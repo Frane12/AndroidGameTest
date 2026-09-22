@@ -1,0 +1,101 @@
+name: Build Jos 40 zora v0.5 desert and menu
+on:
+  push:
+    branches:
+      - jos-40-zora-v05-desert-menu
+  workflow_dispatch:
+jobs:
+  godot-android:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore stable v0.3 and apply v0.5 changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq python3 patch librsvg2-bin libfontconfig1 fonts-dejavu-core
+          python3 - <<'PY'
+          import base64,io,zipfile,zlib,subprocess
+          from pathlib import Path
+          s=''.join(Path(f'jos40-parts/part{i}.txt').read_text().strip() for i in range(5))
+          assert len(s)==18534, 'Invalid stable base archive'
+          with zipfile.ZipFile(io.BytesIO(base64.b85decode(s))) as z:
+              assert z.testzip() is None
+              z.extractall('jos40-game')
+          patch_s=''.join(Path(f'jos40-v05/part{i}.txt').read_text().strip() for i in range(4))
+          assert len(patch_s)==14093, f'Invalid patch length {len(patch_s)}'
+          patch=zlib.decompress(base64.b85decode(patch_s))
+          result=subprocess.run(['patch','--batch','-p1','--fuzz=0'],cwd='jos40-game',input=patch,capture_output=True,check=True)
+          print(result.stdout.decode())
+          print('Restored Godot files',len(list(Path('jos40-game').rglob('*'))))
+          PY
+          cd jos40-game
+          rsvg-convert -w 512 -h 512 assets/icon.svg -o assets/icon.png
+          rsvg-convert -w 192 -h 192 assets/icon.svg -o assets/icon192.png
+          rsvg-convert -w 432 -h 432 assets/icon.svg -o assets/icon432.png
+          file assets/icon*.png
+      - name: Configure Android build tools
+        shell: bash
+        run: |
+          godot --version
+          mkdir -p ~/.config/godot
+          cp /root/.config/godot/editor_settings-4.5.tres ~/.config/godot/editor_settings-4.5.tres
+          mkdir -p ~/.local/share/godot/export_templates/
+          if [ -d /root/.local/share/godot/export_templates/4.5.stable ] && [ "$HOME" != /root ]; then
+            cp -a /root/.local/share/godot/export_templates/4.5.stable ~/.local/share/godot/export_templates/
+          fi
+          yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /tmp/sdk-install.log || true
+      - name: Parse Godot scripts and smoke test menu, physics, sky and saves
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          set -o pipefail
+          godot --headless --editor --import --quit 2>&1 | tee /tmp/godot-import.log
+          cat > smoke.gd <<'GDSCRIPT'
+          extends SceneTree
+          func _initialize()->void:
+           call_deferred("_smoke")
+          func _smoke()->void:
+           var w=load("res://scenes/main.tscn").instantiate()
+           root.add_child(w)
+           await process_frame
+           assert(w.menu_open)
+           w.new_game()
+           assert(w.game_active and not w.menu_open)
+           w.change_location()
+           assert(w.exterior)
+           for i in 46:w.update_desert_atmosphere(4.0)
+           w.save_manual()
+           assert(FileAccess.file_exists("user://slot1.cfg"))
+           assert(w.load_from("user://slot1.cfg"))
+           w.menu_action("menu")
+           assert(w.menu_open)
+           print("SMOKE PASS: title, new game, desert, sun cycle, save, load, menu")
+           quit()
+          GDSCRIPT
+          godot --headless --path . --script smoke.gd 2>&1 | tee /tmp/godot-smoke.log
+          if grep -Ei 'SCRIPT ERROR|Parse Error|Failed loading script|Invalid call|Invalid get index|Assertion failed' /tmp/godot-import.log /tmp/godot-smoke.log; then
+            echo 'Godot validation failed'; exit 1
+          fi
+          grep -q 'SMOKE PASS' /tmp/godot-smoke.log
+      - name: Export signed Android ARM64 APK
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug Android build/Jos-40-zora-Godot-v0.5-A810.apk 2>&1 | tee /tmp/godot-export.log
+          test -s build/Jos-40-zora-Godot-v0.5-A810.apk
+          if grep -Ei 'ERROR:|Export failed' /tmp/godot-export.log; then
+            echo 'Android export error'; exit 1
+          fi
+          unzip -t build/Jos-40-zora-Godot-v0.5-A810.apk | tail -2
+          ls -lh build/Jos-40-zora-Godot-v0.5-A810.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jos-40-zora-v0.5-A810-desert-APK
+          path: jos40-game/build/Jos-40-zora-Godot-v0.5-A810.apk
+          if-no-files-found: error
