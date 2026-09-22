@@ -1,0 +1,87 @@
+name: Build Jos 40 zora Godot v0.4 Light and Wind
+on:
+  push:
+    branches:
+      - jos-40-zora-godot-v04-light-wind
+  workflow_dispatch:
+jobs:
+  godot-android:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install project restoration utilities
+        shell: bash
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq python3 patch libfontconfig1 fonts-dejavu-core
+      - name: Restore Astras Godot base and apply v0.4 delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, zipfile, io, zlib, subprocess
+          original=''.join(Path(f'jos40-parts/part{i}.txt').read_text().strip() for i in range(5))
+          assert len(original)==18534, f'Incorrect base archive length: {len(original)}'
+          with zipfile.ZipFile(io.BytesIO(base64.b85decode(original))) as z:
+              assert z.testzip() is None
+              z.extractall('jos40-game')
+          base=Path('jos40-game')
+          for path, old, new in [
+              ('scripts/player.gd',' position=spawn_point\n',' position=Vector3(45,2,0) if world.exterior else spawn_point\n'),
+              ('scripts/hud.gd','mouse_filter=Control.MOUSE_FILTER_IGNORE','mouse_filter=Control.MOUSE_FILTER_PASS')
+          ]:
+              p=base/path
+              p.write_text(p.read_text().replace(old,new))
+          delta=''.join(Path(f'jos40-delta/part{i}.txt').read_text().strip() for i in range(3))
+          assert len(delta)==11872, f'Incorrect patch length: {len(delta)}'
+          patch=zlib.decompress(base64.b85decode(delta))
+          result=subprocess.run(['patch','-p1','--fuzz=0'],input=patch,cwd=base,check=True,capture_output=True)
+          print(result.stdout.decode())
+          assert (base/'project.godot').exists()
+          assert 'wind_power' in (base/'scripts/world.gd').read_text()
+          assert 'stamina' in (base/'scripts/player.gd').read_text()
+          print('v0.4 restored and patch applied')
+          PY
+      - name: Setup Android SDK and Godot
+        shell: bash
+        run: |
+          godot --version
+          mkdir -p ~/.config/godot
+          cp /root/.config/godot/editor_settings-4.5.tres ~/.config/godot/editor_settings-4.5.tres
+          test -f /root/debug.keystore
+          mkdir -p ~/.local/share/godot/export_templates/
+          if [ -d /root/.local/share/godot/export_templates/4.5.stable ] && [ "$HOME" != /root ]; then
+            cp -a /root/.local/share/godot/export_templates/4.5.stable ~/.local/share/godot/export_templates/
+          fi
+          yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /tmp/sdk-install.log || true
+      - name: Import and validate Godot scripts
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          set -o pipefail
+          godot --headless --editor --import --quit 2>&1 | tee /tmp/godot-import.log
+          godot --headless --quit-after 120 --path . 2>&1 | tee /tmp/godot-smoke.log
+          if grep -Ei 'SCRIPT ERROR|Parse Error|Failed loading script|Invalid call|Invalid get index' /tmp/godot-import.log /tmp/godot-smoke.log; then
+            echo 'Godot script validation failed'; exit 1
+          fi
+      - name: Export signed Android ARM64 APK
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug Android build/Jos-40-zora-Godot-v0.4.apk 2>&1 | tee /tmp/godot-export.log
+          test -s build/Jos-40-zora-Godot-v0.4.apk
+          if grep -Ei 'ERROR:|Export failed' /tmp/godot-export.log; then
+            echo 'Godot export reported errors'; exit 1
+          fi
+          unzip -t build/Jos-40-zora-Godot-v0.4.apk | tail -2
+          ls -lh build/Jos-40-zora-Godot-v0.4.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jos-40-zora-v0.4-Moses-Sun-Moon-APK
+          path: jos40-game/build/Jos-40-zora-Godot-v0.4.apk
+          if-no-files-found: error
