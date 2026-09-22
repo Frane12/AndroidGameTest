@@ -1,0 +1,66 @@
+name: Build Jos 40 zora Godot 2.5D
+on:
+  push:
+    branches:
+      - jos-40-zora-godot-v03
+  workflow_dispatch:
+jobs:
+  godot-android:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore complete Godot project
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, zipfile, io
+          combined=''.join(Path(f'jos40-parts/part{i}.txt').read_text().strip() for i in range(5))
+          assert len(combined)==18534, f'Invalid source length: {len(combined)}'
+          raw=base64.b85decode(combined)
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              corrupted=z.testzip()
+              assert corrupted is None, f'Bad zip member: {corrupted}'
+              z.extractall('jos40-game')
+          print('Godot project restored; files:', len(list(Path('jos40-game').rglob('*'))))
+          PY
+      - name: Setup Android and Godot
+        shell: bash
+        run: |
+          godot --version
+          mkdir -p ~/.local/share/godot/export_templates/
+          if [ -d /root/.local/share/godot/export_templates/4.5.stable ] && [ "$HOME" != /root ]; then
+            cp -a /root/.local/share/godot/export_templates/4.5.stable ~/.local/share/godot/export_templates/
+          fi
+          yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /tmp/sdk-install.log || true
+          tail -8 /tmp/sdk-install.log
+      - name: Import and parse Godot scripts
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          godot --headless --editor --import --quit 2>&1 | tee /tmp/godot-import.log
+          godot --headless --quit-after 60 --path . 2>&1 | tee /tmp/godot-smoke.log
+          if grep -Ei "SCRIPT ERROR|Parse Error|Failed loading script|Invalid call" /tmp/godot-import.log /tmp/godot-smoke.log; then
+            echo "Godot script validation failed"
+            exit 1
+          fi
+      - name: Export signed ARM64 Android APK
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug Android build/Jos-40-zora-Godot-v0.3.apk 2>&1 | tee /tmp/godot-export.log
+          test -s build/Jos-40-zora-Godot-v0.3.apk
+          if grep -Ei 'ERROR:|Export failed' /tmp/godot-export.log; then
+            echo 'Export reported errors'
+            exit 1
+          fi
+          unzip -t build/Jos-40-zora-Godot-v0.3.apk | tail -2
+          ls -lh build/Jos-40-zora-Godot-v0.3.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jos-40-zora-Godot-v0.3-APK
+          path: jos40-game/build/Jos-40-zora-Godot-v0.3.apk
+          if-no-files-found: error
