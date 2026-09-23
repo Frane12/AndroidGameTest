@@ -1,0 +1,132 @@
+name: Build Jos 40 zora v0.7 moving shadows and clear sky
+on:
+  push:
+    branches:
+      - jos-40-zora-v07-clear-sky-shadows
+  workflow_dispatch:
+jobs:
+  godot-android:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore stable v0.3 and apply v0.5 changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq python3 patch curl ca-certificates librsvg2-bin libfontconfig1 fonts-dejavu-core
+          python3 - <<'PY'
+          import base64,io,zipfile,zlib,subprocess
+          from pathlib import Path
+          s=''.join(Path(f'jos40-parts/part{i}.txt').read_text().strip() for i in range(5))
+          assert len(s)==18534, 'Invalid stable base archive'
+          with zipfile.ZipFile(io.BytesIO(base64.b85decode(s))) as z:
+              assert z.testzip() is None
+              z.extractall('jos40-game')
+          # The validated v0.3 project contains two fixes made after its original archive.
+          base=Path('jos40-game')
+          for path,old,new in [
+              ('scripts/player.gd',' position=spawn_point\\n',' position=Vector3(45,2,0) if world.exterior else spawn_point\\n'),
+              ('scripts/hud.gd','mouse_filter=Control.MOUSE_FILTER_IGNORE','mouse_filter=Control.MOUSE_FILTER_PASS')
+          ]:
+              p=base/path
+              src=p.read_text()
+              old=old.replace('\\n','\n')
+              new=new.replace('\\n','\n')
+              assert old in src, path
+              p.write_text(src.replace(old,new,1))
+          patch_s=''.join(Path(f'jos40-v05/part{i}.txt').read_text().strip() for i in range(4))
+          assert len(patch_s)==14093, f'Invalid patch length {len(patch_s)}'
+          patch=zlib.decompress(base64.b85decode(patch_s))
+          result=subprocess.run(['patch','--batch','-p1','--fuzz=0'],cwd='jos40-game',input=patch,capture_output=True,check=True)
+          print(result.stdout.decode()); print(result.stderr.decode())
+          print('Restored Godot files',len(list(Path('jos40-game').rglob('*'))))
+          PY
+          cd jos40-game
+          python3 - <<'PY'
+          from pathlib import Path
+          icon=Path('assets/icon.svg')
+          svg=icon.read_text()
+          # Original v0.3 icon has no ending newline: force one clean SVG root after patch.
+          assert '</svg>' in svg
+          icon.write_text(svg[:svg.index('</svg>')+6]+'\n')
+          PY
+          rsvg-convert -w 512 -h 512 assets/icon.svg -o assets/icon.png
+          rsvg-convert -w 192 -h 192 assets/icon.svg -o assets/icon192.png
+          rsvg-convert -w 432 -h 432 assets/icon.svg -o assets/icon432.png
+          ls -lh assets/icon*.png
+      - name: Apply v0.6 UI and materials patch and fetch verified CC0 textures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,zlib,subprocess
+          from pathlib import Path
+          s=Path("jos40-v06/patch.b85").read_text().strip()
+          assert len(s)==6395, f"Invalid v0.6 patch length: {len(s)}"
+          result=subprocess.run(["patch","--batch","-p1","--fuzz=0"],cwd="jos40-game",input=zlib.decompress(base64.b85decode(s)),capture_output=True,check=True)
+          print(result.stdout.decode(),result.stderr.decode())
+          PY
+          sed -i '/texture_repeat=BaseMaterial3D.TEXTURE_REPEAT_ENABLED/d' jos40-game/scripts/world.gd
+          mkdir -p jos40-game/assets/textures
+          curl -fL --retry 3 --connect-timeout 20 -o jos40-game/assets/textures/sand_03_diff_1k.jpg "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/sand_03/sand_03_diff_1k.jpg"
+          curl -fL --retry 3 --connect-timeout 20 -o jos40-game/assets/textures/sandstone_blocks_04_diff_1k.jpg "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/sandstone_blocks_04/sandstone_blocks_04_diff_1k.jpg"
+          python3 - <<'PY'
+          from pathlib import Path
+          for n in ("sand_03_diff_1k.jpg","sandstone_blocks_04_diff_1k.jpg"):
+              f=Path("jos40-game/assets/textures")/n
+              assert f.stat().st_size>25000,(n,f.stat().st_size)
+              assert f.read_bytes()[:3]==bytes.fromhex("ffd8ff"),"Not JPEG: "+n
+              print("Verified CC0 texture",n,f.stat().st_size,"bytes")
+          PY
+      - name: Apply v0.7 moving shadows and clear sky
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import base64,zlib,subprocess
+          from pathlib import Path
+          patch=zlib.decompress(base64.b85decode(Path("jos40-v07/patch.b85").read_text().strip()))
+          subprocess.run(["patch","--batch","-p1","--fuzz=0"],cwd="jos40-game",input=patch,check=True)
+          PYCODE
+      - name: Configure Android build tools
+        shell: bash
+        run: |
+          godot --version
+          mkdir -p ~/.config/godot
+          cp /root/.config/godot/editor_settings-4.5.tres ~/.config/godot/editor_settings-4.5.tres
+          mkdir -p ~/.local/share/godot/export_templates/
+          if [ -d /root/.local/share/godot/export_templates/4.5.stable ] && [ "$HOME" != /root ]; then
+            cp -a /root/.local/share/godot/export_templates/4.5.stable ~/.local/share/godot/export_templates/
+          fi
+          yes | sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /tmp/sdk-install.log || true
+      - name: Parse Godot scripts and smoke test menu, physics, sky and saves
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          set -o pipefail
+          godot --headless --editor --import --quit 2>&1 | tee /tmp/godot-import.log
+          godot --headless --path . --script tests/smoke.gd 2>&1 | tee /tmp/godot-smoke.log
+          if grep -Ei 'SCRIPT ERROR|Parse Error|Failed loading script|Invalid call|Invalid get index|Assertion failed' /tmp/godot-import.log /tmp/godot-smoke.log; then
+            echo 'Godot validation failed'; exit 1
+          fi
+          grep -q 'SMOKE PASS' /tmp/godot-smoke.log
+      - name: Export signed Android ARM64 APK
+        shell: bash
+        working-directory: jos40-game
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug Android build/Jos-40-zora-Godot-v0.7-A810.apk 2>&1 | tee /tmp/godot-export.log
+          test -s build/Jos-40-zora-Godot-v0.7-A810.apk
+          if grep -Ei 'ERROR:|Export failed' /tmp/godot-export.log; then
+            echo 'Android export error'; exit 1
+          fi
+          unzip -t build/Jos-40-zora-Godot-v0.7-A810.apk | tail -2
+          ls -lh build/Jos-40-zora-Godot-v0.7-A810.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jos-40-zora-v0.7-A810-Clear-Sky-Shadows-APK
+          path: jos40-game/build/Jos-40-zora-Godot-v0.7-A810.apk
+          if-no-files-found: error
