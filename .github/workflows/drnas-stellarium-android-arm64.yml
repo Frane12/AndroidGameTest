@@ -1,0 +1,119 @@
+name: DRNAS Stellarium 26.3 Native Android ARM64 (experimental)
+on:
+  push:
+    branches: [experiment/stellarium-native-android-26-3]
+    paths:
+      - 'stellarium/**'
+      - '.github/workflows/drnas-stellarium-android-arm64.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-stellarium-android-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  STELLARIUM_TAG: v26.3
+  STELLARIUM_SHA: 3f23cf3a1a59523a9c7b1ec4540c33bca77addfa
+  QT_VERSION: 6.8.3
+  NDK_VERSION: 26.1.10909125
+  QT_INSTALL: ${{ github.workspace }}/.qt
+
+jobs:
+  native-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-build tools and Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build git ccache python3 python3-pip pkg-config libgl1-mesa-dev
+          python3 -m pip install --disable-pip-version-check --user 'aqtinstall==3.3.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if [[ ! -f "$ANDROID_HOME/ndk/$NDK_VERSION/build/cmake/android.toolchain.cmake" ]]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
+          fi
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          mkdir -p out
+
+      - name: Cache official Qt desktop and Android SDK packages
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: .qt
+          key: drnas-stellarium-qt-6.8.3-linux-host-android-arm64-v1
+
+      - name: Install official Qt 6.8.3 host and Android arm64 modules
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 -O "$QT_INSTALL" -m qtcharts qtpositioning qtsvg qtshadertools
+          aqt install-qt linux android "$QT_VERSION" android_arm64_v8a -O "$QT_INSTALL" -m qtcharts qtpositioning qtsvg qtshadertools
+          test -s "$QT_INSTALL/$QT_VERSION/android_arm64_v8a/lib/cmake/Qt6/qt.toolchain.cmake"
+          test -s "$QT_INSTALL/$QT_VERSION/android_arm64_v8a/lib/cmake/Qt6Charts/Qt6ChartsConfig.cmake"
+          test -s "$QT_INSTALL/$QT_VERSION/android_arm64_v8a/lib/cmake/Qt6Positioning/Qt6PositioningConfig.cmake"
+          test -s "$QT_INSTALL/$QT_VERSION/android_arm64_v8a/lib/cmake/Qt6SvgWidgets/Qt6SvgWidgetsConfig.cmake"
+
+      - name: Checkout exact GPL Stellarium v26.3 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth=1 --branch "$STELLARIUM_TAG" https://github.com/Stellarium/stellarium.git upstream-stellarium
+          actual="$(git -C upstream-stellarium rev-parse HEAD)"
+          test "$actual" = "$STELLARIUM_SHA" || { echo "::error::Unexpected upstream tag revision $actual"; exit 1; }
+          python3 stellarium/patch-android.py upstream-stellarium/android/AndroidManifest.xml
+          echo "Upstream Stellarium: $STELLARIUM_TAG ($actual)" | tee out/source-info.txt
+
+      - name: Configure actual desktop Stellarium source for Android ARM64
+        id: configure
+        shell: bash
+        env:
+          STELLARIUM_SOURCE_DIR: ${{ github.workspace }}/upstream-stellarium
+          QT_HOST: ${{ github.workspace }}/.qt/6.8.3/gcc_64
+          QT_ANDROID: ${{ github.workspace }}/.qt/6.8.3/android_arm64_v8a
+        run: bash stellarium/build-android.sh configure 2>&1 | tee out/configure.log
+
+      - name: Compile real Stellarium Qt Widgets and OpenGL ES application
+        id: compile
+        shell: bash
+        run: bash stellarium/build-android.sh compile 2>&1 | tee out/compile.log
+
+      - name: Build and sign Qt Android debug APK
+        id: package
+        shell: bash
+        env:
+          QT_ANDROID: ${{ github.workspace }}/.qt/6.8.3/android_arm64_v8a
+        run: bash stellarium/build-android.sh package 2>&1 | tee out/package.log
+
+      - name: Validate APK architecture and Android manifest
+        if: steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find .build/stellarium-android -type f -name '*.apk' -exec cp -v '{}' out/ \;
+          find out -maxdepth 1 -name '*.apk' -size +1M | grep -q '.apk$'
+          for apk in out/*.apk; do
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+            "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee out/apk-badging.txt
+            unzip -Z1 "$apk" | grep -q 'lib/arm64-v8a/'
+          done
+
+      - name: Upload compile diagnostics even if Android build fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Stellarium-Android-ARM64-${{ github.run_id }}
+          path: |
+            out/
+            .build/stellarium-android/CMakeCache.txt
+            .build/stellarium-android/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+          retention-days: 30
