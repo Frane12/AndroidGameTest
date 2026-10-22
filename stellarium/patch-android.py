@@ -8,7 +8,7 @@ if len(sys.argv) != 2:
 path = Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")
 replacements = {
-    'package="org.stellarium.stellarium"': 'package="org.drnas.stellarium.native"',
+    'package="org.stellarium.stellarium"': 'package="org.drnas.stellarium.port"',
     'android:label="Stellarium"': 'android:label="DRNAS Stellarium Native"',
 }
 for original, replacement in replacements.items():
