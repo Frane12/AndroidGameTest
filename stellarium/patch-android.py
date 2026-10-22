@@ -39,3 +39,32 @@ if jpl.count(old_jpl) != 1 or jpl.count("#pragma pack()") != 1:
 jpl = jpl.replace(old_jpl, new_jpl).replace("#pragma pack()", "#pragma pack(pop)")
 jpl_header.write_text(jpl, encoding="utf-8")
 print("Android JPL ephemeris: preserved packed structs, fixed libc++ header alignment")
+
+
+# Remove upstream's obsolete Android all-files-access prompt from main.cpp.
+# The Android manifest above deliberately drops MANAGE_EXTERNAL_STORAGE, and
+# the first on-device sky viewport needs no unrestricted file-system access.
+# This is the only usage of private Qt JNI headers in the pinned main.cpp.
+# Qt's public application bootstrap remains unmodified.
+main_path = path.parent.parent / "src/main.cpp"
+main = main_path.read_text(encoding="utf-8")
+private_includes = (
+    "#ifdef Q_OS_ANDROID\n"
+    "#include <QJniObject>\n"
+    "#include <QJniEnvironment>\n"
+    "#include <QtCore/private/qjnihelpers_p.h>\n"
+    "#include <QtCore/private/qandroidextras_p.h>\n"
+    "#endif\n"
+)
+if main.count(private_includes) != 1:
+    raise SystemExit("Pinned Stellarium Qt JNI imports changed; refusing blind edit")
+main = main.replace(private_includes, "", 1)
+block_start = '\n#ifdef Q_OS_ANDROID\n\tif (!QJniObject::callStaticMethod<jboolean>("android/os/Environment", "isExternalStorageManager"))'
+block_end = "\n#endif\n\n\t// Init the file manager"
+if main.count(block_start) != 1 or main.count(block_end) != 1:
+    raise SystemExit("Pinned Stellarium Android storage prompt changed; refusing blind edit")
+start = main.index(block_start)
+end = main.index(block_end, start)
+main = main[:start] + main[end + len("\n#endif"):]
+main_path.write_text(main, encoding="utf-8")
+print("Android main.cpp: dropped unused Qt private JNI headers and obsolete all-files permission prompt")
