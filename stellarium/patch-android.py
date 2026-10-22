@@ -68,3 +68,26 @@ end = main.index(block_end, start)
 main = main[:start] + main[end + len("\n#endif"):]
 main_path.write_text(main, encoding="utf-8")
 print("Android main.cpp: dropped unused Qt private JNI headers and obsolete all-files permission prompt")
+\n\n# Android must use app-private storage, not a desktop-style ~/.stellarium
+# folder that may resolve to an unwritable / directory on devices.
+anchor = '\\t// Init the file manager\\n\\tStelFileMgr::init();'
+replacement = (
+    '#ifdef Q_OS_ANDROID\\n'
+    '\tconst QString drnasUserDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);\\n'
+    '\tif (drnasUserDir.isEmpty())\\n'
+    '\t\tqFatal("DRNAS Android: app-private data directory unavailable");\\n'
+    '\tqputenv("STEL_USERDIR", drnasUserDir.toUtf8());\\n'
+    '\tqInfo().noquote() << "DRNAS Android user data:" << drnasUserDir;\\n'
+    '#endif\\n\\n'
+    '\t// Init the file manager\\n'
+    '\tStelFileMgr::init();'
+)
+if main.count(anchor) != 1:
+    raise SystemExit("Pinned Stellarium file-manager init changed; refusing blind patch")
+main = main.replace(anchor, replacement, 1)
+include_anchor = '#include <QDir>\\n#include <QFile>'
+if main.count(include_anchor) != 1:
+    raise SystemExit("Pinned Stellarium Qt includes changed")
+main = main.replace(include_anchor, '#include <QDir>\\n#include <QStandardPaths>\\n#include <QFile>', 1)
+main_path.write_text(main, encoding="utf-8")
+print("Android main.cpp: use private writable app data directory for Stellarium configuration")

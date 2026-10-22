@@ -1,6 +1,6 @@
 # DRNAS Native Stellarium — Android ARM64 experimental port
 
-**Status: CI-first proof of concept; no verified working APK yet.**
+**Status: First signed APK built but crashes on-device; experimental startup assets fix in progress.**
 
 This branch starts from the **real GPL-licensed Stellarium v26.3 desktop C++/Qt source**, pinned to commit
 `3f23cf3a1a59523a9c7b1ec4540c33bca77addfa`.
@@ -34,3 +34,17 @@ and desktop Qt GUI are **not replaced**.
 Upstream: https://github.com/Stellarium/stellarium (GPL-2.0-or-later / upstream license details).
 Our build scripts are distributed with the intention of respecting upstream GPL obligations.
 The original Stellarium source is fetched at build time, **not presented as an original DRNAS implementation**.
+
+## Android start-up fix
+
+The first signed APK (run 39712761275) was reported to crash at launch. Inspection found that the Android package source held **no Stellarium runtime assets**, whereas `StelFileMgr::init()` requires `assets:/data/ssystem_major.ini` or it aborts with `qFatal`. New APK staging copies actual upstream v26.3 `data`, stars, textures, nebula catalog, default sky culture and landscape into `android/assets`, including CMake-generated `data/default_cfg.ini`. CI rejects APKs missing essential assets. Native Android app configuration now uses app-private writable storage. This is a grounded suspected fix; **on-device validation is still required**.
+
+For native logcat (device connected with USB debugging):
+
+```sh
+adb logcat -c
+adb shell am force-stop org.drnas.stellarium.port
+adb shell monkey -p org.drnas.stellarium.port 1
+adb logcat -d -v time -s QtCore:V Qt:V AndroidRuntime:E libc:F DEBUG:E 'Stellarium:V' '*:S' > stellarium-android-startup.log
+```
+

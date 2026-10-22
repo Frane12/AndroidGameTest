@@ -103,6 +103,13 @@ jobs:
           QT_ANDROID: ${{ github.workspace }}/.qt/6.8.3/android_arm64_v8a
         run: bash stellarium/build-android.sh configure 2>&1 | tee out/configure.log
 
+      - name: Stage real desktop Stellarium catalogs, fonts and textures into Android APK assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 stellarium/stage-assets.py upstream-stellarium | tee out/runtime-assets.log
+          test -f upstream-stellarium/android/assets/data/ssystem_major.ini
+
       - name: Compile real Stellarium Qt Widgets and OpenGL ES application
         id: compile
         shell: bash
@@ -138,6 +145,17 @@ jobs:
             "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee out/apk-badging.txt
             grep -F "package: name='org.drnas.stellarium.port'" out/apk-badging.txt
             unzip -Z1 "$apk" | grep -q 'lib/arm64-v8a/'
+            # Prevent another CI-green / on-device qFatal from missing original catalogs.
+            for required in \
+              assets/data/ssystem_major.ini \
+              assets/data/default_cfg.ini \
+              assets/stars/hip_gaia3/defaultStarsConfig.json \
+              assets/landscapes/guereins/landscape.ini; do
+              unzip -Z1 "$apk" | grep -Fx "$required" || {
+                echo "::error::APK missing required Stellarium startup asset $required"
+                exit 1
+              }
+            done
           done
           (cd out && sha256sum *.apk > APK-SHA256SUMS.txt)
           rm -f out/drnas-stellarium-debug.keystore
