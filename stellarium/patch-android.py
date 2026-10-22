@@ -321,3 +321,91 @@ ocular_cpp = replace_unique(
 )
 ocular_cpp_path.write_text(ocular_cpp, encoding="utf-8")
 print("Android Oculars: hide duplicate toolbar while settings dialog is open")
+
+
+# Android visual modes and DPR diagnostics. Preserve existing config files and
+# make the preset switchable from the real Stellarium sky-view options window.
+# The Qt 6.8 OpenGL framebuffer follows logical viewport * devicePixelRatio;
+# do not force desktop 1024x768, disable native DPI, or upsample an FBO.
+main_path = path.parent.parent / "src/main.cpp"
+main = main_path.read_text(encoding="utf-8")
+main = replace_unique(
+    main,
+    '\tQ_ASSERT(confSettings);\n\tqInfo().noquote() << "Config file:"',
+    '\tQ_ASSERT(confSettings);\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\t// One-time mobile visual preset migration; never reset user choices on next boot.\n'
+    '\tif (!confSettings->contains("drnas/enhanced_sky"))\n'
+    '\t{\n'
+    '\t\tconfSettings->setValue("drnas/enhanced_sky", true);\n'
+    '\t\tconfSettings->setValue("stars/relative_scale", 1.18);\n'
+    '\t\tconfSettings->setValue("stars/absolute_scale", 1.10);\n'
+    '\t\tconfSettings->setValue("landscape/flag_minimal_brightness", true);\n'
+    '\t\tconfSettings->setValue("landscape/minimal_brightness", 0.10);\n'
+    '\t\tconfSettings->sync();\n'
+    '\t\tqInfo() << "DRNAS Android: Enhanced sky initial preset";\n'
+    '\t}\n'
+    '#endif\n'
+    '\tqInfo().noquote() << "Config file:"',
+    "Android default visual profile",
+)
+main_path.write_text(main, encoding="utf-8")
+
+view_path = path.parent.parent / "src/gui/ViewDialog.cpp"
+view = view_path.read_text(encoding="utf-8")
+view = replace_unique(
+    view,
+    '#include "StelCore.hpp"\n#include "StelModule.hpp"',
+    '#include "StelCore.hpp"\n#include "StelSkyDrawer.hpp"\n#include "StelModule.hpp"',
+    "Android visual preset sky drawer include",
+)
+view = replace_unique(
+    view,
+    '#include <QSignalBlocker>\n#include <QTimer>',
+    '#include <QSignalBlocker>\n#include <QCheckBox>\n#include <QLayout>\n#include <QTimer>',
+    "Android visual preset UI includes",
+)
+view = replace_unique(
+    view,
+    '\tLandscapeMgr* lmgr = GETSTELMODULE(LandscapeMgr);\n\tQ_ASSERT(lmgr);',
+    '\tLandscapeMgr* lmgr = GETSTELMODULE(LandscapeMgr);\n\tQ_ASSERT(lmgr);\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\t// Mobile-only switch in the original Sky and Viewing Options dialog.\n'
+    '\t// Keep the real astronomical tone mapping and GL renderer untouched.\n'
+    '\tQCheckBox* enhanced = new QCheckBox(tr("DRNAS Enhanced sky (turn off for Realistic)"), ui->starGroupBox);\n'
+    '\tenhanced->setToolTip(tr("Enhanced: slightly brighter stars and landscape. Realistic: original Stellarium sky brightness."));\n'
+    '\tif (ui->starGroupBox->layout())\n'
+    '\t\tui->starGroupBox->layout()->addWidget(enhanced);\n'
+    '\tenhanced->setChecked(app->getSettings()->value("drnas/enhanced_sky", true).toBool());\n'
+    '\tconnect(enhanced, &QCheckBox::toggled, this, [app, lmgr](bool useEnhanced) {\n'
+    '\t\tStelSkyDrawer* drawer = app->getCore()->getSkyDrawer();\n'
+    '\t\tdrawer->setRelativeStarScale(useEnhanced ? 1.18 : 1.0);\n'
+    '\t\tdrawer->setAbsoluteStarScale(useEnhanced ? 1.10 : 1.0);\n'
+    '\t\tlmgr->setFlagLandscapeUseMinimalBrightness(useEnhanced);\n'
+    '\t\tapp->getSettings()->setValue("drnas/enhanced_sky", useEnhanced);\n'
+    '\t\tapp->getSettings()->sync();\n'
+    '\t});\n'
+    '#endif',
+    "Android visual modes checkbox",
+)
+view_path.write_text(view, encoding="utf-8")
+
+main_view_path = path.parent.parent / "src/StelMainView.cpp"
+main_view = main_view_path.read_text(encoding="utf-8")
+main_view = replace_unique(
+    main_view,
+    '\t\tconst QSize& sz = event->size();\n\t\tscene()->setSceneRect(QRect(QPoint(0, 0), sz));',
+    '\t\tconst QSize& sz = event->size();\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\t\t// Qt OpenGL framebuffer target is logical widget size multiplied by\n'
+    '\t\t// devicePixelRatioF(). Diagnostic only: never artificially downscale.\n'
+    '\t\tconst qreal dpr = devicePixelRatioF();\n'
+    '\t\tqInfo().nospace() << "DRNAS Android viewport: logical=" << sz.width() << "x" << sz.height()\n'
+    '\t\t                  << " DPR=" << dpr << " expected physical framebuffer="\n'
+    '\t\t                  << qRound(sz.width() * dpr) << "x" << qRound(sz.height() * dpr);\n'
+    '#endif\n'
+    '\t\tscene()->setSceneRect(QRect(QPoint(0, 0), sz));',
+    "Android DPI framebuffer diagnostics",
+)
+main_view_path.write_text(main_view, encoding="utf-8")
+print("Android visual modes: Enhanced/Realistic toggle, mobile contrast defaults, DPR-aware render diagnostics")
