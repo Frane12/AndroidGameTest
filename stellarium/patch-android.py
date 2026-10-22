@@ -536,3 +536,53 @@ main = replace_unique(
 )
 main_path.write_text(main, encoding="utf-8")
 print("DRNAS Android main window: rely on current Activity viewport, not persisted desktop geometry")
+
+
+# Android rotation splash repair: the upstream splash is a standalone
+# QSplashScreen whose original pixmap size never follows a device rotation.
+# Refit the pixmap whenever the splash window receives a resize event.
+splash_hpp_path = path.parent.parent / "src/StelSplashScreen.hpp"
+splash_cpp_path = path.parent.parent / "src/StelSplashScreen.cpp"
+splash_hpp = splash_hpp_path.read_text(encoding="utf-8")
+splash_cpp = splash_cpp_path.read_text(encoding="utf-8")
+splash_hpp = replace_unique(
+    splash_hpp,
+    '\t\tvoid paintEvent(QPaintEvent*) override;',
+    '\t\tvoid paintEvent(QPaintEvent*) override;\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\t\tvoid resizeEvent(QResizeEvent*) override;\n'
+    '#endif',
+    "Android splash resize declaration",
+)
+splash_cpp = replace_unique(
+    splash_cpp,
+    '\tsetPixmap(makePixmap(sizeRatio));',
+    '#ifdef Q_OS_ANDROID\n'
+    '\t// Keep the splash inside the screen, including narrow portrait displays.\n'
+    '\tconst QSize available = QGuiApplication::primaryScreen()->availableGeometry().size();\n'
+    '\tQPixmap image = makePixmap(sizeRatio);\n'
+    '\tif (!available.isEmpty())\n'
+    '\t\timage = image.scaled(available * 0.90, Qt::KeepAspectRatio, Qt::SmoothTransformation);\n'
+    '\tsetPixmap(image);\n'
+    '#else\n'
+    '\tsetPixmap(makePixmap(sizeRatio));\n'
+    '#endif',
+    "Android splash fit initial screen",
+)
+splash_cpp = replace_unique(
+    splash_cpp,
+    'void SplashScreen::SplashScreenWidget::paintEvent(QPaintEvent* event)',
+    '#ifdef Q_OS_ANDROID\n'
+    'void SplashScreen::SplashScreenWidget::resizeEvent(QResizeEvent* event)\n'
+    '{\n'
+    '\tQSplashScreen::resizeEvent(event);\n'
+    '\t// Do not force the original desktop-sized image after rotation.\n'
+    '\tupdate();\n'
+    '}\n'
+    '#endif\n\n'
+    'void SplashScreen::SplashScreenWidget::paintEvent(QPaintEvent* event)',
+    "Android splash resize handler",
+)
+splash_hpp_path.write_text(splash_hpp, encoding="utf-8")
+splash_cpp_path.write_text(splash_cpp, encoding="utf-8")
+print("Android splash: limit image to available screen and refresh after rotation")
