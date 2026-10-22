@@ -92,3 +92,143 @@ if main.count(include_anchor) != 1:
 main = main.replace(include_anchor, '#include <QDir>\n#include <QStandardPaths>\n#include <QFile>', 1)
 main_path.write_text(main, encoding="utf-8")
 print("Android main.cpp: use private writable app data directory for Stellarium configuration")
+
+
+# Android's desktop Qt dialogs live inside QGraphicsProxyWidget overlays.
+# Desktop-saved geometry may exceed the phone screen, and the upstream
+# inactive-window transparency makes the star field show through controls.
+# Adapt only the pinned Android build, leaving desktop Stellarium unchanged.
+dialog_cpp_path = path.parent.parent / "src/gui/StelDialog.cpp"
+dialog_hpp_path = path.parent.parent / "src/gui/StelDialog.hpp"
+dialog_cpp = dialog_cpp_path.read_text(encoding="utf-8")
+dialog_hpp = dialog_hpp_path.read_text(encoding="utf-8")
+
+
+def replace_unique(content, needle, replacement, label):
+    if content.count(needle) != 1:
+        raise SystemExit(f"Stellarium 26.3 GUI source changed ({label}); refusing blind edit")
+    return content.replace(needle, replacement, 1)
+
+
+dialog_helpers = r"""
+#ifdef Q_OS_ANDROID
+// Qt Widgets dialogs are rendered as graphics items on Android.
+// Use logical view pixels (not physical display pixels); scaling the proxy
+// also scales hit testing, so touch coordinates continue to match controls.
+static void drnasFitAndroidDialog(CustomProxy* proxy, QWidget* widget)
+{
+    if (!proxy || !widget)
+        return;
+
+    const QSizeF viewSize(StelMainView::getInstance().size());
+    if (viewSize.width() <= 0.0 || viewSize.height() <= 0.0)
+        return;
+
+    constexpr qreal margin = 12.0;
+    const qreal maxWidth = qMax(qreal(1), viewSize.width() - 2.0 * margin);
+    const qreal maxHeight = qMax(qreal(1), viewSize.height() - 2.0 * margin);
+    const QSizeF originalSize = proxy->size();
+    const qreal contentWidth = qMax(qreal(1), originalSize.width());
+    const qreal contentHeight = qMax(qreal(1), originalSize.height());
+    const qreal fit = qMin(qreal(1), qMin(maxWidth / contentWidth,
+                                        maxHeight / contentHeight));
+
+    // Always recompute from unscaled layout dimensions: never accumulate
+    // scaling across reopening, device rotation or font-size changes.
+    proxy->setTransformOriginPoint(QPointF(0, 0));
+    proxy->setScale(fit);
+    proxy->setPos(qMax(qreal(0), (viewSize.width() - contentWidth * fit) / 2.0),
+                  qMax(qreal(0), (viewSize.height() - contentHeight * fit) / 2.0));
+    widget->setWindowOpacity(1.0);
+}
+#endif
+
+"""
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "#include <QMessageBox>\n\nStelDialog::StelDialog",
+    "#include <QMessageBox>\n\n" + dialog_helpers + "StelDialog::StelDialog",
+    "Android dialog helper",
+)
+
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "\tconnect(&StelApp::getInstance(), &StelApp::colorSchemeChanged, this, &StelDialog::handleColorSchemeChanged);",
+    "\tconnect(&StelApp::getInstance(), &StelApp::colorSchemeChanged, this, &StelDialog::handleColorSchemeChanged);"
+    "\n#ifdef Q_OS_ANDROID\n"
+    "\tconnect(&StelMainView::getInstance(), &StelMainView::sizeChanged, this,\n"
+    "\t        [this](const QSize&) {\n"
+    "\t            if (dialog && proxy && dialog->isVisible())\n"
+    "\t                drnasFitAndroidDialog(proxy, dialog);\n"
+    "\t        });\n"
+    "#endif",
+    "rotation / resize callback",
+)
+
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "\t\t\tconnect(proxy, &CustomProxy::sizeChanged, this, &StelDialog::handleDialogSizeChanged);",
+    "\t\t\tconnect(proxy, &CustomProxy::sizeChanged, this, &StelDialog::handleDialogSizeChanged);"
+    "\n#ifdef Q_OS_ANDROID\n"
+    "\t\t\tconnect(proxy, &CustomProxy::sizeChanged, this, [this](QSizeF) {\n"
+    "\t\t\t\tif (dialog && dialog->isVisible())\n"
+    "\t\t\t\t\tdrnasFitAndroidDialog(proxy, dialog);\n"
+    "\t\t\t});\n"
+    "#endif",
+    "dynamic dialog resize",
+)
+
+# The desktop code restores sometimes huge old window sizes and then clips
+# them to 95% of the phone, hiding child widgets. Keep natural layout size
+# on Android and scale its graphics proxy instead.
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "\t\t\tif(proxy->size().width() > maxSize.width() || proxy->size().height() > maxSize.height())",
+    "#ifndef Q_OS_ANDROID\n"
+    "\t\t\tif(proxy->size().width() > maxSize.width() || proxy->size().height() > maxSize.height())",
+    "native size clamp guard",
+)
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "\t\t\thandleDialogSizeChanged(proxy->size()); // This may trigger internal updates in subclasses. E.g. LocationPanel location arrow.",
+    "#endif\n"
+    "\t\t\thandleDialogSizeChanged(proxy->size()); // This may trigger internal updates in subclasses. E.g. LocationPanel location arrow.",
+    "native size clamp end",
+)
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "\t\tproxy->setFocus();",
+    "#ifdef Q_OS_ANDROID\n"
+    "\t\t// Keep every dialog inside the current viewport, also on reopen.\n"
+    "\t\tdrnasFitAndroidDialog(proxy, dialog);\n"
+    "#endif\n"
+    "\t\tproxy->setFocus();",
+    "fit on every show",
+)
+dialog_cpp = replace_unique(
+    dialog_cpp,
+    "\t\t\tdialog = new QDialog(nullptr);",
+    "\t\t\tdialog = new QDialog(nullptr);"
+    "\n#ifdef Q_OS_ANDROID\n"
+    "\t\t\t// Paint the window background fully instead of exposing the sky.\n"
+    "\t\t\tdialog->setAutoFillBackground(true);\n"
+    "\t\t\tdialog->setWindowOpacity(1.0);\n"
+    "#endif",
+    "opaque Android window",
+)
+dialog_hpp = replace_unique(
+    dialog_hpp,
+    '\t\t\tif (StelApp::getInstance().getSettings()->value("gui/flag_use_window_transparency", true).toBool())',
+    '#ifndef Q_OS_ANDROID\n'
+    '\t\t\tif (StelApp::getInstance().getSettings()->value("gui/flag_use_window_transparency", true).toBool())',
+    "disable inactive Android window transparency",
+)
+dialog_hpp = replace_unique(
+    dialog_hpp,
+    "\t\t\treturn QGraphicsProxyWidget::event(event);",
+    "#endif\n\t\t\treturn QGraphicsProxyWidget::event(event);",
+    "Android transparency guard end",
+)
+dialog_cpp_path.write_text(dialog_cpp, encoding="utf-8")
+dialog_hpp_path.write_text(dialog_hpp, encoding="utf-8")
+print("Android Qt dialogs: scale to portrait/landscape viewport, recenter on reopen/rotate, preserve opaque controls")
