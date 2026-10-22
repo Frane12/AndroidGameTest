@@ -232,3 +232,92 @@ dialog_hpp = replace_unique(
 dialog_cpp_path.write_text(dialog_cpp, encoding="utf-8")
 dialog_hpp_path.write_text(dialog_hpp, encoding="utf-8")
 print("Android Qt dialogs: scale to portrait/landscape viewport, recenter on reopen/rotate, preserve opaque controls")
+
+
+# Android refinement: keep star/planet information inside a usable corner
+# instead of letting the long desktop HTML text cover the whole sky scene.
+# Default to ShortInfo on mobile, but honor explicit "all"/"custom" choices.
+sky_cpp_path = path.parent.parent / "src/gui/SkyGui.cpp"
+sky_cpp = sky_cpp_path.read_text(encoding="utf-8")
+sky_helper = r"""
+#ifdef Q_OS_ANDROID
+// Fit existing rich-text content without changing the selected object,
+// its data, the general GUI DPI, or Qt's touch-coordinate mapping.
+static void drnasFitAndroidObjectInfo(QGraphicsTextItem* panel)
+{
+    if (!panel)
+        return;
+    const QSize viewport = StelMainView::getInstance().size();
+    if (viewport.width() <= 0 || viewport.height() <= 0)
+        return;
+    const QRectF textRect = panel->boundingRect();
+    if (textRect.width() <= 0 || textRect.height() <= 0)
+        return;
+
+    const bool portrait = viewport.height() > viewport.width();
+    const qreal widthBudget = viewport.width() * (portrait ? 0.70 : 0.32);
+    const qreal heightBudget = viewport.height() * 0.72;
+    const qreal fit = qMin(qreal(1.0), qMin(widthBudget / textRect.width(),
+                                           heightBudget / textRect.height()));
+    panel->setTransformOriginPoint(QPointF(0, 0));
+    panel->setScale(fit);
+}
+#endif
+
+"""
+sky_cpp = replace_unique(
+    sky_cpp,
+    "#include <QGraphicsDropShadowEffect>\n\nInfoPanel::InfoPanel",
+    "#include <QGraphicsDropShadowEffect>\n\n" + sky_helper + "InfoPanel::InfoPanel",
+    "star info adaptive helper",
+)
+sky_cpp = replace_unique(
+    sky_cpp,
+    '\tQString objectInfo = conf->value("gui/selected_object_info", "default").toString();',
+    '\tQString objectInfo = conf->value("gui/selected_object_info", "default").toString();\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\tif (objectInfo == "default") objectInfo = "short";\n'
+    '#endif',
+    "compact Android default star info",
+)
+sky_cpp = replace_unique(
+    sky_cpp,
+    '\t\t\t+ "</span></div>");',
+    '\t\t\t+ "</span></div>");\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\t\tdrnasFitAndroidObjectInfo(this);\n'
+    '#endif',
+    "star info reflow",
+)
+sky_cpp = replace_unique(
+    sky_cpp,
+    '\tQGraphicsWidget::resizeEvent(event);\n\tupdateBarsPos();',
+    '\tQGraphicsWidget::resizeEvent(event);\n\tupdateBarsPos();\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\tdrnasFitAndroidObjectInfo(infoPanel);\n'
+    '#endif',
+    "star info rotation handling",
+)
+sky_cpp_path.write_text(sky_cpp, encoding="utf-8")
+print("Android sky info: responsive bounds and compact default (user overrides retained)")
+
+# Hide the non-modal Oculars control overlay while its full configuration
+# dialog is open. Leaving both onscreen creates duplicated, overlapping
+# controls at the top edge on a phone. Restore the overlay on close, only
+# if the user enabled it; telescope/CCD data and plugin actions are intact.
+ocular_cpp_path = path.parent.parent / "plugins/Oculars/src/Oculars.cpp"
+ocular_cpp = ocular_cpp_path.read_text(encoding="utf-8")
+ocular_cpp = replace_unique(
+    ocular_cpp,
+    '\t\tocularDialog = new OcularDialog(this, &ccds, &oculars, &telescopes, &lenses);',
+    '\t\tocularDialog = new OcularDialog(this, &ccds, &oculars, &telescopes, &lenses);\n'
+    '#ifdef Q_OS_ANDROID\n'
+    '\t\tconnect(ocularDialog, &StelDialog::visibleChanged, this, [this](bool shown) {\n'
+    '\t\t\tif (guiPanel)\n'
+    '\t\t\t\tguiPanel->setVisible(!shown && flagGuiPanelEnabled);\n'
+    '\t\t});\n'
+    '#endif',
+    "Oculars Android settings overlay",
+)
+ocular_cpp_path.write_text(ocular_cpp, encoding="utf-8")
+print("Android Oculars: hide duplicate toolbar while settings dialog is open")
