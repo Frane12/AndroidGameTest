@@ -1,0 +1,187 @@
+name: DRNAS Stellarium automatic pre-release APK update
+
+on:
+  # This must live on the repository's default branch (main).
+  workflow_run:
+    workflows:
+      - DRNAS Stellarium 26.3 Native Android ARM64 (experimental)
+    types: [completed]
+    branches:
+      - experiment/stellarium-native-android-26-3
+  # One-time catch-up on installation/update and manual retry.
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/drnas-stellarium-publish-prerelease.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: drnas-stellarium-single-prerelease
+  cancel-in-progress: false
+
+jobs:
+  publish-prerelease:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'experiment/stellarium-native-android-26-3' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Confirm the newest native build succeeded and retrieve its APK
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_workflow="drnas-stellarium-android-arm64.yml"
+          native_branch="experiment/stellarium-native-android-26-3"
+          newest="$(gh run list --workflow "$native_workflow" --branch "$native_branch" \
+            --limit 1 --json databaseId,headSha,status,conclusion)"
+          run_id="$(jq -r '.[0].databaseId // empty' <<< "$newest")"
+          sha="$(jq -r '.[0].headSha // empty' <<< "$newest")"
+          status="$(jq -r '.[0].status // empty' <<< "$newest")"
+          conclusion="$(jq -r '.[0].conclusion // empty' <<< "$newest")"
+          if [[ -z "$run_id" ]]; then
+            echo "::notice::No native Stellarium run found. Nothing to publish."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$status" != completed || "$conclusion" != success ]]; then
+            echo "::notice::Latest native run $run_id is $status/$conclusion; keeping the existing pre-release."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == workflow_run && "$COMPLETED_RUN_ID" != "$run_id" ]]; then
+            echo "::notice::An older run finished after a newer build; ignoring $COMPLETED_RUN_ID."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Do not execute or check out code from the triggering run.
+          gh api "repos/$GH_REPO/actions/runs/$run_id" > "$RUNNER_TEMP/native-run.json"
+          jq -e --arg repo "$GH_REPO" --arg branch "$native_branch" \
+            '.conclusion == "success" and .head_branch == $branch and
+             .head_repository.full_name == $repo and
+             .name == "DRNAS Stellarium 26.3 Native Android ARM64 (experimental)"' \
+            "$RUNNER_TEMP/native-run.json" >/dev/null
+
+          artifact="DRNAS-Stellarium-Android-ARM64-$run_id"
+          gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | .name' \
+            | grep -Fx "$artifact" >/dev/null || {
+              echo "::error::Successful native run $run_id has no available APK artifact."
+              exit 1
+            }
+          mkdir -p "$RUNNER_TEMP/stellarium-apk"
+          gh run download "$run_id" --name "$artifact" --dir "$RUNNER_TEMP/stellarium-apk"
+          mapfile -d '' apks < <(find "$RUNNER_TEMP/stellarium-apk" -type f -name '*.apk' -size +1M -print0)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one APK, found ${#apks[@]}."
+            exit 1
+          fi
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "apk=${apks[0]}" >> "$GITHUB_OUTPUT"
+          echo "Source native build: https://github.com/$GH_REPO/actions/runs/$run_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify signed ARM64 Stellarium package
+        if: steps.apk.outputs.eligible == 'true'
+        env:
+          APK: ${{ steps.apk.outputs.apk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$ANDROID_HOME/build-tools/35.0.0/apksigner" ]]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0"
+          fi
+          buildtools="$ANDROID_HOME/build-tools/35.0.0"
+          "$buildtools/apksigner" verify --verbose "$APK"
+          "$buildtools/aapt" dump badging "$APK" > "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "package: name='org.drnas.stellarium.port'" "$RUNNER_TEMP/apk-badging.txt"
+          unzip -Z1 "$APK" > "$RUNNER_TEMP/apk-entries.txt"
+          grep -E '^lib/arm64-v8a/[^/]+[.]so$' "$RUNNER_TEMP/apk-entries.txt" >/dev/null
+          for required in \
+            assets/data/ssystem_major.ini \
+            assets/data/default_cfg.ini \
+            assets/stars/hip_gaia3/defaultStarsConfig.json \
+            assets/landscapes/guereins/landscape.ini; do
+            grep -Fx "$required" "$RUNNER_TEMP/apk-entries.txt" >/dev/null || {
+              echo "::error::Missing required upstream asset: $required"
+              exit 1
+            }
+          done
+          sha256sum "$APK" | tee "$RUNNER_TEMP/apk-sha256.txt"
+
+      - name: Upload new APK and remove the previous APK from the same pre-release
+        if: steps.apk.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN: ${{ steps.apk.outputs.run_id }}
+          SOURCE_SHA: ${{ steps.apk.outputs.source_sha }}
+          APK: ${{ steps.apk.outputs.apk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          stable_tag="stellarium-v26.3-android-prealpha.0.1"
+          tag="$stable_tag"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            # Update an existing Stellarium v26.3 Pre-Alpha 0.1 release,
+            # including releases previously created with a build suffix.
+            previous_tag="$(gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease and
+                       (.tagName | startswith("stellarium-v26.3-android-prealpha.0.1")))] |
+                    .[0].tagName // empty')"
+            if [[ -n "$previous_tag" ]]; then
+              tag="$previous_tag"
+            fi
+          fi
+          filename="DRNAS-Stellarium-v26.3-Android-ARM64-PreAlpha-0.1-build-$SOURCE_RUN.apk"
+          title="DRNAS Stellarium 26.3 Android ARM64 — Pre-Alpha 0.1"
+          notes="$RUNNER_TEMP/stellarium-release-notes.md"
+          cat > "$notes" <<EOF
+          # DRNAS Stellarium 26.3 — Native Android ARM64 (Pre-Alpha 0.1)
+
+          Experimental port of the original Stellarium desktop C++ application to Android ARM64 with Qt 6.8.3 and OpenGL ES. Not an official Stellarium release.
+
+          **Latest verified build:** $SOURCE_RUN
+          **Source commit:** $SOURCE_SHA
+          **Build and diagnostics:** https://github.com/$GH_REPO/actions/runs/$SOURCE_RUN
+
+          Download the APK below under **Assets**. This asset is automatically replaced after each newer successful native Stellarium build. Only signed APKs with the required ARM64 library and source data files are published. This is pre-alpha software; startup, UI layout, rotation and rendering may still have issues.
+
+          **Note:** CI debug signing keys are generated per build, so Android may require uninstalling the previous development APK before installing an update. Back up any app data first.
+          EOF
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if ! gh release view "$tag" --json assets --jq '.assets[].name' \
+              | grep -Fxq "$filename"; then
+              # Upload first; only remove older APKs when upload succeeded.
+              gh release upload "$tag" "$APK#$filename"
+            fi
+            gh release edit "$tag" --title "$title" --notes-file "$notes" --prerelease
+            mapfile -t previous_assets < <(gh release view "$tag" --json assets --jq '.assets[].name')
+            for asset in "${previous_assets[@]}"; do
+              if [[ "$asset" == *.apk && "$asset" != "$filename" ]]; then
+                gh release delete-asset "$tag" "$asset" --yes
+              fi
+            done
+          else
+            gh release create "$tag" "$APK#$filename" \
+              --target "$SOURCE_SHA" --title "$title" --notes-file "$notes" \
+              --prerelease
+          fi
+
+          gh release view "$tag" --json url,isPrerelease,assets \
+            --jq '{url, isPrerelease, assets: [.assets[].name]}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
