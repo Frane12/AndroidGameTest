@@ -409,3 +409,130 @@ main_view = replace_unique(
 )
 main_view_path.write_text(main_view, encoding="utf-8")
 print("Android visual modes: Enhanced/Realistic toggle, mobile contrast defaults, DPR-aware render diagnostics")
+
+
+# DRNAS Android rotation-safe splash / fullscreen layout.
+# On Qt Android QSplashScreen is hosted by the Activity surface, not a
+# desktop-sized native popup. Painting a fixed desktop pixmap leaves most of
+# the activity gray and clips the image when it rotates. Render the complete
+# Android splash against the CURRENT widget size each paint instead.
+splash_path = path.parent.parent / "src/StelSplashScreen.cpp"
+splash = splash_path.read_text(encoding="utf-8")
+splash = replace_unique(
+    splash,
+    "\tinstance->show();\n\n#if !defined(Q_OS_ANDROID)",
+    "#ifdef Q_OS_ANDROID\n"
+    "\t// Android's Activity window is fullscreen; let Qt resize it on rotation.\n"
+    "\tinstance->showFullScreen();\n"
+    "#else\n"
+    "\tinstance->show();\n"
+    "#endif\n\n#if !defined(Q_OS_ANDROID)",
+    "Android fullscreen splash",
+)
+splash = replace_unique(
+    splash,
+    "\tsetPixmap(makePixmap(sizeRatio));",
+    "#ifdef Q_OS_ANDROID\n"
+    "\t// QSplashScreen uses pixmap size as its desktop window size. Android\n"
+    "\t// paints the actual responsive splash in paintEvent below instead.\n"
+    "\tsetPixmap(QPixmap(1, 1));\n"
+    "\tsetAutoFillBackground(false);\n"
+    "#else\n"
+    "\tsetPixmap(makePixmap(sizeRatio));\n"
+    "#endif",
+    "Android splash pixmap preferred size",
+)
+android_splash_paint = r"""
+#ifdef Q_OS_ANDROID
+    Q_UNUSED(event)
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+    // Never expose Android's default gray Activity background.
+    p.fillRect(rect(), QColor(5, 9, 17));
+
+    if (width() > 0 && height() > 0)
+    {
+        QFont heading = titleFont;
+        heading.setPixelSize(qBound(19, height() / 11, 44));
+        p.setFont(heading);
+        p.setPen(Qt::white);
+        const int header = qBound(34, height() / 8, 62);
+        p.drawText(QRect(12, 6, qMax(1, width() - 24), header),
+                   Qt::AlignCenter, titleText);
+
+        // Calculate geometry on EVERY repaint: after portrait/landscape
+        // changes the image remains centered, uncropped, and aspect-correct.
+        QPixmap original(StelFileMgr::findFile("data/splash.png"));
+        const QRect imageArea = rect().adjusted(16, header + 12, -16, -62);
+        if (!original.isNull() && imageArea.width() > 0 && imageArea.height() > 0)
+        {
+            const QSize fitted = original.size().scaled(imageArea.size(),
+                                                        Qt::KeepAspectRatio);
+            const QPoint topLeft(imageArea.x() + (imageArea.width() - fitted.width()) / 2,
+                                 imageArea.y() + (imageArea.height() - fitted.height()) / 2);
+            p.drawPixmap(QRect(topLeft, fitted), original);
+        }
+
+        QFont version = splashFont;
+        version.setPixelSize(qBound(11, height() / 31, 19));
+        p.setFont(version);
+        p.drawText(QRect(16, height() - 58, qMax(1, width() - 32), 24),
+                   Qt::AlignHCenter | Qt::AlignVCenter,
+                   StelUtils::getApplicationPublicVersion());
+    }
+
+    // Preserve the upstream live loading message.
+    QSplashScreen::drawContents(&p);
+    painted = true;
+    return;
+#else
+"""
+splash = replace_unique(
+    splash,
+    "\tQSplashScreen::paintEvent(event);\n\n\tQPainter p(this);",
+    android_splash_paint + "\tQSplashScreen::paintEvent(event);\n\n\tQPainter p(this);",
+    "Android splash adaptive painting",
+)
+splash = replace_unique(
+    splash,
+    "\tpainted=true;\n}\n\nQPixmap SplashScreen::SplashScreenWidget::makePixmap",
+    "\tpainted=true;\n#endif\n}\n\nQPixmap SplashScreen::SplashScreenWidget::makePixmap",
+    "Android splash paint guard end",
+)
+splash_path.write_text(splash, encoding="utf-8")
+print("DRNAS Android splash: fullscreen, opaque, responsive image with aspect ratio on rotation")
+
+# The desktop startup applies a stale 1024x768 config window size and may
+# intersect the native rectangle with a geometry sampled BEFORE the screen
+# finishes rotating during startup. Android's Qt Activity owns this size;
+# don't override it with desktop geometry.
+main = main_path.read_text(encoding="utf-8")
+main = replace_unique(
+    main,
+    "\tmainWin.resize(size);",
+    "#ifndef Q_OS_ANDROID\n"
+    "\tmainWin.resize(size);\n"
+    "#endif",
+    "Android bypass desktop 1024x768 resize",
+)
+main = replace_unique(
+    main,
+    '\tconst bool fullscreen = confSettings->value("video/fullscreen", true).toBool();',
+    "#ifdef Q_OS_ANDROID\n"
+    "\t// Let the Android Activity resize the native surface on orientation\n"
+    "\t// changes; avoid desktop geometry sampled before rotation completed.\n"
+    "\tmainWin.setFullScreen(true);\n"
+    "#else\n"
+    '\tconst bool fullscreen = confSettings->value("video/fullscreen", true).toBool();',
+    "Android Activity fullscreen",
+)
+main = replace_unique(
+    main,
+    "\n\tmainWin.show();",
+    "\n#endif\n\n\tmainWin.show();",
+    "Android Activity fullscreen guard end",
+)
+main_path.write_text(main, encoding="utf-8")
+print("DRNAS Android main window: rely on current Activity viewport, not persisted desktop geometry")
