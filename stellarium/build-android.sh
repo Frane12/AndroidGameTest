@@ -46,6 +46,10 @@ case "$MODE" in
       -DENABLE_EXPORT_COMPILE_COMMANDS=ON
     ;;
   compile)
+    # Remove only a redundant explicit NDK sysroot system header path from
+    # generated Ninja commands. Clang already inherits it from --sysroot;
+    # listing it ahead of libc++ breaks include_next <math.h>/<string.h>.
+    python3 "$ROOT/stellarium/fix-ndk-headers.py" "$BUILD_DIR/build.ninja" "$ANDROID_HOME/ndk/$NDK_VERSION"
     cmake --build "$BUILD_DIR" --target stellarium --parallel 4
     ;;
   package)
