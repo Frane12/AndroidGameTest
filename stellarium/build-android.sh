@@ -50,6 +50,11 @@ case "$MODE" in
     # generated Ninja commands. Clang already inherits it from --sysroot;
     # listing it ahead of libc++ breaks include_next <math.h>/<string.h>.
     python3 "$ROOT/stellarium/fix-ndk-headers.py" "$BUILD_DIR/build.ninja" "$ANDROID_HOME/ndk/$NDK_VERSION"
+    # Preflight the previously failing JPL translation unit before ~500 C++ steps.
+    # This catches the Qt ARM64 packing/alignment regression early, while the
+    # normal target below reuses the resulting .o without compiling it twice.
+    echo "Preflight the previously failing JPL ephemeris translation unit"
+    ninja -C "$BUILD_DIR" src/CMakeFiles/stelMain.dir/core/planetsephems/jpleph.cpp.o
     cmake --build "$BUILD_DIR" --target stellarium --parallel 4
     ;;
   package)
