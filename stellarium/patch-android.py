@@ -586,3 +586,105 @@ splash_cpp = replace_unique(
 splash_hpp_path.write_text(splash_hpp, encoding="utf-8")
 splash_cpp_path.write_text(splash_cpp, encoding="utf-8")
 print("Android splash: limit image to available screen and refresh after rotation")
+
+
+# Android fullscreen-on-start reassertion: Qt desktop fullscreen by itself
+# does not hide the Android status/navigation bars, and a later show()
+# can interfere with the Android activity's current surface bounds.
+# Keep the existing desktop implementation unchanged. This uses only the
+# public Qt 6.8 Android native interface, on Android's UI thread.
+main = main_path.read_text(encoding="utf-8")
+main = replace_unique(
+    main,
+    "#include <QThreadPool>\n",
+    "#include <QThreadPool>\n"
+    "#ifdef Q_OS_ANDROID\n"
+    "#include <QJniObject>\n"
+    "#endif\n",
+    "public Android JNI include for immersive fullscreen",
+)
+
+drnas_immersive = r"""
+#ifdef Q_OS_ANDROID
+// Android's system UI must be changed on the Java UI thread, not QtThread.
+static void drnasForceImmersiveBars()
+{
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([]() {
+        if (!QNativeInterface::QAndroidApplication::isActivityContext())
+            return;
+        const QJniObject activity = QNativeInterface::QAndroidApplication::context();
+        if (!activity.isValid())
+            return;
+        const QJniObject window = activity.callObjectMethod(
+            "getWindow", "()Landroid/view/Window;");
+        if (!window.isValid())
+            return;
+
+        // FLAG_FULLSCREEN hides the Android status bar.
+        window.callMethod<void>("addFlags", "(I)V", jint(0x00000400));
+
+        const QJniObject decor = window.callObjectMethod(
+            "getDecorView", "()Landroid/view/View;");
+        if (decor.isValid())
+        {
+            // IMMERSIVE_STICKY | LAYOUT_STABLE | LAYOUT_HIDE_NAVIGATION |
+            // LAYOUT_FULLSCREEN | HIDE_NAVIGATION | FULLSCREEN.
+            // System navigation may still be revealed temporarily by swipe.
+            constexpr jint flags = 0x00001000 | 0x00000100 |
+                                   0x00000200 | 0x00000400 |
+                                   0x00000002 | 0x00000004;
+            decor.callMethod<void>("setSystemUiVisibility", "(I)V", flags);
+        }
+
+        // Modern system-bar controller (API 30+). Preserve gesture navigation.
+        if (QNativeInterface::QAndroidApplication::sdkVersion() >= 30)
+        {
+            const QJniObject controller = window.callObjectMethod(
+                "getInsetsController",
+                "()Landroid/view/WindowInsetsController;");
+            if (controller.isValid())
+            {
+                constexpr jint statusAndNavigation = 0x1 | 0x2;
+                constexpr jint transientBarsBySwipe = 0x2;
+                controller.callMethod<void>(
+                    "setSystemBarsBehavior", "(I)V", transientBarsBySwipe);
+                controller.callMethod<void>("hide", "(I)V",
+                                            statusAndNavigation);
+            }
+        }
+    });
+}
+#endif
+
+"""
+main = replace_unique(
+    main,
+    "class StelApplication : public QApplication",
+    drnas_immersive + "class StelApplication : public QApplication",
+    "Android immersive fullscreen helper",
+)
+main = replace_unique(
+    main,
+    "\tmainWin.show();\n\tSplashScreen::finish(&mainWin);",
+    "#ifdef Q_OS_ANDROID\n"
+    "\t// Ignore stale desktop size/fullscreen preferences on every startup.\n"
+    "\tmainWin.showFullScreen();\n"
+    "\tdrnasForceImmersiveBars();\n"
+    "\t// Android can restore bars when returning from the launcher/settings.\n"
+    "\tQObject::connect(&app, &QGuiApplication::applicationStateChanged,\n"
+    "\t                 &mainWin, [&mainWin](Qt::ApplicationState state) {\n"
+    "\t\tif (state == Qt::ApplicationActive)\n"
+    "\t\t{\n"
+    "\t\t\tmainWin.showFullScreen();\n"
+    "\t\t\tdrnasForceImmersiveBars();\n"
+    "\t\t}\n"
+    "\t});\n"
+    "\tqInfo() << \"DRNAS Android: forced fullscreen/immersive at startup\";\n"
+    "#else\n"
+    "\tmainWin.show();\n"
+    "#endif\n"
+    "\tSplashScreen::finish(&mainWin);",
+    "force fullscreen native window on Android startup",
+)
+main_path.write_text(main, encoding="utf-8")
+print("Android startup: force Qt fullscreen, hide status/navigation bars, restore immersive mode on resume")
