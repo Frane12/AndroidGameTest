@@ -1,0 +1,92 @@
+name: DRNAS Stellarium quick runtime assets repair APK
+on:
+  push:
+    branches: [experiment/stellarium-native-android-26-3]
+    paths: ['.github/workflows/drnas-stellarium-runtime-repack.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  repack-proven-native-binary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download already-proven compiled native ARM64 APK
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 39712761275
+          name: DRNAS-Stellarium-Android-ARM64-39712761275
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: baseline
+      - name: Prepare SDK and exact original v26.3 runtime data
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip unzip python3
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0"
+          git clone --depth 1 --quiet --branch v26.3 https://github.com/Stellarium/stellarium.git upstream-stellarium
+          test "$(git -C upstream-stellarium rev-parse HEAD)" = "3f23cf3a1a59523a9c7b1ec4540c33bca77addfa"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("upstream-stellarium")
+          cfg=(p/"cmake/default_cfg.ini.cmake").read_text()
+          assert cfg.count("@STELLARIUM_PUBLIC_VERSION@")==1
+          (p/"data/default_cfg.ini").write_text(cfg.replace("@STELLARIUM_PUBLIC_VERSION@","26.3"))
+          PY
+          python3 stellarium/stage-assets.py upstream-stellarium | tee runtime-assets.log
+      - name: Repack original compiled binary with required Android assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_apk="$(find baseline -name '*.apk' -type f | head -n 1)"
+          test -n "$source_apk"
+          test "$(find baseline -name '*.apk' -type f | wc -l)" -eq 1
+          mkdir -p out staging
+          cp "$source_apk" staging/stellarium-patched.apk
+          (
+            cd upstream-stellarium/android
+            zip -q -0 -r "$GITHUB_WORKSPACE/staging/stellarium-patched.apk" assets/
+          )
+          zip -d staging/stellarium-patched.apk 'META-INF/*.RSA' 'META-INF/*.SF' 'META-INF/*.MF' >/dev/null 2>&1 || true
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 staging/stellarium-patched.apk staging/stellarium-aligned.apk
+          keytool -genkeypair -noprompt -keystore staging/runtime-fix-debug.keystore \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 365 \
+            -storepass android -keypass android -dname "CN=DRNAS Stellarium Debug,O=DRNAS,C=HR"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks staging/runtime-fix-debug.keystore --ks-key-alias androiddebugkey \
+            --ks-pass pass:android --key-pass pass:android \
+            --out out/DRNAS-Stellarium-v26.3-ARM64-runtime-assets-test.apk \
+            staging/stellarium-aligned.apk
+          apk=out/DRNAS-Stellarium-v26.3-ARM64-runtime-assets-test.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee out/apk-info.txt
+          grep -F "package: name='org.drnas.stellarium.port'" out/apk-info.txt
+          unzip -Z1 "$apk" | grep -F 'lib/arm64-v8a/'
+          for res in \
+            assets/data/ssystem_major.ini \
+            assets/data/default_cfg.ini \
+            assets/stars/hip_gaia3/defaultStarsConfig.json \
+            assets/skycultures/modern/index.json \
+            assets/landscapes/guereins/landscape.ini; do
+            unzip -Z1 "$apk" | grep -Fx "$res" || {
+              echo "::error::Missing essential runtime resource: $res"
+              exit 1
+            }
+          done
+          (cd out && sha256sum *.apk > APK-SHA256SUMS.txt)
+          echo "The original v26.3 native binary from run 39712761275 was reused; only the data assets changed." > out/README-runtime-fix.txt
+      - name: Upload directly installable diagnostic APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Stellarium-v26.3-ARM64-RuntimeFix-${{ github.run_id }}
+          path: |
+            out/
+            runtime-assets.log
+          if-no-files-found: warn
+          retention-days: 30
