@@ -1,0 +1,136 @@
+name: DRNAS Stellarium publish latest APK as pre-release
+
+on:
+  push:
+    branches:
+      - experiment/stellarium-native-android-26-3
+    paths:
+      - .github/workflows/drnas-stellarium-publish-prerelease.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: drnas-stellarium-publish-prerelease
+  cancel-in-progress: false
+
+jobs:
+  publish-prerelease:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recover latest successful, still-available native Stellarium APK
+        id: recover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_workflow=drnas-stellarium-android-arm64.yml
+          source_branch=experiment/stellarium-native-android-26-3
+          selected_id=
+          selected_sha=
+          selected_apk=
+          while IFS=$'\t' read -r run_id head_sha; do
+            [[ -n "$run_id" && -n "$head_sha" ]] || continue
+            artifact_name="DRNAS-Stellarium-Android-ARM64-$run_id"
+            if ! gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.expired == false) | .name' | grep -Fxq "$artifact_name"; then
+              echo "Run $run_id: APK artifact not found (possibly deleted); trying an older success."
+              continue
+            fi
+            candidate_dir="$RUNNER_TEMP/stellarium-$run_id"
+            mkdir -p "$candidate_dir"
+            if ! gh run download "$run_id" --name "$artifact_name" --dir "$candidate_dir"; then
+              echo "Run $run_id: artifact download failed; trying an older success."
+              continue
+            fi
+            mapfile -d '' apks < <(find "$candidate_dir" -type f -name '*.apk' -size +1M -print0)
+            if [[ ${#apks[@]} -eq 0 ]]; then
+              echo "Run $run_id: artifact does not contain an APK."
+              continue
+            fi
+            selected_id="$run_id"
+            selected_sha="$head_sha"
+            selected_apk="${apks[0]}"
+            break
+          done < <(gh run list --workflow "$source_workflow" --branch "$source_branch" \
+            --status success --limit 50 --json databaseId,headSha \
+            --jq '.[] | [.databaseId, .headSha] | @tsv')
+
+          if [[ -z "$selected_apk" ]]; then
+            echo "::error::No installable APK artifact remains among the latest 50 successful Stellarium builds."
+            echo "Re-run the native ARM64 workflow first, then run this publisher again."
+            exit 1
+          fi
+          echo "Recovering run $selected_id at commit $selected_sha"
+          echo "source_run=$selected_id" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$selected_sha" >> "$GITHUB_OUTPUT"
+          echo "apk=$selected_apk" >> "$GITHUB_OUTPUT"
+
+      - name: Verify native ARM64 APK before publishing
+        env:
+          APK: ${{ steps.recover.outputs.apk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$ANDROID_HOME/build-tools/35.0.0/apksigner" ]]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0"
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/stellarium-badging.txt"
+          grep -F "package: name='org.drnas.stellarium.port'" "$RUNNER_TEMP/stellarium-badging.txt"
+          unzip -Z1 "$APK" > "$RUNNER_TEMP/stellarium-apk-contents.txt"
+          grep -Fx 'lib/arm64-v8a/libstellarium.so' "$RUNNER_TEMP/stellarium-apk-contents.txt"
+          for required in \
+            assets/data/ssystem_major.ini \
+            assets/data/default_cfg.ini \
+            assets/stars/hip_gaia3/defaultStarsConfig.json \
+            assets/landscapes/guereins/landscape.ini; do
+            grep -Fx "$required" "$RUNNER_TEMP/stellarium-apk-contents.txt"
+          done
+          sha256sum "$APK"
+
+      - name: Publish GitHub pre-release with recovered APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN: ${{ steps.recover.outputs.source_run }}
+          SOURCE_SHA: ${{ steps.recover.outputs.source_sha }}
+          APK: ${{ steps.recover.outputs.apk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="stellarium-v26.3-android-prealpha.0.1-build.$SOURCE_RUN"
+          filename="DRNAS-Stellarium-v26.3-Android-ARM64-PreAlpha-0.1.apk"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; no duplicate created."
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/stellarium-prerelease-notes.md" <<EOF
+          # DRNAS Stellarium 26.3 — Native Android ARM64, Pre-Alpha 0.1
+
+          Experimental native ARM64 port of the original GPL Stellarium desktop C++/Qt 6.8.3 and OpenGL ES code. This is not an official Stellarium release.
+
+          **Status:** Pre-alpha. Sky rendering, Android screen layout and GUI dialogs are under active testing. Some features may not work or may crash.
+
+          **Source workflow run:** https://github.com/$GH_REPO/actions/runs/$SOURCE_RUN
+
+          **Source commit:** [${SOURCE_SHA:0:12}](https://github.com/$GH_REPO/commit/$SOURCE_SHA)
+
+          **Architecture:** Android ARM64 (arm64-v8a). APK signed with the CI debug key.
+
+          The attached APK is recovered directly from the successful GitHub Actions build above, without recompilation. Verify Android installation and orientation behavior on-device.
+          EOF
+          gh release create "$tag" "$APK#$filename" \
+            --target "$SOURCE_SHA" \
+            --title "DRNAS Stellarium 26.3 Android ARM64 — Pre-Alpha 0.1 (build $SOURCE_RUN)" \
+            --notes-file "$RUNNER_TEMP/stellarium-prerelease-notes.md" \
+            --prerelease
+          gh release view "$tag" --json url,isPrerelease,assets \
+            --jq '{url, isPrerelease, assets: [.assets[].name]}'
