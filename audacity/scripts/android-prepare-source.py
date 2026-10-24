@@ -74,7 +74,7 @@ if mark not in text:
     endif()
 
 """
-        text = text.replace(root_anchor, find_roots + root_anchor, 1)
+    text = text.replace(root_anchor, find_roots + root_anchor, 1)
     dep_file.write_text(text)
 print("[DRNAS] Muse nested dependencies will use Android NDK, not host Linux compiler flags")
 
