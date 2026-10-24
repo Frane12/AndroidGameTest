@@ -35,6 +35,9 @@ test -f "$SRC/muse/framework/cmake/MuseDeclareOptions.cmake" || { echo "Audacity
 test -f "$QT_TOOLCHAIN" || { echo "Qt Android 6.10 toolchain missing"; exit 42; }
 test -d "$QT_HOST_PATH" || { echo "Qt 6.10 desktop host tools missing"; exit 43; }
 test -d "${ANDROID_HOME:-/missing}/ndk/$NDK_VERSION" || { echo "Android NDK r27c missing"; exit 44; }
+export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/$NDK_VERSION"
+echo "[DRNAS] Propagating Android NDK to every nested dependency build"
+echo "[DRNAS] Muse dependency platform: android/aarch64 (never linux/aarch64)"
 
 git -C "$SRC" log -1 --format='[DRNAS] upstream commit: %H'
 echo "[DRNAS] Running original Audacity CMake configuration for Android"
@@ -47,6 +50,8 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DANDROID_NDK_ROOT="$ANDROID_HOME/ndk/$NDK_VERSION" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-28 \
+  -DLIB_OS=android \
+  -DLIB_ARCH=aarch64 \
   -DAU4_BUILD_CONFIGURATION=app \
   -DAU4_BUILD_MODE=dev \
   -DAU_BUILD_CLOUD_AUDIOCOM=OFF \
