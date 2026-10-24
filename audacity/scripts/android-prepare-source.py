@@ -120,8 +120,8 @@ print("[DRNAS] PortAudio Android linker adaptation staged")
 wx_spec_path = source_root / "muse_deps/recipes/wxwidgets/spec.cmake"
 wx_spec = wx_spec_path.read_text()
 wx_anchor = "set(DEP_CMAKE_ARGS_LINUX   -DwxUSE_GUI=OFF)"
-if "set(DEP_CMAKE_ARGS_ANDROID -DwxUSE_GUI=OFF)" not in wx_spec:
+if "set(DEP_CMAKE_ARGS_ANDROID -DwxUSE_GUI=OFF -DwxUSE_ZLIB=sys)" not in wx_spec:
     if wx_spec.count(wx_anchor) != 1:
         raise SystemExit("Unexpected wxWidgets base-only recipe")
-    wx_spec_path.write_text(wx_spec.replace(wx_anchor, wx_anchor + '\nset(DEP_CMAKE_ARGS_ANDROID -DwxUSE_GUI=OFF)', 1))
-print("[DRNAS] wxWidgets uses headless wxBase on Android; GTK GUI disabled")
+    wx_spec_path.write_text(wx_spec.replace(wx_anchor, wx_anchor + '\nset(DEP_CMAKE_ARGS_ANDROID -DwxUSE_GUI=OFF -DwxUSE_ZLIB=sys)', 1))
+print("[DRNAS] wxWidgets uses headless wxBase and Android system zlib (no GTK GUI)")
