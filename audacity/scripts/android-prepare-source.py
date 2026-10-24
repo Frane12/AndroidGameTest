@@ -114,3 +114,14 @@ endif()
 """
     portaudio_build.write_text(portaudio_recipe.replace(anchor, fix + anchor, 1))
 print("[DRNAS] PortAudio Android linker adaptation staged")
+
+# Audacity 4 retains wxBase for its legacy AU3 engine. Android needs
+# the same base-only, headless wxWidgets build as Linux/Windows, not GTK3.
+wx_spec_path = source_root / "muse_deps/recipes/wxwidgets/spec.cmake"
+wx_spec = wx_spec_path.read_text()
+wx_anchor = "set(DEP_CMAKE_ARGS_LINUX   -DwxUSE_GUI=OFF)"
+if "set(DEP_CMAKE_ARGS_ANDROID -DwxUSE_GUI=OFF)" not in wx_spec:
+    if wx_spec.count(wx_anchor) != 1:
+        raise SystemExit("Unexpected wxWidgets base-only recipe")
+    wx_spec_path.write_text(wx_spec.replace(wx_anchor, wx_anchor + '\nset(DEP_CMAKE_ARGS_ANDROID -DwxUSE_GUI=OFF)', 1))
+print("[DRNAS] wxWidgets uses headless wxBase on Android; GTK GUI disabled")
