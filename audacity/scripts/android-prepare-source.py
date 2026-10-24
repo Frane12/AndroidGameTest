@@ -22,7 +22,7 @@ if already in original:
 
 platform_check = "if(${CMAKE_CXX_COMPILER} MATCHES"
 expected_host_checks = original.count("CMAKE_HOST_SYSTEM_NAME")
-if original.count(platform_check) != 1 or expected_host_checks != 4:
+if original.count(platform_check) != 1 or expected_host_checks != 5:
     raise SystemExit(
         f"Unexpected Muse platform detector structure: compiler checks={original.count(platform_check)}, "
         f"host checks={expected_host_checks}. Review upstream before patching."
