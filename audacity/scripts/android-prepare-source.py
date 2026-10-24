@@ -60,6 +60,21 @@ if mark not in text:
 
 """
     text = text.replace(needle, injection + needle, 1)
+
+    # Android NDK's CMake find rules search target roots, not host paths.
+    # Muse lists dependent installed libraries only as CMAKE_PREFIX_PATH.
+    # Export them as CMAKE_FIND_ROOT_PATH too, so Vorbis sees the actual
+    # Android libogg/include tree (and subsequent deps see their parents).
+    root_anchor = '    if(_initial_cache)\\n'
+    if text.count(root_anchor) != 1:
+        raise SystemExit("Unexpected Muse dependency init.cmake structure")
+    find_roots = """    # DRNAS Android dependency sysroot lookup
+    if(BD_OS STREQUAL "android" AND BD_DEPENDS_PREFIXES)
+        string(APPEND _initial_cache "set(CMAKE_FIND_ROOT_PATH \\"\${BD_DEPENDS_PREFIXES}\\" CACHE STRING \\"\\" FORCE)\\n")
+    endif()
+
+"""
+    text = text.replace(root_anchor, find_roots + root_anchor, 1)
     dep_file.write_text(text)
 print("[DRNAS] Muse nested dependencies will use Android NDK, not host Linux compiler flags")
 
