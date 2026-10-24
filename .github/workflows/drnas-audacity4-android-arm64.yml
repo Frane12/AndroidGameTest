@@ -61,8 +61,12 @@ jobs:
       - name: Install Android SDK API 36 and NDK r27c
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+          set -o pipefail
+          mkdir -p audacity-logs
+          echo "Initial disk space:" | tee audacity-logs/android-sdk.log
+          df -h . | tee -a audacity-logs/android-sdk.log
+          yes | sdkmanager --licenses >audacity-logs/android-licenses.log 2>&1 || true
+          sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018' 2>&1 | tee -a audacity-logs/android-sdk.log
 
       - name: Prepare native build tools
         run: |
@@ -71,14 +75,24 @@ jobs:
           python -m pip install --upgrade pip aqtinstall
 
       - name: Install Qt 6.10 desktop HOST tools
+        shell: bash
         run: |
+          set -o pipefail
+          mkdir -p audacity-logs
+          echo 'Qt desktop architectures:' | tee audacity-logs/qt-host.log
+          python -m aqt list-qt linux desktop --arch 6.10.0 2>&1 | tee -a audacity-logs/qt-host.log
           python -m aqt install-qt linux desktop 6.10.0 linux_gcc_64 -O "$HOME/Qt" \
-            --modules qt5compat qtnetworkauth qtshadertools qtstatemachine
+            --modules qt5compat qtnetworkauth qtshadertools qtstatemachine 2>&1 | tee -a audacity-logs/qt-host.log
 
       - name: Install Qt 6.10 Android arm64 TARGET libraries
+        shell: bash
         run: |
+          set -o pipefail
+          mkdir -p audacity-logs
+          echo 'Qt Android architectures:' | tee audacity-logs/qt-android.log
+          python -m aqt list-qt linux android --arch 6.10.0 2>&1 | tee -a audacity-logs/qt-android.log
           python -m aqt install-qt linux android 6.10.0 android_arm64_v8a -O "$HOME/Qt" \
-            --modules qt5compat qtnetworkauth qtshadertools qtstatemachine
+            --modules qt5compat qtnetworkauth qtshadertools qtstatemachine 2>&1 | tee -a audacity-logs/qt-android.log
 
       - name: Configure genuine Audacity 4 Android target
         id: probe
@@ -87,6 +101,21 @@ jobs:
           DRNAS_QT_VERSION: 6.10.0
         run: |
           bash audacity/scripts/android-preflight.sh "${{ inputs.stage || 'configure' }}"
+
+      - name: Failure summary
+        if: failure()
+        shell: bash
+        run: |
+          echo '## DRNAS Audacity Android failure' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Open the failed step and download diagnostics below. A failed configure is an expected first porting milestone, not a compiled APK.' >> "$GITHUB_STEP_SUMMARY"
+          for f in audacity-logs/*.log; do
+            if [[ -f "$f" ]]; then
+              echo "### $f (last 40 lines)" >> "$GITHUB_STEP_SUMMARY"
+              echo '\`\`\`text' >> "$GITHUB_STEP_SUMMARY"
+              tail -n 40 "$f" >> "$GITHUB_STEP_SUMMARY"
+              echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Preserve diagnostic logs (including failures)
         if: always()
