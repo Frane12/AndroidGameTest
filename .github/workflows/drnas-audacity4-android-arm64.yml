@@ -55,18 +55,38 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android command-line SDK
-        uses: android-actions/setup-android@v3
+      # The hosted ubuntu-24.04 runner already has modern Android commandline-tools.
+      # setup-android@v3 currently calls "sdkmanager tools" (removed legacy SDK
+      # package) and fails before NDK/Qt configuration even starts.
+      - name: Use runner Android SDK command-line tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          test -d "$SDK_ROOT" || { echo "::error::Android SDK root not present: $SDK_ROOT"; exit 40; }
+          if [[ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]]; then
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -mindepth 3 -maxdepth 3 -name sdkmanager -type f | sort -V | tail -1)"
+          fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "::error::No runnable sdkmanager"; exit 41; }
+          echo "DRNAS_SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          mkdir -p audacity-logs
+          echo "Using SDK: $SDK_ROOT" | tee audacity-logs/android-sdk.log
+          "$SDKMANAGER" --version 2>&1 | tee -a audacity-logs/android-sdk.log
 
       - name: Install Android SDK API 36 and NDK r27c
         shell: bash
         run: |
-          set -o pipefail
-          mkdir -p audacity-logs
-          echo "Initial disk space:" | tee audacity-logs/android-sdk.log
+          set -Eeuo pipefail
+          echo "Initial disk space:" | tee -a audacity-logs/android-sdk.log
           df -h . | tee -a audacity-logs/android-sdk.log
-          yes | sdkmanager --licenses >audacity-logs/android-licenses.log 2>&1 || true
-          sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018' 2>&1 | tee -a audacity-logs/android-sdk.log
+          yes | "$DRNAS_SDKMANAGER" --licenses >audacity-logs/android-licenses.log 2>&1 || true
+          "$DRNAS_SDKMANAGER" --install 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018' 2>&1 | tee -a audacity-logs/android-sdk.log
+          test -d "$ANDROID_HOME/ndk/27.2.12479018" || { echo "::error::Android NDK r27c install failed"; exit 42; }
 
       - name: Prepare native build tools
         run: |
