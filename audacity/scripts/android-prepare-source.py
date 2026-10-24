@@ -86,3 +86,31 @@ spec = spec_file.read_text()
 if 'if(BD_OS STREQUAL "linux")' not in spec or '-DPA_USE_JACK=ON' not in spec:
     raise SystemExit("Unexpected PortAudio Linux/JACK recipe structure")
 print("[DRNAS] Pinned PortAudio recipe verified; Android will not request JACK")
+
+# PortAudio 19.7.0 Unix CMake hard-links -lpthread, which does not exist
+# as a separate library on Android bionic (pthread is part of libc).
+# Patch only the fetched build recipe; no fake Android audio host API.
+portaudio_build = source_root / "muse_deps/recipes/portaudio/build.cmake"
+portaudio_recipe = portaudio_build.read_text()
+if "DRNAS Android bionic pthread linking" not in portaudio_recipe:
+    anchor = '_bd_cmake_build("${SRC}")'
+    if portaudio_recipe.count(anchor) != 1:
+        raise SystemExit("Unexpected PortAudio build recipe structure")
+    fix = r"""# DRNAS Android bionic pthread linking
+if(BD_OS STREQUAL "android")
+    set(_drnas_pa_path "${SRC}/CMakeLists.txt")
+    file(READ "${_drnas_pa_path}" _drnas_pa_before)
+    set(_drnas_pa_find "SET(PA_LIBRARY_DEPENDENCIES \${PA_LIBRARY_DEPENDENCIES} m pthread)")
+    string(REPLACE "${_drnas_pa_find}"
+        "SET(PA_LIBRARY_DEPENDENCIES \${PA_LIBRARY_DEPENDENCIES} m)"
+        _drnas_pa_after "${_drnas_pa_before}")
+    if(_drnas_pa_before STREQUAL _drnas_pa_after)
+        message(FATAL_ERROR "[DRNAS] Expected PortAudio pthread linker dependency not found")
+    endif()
+    file(WRITE "${_drnas_pa_path}" "${_drnas_pa_after}")
+    message(STATUS "[DRNAS] PortAudio: removed -lpthread for Android bionic (skeleton audio backend)")
+endif()
+
+"""
+    portaudio_build.write_text(portaudio_recipe.replace(anchor, fix + anchor, 1))
+print("[DRNAS] PortAudio Android linker adaptation staged")
