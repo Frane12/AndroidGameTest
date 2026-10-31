@@ -1,0 +1,145 @@
+name: DRNAS SAT V9.6 — Unseen 2026 Official Checkpoint Grid vs World Published Times
+on:
+  push:
+    branches: [experiment/drnas-sat-v96-unseen-official-64-96-128-256-20261031]
+    paths: ['.github/workflows/drnas-v96-unseen-official-checkpoints.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: freeze-12-official-2026-disjoint-prior30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          run-id: 41231153158
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: known18
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41232668762
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: known12
+      - name: Freeze 12 NEW official inputs, never seen by previous DRNAS solvers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/official_v96_select.py \
+            research/drnas-sat-v7-8/official_v96_run.py \
+            research/drnas-sat-v7-8/official_v96_audit.py
+          test -f known18/official_shortlong_manifest.json
+          test -f known12/official_v94_manifest.json
+          curl -fsSL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv \
+            -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 -u research/drnas-sat-v7-8/official_v96_select.py
+          sha256sum official_v96_manifest.json > manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          path: |
+            official_v96_manifest.json
+            manifest.sha256
+          if-no-files-found: warn
+  benchmark:
+    needs: freeze
+    if: needs.freeze.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    name: v96-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 33
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          path: official_manifest
+      - name: Build unchanged CaDiCaL and 64,96,128,256 split-point variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(src.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/ca-v96.log 2>&1) \
+            || { tail -120 /tmp/ca-v96.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v96_single_checkpoint_grid.cpp \
+            cadical-src/build/libcadical.a -o v96_grid -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Three new official cases, 5 modes, 2 repeats, same 15s wall cap
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_v96_run.py \
+            --manifest official_manifest/official_v96_manifest.json \
+            --shard "$SHARD" --out results --exe ./v96_grid
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v96-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          path: official_manifest
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v96-shard-*
+          path: v96-results
+      - name: Verify all 120 results and report published fastest per-CNF official 2026 times as different-hardware context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_v96_audit.py
+          cat v96-results/v96_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v96-12-never-seen-official-2026-full-results-and-world-context
+          path: |
+            official_manifest/
+            v96-results/
+          if-no-files-found: warn
