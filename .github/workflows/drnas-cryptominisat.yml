@@ -1,0 +1,56 @@
+name: DRNAS NP Lab versus CryptoMiniSat
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/**'
+      - '.github/workflows/drnas-cryptominisat.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated benchmark branch
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real CryptoMiniSat
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cryptominisat
+          command -v cryptominisat5
+          cryptominisat5 --version || true
+      - name: Verify DRNAS correctness
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_v02.py
+      - name: Generate deterministic CNF test instances
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python generate_cases.py --dir cases --seeds 2
+          test "$(($(wc -l < cases/manifest.csv)-1))" -eq 34
+      - name: Benchmark both solvers, same machine and instances
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python benchmark_cryptominisat.py --crypto cryptominisat5 --timeout 2.0 --repeats 3 --require-crypto
+      - name: Show summary
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f results/summary.csv; then cat results/summary.csv; fi
+      - name: Upload raw data, logs and instances
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-versus-cryptominisat
+          path: |
+            DRNAS_NP_Crypto_Benchmark/results/
+            DRNAS_NP_Crypto_Benchmark/cases/
+          if-no-files-found: warn
