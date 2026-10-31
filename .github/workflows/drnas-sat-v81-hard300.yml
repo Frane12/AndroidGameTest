@@ -1,0 +1,119 @@
+name: DRNAS SAT v8.1 Hard300 Checkpoint Diagnostics
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-sat-v81-hard300-20261031
+    paths:
+      - '.github/workflows/drnas-sat-v81-hard300.yml'
+      - 'research/drnas-sat-v7-8/v81_*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  hard-case:
+    name: hard300-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {name: h0-0e0689, shard: 0, case_id: "0e06895600b5cd0b6fadb87e17bf8145"}
+          - {name: h3-43d40c, shard: 3, case_id: "43d40ced32b5be08814ef24f97379654"}
+          - {name: h3-44b7d2, shard: 3, case_id: "44b7d2c8d08574002ac959e6d1ef30ae"}
+          - {name: h4-53d23b, shard: 4, case_id: "53d23b2b464a5c041114eb1f00cc4b81"}
+          - {name: h6-93983a, shard: 6, case_id: "93983a1211a506a87907c7e2ffa4e818"}
+          - {name: h6-a08d0f, shard: 6, case_id: "a08d0fcc98fe0ce9c53b2fd0c69ccc4b"}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify frozen solver sources and build instrumented hybrid diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile research/drnas-sat-v7-8/v81_hard_benchmark.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp | tee frozen_hashes.txt
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1, 'Unexpected v7.7 main signature'
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical_sha.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v81_hard_probe.cpp \
+            cadical-src/build/libcadical.a -o v81_hard_probe -pthread -ldl -lz
+          test -x v81_hard_probe
+      - name: Retrieve frozen official 2026 manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-satcomp2026-official-instance-mini-par2
+          run-id: 41204322891
+          github-token: ${{ github.token }}
+          path: previous_manifest
+      - name: Fetch exact original CNFs and verify DIMACS SHA256
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/official26_v77_fetch.py \
+            --previous previous_manifest/satcomp26_official/source_manifest.csv \
+            --outdir original_official_sources --shard "$SHARD" --shards 10
+      - name: Run 300s per mode with live CPU RSS and checkpoint traces
+        env:
+          CASE_ID: ${{ matrix.case_id }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/v81_hard_benchmark.py \
+            --sources original_official_sources/selected.json \
+            --binary "$GITHUB_WORKSPACE/v81_hard_probe" \
+            --case-id "$CASE_ID" \
+            --outdir results
+          cat results/v81_report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve exact CNF manifest, hashes, traces, CPU/RSS histories
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V81-hard-${{ matrix.name }}
+          path: |
+            frozen_hashes.txt
+            cadical_sha.txt
+            original_official_sources/selected.json
+            results/
+          if-no-files-found: warn
+  consolidate:
+    if: always()
+    needs: hard-case
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-V81-hard-*
+          path: all_cases
+      - name: Consolidate six distinct hard CNFs (no silent missing instances)
+        run: |
+          set -euo pipefail
+          count=0
+          for f in all_cases/*/results/v81_report.md; do
+            test -f "$f"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            count=$((count+1))
+          done
+          test "$count" -eq 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V81-Hard300-Full-Diagnostics
+          path: all_cases/
+          if-no-files-found: error
