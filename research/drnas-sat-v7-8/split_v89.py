@@ -112,6 +112,7 @@ def historical_hashes(root):
         try:
             module.EXPERIMENT=experiment
             module.OUT=root/("historical-%d"%number)
+            module.OUT.mkdir(parents=True,exist_ok=True)
             for spec in items:
                 old=module.make_case(*spec)
                 if old["sha256"] in hashes:
