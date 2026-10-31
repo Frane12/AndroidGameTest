@@ -83,35 +83,45 @@ def freeze(args):
     with Path(args.scores).open(newline="",encoding="utf8") as f:
         records=[x for x in csv.DictReader(f) if x["solverid"]=="biere_cadical3[main]"]
     assert len(records)==400
+    # Selection repair BEFORE any V10 solver timings: original SAT_fast quota
+    # contained too few downloadable CNFs. Retain four SAT + four UNSAT
+    # independently of the runner's performance, using pinned official labels
+    # and hash order, with medium-size-time priority for practicality.
     groups=defaultdict(list)
     for row in records:
         label=label_from_score(row["status"])
         ident=row["instanceid"]
         if label is None or ident in excluded:continue
         t=float(row["runtime"])
-        band=("fast" if 0<t<5 else "medium" if 5<=t<=45 else "")
-        if band:
-            groups[label+"_"+band].append(row)
+        if not (0<t<=180):continue
+        band=("medium" if 5<=t<=60 else
+              "fast" if t<5 else "long")
+        groups[label].append((0 if band=="medium" else 1 if band=="fast" else 2,
+                              row,band))
     accepted=[];attempts=[];selected=set()
-    for key in ("SAT_fast","UNSAT_fast","SAT_medium","UNSAT_medium"):
-        for row in sorted(groups[key],key=lambda x:hash_order(key+x["instanceid"])):
-            if sum(x["stratum"]==key for x in accepted)>=2:break
+    for label in ("SAT","UNSAT"):
+        rank=sorted(groups[label],key=lambda t:(t[0],hash_order(t[1]["instanceid"])))
+        for priority,row,band in rank:
+            if sum(x["official_label"]==label for x in accepted)>=4:break
             ident=row["instanceid"]
             if ident in selected:continue
             try:
                 info=src.download_and_features(ident)
                 selected.add(ident)
                 accepted.append({**info,"group":"new_2026_holdout",
-                    "official_label":label_from_score(row["status"]),
-                    "stratum":key,"official_ca3_s":float(row["runtime"])})
-                attempts.append({"id":ident,"status":"accepted","stratum":key})
-                print("V100_FROZEN_ACCEPT",ident,key,flush=True)
+                    "official_label":label,"stratum":label+"_"+band,
+                    "official_ca3_s":float(row["runtime"])})
+                attempts.append({"id":ident,"status":"accepted",
+                                 "stratum":label+"_"+band})
+                print("V100_FROZEN_ACCEPT",ident,label,band,flush=True)
             except Exception as exc:
-                attempts.append({"id":ident,"status":"reject","stratum":key,
+                attempts.append({"id":ident,"status":"reject",
+                                 "stratum":label+"_"+band,
                                  "reason":str(exc)[:250]})
-                print("V100_REJECT",ident,key,str(exc)[:90],flush=True)
-        if sum(x["stratum"]==key for x in accepted)<2:
-            raise RuntimeError("Missing 2 valid CNFs for predeclared stratum "+key)
+                print("V100_REJECT",ident,label,band,str(exc)[:90],flush=True)
+        if sum(x["official_label"]==label for x in accepted)<4:
+            raise RuntimeError("Fewer than 4 downloadable "+label+
+                               " 2026 CNFs after checking "+str(len(rank))+" candidates")
     assert len(accepted)==8
     accepted.sort(key=lambda x:hash_order("selected/"+x["id"]))
     assert len({c["id"] for c in known+accepted})==12
@@ -129,7 +139,7 @@ def freeze(args):
           "Four known selected diagnostic cases do not establish generalization",
           "Eight new cases exclude earlier 54+12 2026 manifests, not an exhaustive global repo audit",
           "Official reference times used only for stratified preselection, NEVER routing",
-          "Class quotas and capped input size introduce selection bias",
+          "Label quotas, official baseline-time priority and size caps bias sampling",
           "Two fixed-seed repeated orders and 18s caps, not official competition rules",
           "SAT model check by solver; UNSAT certificates not separately verified"]))
     print("V100_FROZEN",len(known),len(accepted),len(attempts),flush=True)
