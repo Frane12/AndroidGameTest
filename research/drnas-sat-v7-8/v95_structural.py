@@ -8,6 +8,12 @@ import argparse,csv,hashlib,json,math,os,random,statistics,subprocess,time
 from collections import Counter,defaultdict
 from pathlib import Path
 from official_shortlong_select import download_and_features,REV,SCORES_GIT_BLOB
+import official_shortlong_select as official_source
+# v9.5 experiment only: permit moderate files beyond the earlier 48MiB screening.
+official_source.CNF_CAP=96*1024*1024
+official_source.RAW_CAP=96*1024*1024
+official_source.VARIABLE_CAP=1000000
+official_source.CLAUSE_CAP=4000000
 BASE=("ca_plain","orig_v76","orig_v76_plain","v92_sparse")
 MODES=BASE+("v94_cautious","v95_structural")
 FEATURES=("log_vars","log_clauses","clause_var","avg_width",
@@ -153,13 +159,17 @@ def freeze_cmd(args):
         pools[label+"_"+grade].append({"id":ident,"official_label":label.upper(),
                        "stratum":label+"_"+grade,"official_baseline_s":sec})
     def key(s):return hashlib.sha256((SALT+"/"+s).encode()).hexdigest()
-    chosen=[];attempts=[]
+    chosen=[];attempts=[];attempted=set()
+    # First, try balanced strata. An exhausted stratum must not abort
+    # an otherwise valid prospective cohort; fill remainder in fixed order.
+    candidates=[]
     for stratum,quota in QUOTAS.items():
-        # Baseline runtimes only used for stratification, never prediction.
         ordered=sorted(pools[stratum],key=lambda x:key(stratum+"/"+x["id"]))
+        candidates.extend(ordered)
         count=0
         for rec in ordered:
             if count>=quota:break
+            attempted.add(rec["id"])
             try:info=download_and_features(rec["id"])
             except Exception as ex:
                 attempts.append({"id":rec["id"],"accepted":False,"why":str(ex)})
@@ -169,7 +179,25 @@ def freeze_cmd(args):
             attempts.append({"id":rec["id"],"accepted":True})
             count+=1
             print("V95_ACCEPT",stratum,rec["id"],info["cnf_bytes"],flush=True)
-        if count!=quota:raise RuntimeError("Not enough accessible CNFs "+stratum)
+        if count<quota:
+            print("V95_STRATUM_SHORTFALL",stratum,count,quota,flush=True)
+    if len(chosen)<24:
+        # Original SAT/UNSAT strata are public and frozen; no DRNAS outcome
+        # has been measured for any candidate.
+        for rec in sorted(candidates,key=lambda x:key("spill/"+x["id"])):
+            if len(chosen)>=24:break
+            if rec["id"] in attempted:continue
+            attempted.add(rec["id"])
+            try:info=download_and_features(rec["id"])
+            except Exception as ex:
+                attempts.append({"id":rec["id"],"accepted":False,"why":str(ex)})
+                print("V95_SPILL_REJECT",rec["stratum"],rec["id"],str(ex),flush=True)
+                continue
+            chosen.append({**rec,**info,"split":"v95_unseen"})
+            attempts.append({"id":rec["id"],"accepted":True})
+            print("V95_SPILL_ACCEPT",rec["stratum"],rec["id"],info["cnf_bytes"],flush=True)
+    if len(chosen)<24:
+        raise RuntimeError("Insufficient 24 disjoint downloadable CNFs: "+str(len(chosen)))
     assert len(chosen)==24 and not ({x["id"] for x in chosen}&excluded)
     # Stable shuffle; four CNFs per shard.
     chosen.sort(key=lambda x:key("schedule/"+x["id"]))
