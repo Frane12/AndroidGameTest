@@ -1,0 +1,95 @@
+name: DRNAS V7.2.1 vs authentic SATLIB benchmark corpus
+on:
+  push:
+    branches:
+      - research/drnas-sat-satlib-v7-2-1
+    paths:
+      - research/drnas-sat-real-2025/fetch_satlib.py
+      - research/drnas-sat-real-2025/satlib_sources.json
+      - .github/workflows/drnas-sat-real-satlib.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-real-satlib
+  cancel-in-progress: false
+jobs:
+  official-satlib-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build official CaDiCaL v3.0.1, exact original code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-real-2025/real_single.cpp \
+            cadical-src/build/libcadical.a -o real_single -pthread -ldl -lz
+      - name: Download and SHA256-verify 7 original SATLIB benchmark archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-real-2025/fetch_satlib.py \
+            --manifest research/drnas-sat-real-2025/satlib_sources.json \
+            --outdir "$GITHUB_WORKSPACE/satlib_inputs"
+      - name: Fixed SATLIB pilot — seven external problem families
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-real-2025/run_real.py \
+            --binary "$GITHUB_WORKSPACE/real_single" \
+            --verification "$GITHUB_WORKSPACE/satlib_inputs/source-verification.json" \
+            --group pilot --outdir "$GITHUB_WORKSPACE/satlib_pilot" \
+            --timeout 2 --repeats 2
+      - name: Frozen SATLIB holdout — all originally selected CNFs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-real-2025/run_real.py \
+            --binary "$GITHUB_WORKSPACE/real_single" \
+            --verification "$GITHUB_WORKSPACE/satlib_inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/satlib_holdout" \
+            --timeout 2 --repeats 2
+      - name: Report PAR-2 inclusive of timeouts
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('satlib_holdout/summary.json').read_text())
+          lines=[
+            '# DRNAS V7.2.1 vs original SATLIB CNFs',
+            f"SHA256 verified SATLIB archives, {s['cases']} holdout problems from 7 SATLIB families.",
+            f"2 repetitions, 2-second method timeout, PAR-2 score.",
+            '',
+            '| Method | PAR-2 s | Ratio to plain | Solved runs |',
+            '|---|---:|---:|---:|'
+          ]
+          for m in ['plain','majority','selective','confidence','confidence_random']:
+            x=s['methods'][m]
+            lines.append(f"| {m} | {x['par2_score_s']:.4f} | {x['speed_ratio_plain_over_method']:.4f}x | {x['solved_runs']}/{x['total_runs']} |")
+          lines+=['',
+                  f"Confidence gate selected {s['selected_by_confidence']}/{s['cases']} cases.",
+                  f"Mean selection time: {s['selector_gate_us_mean']:.3f} microseconds.",
+                  'Original SATLIB clause data preserved; only non-DIMACS terminal % and line endings normalized.',
+                  'No tuning on these cases. Timeout penalty is included.']
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fp:fp.write('\n'.join(lines)+'\n')
+          PY
+      - name: Save source verification, inputs metadata and all results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v721-original-satlib-benchmark
+          path: |
+            cadical-source-commit.txt
+            satlib_inputs/source-verification.json
+            satlib_pilot/
+            satlib_holdout/
+          if-no-files-found: warn
