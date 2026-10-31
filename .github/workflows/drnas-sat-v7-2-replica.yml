@@ -1,0 +1,76 @@
+name: DRNAS SAT v7.2 Independent Replication
+on:
+  push:
+    branches:
+      - research/drnas-sat-selective-v7-2
+    paths:
+      - .github/workflows/drnas-sat-v7-2-replica.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-v7-2-replica
+  cancel-in-progress: false
+jobs:
+  independent-replication:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Pin and build official CaDiCaL
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-2/selective_bench.cpp cadical-src/build/libcadical.a \
+            -o selective_bench -pthread -ldl -lz
+      - name: Independent 204 CNFs, same frozen selector, seed 20261124
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-2/generate_v72.py \
+            --seed 20261124 --each 17 --outdir "$GITHUB_WORKSPACE/v72_replica"
+          ./selective_bench \
+            "$GITHUB_WORKSPACE/v72_replica/manifest.csv" \
+            "$GITHUB_WORKSPACE/v72_replica/measurements.csv" \
+            3 20261124
+          python research/drnas-sat-v7-2/summarize_v72.py \
+            --csv "$GITHUB_WORKSPACE/v72_replica/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v72_replica/summary.json" \
+            > v72_replica/summary_console.txt
+      - name: Report replication, no selective changes
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v72_replica/summary.json').read_text())
+          report=["# DRNAS SAT v7.2 independent replication",
+          "Same frozen gate, new seed 20261124, 204 CNFs, three repetitions each.",
+          "",
+          "| Method | Sum of medians (ms) | Speedup vs plain | Faster cases |",
+          "|---|---:|---:|---:|"]
+          for m in ["plain","majority","selective","gated_random"]:
+            item=s["timings"][m]
+            report.append(f"| {m} | {item['sum_medians_ms']:.3f} | {item['speedup_plain_over_method']:.4f}x | {item['faster_cases']} |")
+          q=s["gate_accuracy_5pct_gain_target"]
+          report += ["",f"Selection: {s['selected_cases']}/{s['instances']}; precision >=5% gain: {q['precision']:.3f}; recall {q['recall']:.3f}",
+          f"Correct: {s['verified_sat_unsat']}/{s['instances']}.",
+          "No parameters were modified between initial holdout and replication."]
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write("\n".join(report)+"\n")
+          PY
+      - name: Save independent replicates, CNFs and timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v7-2-independent-replication
+          path: |
+            cadical-source-commit.txt
+            v72_replica/
+          if-no-files-found: warn
