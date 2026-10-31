@@ -1,0 +1,66 @@
+name: DRNAS SAT V9.7 — Compile and Late Learning Gate Smoke
+on:
+  push:
+    branches: [experiment/drnas-sat-v97-late-learning-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-v97-smoke.yml'
+      - 'research/drnas-sat-v7-8/v97_late_learning.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile instrumented CaDiCaL 3.0.1
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert s.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(s.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/cadical-v97-smoke.log 2>&1) \
+            || { tail -100 /tmp/cadical-v97-smoke.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v97_late_learning.cpp \
+            cadical-src/build/libcadical.a -o v97_smoke -pthread -ldl -lz
+      - name: Validate six arms and real SAT/UNSAT statuses
+        run: |
+          set -euo pipefail
+          cat > tiny_sat.cnf <<'EOF'
+          p cnf 3 2
+          1 2 0
+          -1 3 0
+          EOF
+          cat > tiny_unsat.cnf <<'EOF'
+          p cnf 1 2
+          1 0
+          -1 0
+          EOF
+          python3 - <<'PY'
+          import subprocess
+          modes=('v97_late_never','v97_late_always','v97_late_quality','v97_late_yield')
+          for cnf,expected in [('tiny_sat.cnf','SAT'),('tiny_unsat.cnf','UNSAT')]:
+              for mode in modes:
+                  r=subprocess.run(['./v97_smoke',mode,cnf,'718291'],
+                                   capture_output=True,text=True,timeout=20)
+                  assert r.returncode==0,(mode,cnf,r.stderr)
+                  line,= [x for x in r.stdout.splitlines() if x.startswith('DRNAS_CAUSAL\t')]
+                  data=dict(part.split('=',1) for part in line.split('\t')[1:])
+                  assert data['answer']==expected, (mode,cnf,data['answer'])
+                  if 'DRNAS_EARLY' not in r.stdout: raise RuntimeError('Missing early telemetry '+mode)
+                  for f in ('v96_status64','v96_status128','v96_c64',
+                            'v96_c128','v90_lbd2_256','v90_props_256'):
+                      assert f in data,(mode,f)
+                  print('V97_SMOKE_PASS',mode,cnf,expected,flush=True)
+          PY
