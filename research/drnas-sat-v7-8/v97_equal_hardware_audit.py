@@ -31,9 +31,36 @@ with Path("official_scores.csv").open(newline="",encoding="utf8") as fh:
         if k not in original_best or t<original_best[k][0]:
             original_best[k]=(t,r["solverid"])
 rows=[]
+rows_by_shard={}
 for i in range(3):
-    with (Path("v97-results")/f"v97-shard-{i}"/"results"/"raw.csv").open(newline="") as f:
-        rows+=list(csv.DictReader(f))
+    folder=Path("v97-results")/f"v97-shard-{i}"/"results"
+    with (folder/"raw.csv").open(newline="") as f:
+        shard_rows=list(csv.DictReader(f))
+    assert shard_rows,("empty raw.csv",i)
+    with (folder/"meta.json").open() as f:
+        meta=json.load(f)
+    assert meta["shard"]==i
+    assert len(shard_rows)==len(meta["cases"])*len(MODES)*3
+    assert {r["case"] for r in shard_rows}=={c["id"] for c in meta["cases"]}
+    assert {int(r["cpu_core"]) for r in shard_rows}=={int(meta["cpu_core"])}
+    # Each GitHub runner builds DRNAS separately: compiler/build paths may
+    # make binary SHA differ ACROSS runners without changing the program.
+    # Check hashes strictly WITHIN each runner and matched formula.
+    for mode in MODES:
+        local_hashes={r["binary_sha256"] for r in shard_rows if r["mode"]==mode}
+        assert len(local_hashes)==1,("same-runner binary changed",i,mode,local_hashes)
+        assert all(len(h)==64 for h in local_hashes),("invalid SHA256",i,mode)
+    drnas_hashes={r["binary_sha256"] for r in shard_rows
+                  if r["mode"] in ("drnas_single96","drnas_single128","ca_plain")}
+    assert len(drnas_hashes)==1,("DRNAS variants didn't share one executable",i)
+    rows_by_shard[i]=shard_rows
+    rows+=shard_rows
+# These exact official entrants were compiled once each and their binaries
+# were downloaded unchanged by all runners; their hashes MUST match globally.
+official_modes=("mergesat-l","mergesat","kissat-mab-eae2","kissat-lr-ds","cadical3")
+for mode in official_modes:
+    sha={r["binary_sha256"] for r in rows if r["mode"]==mode}
+    assert len(sha)==1,("official submission binary mismatch",mode,sha)
 assert len(rows)==7*len(MODES)*3, len(rows)
 ids=set(r["case"] for r in rows)
 assert len(ids)==7
@@ -47,8 +74,7 @@ for r in rows:
     if r["status"] not in ("SAT","UNSAT","TIMEOUT"):issues.append("invalid result "+r["case"]+" "+r["mode"])
     if r["status"] in ("SAT","UNSAT") and r["status"]!=case["official_label"]:
         issues.append("wrong SAT/UNSAT answer "+r["case"]+" "+r["mode"])
-    sha={z["binary_sha256"] for z in rows if z["mode"]==r["mode"]}
-    if len(sha)!=1:issues.append("inconsistent binary hash "+r["mode"])
+    # Binary integrity was already checked per source runner above.
 assert not issues,issues[:5]
 def cost(r):return float(r["wall_s"]) if r["status"] in ("SAT","UNSAT") else 30.
 per={}
@@ -99,7 +125,8 @@ report={"cases":len(ids),"repeats":3,"attempts":len(rows),
     "Same GitHub runner core per formula, but not necessarily identical CPU between separate shards",
     "Compiled from original SAT Competition 2026 source archives using supplied build.sh; not original competition environment",
     "Not official world-record validation, and UNSAT independently verified proofs absent",
-    "Per-formula best of two DRNAS budgets is post-hoc selection and optimistically biased"]}
+    "Per-formula best of two DRNAS budgets is post-hoc selection and optimistically biased",
+    "DRNAS executables freshly compiled on three runners: SHA256 checked inside each runner; official archives unchanged globally"]}
 root=Path("v97-results")
 (root/"v97_final_audit.json").write_text(json.dumps(report,indent=2))
 lines=["# DRNAS v9.7 — same-CPU comparison to exact 2026 submitted solver binaries",
