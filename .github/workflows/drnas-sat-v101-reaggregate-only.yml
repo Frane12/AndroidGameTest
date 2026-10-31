@@ -1,0 +1,67 @@
+name: DRNAS V10.1 - Reaggregate Already Measured 264 Trials
+on:
+  push:
+    branches: [experiment/drnas-sat-v102-dual-predictors-20261031]
+    paths: ['.github/workflows/drnas-sat-v101-reaggregate-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reaggregate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Require six existing V10.1 raw artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 28); do
+            count=$(gh api 'repos/Frane12/AndroidGameTest/actions/runs/41246747906/artifacts?per_page=100' --jq '[.artifacts[].name | select(startswith("v101-shard-"))] | length')
+            echo "V10.1 raw shards available: $count / 6"
+            if [ "$count" -eq 6 ]; then exit 0; fi
+            sleep 45
+          done
+          echo "No complete 264-run dataset available" >&2
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: v101-frozen-protocol-and-inputs
+          run-id: 41246747906
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v101-shard-*
+          run-id: 41246747906
+          github-token: ${{ github.token }}
+          path: combined
+      - name: Audit archived measurements, correcting only shard-directory lookup
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v101_manifest.sha256)
+          cp research/drnas-sat-v7-8/v101_graded_confidence.py research/drnas-sat-v7-8/v101_audit_runner.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path('research/drnas-sat-v7-8/v101_audit_runner.py')
+          src=path.read_text()
+          original='("v100-shard-"+str(shard))'
+          fixed='("v101-shard-"+str(shard))'
+          assert src.count(original)==1, "unexpected source audit path"
+          path.write_text(src.replace(original,fixed))
+          PY
+          python3 -u research/drnas-sat-v7-8/v101_audit_runner.py audit \
+            --manifest frozen/v101_manifest.json --combined combined \
+            --out v101_report.json --md v101_report.md
+          cat v101_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V101-264-Corrected-Audit
+          path: |
+            v101_report.json
+            v101_report.md
+          if-no-files-found: warn
