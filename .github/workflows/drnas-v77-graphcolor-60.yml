@@ -1,0 +1,169 @@
+name: DRNAS V7.7 SATLIB Graph Coloring vs CaDiCaL Kissat Zykov
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-graphcolor-60-zykov-baselines
+    paths:
+      - 'research/drnas-sat-v7-7/graphcolor/**'
+      - '.github/workflows/drnas-v77-graphcolor-60.yml'
+permissions:
+  contents: read
+jobs:
+  zykov-official-dependency-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check actual official ZykovColor build prerequisites without claiming a benchmark
+        run: |
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          r=subprocess.run(['g++','--version'],capture_output=True,text=True)
+          home=os.environ.get('GUROBI_HOME','')
+          present=bool(home and Path(home).exists() and
+              any(Path(home).glob('lib/libgurobi*')))
+          d=dict(name='ZykovColor official',source_repo='trewes/ZykovColor',
+            pinned_commit='26e2c6f5b5d4258db2d70a21370ecdeb41a6e5f4',
+            Gurobi_library_available=present,
+            Gurobi_dependency='required by unmodified CMakeLists even when fractional-bound runtime is disabled',
+            additional_dependencies='Boost>=1.88, Open-WBO, exactcolors, CliSAT, CaDiCaL IPASIR-UP',
+            result='CAN_ATTEMPT_ZYKOV_BUILD' if present else 'BLOCKED_LICENSED_GUROBI_DEPENDENCY',
+            no_ZykovColor_timing_claimed=True,
+            note='The real SAT vs ZykovColor same-k test can run with optional_zykovcolor.py once a licensed, unmodified official ZykovColor build exists')
+          Path('zykov_dependency_audit.json').write_text(json.dumps(d,indent=2))
+          print(json.dumps(d,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZykovColor-official-dependencies-audit
+          path: zykov_dependency_audit.json
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile unmodified CaDiCaL 3.0.1 and DRNAS V7.7 C++ Learner
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-7/v77_single.cpp \
+            cadical-src/build/libcadical.a -o v77_graph -pthread -ldl -lz
+      - name: Compile independent Kissat 4.0.4 for graphical SAT reference
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          (cd kissat-src && ./configure && make -j2)
+      - name: Fetch SHA256 pinned SATLIB flat200-479 and authenticate two pilot graphs
+        run: |
+          python -u research/drnas-sat-v7-4/fetch_medium.py \
+            --manifest research/drnas-sat-v7-7/graphcolor/frozen_graph_sources.json \
+            --outdir satlib_inputs --shard 0 --shards 6
+          python -u research/drnas-sat-v7-7/graphcolor/extract_certified_graphs.py \
+            --verification satlib_inputs/source-verification.json \
+            --outdir graph_pilot --group pilot
+      - name: Check first 2 graph problems actually run and agree across solvers
+        run: |
+          python -u research/drnas-sat-v7-7/graphcolor/benchmark_graphcolor.py \
+            --native "$GITHUB_WORKSPACE/v77_graph" \
+            --kissat "$GITHUB_WORKSPACE/kissat-src/build/kissat" \
+            --graphs graph_pilot/graphs.json --outdir graph_pilot_results
+      - name: Preserve equivalent CNF and graph .col source proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphcolor-two-pilot-audit
+          path: |
+            graph_pilot/
+            graph_pilot_results/
+            satlib_inputs/source-verification.json
+          if-no-files-found: warn
+  benchmark:
+    needs: pilot
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build original CaDiCaL 3.0.1 with unchanged DRNAS v7.7
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD > cadical_commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-7/v77_single.cpp \
+            cadical-src/build/libcadical.a -o v77_graph -pthread -ldl -lz
+      - name: Build independent Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          git -C kissat-src rev-parse HEAD > kissat_commit.txt
+          (cd kissat-src && ./configure && make -j2)
+      - name: Re-fetch authenticated SATLIB graph coloring source, fixed shard
+        env:
+          PART: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-4/fetch_medium.py \
+            --manifest research/drnas-sat-v7-7/graphcolor/frozen_graph_sources.json \
+            --outdir satlib_inputs --shard "$PART" --shards 6
+          python -u research/drnas-sat-v7-7/graphcolor/extract_certified_graphs.py \
+            --verification satlib_inputs/source-verification.json \
+            --outdir gc_graphs --group holdout
+      - name: Actual 3-color SAT same-CNF benchmark, 15s x two repeats
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/graphcolor/benchmark_graphcolor.py \
+            --native "$GITHUB_WORKSPACE/v77_graph" \
+            --kissat "$GITHUB_WORKSPACE/kissat-src/build/kissat" \
+            --graphs gc_graphs/graphs.json --outdir gc_results
+      - name: Archive full raw times and exact graph .col conversion proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphcolor-shard${{ matrix.shard }}-results
+          path: |
+            cadical_commit.txt
+            kissat_commit.txt
+            satlib_inputs/source-verification.json
+            gc_graphs/
+            gc_results/
+          if-no-files-found: warn
+  summarize:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: graphcolor-shard*-results
+          path: combined_shards
+          merge-multiple: false
+      - name: Full benchmark PAR2, 58 graphs with 2 repeats and confidence ranges
+        run: |
+          python -u research/drnas-sat-v7-7/graphcolor/combine_graphcolor.py \
+            --root combined_shards --outdir graphcolor_final
+          cat graphcolor_final/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-v77-GraphColor-58-CaDiCaL-Kissat-results
+          path: graphcolor_final/
+          if-no-files-found: error
