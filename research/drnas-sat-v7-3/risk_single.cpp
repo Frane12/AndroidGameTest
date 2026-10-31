@@ -49,7 +49,7 @@ Risk risk_hints(const Formula &f,bool strong_only) {
     h.selected=safe;
     if(safe)h.literals=std::move(advice);
     h.candidates=h.literals.size();
-    h.analysis_us+=std::chrono::duration<double,std::micro>(Clock::now()-start).count();
+    h.analysis_us=std::chrono::duration<double,std::micro>(Clock::now()-start).count();
     return result;
 }
 struct V73Outcome {
@@ -79,7 +79,8 @@ int main(int argc,char **argv) {
         if(method=="risk_features") {
             const auto r=risk_hints(f,false);
             std::cout<<std::setprecision(12)
-              <<"DRNAS_FEATURES\t"<<(confidence_gate(f).selected?1:0)
+              <<"DRNAS_FEATURES\t"<<(fast_gate(f).selected?1:0)
+              <<'\t'<<(confidence_gate(f).selected?1:0)
               <<'\t'<<(r.hints.selected?1:0)<<'\t'<<r.hints.analysis_us
               <<'\t'<<r.mean_margin<<'\t'<<r.strong_fraction
               <<'\t'<<r.supported<<'\t'<<r.hints.pair_reuse
