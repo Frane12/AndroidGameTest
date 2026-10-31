@@ -330,8 +330,11 @@ int main(int argc,char **argv){
         const Time deadline=begin+std::chrono::duration_cast<Clock::duration>(
                      std::chrono::duration<double,std::milli>(budget_ms));
         bool screening=(mode=="neuro" || mode=="neuro-phase" || mode=="force");
-        const bool phase_work=(mode=="auto"||mode=="phase-majority"||mode=="phase-minority"||mode=="phase-selective"||mode=="neuro-phase");
         const AutoPolicy policy=(mode=="auto")?read_policy(policy_path):AutoPolicy{};
+        // Policy OFF uses the EXACT same parsing path as plain CaDiCaL.
+        const bool phase_work=((mode=="auto" && policy.engine!="base")||
+            mode=="phase-majority"||mode=="phase-minority"||
+            mode=="phase-selective"||mode=="neuro-phase");
         std::string hint_kind=(mode=="phase-majority"?"majority":mode=="phase-minority"?"minority":phase_work?"selective":"none");
         const Time p0=Clock::now();
         CNF f=read_cnf(path,screening||phase_work);
