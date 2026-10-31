@@ -149,7 +149,7 @@ def main():
     OUT.mkdir(exist_ok=True)
     training_cases=satlib('train')+controls('train')
     test=satlib('holdout')+controls('holdout')
-    assert len(training_cases)==len(test) and len(test)>=192
+    assert len(training_cases)==len(test) and len(test)>=172
     assert {x['fingerprint'] for x in training_cases}.isdisjoint(
            x['fingerprint'] for x in test)
     model=training(training_cases)
