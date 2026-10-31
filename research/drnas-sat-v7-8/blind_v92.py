@@ -209,7 +209,15 @@ def main():
             if any(r["status"] in ("TIMEOUT","ERROR") for r in paired):
                 continue
             a,b=paired
-            for k in ("hints","learned_delta","active_256","threshold","extended","second_budget"):
+            # The original frozen V7.6 intentionally leaves threshold,
+            # active_256 and learned_delta zero if the FIRST 256-conflict
+            # solve returned SAT/UNSAT immediately. The v9.2 diagnostic
+            # populates these read-only counters even on early completion.
+            # Compare them only when V7.6 actually entered its extension gate.
+            compare=["hints","extended","second_budget"]
+            if str(a.get("threshold","")) not in ("","0"):
+                compare+=["learned_delta","active_256","threshold"]
+            for k in compare:
                 if str(a.get(k,""))!=str(b.get(k,"")):
                     raise RuntimeError("v92 full vs frozen v7.6 parity mismatch "+
                                        name+" rep "+str(rep)+" "+k)
