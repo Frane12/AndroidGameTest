@@ -191,7 +191,7 @@ def audit(args):
     assert m["protocol"]==SALT and m["arms"]==list(ARMS)
     rows=[]
     for shard in range(6):
-        base=Path(args.combined)/("v100-shard-"+str(shard))/"results"
+        base=Path(args.combined)/("v101-shard-"+str(shard))/"results"
         meta=json.loads((base/"meta.json").read_text())
         assert meta["shard"]==shard and meta["rows"]==44
         assert meta["cases"]==[c["id"] for c in m["cases"][2*shard:2*shard+2]]
