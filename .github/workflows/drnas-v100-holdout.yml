@@ -1,0 +1,98 @@
+name: DRNAS V10 locked V9.9 holdout vs CaDiCaL and Kissat
+on:
+  push:
+    branches: [experiment/drnas-sat-v100-holdout-20261031]
+    paths:
+      - 'research/drnas-sat-v10-0/**'
+      - '.github/workflows/drnas-v100-holdout.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 research/drnas-sat-v10-0/holdout.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41232668762
+          github-token: ${{ github.token }}
+          path: old
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          run-id: 41237911915
+          github-token: ${{ github.token }}
+          path: new
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V99-vs-official-2026-final
+          run-id: 41245010059
+          github-token: ${{ github.token }}
+          path: baseline
+      - run: python3 research/drnas-sat-v10-0/holdout.py freeze
+      - uses: actions/upload-artifact@v4
+        with: {name: v100-locked-six-CNFs, path: plan.json}
+  compare:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix: {index: [0, 1, 2, 3, 4, 5]}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: v100-locked-six-CNFs}
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v99-linux-x86_64-and-metrics
+          run-id: 41244333679
+          github-token: ${{ github.token }}
+          path: drnas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v97-compiled-official-*
+          merge-multiple: true
+          run-id: 41239258943
+          github-token: ${{ github.token }}
+          path: official
+      - name: Check binaries and run same-core randomized trials
+        run: |
+          set -euo pipefail
+          (cd official && sha256sum -c bins/*.sha256)
+          chmod +x drnas/drnas-sat official/bins/{cadical3,kissat-lr-ds}
+          ulimit -s unlimited
+          python3 -u research/drnas-sat-v10-0/holdout.py trial ${{ matrix.index }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v100-raw-${{ matrix.index }}
+          path: trial-*.json
+          if-no-files-found: error
+  audit:
+    needs: compare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: v100-locked-six-CNFs}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v100-raw-*
+          merge-multiple: true
+          path: trials
+      - run: |
+          python3 research/drnas-sat-v10-0/holdout.py audit
+          cat v100-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V100-V99-frozen-holdout-final
+          path: |
+            plan.json
+            v100-summary.md
+            v100-results.csv
