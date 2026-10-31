@@ -107,6 +107,7 @@ static V77 solve77(const Formula& f,const std::string &method,uint32_t seed) {
     return o;
 }
 
+#ifndef DRNAS_V77_EMBEDDED
 int main(int argc,char**argv) {
     try {
         if(argc!=4) {
@@ -145,3 +146,5 @@ int main(int argc,char**argv) {
         return 1;
     }
 }
+
+#endif // DRNAS_V77_EMBEDDED
