@@ -98,6 +98,14 @@ assert len(results)==40
 # answer in advance and is NOT an implementable solver or a proof of accuracy.
 oracle=sum(min(r["orig_v76_par2"],r["orig_v76_plain_par2"]) for r in results)
 comparable=[r for r in results if r["ratio_plain_over_guided"] is not None]
+# Predeclare a minimal information sufficiency rule: report signals but
+# explicitly withhold any structural-subclass claim when the effective
+# sample is too small or dominated by one formula family.
+wins=[r for r in comparable if r["category"]=="GUIDED_WIN"]
+losses=[r for r in comparable if r["category"]=="GUIDED_LOSS"]
+informative_families={r["family"] for r in wins+losses}
+sufficient=(len(comparable)>=12 and len(wins)>=3 and len(losses)>=3
+            and len(informative_families)>=2)
 line=["# DRNAS SAT V8.9 — structural pilot (40 unseen synthetic formulas)","",
       "Exploratory structural screening only; no general speedup/complexity theorem established.",
       "All 600 runs: 40 CNFs x 3 repeats x 5 modes, 3 s cap; PAR-2 timeouts count as 6 s.",
@@ -110,6 +118,11 @@ line=["# DRNAS SAT V8.9 — structural pilot (40 unseen synthetic formulas)","",
       "## Aggregate PAR-2 (sum of per-case medians, lower is better)","",
       "| Mode | PAR-2 seconds |","|---|---:|"]
 line += ["| %s | %.5f |"%(mode,total[mode]) for mode in MODES]
+line += ["","Information sufficiency: %d comparable, %d guided wins, %d guided losses, %d informative families."%(
+    len(comparable),len(wins),len(losses),len(informative_families)),
+    "Candidate structural subclass status: %s"%(
+        "EXPLORATORY ASSOCIATIONS ONLY (minimum sample met, not independently validated)" if sufficient
+        else "INSUFFICIENT INFORMATIVE FORMULAS; NO STRUCTURAL SUBCLASS INFERRED")]
 line += ["","Perfect hindsight min(V7.6 guided, V7.6 plain): %.5f s; NOT deployable."%oracle,
          "Potential oracle saving vs always-plain: %.3f%%"%
          (100*(1-oracle/total["orig_v76_plain"])),"",
