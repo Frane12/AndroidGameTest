@@ -67,18 +67,25 @@ def output_dataset(rows,reps,cutoff,dest):
         g=modes["fastpath_guided"]
         p=modes["fastpath_plain"]
         base=modes["plain"]
-        features=g[0]
+        # A censored formula may timeout under ALL modes; its native
+        # feature fields are unavailable. Preserve the row as unknown,
+        # never infer a false "not selected" label from absent telemetry.
+        features=next((x for x in g if x["selected"] is not None),None)
+        def med(field):
+            values=[x[field] for x in g if x[field] is not None]
+            return statistics.median(values) if values else None
         diag.append({
             "case":name,"family":g[0]["family"],"answer":g[0]["known_answer"],
-            "vars":g[0]["variables"],"clauses":g[0]["clauses"],
-            "fastpath_eligible":int(features["selected"]),
-            "mean_hint_margin":features["mean_hint_margin"],
-            "strong_fraction":features["strong_fraction"],
-            "ternary_fraction":features["ternary_fraction"],
-            "proposed_hints":features["proposed"],
-            "preflight_us_median":statistics.median(x["preflight_us"] for x in g),
-            "clause_offer_count_median":statistics.median(x["observed"] for x in g),
-            "short5_fraction_median":statistics.median(x["short_fraction"] for x in g),
+            "vars":features["variables"] if features else None,
+            "clauses":features["clauses"] if features else None,
+            "fastpath_eligible":features["selected"] if features else None,
+            "mean_hint_margin":features["mean_hint_margin"] if features else None,
+            "strong_fraction":features["strong_fraction"] if features else None,
+            "ternary_fraction":features["ternary_fraction"] if features else None,
+            "proposed_hints":features["proposed"] if features else None,
+            "preflight_us_median":med("preflight_us"),
+            "clause_offer_count_median":med("observed"),
+            "short5_fraction_median":med("short_fraction"),
             "did_extend":int(any(x["extended"] for x in g)),
             "plain_s":score(base),"fastpath_plain_s":score(p),
             "fastpath_guided_s":score(g),
