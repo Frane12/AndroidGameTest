@@ -198,7 +198,12 @@ static Audit ablation(const Formula &f,const std::string &policy,
     a.short5=obs.short5;
     a.short_fraction=a.offered?double(a.short5)/a.offered:0.;
     if(a.stage1==0) {
-        if(policy=="v91_gate" || policy=="v91_always" || policy=="v91_never") {
+        if(policy=="v92_structural" || policy=="v92_sparse" ||
+           policy=="v92_full") {
+            // Exactly the original v7.6 256 -> 768 continuation policy.
+            a.extended=a.learned_delta>=a.threshold && a.active_256>0;
+            a.gate_reason=a.extended?"v92_durable_v76":"v92_low_yield_resume";
+        } else if(policy=="v91_gate" || policy=="v91_always" || policy=="v91_never") {
             // Same v7.6 continuation budget for EVERY v9.1 arm.
             a.extended=a.learned_delta>=a.threshold && a.active_256>0;
             // This comparison is observational; do not act until >256.
