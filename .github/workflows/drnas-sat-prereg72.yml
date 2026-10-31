@@ -1,0 +1,138 @@
+name: DRNAS SAT preregistered 72-CNF verification
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-prereg72-20261031
+    paths:
+      - '.github/workflows/drnas-sat-prereg72.yml'
+      - 'research/drnas-sat-v7-8/prereg72_*'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  preregister:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Snapshot official 2026 scores with pinned Git blob
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python -m py_compile research/drnas-sat-v7-8/prereg72_manifest.py \
+            research/drnas-sat-v7-8/prereg72_run.py \
+            research/drnas-sat-v7-8/prereg72_aggregate.py
+      - name: Fetch prior examined 20-source manifest for exclusion
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-satcomp2026-official-instance-mini-par2
+          run-id: 41204322891
+          github-token: ${{ github.token }}
+          path: previous_manifest
+      - name: Freeze pre-registered IDs before first benchmark run
+        run: |
+          python -u research/drnas-sat-v7-8/prereg72_manifest.py \
+            --scores official_scores.csv \
+            --previous previous_manifest/satcomp26_official/source_manifest.csv \
+            --out prereg72_manifest.json
+          sha256sum prereg72_manifest.json | tee prereg72_manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prereg72-selection-frozen
+          path: |
+            prereg72_manifest.json
+            prereg72_manifest.sha256
+            official_scores.csv
+          if-no-files-found: error
+  benchmark:
+    needs: preregister
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    name: prereg72-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Download immutable selected 72 source IDs
+        uses: actions/download-artifact@v4
+        with:
+          name: prereg72-selection-frozen
+          path: prereg
+      - name: Verify frozen original sources and build CaDiCaL 3.0.1
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          (cd prereg && sha256sum -c prereg72_manifest.sha256)
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v80_hybrid_probe.cpp \
+            cadical-src/build/libcadical.a -o v80_hybrid_probe -pthread -ldl -lz
+          test -x v80_hybrid_probe
+      - name: Evaluate six exact official CNFs with paired mode order
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/prereg72_run.py \
+            --manifest prereg/prereg72_manifest.json \
+            --shard "$SHARD" \
+            --binary "$GITHUB_WORKSPACE/v80_hybrid_probe" \
+            --outdir results
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve every result including errors
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prereg72-shard-${{ matrix.shard }}
+          path: |
+            prereg/prereg72_manifest.json
+            results/
+          if-no-files-found: warn
+  aggregate:
+    if: always()
+    needs: [preregister, benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prereg72-shard-*
+          path: gathered
+      - name: Refuse missing data and report full pre-registered performance
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/prereg72_aggregate.py
+          cat prereg72_full_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-Preregistered72-Full-Results
+          path: |
+            prereg72_full_report.md
+            prereg72_all_results.json
+          if-no-files-found: warn
