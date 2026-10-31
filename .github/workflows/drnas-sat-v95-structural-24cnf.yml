@@ -1,0 +1,217 @@
+name: DRNAS SAT V9.5 — Structural Relations, Frozen Training + 24 Fresh CNFs
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-v95-structural-relations-20261031
+    paths:
+      - '.github/workflows/drnas-sat-v95-structural-24cnf.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train:
+    name: fit 30 historical CNFs with leave-one-out validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-Official2026-18CNF-360Runs-Predictor-FINAL-Corrected
+          run-id: 41232079816
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: train_old
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v94-2026-official-12-new-CNFs-full-results
+          run-id: 41232668762
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: train_new
+      - name: Freeze predictor (never inspect new 24 test runtimes)
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v95_structural.py
+          python3 -u research/drnas-sat-v7-8/v95_structural.py train \
+            --old train_old/official_shortlong_prediction.json \
+            --new train_new/combined-v94/v94_report.json \
+            --out v95_frozen_model.json
+          sha256sum v95_frozen_model.json | tee model.sha256
+          python3 - <<'PY'
+          import json
+          m=json.load(open('v95_frozen_model.json'))
+          with open('model.md','w') as f:
+              f.write('# V9.5 selector: old data only\n\n'+
+                      'Model: '+str(m['fitted_selector'])+'\n\n'+
+                      'LOOCV: '+str(m['candidate_CV'])+'\n')
+          PY
+          cat model.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v95-frozen-30cnf-learned-model
+          path: |
+            v95_frozen_model.json
+            model.sha256
+            model.md
+          if-no-files-found: error
+
+  freeze:
+    needs: train
+    name: freeze 24 disjoint SAT Competition 2026 CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v95-frozen-30cnf-learned-model
+          path: trained
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          run-id: 41231153158
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: oldmanifest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v94-2026-official-12-new-CNFs-full-results
+          run-id: 41232668762
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: newmanifest
+      - name: Reproducible competition metadata and new input SHA256 manifest
+        run: |
+          set -euo pipefail
+          (cd trained && sha256sum -c model.sha256)
+          curl -fL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv \
+            -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 -u research/drnas-sat-v7-8/v95_structural.py freeze \
+            --old-manifest oldmanifest/official_shortlong_manifest.json \
+            --new-manifest newmanifest/official_manifest/official_v94_manifest.json \
+            --model trained/v95_frozen_model.json \
+            --scores official_scores.csv --out official_v95_manifest.json
+          sha256sum official_v95_manifest.json | tee manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v95-frozen-24-new-official-manifest
+          path: |
+            official_v95_manifest.json
+            manifest.sha256
+          if-no-files-found: warn
+
+  benchmark:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    name: v95-24fresh-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v95-frozen-30cnf-learned-model
+          path: trained
+      - uses: actions/download-artifact@v4
+        with:
+          name: v95-frozen-24-new-official-manifest
+          path: official_manifest
+      - name: Build frozen instrumented CaDiCaL 3.0.1, preserve baseline sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd trained && sha256sum -c model.sha256)
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(src.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 > /tmp/v95-build.log 2>&1) \
+            || { tail -100 /tmp/v95-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v94_cautious_probe.cpp \
+            cadical-src/build/libcadical.a -o v95_common_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Test 4 unseen CNFs x 6 modes x 3 repeats (15 sec per attempt)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v95_structural.py run \
+            --model trained/v95_frozen_model.json \
+            --manifest official_manifest/official_v95_manifest.json \
+            --shard "$SHARD" --exe ./v95_common_probe --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v95-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+
+  audit:
+    needs: [train,freeze,benchmark]
+    if: always()
+    name: fail-closed 432-attempt and paired PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v95-frozen-30cnf-learned-model
+          path: trained
+      - uses: actions/download-artifact@v4
+        with:
+          name: v95-frozen-24-new-official-manifest
+          path: official_manifest
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v95-shard-*
+          path: combined-v95
+      - name: Validate SHA, complete matrix, solutions and independent results
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v95_structural.py audit \
+            --model trained/v95_frozen_model.json \
+            --manifest official_manifest/official_v95_manifest.json \
+            --combined combined-v95 --report v95_report.json --markdown v95_report.md
+          cat v95_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v95-24fresh-official-432-attempt-audit
+          path: |
+            trained/v95_frozen_model.json
+            official_manifest/
+            combined-v95/
+            v95_report.json
+            v95_report.md
+          if-no-files-found: warn
