@@ -170,7 +170,7 @@ def evaluate(train, test, title):
         observed = [r[target] for r in rows]
         covered = [r for r in observed if r["decision"] != "ABSTAIN"]
         correct = sum((r["decision"] == "YES") == bool(r["actual"]) for r in covered)
-        majority = int(sum(r["actual"] for r in train) * 2 >= len(train)) if train else 0
+        majority = int(sum(r["targets"][target] for r in train) * 2 >= len(train)) if train else 0
         metrics[target] = {
             "n_cases": len(observed), "positive_cases": sum(r["actual"] for r in observed),
             "coverage": len(covered), "correct_when_covered": correct,
