@@ -61,9 +61,9 @@ def build(destination="external_cases",per_group=20):
                 n,clauses=read_dimacs(cnf_path)
                 if n<1 or not clauses:raise ValueError(f"Empty or malformed CNF: {member.name}")
                 if max((abs(lit) for c in clauses for lit in c),default=0)>n:raise ValueError("Bad DIMACS")
-                canonical=(f"c canonical DIMACS of SATLIB original {member.name}\\n"
-                           +f"p cnf {n} {len(clauses)}\\n"
-                           +"".join(" ".join(map(str,cl))+" 0\\n" for cl in clauses))
+                canonical=(f"c canonical DIMACS of SATLIB original {member.name}\n"
+                           +f"p cnf {n} {len(clauses)}\n"
+                           +"".join(" ".join(map(str,cl))+" 0\n" for cl in clauses))
                 cnf_path.write_text(canonical,encoding="utf-8")
                 canonical_sha=hashlib.sha256(cnf_path.read_bytes()).hexdigest()
                 n2,c2=read_dimacs(cnf_path)
