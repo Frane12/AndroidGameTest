@@ -22,7 +22,7 @@ EXCLUDED={"4ae685a11b5cecca76dc3d463481ce92",
           "0c9da400944b002f90fd385d4fdab385"}
 def hashorder(s):
     return hashlib.sha256((SALT+"/"+s).encode()).hexdigest()
-def download_and_features(case):
+def download_and_features(case,save_to=None):
     url="https://benchmark-database.de/file/"+case
     req=urllib.request.Request(url,headers={"User-Agent":"DRNAS-SAT-shortlong-2026/1.0"})
     with tempfile.TemporaryDirectory() as t:
@@ -53,6 +53,7 @@ def download_and_features(case):
     # Parse standard DIMACS. Do not use official solver result in features.
     header=None
     clauses=0
+    pending=[]
     widths={2:0,3:0,4:0}
     lit_total=0; max_width=0; pos=neg=None
     for line in payload.splitlines():
@@ -68,22 +69,24 @@ def download_and_features(case):
             header=(n,m);pos=[0]*(n+1);neg=[0]*(n+1)
             continue
         if header is None:raise ValueError("missing header")
-        # Majority of original GBD instances are one clause per line.
-        # Fail closed for non-standard wrapping instead of mis-parsing.
-        vals=[int(x) for x in line.split()]
-        if not vals or vals[-1]!=0 or any(x==0 for x in vals[:-1]):
-            raise ValueError("nonstandard multiline or malformed DIMACS")
-        width=len(vals)-1
-        if width==0:raise ValueError("empty clause not supported in preflight")
-        max_width=max(max_width,width);lit_total+=width
-        if width in widths:widths[width]+=1
-        for lit in vals[:-1]:
-            v=abs(lit)
-            if v>header[0]:raise ValueError("variable out of range")
-            if lit>0:pos[v]+=1
-            else:neg[v]+=1
-        clauses+=1
-    if header is None or clauses!=header[1]:
+        # Standard DIMACS permits wrapping clauses across physical lines.
+        for word in line.split():
+            lit=int(word)
+            if lit:
+                v=abs(lit)
+                if v>header[0]:raise ValueError("variable out of range")
+                if lit>0:pos[v]+=1
+                else:neg[v]+=1
+                pending.append(lit)
+            else:
+                width=len(pending)
+                if width==0:raise ValueError("empty clause not supported in preflight")
+                max_width=max(max_width,width);lit_total+=width
+                if width in widths:widths[width]+=1
+                clauses+=1
+                if clauses>header[1]:raise ValueError("excess clauses")
+                pending.clear()
+    if header is None or clauses!=header[1] or pending:
         raise ValueError("invalid clause count")
     n,m=header
     active=[i for i in range(1,n+1) if pos[i]+neg[i]>0]
@@ -101,6 +104,7 @@ def download_and_features(case):
       "four_frac":round(widths[4]/m,8),
       "polarity_imbalance":round(imbalance,8),
       "majority_coverage":round(majority/len(active),8)}
+    if save_to is not None:Path(save_to).write_bytes(payload)
     return {"id":case,"source_url":url,"sha256":digest.hexdigest(),
             "cnf_bytes":unpacked,"variables":n,"clauses":m,
             "max_width":max_width,"features":features}
