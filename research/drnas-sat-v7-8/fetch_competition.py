@@ -22,8 +22,8 @@ def main(args):
     for group in ("pilot","holdout"):
         items=spec[group]
         if group=="holdout":
-            items=[c for idx,c in enumerate(items) if idx%args.shards==args.shard]
-        elif args.pilot_only is False:
+            items=[] if args.pilot_only else [c for idx,c in enumerate(items) if idx%args.shards==args.shard]
+        elif not args.pilot_only:
             items=[]
         target=root/group
         target.mkdir(parents=True,exist_ok=True)
