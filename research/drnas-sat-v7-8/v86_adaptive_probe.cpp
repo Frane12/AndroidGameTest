@@ -192,6 +192,8 @@ int main(int argc,char **argv) {
             a.observer_connected=true;
         } else if(mode=="adaptive_two_checkpoint") {
             a=ablation(f,"adaptive_two_checkpoint",true,seed);
+        } else if(mode=="adaptive_two_checkpoint_no_hints") {
+            a=ablation(f,"adaptive_two_checkpoint",true,seed,false);
         } else if(mode=="hybrid_gate_with_observer") {
             a=ablation(f,"hybrid_gate",true,seed);
         } else if(mode=="old_gate_with_observer") {
