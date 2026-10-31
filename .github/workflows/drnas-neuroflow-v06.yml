@@ -1,0 +1,90 @@
+name: DRNAS NeuroFlow v0.6 multifeature heldout
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v06_*.py'
+      - '.github/workflows/drnas-neuroflow-v06.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  study-v06:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install exact reference solver
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version
+      - name: Validate older NeuroFlow and DRNAS exactness
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+      - name: Exhaustive equivalence tests and multi-feature policy smoke test
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          from itertools import product
+          import random
+          from drnas_np_lab import normalize,check
+          from nf_v06_multifeature import signature,run,build_model,FEATURE_NAMES
+          rng=random.Random(1632)
+          train=[]
+          samples=[]
+          for n in range(2,10):
+              for j in range(45):
+                  cs=normalize(n,[tuple(v if rng.randrange(2) else -v
+                      for v in rng.sample(range(1,n+1),rng.randrange(min(4,n)+1)))
+                      for _ in range(16)])
+                  expected='SAT' if any(check(cs,b) for b in product((False,True),repeat=n)) else 'UNSAT'
+                  fs=signature(n,cs)
+                  assert len(fs.vector)==len(FEATURE_NAMES)
+                  for v in ('base','always','v05'):
+                      res=run(n,cs,v,budget=1.0)
+                      assert res.status==expected,(n,j,v,res.status,expected)
+                      if expected=='SAT':assert check(cs,res.assignment)
+                  train.append(dict(vector=fs.vector,feature_ms=fs.ms,
+                      gain_ms=(-1 if j%4==0 else .5)))
+                  samples.append((n,cs,expected))
+          model=build_model(train)
+          for n,cs,expected in samples:
+              r=run(n,cs,'learned',model,budget=1.0)
+              assert r.status==expected,(n,r.status,expected)
+              if r.status=='SAT':assert check(cs,r.assignment)
+          print(f'PASS {len(samples)} exhaustive small CNFs with four strategies')
+          print('PILOT TRAIN-ONLY SELECTOR:',model['selection'])
+          PY
+      - name: Download original SATLIB and enforce no previous data overlap
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v06_fetch.py
+          test "$(($(wc -l < nf06_train_satlib/manifest.csv)-1))" -eq 160
+          test "$(($(wc -l < nf06_holdout_satlib/manifest.csv)-1))" -eq 160
+      - name: Freeze learned multi-feature policy and benchmark on unseen cases
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v06_benchmark.py
+      - name: Print measured results and model selection
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f nf06_results/summary.csv; then cat nf06_results/summary.csv; fi
+          if test -f nf06_results/frozen_model.json; then python -c 'import json;print(json.load(open("nf06_results/frozen_model.json"))["selection"])'; fi
+      - name: Archive raw timings and source provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-neuroflow-v06-multifeature
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf06_results/
+            DRNAS_NP_Crypto_Benchmark/nf06_train_satlib/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf06_holdout_satlib/manifest.csv
+          if-no-files-found: warn
