@@ -73,7 +73,7 @@ class NeuroFlowPolicy:
         self.mode=mode
         self.probe_cap_ms=float(probe_cap_ms)
         self.recheck_every=int(recheck_every)
-        self.history=defaultdict(lambda:{'attempts':0,'hits':0,'misses':0,'cost_ms':0.0,'debt_ms':0.0,'skips':0,'cooldown':0})
+        self.history=defaultdict(lambda:{'attempts':0,'hits':0,'misses':0,'cost_ms':0.0,'debt_ms':0.0,'skips':0,'cooldown':0,'observed_net_ms':0.0,'paired':0,'loss_streak':0})
     def should_probe(self,key):
         h=self.history[key]
         if self.mode=='off':return False,'disabled'
@@ -122,6 +122,24 @@ class NeuroFlowPolicy:
             prep_ms,(time.perf_counter()-before)*1000,key,
             reason if enabled else 'skipped',reason if not enabled else '',
             base.assignment,True,base.status!='SAT' or check(clauses,base.assignment))
+    def record_paired_gain(self,key,baseline_ms,adaptive_ms):
+        """Offline A/B result: true net decision debt. Never compute baseline
+        in the critical solving path; only future policy adapts to measurements.
+        """
+        h=self.history[key]
+        gain=baseline_ms-adaptive_ms
+        h['paired']+=1
+        h['observed_net_ms']+=gain
+        if gain<0:
+            h['debt_ms']+=-gain
+            h['loss_streak']+=1
+            if h['loss_streak']>=2 and self.mode=='adaptive':
+                h['cooldown']=max(h['cooldown'],self.recheck_every)
+                h['loss_streak']=0
+        else:
+            h['debt_ms']=max(0.0,h['debt_ms']-gain)
+            h['loss_streak']=0
+
     def save(self,path):
         # No instance content or private data, only counters.
         with open(path,'w',encoding='utf-8') as f:
