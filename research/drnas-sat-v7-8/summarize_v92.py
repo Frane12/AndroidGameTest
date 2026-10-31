@@ -94,9 +94,14 @@ for case in cases:
               x["mode"] in ("orig_v76","v92_full_compat")]
         assert len(pair)==2
         if any(x["status"] not in ("SAT","UNSAT") for x in pair):continue
-        for field in ("hints","extended","second_budget","learned_delta",
-                      "threshold","active_256","stage3"):
-            if field=="stage3":continue # original and diagnostic both 0, no requirement
+        # Frozen v7.6 leaves learned_delta/threshold/active_256
+        # unrecorded on terminal stage1 SAT/UNSAT; v9.2 diagnostics do not.
+        # Compare those counters only when the original reached its gate.
+        frozen=next(x for x in pair if x["mode"]=="orig_v76")
+        check=["hints","extended","second_budget"]
+        if frozen.get("threshold","") not in ("","0"):
+            check+=["learned_delta","threshold","active_256"]
+        for field in check:
             if len({x.get(field,"") for x in pair})!=1:
                 errors.append(name+" v7.6/full-compat "+field+" mismatch")
 lines+=["","## Per-family selection and sensitivity","",
