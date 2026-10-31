@@ -1,0 +1,135 @@
+name: DRNAS SAT V7.5.1 — Matched Conflict Controls
+on:
+  push:
+    branches:
+      - research/drnas-sat-neuroflow-v7-5-controls
+    paths:
+      - research/drnas-sat-v7-5/**
+      - .github/workflows/drnas-sat-neuroflow-v751-controls.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-neuroflow-v751-controls
+  cancel-in-progress: false
+jobs:
+  native-cadical-benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [pilot, shard0, shard1, shard2, shard3, shard4, shard5, shard6, shard7]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build unchanged CaDiCaL 3.0.1 and DRNAS V7.5 native C++
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-5/v75_single.cpp \
+            cadical-src/build/libcadical.a -o v75_single -pthread -ldl -lz
+      - name: Download frozen authentic SATLIB CNFs with full SHA256 checks
+        env:
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PART" == "pilot" ]]; then
+            SHARD=0
+          else
+            SHARD=$(echo "$PART" | sed 's/^shard//')
+          fi
+          python -u research/drnas-sat-v7-4/fetch_medium.py \
+            --manifest research/drnas-sat-v7-5/frozen_v751_sources.json \
+            --outdir "$GITHUB_WORKSPACE/v75_inputs" \
+            --shard "$SHARD" --shards 8
+      - name: Run randomized paired trials with equal 12-second process cutoff
+        env:
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PART" == "pilot" ]]; then
+            GROUP=pilot
+            REPEATS=1
+          else
+            GROUP=holdout
+            REPEATS=2
+          fi
+          python -u research/drnas-sat-v7-5/benchmark.py \
+            --binary "$GITHUB_WORKSPACE/v75_single" \
+            --verification "$GITHUB_WORKSPACE/v75_inputs/source-verification.json" \
+            --group "$GROUP" --outdir "$GITHUB_WORKSPACE/v75_results" \
+            --timeout 12 --repeats "$REPEATS"
+      - name: Individual shard summary with all timeouts
+        if: success()
+        env:
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json
+          from pathlib import Path
+          s=json.loads(Path("v75_results/summary.json").read_text())
+          lines=[
+            f"# DRNAS NeuroFlow SAT V7.5.1 — {os.environ['PART']}",
+            f"Real SATLIB cases: {s['cases']}; repetitions: {s['repeats']}; "
+            f"cutoff: {s['cutoff_s']}s; PAR-2 timeout penalty included.",
+            '',
+            '| Method | PAR2 total seconds | Speedup vs plain | Solved runs |',
+            '|---|---:|---:|---:|'
+          ]
+          for name,result in s['modes'].items():
+            lines.append(f"| {name} | {result['par2_sum_case_medians_s']:.5f} | "
+                         f"{result['speedup_plain_over_mode']:.4f}x | "
+                         f"{result['solved_runs']}/{result['total_runs']} |")
+          lines.append("Pilot not part of final combined holdout. See all original CNF SHA256 and raw timings.")
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("\n".join(lines)+"\n")
+          PY
+      - name: Upload every original source verification and result row
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v751-${{ matrix.part }}-results
+          path: |
+            cadical-source-commit.txt
+            v75_inputs/source-verification.json
+            v75_results/
+          if-no-files-found: warn
+
+  combine-holdout:
+    needs: native-cadical-benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v751-shard*-results
+          path: all_shards
+          merge-multiple: false
+      - name: Aggregate ALL eight independent holdout shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-5/aggregate.py \
+            --root all_shards --out combined_v75 \
+            --repeats 2 --cutoff 12
+          cat combined_v75/research_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-SAT-V751-matched-controls-complete-results
+          path: combined_v75/
+          if-no-files-found: error
