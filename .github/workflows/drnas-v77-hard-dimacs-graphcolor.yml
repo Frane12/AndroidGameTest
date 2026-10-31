@@ -1,0 +1,98 @@
+name: DRNAS V7.7 Hard DIMACS Graph Coloring 60s CaDiCaL Kissat
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-v77-dimacs-hard-graphcolor-60s
+    paths:
+      - 'research/drnas-sat-v7-7/hard_graphcolor/**'
+      - '.github/workflows/drnas-v77-hard-dimacs-graphcolor.yml'
+permissions:
+  contents: read
+jobs:
+  hard-graph-benchmark:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        graph: [0,1,2,3,4,5,6,7,8,9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build exact same CaDiCaL 3.0.1 for baseline and unchanged DRNAS v7.7
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical_commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-7/v77_single.cpp \
+            cadical-src/build/libcadical.a -o v77_hardgraph -pthread -ldl -lz
+          test -x v77_hardgraph
+      - name: Compile unmodified independent Kissat 4.0.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          git -C kissat-src rev-parse HEAD | tee kissat_commit.txt
+          (cd kissat-src && ./configure && make -j2)
+          test -x kissat-src/build/kissat
+      - name: SHA-verify pinned original DIMACS graph and generate two k-coloring CNFs
+        env:
+          SHARD: ${{ matrix.graph }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/hard_graphcolor/prepare_graphs.py \
+            --manifest research/drnas-sat-v7-7/hard_graphcolor/frozen_graphs.json \
+            --outdir hard_graph_sources --shard "$SHARD" --shards 10
+          test -f hard_graph_sources/cases.json
+      - name: Run 5 frozen methods, same 60-second budget, 2 repeats each
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/hard_graphcolor/benchmark.py \
+            --native "$GITHUB_WORKSPACE/v77_hardgraph" \
+            --kissat "$GITHUB_WORKSPACE/kissat-src/build/kissat" \
+            --cases hard_graph_sources/cases.json \
+            --outdir results
+      - name: Preserve all original graphs, exact k-color CNF hashes and raw attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dimacs-hardgraph-shard${{ matrix.graph }}-results
+          path: |
+            cadical_commit.txt
+            kissat_commit.txt
+            hard_graph_sources/cases.json
+            results/
+          if-no-files-found: warn
+  combine:
+    needs: hard-graph-benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dimacs-hardgraph-shard*-results
+          path: all_shards
+          merge-multiple: false
+      - name: Compute exact 20-case PAR2 with graph-cluster uncertainty
+        run: |
+          python -u research/drnas-sat-v7-7/hard_graphcolor/combine.py \
+            --root all_shards --outdir hard_graph_final
+          cat hard_graph_final/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V77-Hard-DIMACS-GraphColor-60s-complete
+          path: hard_graph_final/
+          if-no-files-found: error
