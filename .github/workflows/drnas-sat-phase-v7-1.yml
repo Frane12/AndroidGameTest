@@ -1,0 +1,108 @@
+name: DRNAS SAT v7.1 Structural Phase vs CaDiCaL
+on:
+  push:
+    branches:
+      - research/drnas-sat-phase-v7-1
+    paths:
+      - research/drnas-sat-v7/**
+      - .github/workflows/drnas-sat-phase-v7-1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-phase-v7-1
+  cancel-in-progress: false
+jobs:
+  phase-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build pinned original CaDiCaL 3.0.1 API
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+      - name: Compile DRNAS V7.1 (unmodified CaDiCaL library)
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            -I cadical-src/src \
+            research/drnas-sat-v7/phase_bench.cpp \
+            cadical-src/build/libcadical.a \
+            -o phase_bench -pthread -ldl -lz
+      - name: Pilot 28 independent CNF cases, 3 runs per method
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v6/generate_instances.py \
+            --seed 20261117 --small 4 --each 4 \
+            --outdir "$GITHUB_WORKSPACE/v7_pilot"
+          ./phase_bench \
+            "$GITHUB_WORKSPACE/v7_pilot/manifest.csv" \
+            "$GITHUB_WORKSPACE/v7_pilot/measurements.csv" \
+            3 20261117
+          python research/drnas-sat-v7/summarize_phase.py \
+            --csv "$GITHUB_WORKSPACE/v7_pilot/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v7_pilot/summary.json" \
+            --seed 20261117 > v7_pilot/log_summary.txt
+      - name: Frozen holdout 208 CNF cases, 5 runs each (no selection)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v6/generate_instances.py \
+            --seed 20261119 --small 16 --each 32 \
+            --outdir "$GITHUB_WORKSPACE/v7_holdout"
+          ./phase_bench \
+            "$GITHUB_WORKSPACE/v7_holdout/manifest.csv" \
+            "$GITHUB_WORKSPACE/v7_holdout/measurements.csv" \
+            5 20261119
+          python research/drnas-sat-v7/summarize_phase.py \
+            --csv "$GITHUB_WORKSPACE/v7_holdout/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v7_holdout/summary.json" \
+            --seed 20261119 > v7_holdout/log_summary.txt
+      - name: Publish full comparison, including regressions
+        if: success()
+        run: |
+          python - <<'PY'
+          import os,json
+          from pathlib import Path
+          d=json.loads(Path('v7_holdout/summary.json').read_text())
+          lines=[
+            '# DRNAS SAT v7.1 Structural Phase (CaDiCaL 3.0.1)',
+            f"Holdout: {d['cases']} freshly seeded synthetic CNF instances; {d['repetitions']} repeats each",
+            f"Correct SAT/UNSAT: **{d['verified_agreement']}/{d['cases']}**",
+            '',
+            '| Method | Sum of case medians (ms) | Speedup vs plain | Faster individual cases |',
+            '|---|---:|---:|---:|'
+          ]
+          for key,label in [('plain','CaDiCaL 3.0.1 plain'),('majority','Occurrence majority phase'),('structural','DRNAS structural phase'),('random_phase','Random phase control')]:
+            x=d['methods'][key]
+            lines.append(f"| {label} | {x['sum_instance_medians_ms']:.4f} | {x['speedup_plain_over_method']:.4f}x | {x['faster_cases_than_plain']} |")
+          lines.extend([
+            '',
+            f"Structural hints applied in {d['phase_activity']['structural']['cases_with_nonzero_phase_hints']}/{d['cases']} cases.",
+            f"Modular components recognized in {d['phase_activity']['structural']['cases_with_structural_components']}/{d['cases']} cases.",
+            '',
+            "No clauses changed; original CaDiCaL source is unmodified. CNF loading excluded equally; analysis, solver construction, and solve included.",
+            "Synthetic benchmark only. Compare per-family JSON before scientific claims."
+          ])
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fp:fp.write('\n'.join(lines)+'\n')
+          PY
+      - name: Save all instances, input manifests, timings and summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v7-1-phase-cadical-results
+          path: |
+            cadical-source-commit.txt
+            v7_pilot/
+            v7_holdout/
+          if-no-files-found: warn
