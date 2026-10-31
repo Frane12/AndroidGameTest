@@ -1,0 +1,111 @@
+name: DRNAS SAT V7.4 Original Medium Difficulty Benchmarks
+on:
+  push:
+    branches:
+      - research/drnas-sat-real-medium-v7-4
+    paths:
+      - research/drnas-sat-v7-4/**
+      - .github/workflows/drnas-sat-real-medium-v74.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-v74-medium
+  cancel-in-progress: false
+jobs:
+  medium-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [pilot, shard0, shard1, shard2, shard3, shard4, shard5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build official unmodified CaDiCaL 3.0.1, same V7.3 code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-3/risk_single.cpp cadical-src/build/libcadical.a \
+            -o risk_single -pthread -ldl -lz
+      - name: SHA256 verify authentic original SATLIB archives, frozen selection
+        env:
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PART" == "pilot" ]]; then
+            SHARD=0
+          else
+            SHARD=$(echo "$PART" | sed 's/^shard//')
+          fi
+          python -u research/drnas-sat-v7-4/fetch_medium.py \
+            --manifest research/drnas-sat-v7-4/frozen_real_medium.json \
+            --outdir "$GITHUB_WORKSPACE/v74_inputs" \
+            --shard "$SHARD" --shards 6
+      - name: Execute V7.4 frozen pilot or independent holdout shard
+        env:
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PART" == "pilot" ]]; then
+            GROUP=pilot
+            REPEATS=1
+          else
+            GROUP=holdout
+            REPEATS=2
+          fi
+          python -u research/drnas-sat-v7-3/run_risk.py \
+            --binary "$GITHUB_WORKSPACE/risk_single" \
+            --verification "$GITHUB_WORKSPACE/v74_inputs/source-verification.json" \
+            --group "$GROUP" --outdir "$GITHUB_WORKSPACE/v74_results" \
+            --timeout 15 --repeats "$REPEATS"
+      - name: Publish full timeout-aware PAR-2 and gate activity
+        if: success()
+        env:
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v74_results/summary.json').read_text())
+          lines=[
+            f"# DRNAS SAT V7.4 — {os.environ['PART']}",
+            f"Original SATLIB authenticated SHA256, {s['cases']} cases, {s['repetitions']} repeats, "
+            f"{s['timeout_per_process_seconds']}s cutoff, PAR-2 includes every timeout.",
+            '',
+            '| Method | PAR-2 score (s) | CaDiCaL / method | Solved runs |',
+            '|---|---:|---:|---:|'
+          ]
+          for name in ('plain','majority','confidence','risk_guard','risk_strong'):
+            d=s['methods'][name]
+            lines.append(f"| {name} | {d['par2_score_s']:.4f} | {d['speed_ratio_plain_over_method']:.4f}x | "
+                         f"{d['solved_runs']}/{d['total_runs']} |")
+          lines += ['',
+            f"V7.2.1 chose phases: {s['selected_by_confidence']}/{s['cases']}; "
+            f"V7.3 chose phases: {s['selected_by_risk_guard']}/{s['cases']}.",
+            "All formulas preselected by original filename SHA256, independently of runtime.",
+            "Methods use unchanged single CaDiCaL 3.0.1 solver with optional phase suggestions.",
+            "Original file hashes and all timeout records are in the artifact; no cherry-picking."]
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+            f.write('\n'.join(lines)+'\n')
+          PY
+      - name: Preserve full source authentication and measurements including regressions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v74-${{ matrix.part }}-results
+          path: |
+            cadical-source-commit.txt
+            v74_inputs/source-verification.json
+            v74_results/
+          if-no-files-found: warn
