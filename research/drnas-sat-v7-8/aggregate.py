@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""DRNAS SAT V7.8: independently combine all frozen SATLIB and Competition
+2025 holdout shards, preserve source checks, raw paired measurements and
+observational (not fitted) Benefit Predictor feature/label table.
+"""
+import argparse,csv,json,statistics
+from pathlib import Path
+from benchmark import FIELDS,METHODS,summarize
+
+INTS={"repeat","hints","first_budget","stage1","second_budget","stage2","extended",
+      "resumed","observed","short3","short5","short8","sum_len","variables",
+      "clauses","selected","proposed"}
+FLOATS={"wall_s","native_s","short_fraction","probe_us","extension_us",
+        "resume_us","preflight_us","mean_hint_margin","strong_fraction",
+        "ternary_fraction","cutoff_s"}
+
+def read_shards(root,pattern,count):
+    paths=sorted(Path(root).glob(pattern))
+    if len(paths)!=count:
+        raise RuntimeError(f"{pattern}: expected {count} frozen shards, got {len(paths)}")
+    rows=[];source_files=set()
+    for path in paths:
+        with path.open(encoding="utf8",newline="") as f:
+            items=list(csv.DictReader(f))
+        if not items:raise RuntimeError("Empty results "+str(path))
+        for x in items:
+            key=x["case"]
+            if key in source_files and (key,path)==(None,None):
+                raise RuntimeError("Never reached")
+            row={}
+            for col in FIELDS:
+                v=x.get(col)
+                if col in INTS:v=int(v) if v not in ("",None) else None
+                elif col in FLOATS:v=float(v) if v not in ("",None) else None
+                row[col]=v
+            rows.append(row)
+    names={}
+    for path in paths:
+        with path.open(encoding="utf8",newline="") as f:
+            for row in csv.DictReader(f):
+                k=row["case"]
+                if k in names and names[k]!=str(path):
+                    raise RuntimeError("Duplicate original CNF across shards: "+k)
+                names[k]=str(path)
+    return rows
+
+def output_dataset(rows,reps,cutoff,dest):
+    dest=Path(dest)
+    dest.mkdir(parents=True,exist_ok=True)
+    info=summarize(rows,reps,cutoff)
+    info["measurement_rows"]=len(rows)
+    if len(rows)!=info["n_instances"]*reps*len(METHODS):
+        raise RuntimeError("Incomplete paired raw data")
+    (dest/"summary.json").write_text(json.dumps(info,indent=2)+"\n",encoding="utf8")
+    with (dest/"all_raw.csv").open("w",encoding="utf8",newline="") as f:
+        w=csv.DictWriter(f,fieldnames=FIELDS);w.writeheader();w.writerows(rows)
+    by={}
+    for r in rows:
+        by.setdefault(r["case"],{}).setdefault(r["method"],[]).append(r)
+    # Labels are obtained *after* evaluating the trial. NEVER use this
+    # file as a prospective test of a new predictor fitted to this data.
+    diag=[]
+    def score(trials):
+        return statistics.median(2*cutoff if x["answer"]=="TIMEOUT"
+                                 else x["wall_s"] for x in trials)
+    for name,modes in sorted(by.items()):
+        g=modes["fastpath_guided"]
+        p=modes["fastpath_plain"]
+        base=modes["plain"]
+        features=g[0]
+        diag.append({
+            "case":name,"family":g[0]["family"],"answer":g[0]["known_answer"],
+            "vars":g[0]["variables"],"clauses":g[0]["clauses"],
+            "fastpath_eligible":int(features["selected"]),
+            "mean_hint_margin":features["mean_hint_margin"],
+            "strong_fraction":features["strong_fraction"],
+            "ternary_fraction":features["ternary_fraction"],
+            "proposed_hints":features["proposed"],
+            "preflight_us_median":statistics.median(x["preflight_us"] for x in g),
+            "clause_offer_count_median":statistics.median(x["observed"] for x in g),
+            "short5_fraction_median":statistics.median(x["short_fraction"] for x in g),
+            "did_extend":int(any(x["extended"] for x in g)),
+            "plain_s":score(base),"fastpath_plain_s":score(p),
+            "fastpath_guided_s":score(g),
+            "guided_benefit_over_matched_s":score(p)-score(g),
+            "guided_speed_ratio_matched":score(p)/max(score(g),1e-12),
+        })
+    if diag:
+        with (dest/"benefit_telemetry_observational.csv").open("w",newline="",encoding="utf8") as f:
+            w=csv.DictWriter(f,fieldnames=list(diag[0]));w.writeheader();w.writerows(diag)
+    return info
+
+def write_report(results,dest):
+    lines=[
+      "# DRNAS SAT V7.8 — Fast Path and Benefit Predictor telemetry",
+      "",
+      "Both external datasets were SHA256-authenticated and selected BEFORE "
+      "running V7.8. No result is dropped due to timeout.",
+      "",
+      "## Algorithm",
+      "Static header-only gate: variables >= 180, clauses >= 800, "
+      "and 3.9 <= clauses/variables <= 4.4. Ineligible cases call untouched "
+      "CaDiCaL. Eligible cases run V7.7 quality gating, with matching "
+      "unhinted and random-sign controls paying the same feature-pass cost.",
+      "",
+      "## Separated dataset results",
+    ]
+    for name,info in results.items():
+        lines+=["",f"### {name}: {info['n_instances']} distinct formulas",
+                 f"Original solver: {info['unmodified_solver']}. "
+                 f"{info['repetitions']} repeats, {info['cutoff_s']}s cutoff. "
+                 f"{info['measurement_rows']} raw measurements.",
+                 "",
+                 "| Method | PAR2 time sum (s) | Ratio vs plain | Solved attempts | Gated CNFs |",
+                 "|---|---:|---:|---:|---:|"]
+        for mode in METHODS:
+            m=info["methods"][mode]
+            lines.append(f"| {mode} | {m['PAR2_sum_case_medians_s']:.4f} | "
+                 f"{m['speed_ratio_plain_over_method']:.4f}x | "
+                 f"{m['solved_runs']}/{m['total_runs']} | "
+                 f"{m['gated_instances']} |")
+        lines+=["", "Matched-policy contrasts (ratio >1 favors first method; "
+                  "95% bootstrap including 1 is inconclusive):"]
+        for key,c in info["contrasts"].items():
+            lo,hi=c["paired_bootstrap_95pct"]
+            lines.append(f"- {key}: {c['ratio_control_over_method']:.4f}x "
+                     f"[{lo:.4f}, {hi:.4f}], "
+                     f"{c['faster_instances']} faster / "
+                     f"{c['slower_instances']} slower instances")
+        lines+=["", "Note: this corpus must not be reused as an independent "
+                      "holdout for a predictor subsequently fitted using its "
+                      "benefit telemetry."]
+    lines+=["","## Interpretation and limitations",
+         "- Timing is measured in original subprocess wall clock, including "
+         "startup and CNF read; native microseconds exclude original CNF read.",
+         "- Source class labels checked on every solved result, and SAT models "
+         "validated independently in native code.",
+         "- Some SAT Competition 2025 families may be censored by the 12s cutoff; "
+         "always inspect solved counts and PAR2 before making acceleration claims.",
+         "- The learned-clause-length callback is a proxy, not LBD or proven clause quality.",
+         "- Telemetry is exploratory and contains counterfactual labels computed "
+         "from matched runs; it is NOT an independently evaluated predictor.",
+         "- Method names / decision branches are frozen in source, not selected "
+         "using performance results."]
+    (Path(dest)/"research_report.md").write_text("\n".join(lines)+"\n",encoding="utf8")
+    print("\n".join(lines),flush=True)
+
+if __name__=="__main__":
+    a=argparse.ArgumentParser()
+    a.add_argument("--root",required=True)
+    a.add_argument("--out",required=True)
+    x=a.parse_args()
+    out=Path(x.out);out.mkdir(parents=True,exist_ok=True)
+    specs={
+       "satlib":("drnas-v78-satlib-shard*-results/v78_results/raw.csv",5,3,12),
+       "competition2025":("drnas-v78-competition-shard*-results/v78_results/raw.csv",3,2,12)
+    }
+    result={}
+    for name,(pattern,shards,reps,cutoff) in specs.items():
+        rows=read_shards(x.root,pattern,shards)
+        result[name]=output_dataset(rows,reps,cutoff,out/name)
+    write_report(result,out)
