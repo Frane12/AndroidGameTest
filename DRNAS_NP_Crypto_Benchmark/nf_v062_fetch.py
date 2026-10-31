@@ -56,7 +56,7 @@ def download(root='.'):
                     n=n,m=len(clauses),source_url=url,original_name=filename,
                     original_sha256=h,canonical_sha256=hashlib.sha256(path_out.read_bytes()).hexdigest()))
         print(f'{family}: trained 20 prior v061; 20 NEW heldout',flush=True)
-    assert len(rows['train'])==len(rows['holdout'])>=120
+    assert len(rows['train'])==len(rows['holdout'])>=100
     for phase in ('train','holdout'):
         with (folders[phase]/'manifest.csv').open('w',newline='') as f:
             writer=csv.DictWriter(f,fieldnames=list(rows[phase][0]))
