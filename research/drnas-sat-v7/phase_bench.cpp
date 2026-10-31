@@ -66,6 +66,7 @@ std::vector<Item> read_manifest(const std::string &path){
   std::getline(ss,it.path,',');
   std::getline(ss,trash,',');std::getline(ss,trash,',');
   std::getline(ss,it.group,',');
+  while(!it.group.empty()&&(it.group.back()=='\r'||it.group.back()=='\n'))it.group.pop_back();
   if(it.id.empty()||it.path.empty())throw std::runtime_error("Bad manifest row");
   items.push_back(std::move(it));
  }
