@@ -25,7 +25,7 @@ TRACE=("stage1","stage2","v96_status64","v96_status128",
        "v90_lbd_sum_256","v90_props_256","v90_conflicts_256",
        "v90_jumpdepth_256","v90_jumps_256",
        "learned_delta","threshold","active_pre","active_256",
-       "gate_reason","hints","extended")
+       "gate_reason","hints","extended","v96_durable_predicted","vars","clauses")
 FIELDS=("id","group","sha256","rep","cap","mode","status","wall_s","error")+TRACE
 def hash_file(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def dump(p,x):Path(p).write_text(json.dumps(x,indent=2,sort_keys=True)+"\n")
@@ -142,12 +142,27 @@ def runner(args):
                         lines=[x for x in proc.stdout.splitlines()
                                  if x.startswith("DRNAS_CAUSAL\t")]
                         if len(lines)!=1:raise RuntimeError("Missing result record")
-                        data=dict(x.split("=",1) for x in lines[0].split("\t")[1:])
+                        early=[x for x in proc.stdout.splitlines()
+                                  if x.startswith("DRNAS_EARLY\t")]
+                        if mode.startswith("v96_") and len(early)!=1:
+                            raise RuntimeError("Missing early checkpoint trace")
+                        if early:
+                            data.update(x.split("=",1) for x in early[0].split("\t")[1:])
+                        data.update(x.split("=",1) for x in lines[0].split("\t")[1:])
                         if data["mode"]!=mode:raise RuntimeError("Mode mismatch")
                         status=data["answer"]
                         if status!=c["official_label"]:
                             raise RuntimeError("SAT/UNSAT contradicts official verified label")
-                    except subprocess.TimeoutExpired:status="TIMEOUT";sec=cap
+                    except subprocess.TimeoutExpired as exc:
+                        status="TIMEOUT";sec=cap
+                        raw=exc.stdout or b""
+                        if isinstance(raw,bytes):raw=raw.decode("utf-8","replace")
+                        early=[x for x in raw.splitlines()
+                               if x.startswith("DRNAS_EARLY\t")]
+                        if early:
+                            data.update(x.split("=",1) for x in early[-1].split("\t")[1:])
+                        print("V96_TIMEOUT_EARLY",ident[:10],mode,
+                              "captured",bool(early),flush=True)
                     except Exception as exc:
                         status="ERROR";sec=time.monotonic()-begin;error=str(exc)
                         problems.append(ident+" "+mode+" "+error)

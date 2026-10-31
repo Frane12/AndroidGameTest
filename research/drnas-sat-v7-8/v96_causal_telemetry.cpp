@@ -238,6 +238,44 @@ static Audit ablation(const Formula &f,const std::string &policy,
     a.offered=obs.observed;
     a.short5=obs.short5;
     a.short_fraction=a.offered?double(a.short5)/a.offered:0.;
+    // Flush BEFORE any unrestricted continuation: timeouts must retain
+    // the first 64/128/256-conflict trace. Same output for every V96 arm.
+    if(v96) {
+        const bool durable=(a.active_256>0 && a.learned_delta>=a.threshold);
+        std::cout<<"DRNAS_EARLY\tmode="<<policy
+                 <<"\tstage1="<<a.stage1
+                 <<"\tv96_status64="<<a.v96_status64
+                 <<"\tv96_status128="<<a.v96_status128
+                 <<"\tv96_c64="<<a.v96_c64
+                 <<"\tv96_c128="<<a.v96_c128
+                 <<"\tv96_lbd2_64="<<a.v96_lbd2_64
+                 <<"\tv96_lbd2_128="<<a.v96_lbd2_128
+                 <<"\tv96_lbd4_64="<<a.v96_lbd4_64
+                 <<"\tv96_lbd4_128="<<a.v96_lbd4_128
+                 <<"\tv96_props64="<<a.v96_props64
+                 <<"\tv96_props128="<<a.v96_props128
+                 <<"\tv96_jump64="<<a.v96_jump64
+                 <<"\tv96_jump128="<<a.v96_jump128
+                 <<"\tv96_learn64="<<a.v96_learn64
+                 <<"\tv96_learn128="<<a.v96_learn128
+                 <<"\tv90_learned_256="<<a.v90_learned_256
+                 <<"\tv90_lbd2_256="<<a.v90_lbd2_256
+                 <<"\tv90_lbd4_256="<<a.v90_lbd4_256
+                 <<"\tv90_lbd_sum_256="<<a.v90_lbd_sum_256
+                 <<"\tv90_props_256="<<a.v90_props_256
+                 <<"\tv90_conflicts_256="<<a.v90_conflicts_256
+                 <<"\tv90_jumpdepth_256="<<a.v90_jumpdepth_256
+                 <<"\tv90_jumps_256="<<a.v90_jumps_256
+                 <<"\tlearned_delta="<<a.learned_delta
+                 <<"\tthreshold="<<a.threshold
+                 <<"\tactive_pre="<<a.active_pre
+                 <<"\tactive_256="<<a.active_256
+                 <<"\thints="<<a.hints
+                 <<"\tvars="<<f.vars
+                 <<"\tclauses="<<f.clauses.size()
+                 <<"\tv96_durable_predicted="<<int(durable)
+                 <<std::endl;
+    }
     if(a.stage1==0) {
         if(v96) {
             const bool durable=a.active_256>0 && a.learned_delta>=a.threshold;
