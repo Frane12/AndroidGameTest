@@ -1,0 +1,104 @@
+name: DRNAS SAT V7.2.1 vs REAL SAT Competition 2025
+on:
+  push:
+    branches:
+      - research/drnas-sat-real-2025-v7-2-1
+    paths:
+      - research/drnas-sat-real-2025/**
+      - .github/workflows/drnas-sat-real-2025.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-real-2025
+  cancel-in-progress: false
+jobs:
+  real-cnf-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile original CaDiCaL v3.0.1, unmodified
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+      - name: Compile single-instance adapter over exact V7.2.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+             research/drnas-sat-real-2025/real_single.cpp \
+             cadical-src/build/libcadical.a -o real_single -pthread -ldl -lz
+          test -x real_single
+      - name: Download original SAT Competition 2025 CNFs and verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-real-2025/fetch_benchmarks.py \
+            --manifest research/drnas-sat-real-2025/frozen_sources.json \
+            --outdir "$GITHUB_WORKSPACE/real2025_inputs"
+      - name: Pilot (4 real, separate source families)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-real-2025/run_real.py \
+            --binary "$GITHUB_WORKSPACE/real_single" \
+            --verification "$GITHUB_WORKSPACE/real2025_inputs/source-verification.json" \
+            --group pilot --outdir "$GITHUB_WORKSPACE/real2025_pilot" \
+            --timeout 6 --repeats 2
+      - name: Predeclared holdout, 32 authentic families, 5 methods, 2 reps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-real-2025/run_real.py \
+            --binary "$GITHUB_WORKSPACE/real_single" \
+            --verification "$GITHUB_WORKSPACE/real2025_inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/real2025_holdout" \
+            --timeout 6 --repeats 2
+      - name: Publish actual results including timeouts
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('real2025_holdout/summary.json').read_text())
+          lines=[
+            '# DRNAS V7.2.1 vs real SAT Competition 2025 benchmarks',
+            'All 32 original external CNFs were SHA-256 verified; none generated or changed.',
+            f"Total {s['cases']} cases, {s['repetitions']} repetitions, timeout {s['timeout_per_process_seconds']}s per solver/case.",
+            '',
+            '| Method | PAR-2 score (s) | PAR-2 speed ratio | Solved runs | Faster cases |',
+            '|---|---:|---:|---:|---:|'
+          ]
+          for m in ['plain','majority','selective','confidence','confidence_random']:
+            r=s['methods'][m]
+            lines.append(f"| {m} | {r['par2_score_s']:.3f} | {r['speed_ratio_plain_over_method']:.3f}x | {r['solved_runs']}/{r['total_runs']} | {r['faster_cases_par2']} |")
+          lines += [
+            '',
+            f"Old V7.2 selected {s['selected_by_old_gate']}/{s['cases']}; confidence gate selected {s['selected_by_confidence']}/{s['cases']}.",
+            f"Mean confidence gate time: {s['selector_gate_us_mean']:.3f} microseconds.",
+            'PAR-2 timeouts cost 2x6s. Do not omit timed-out runs.',
+            'Preselected 32 compact SAT Competition 2025 families; not a full competition leaderboard.',
+            'Model verified for SAT, known GBD label compared for SAT/UNSAT. See raw.csv for every run.'
+          ]
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - name: Save source verification, cases, measurement and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-real-2025-v721-all-results
+          path: |
+            cadical-source-commit.txt
+            real2025_inputs/source-verification.json
+            real2025_pilot/
+            real2025_holdout/
+          if-no-files-found: warn
