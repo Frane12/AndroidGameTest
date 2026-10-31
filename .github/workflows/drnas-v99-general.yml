@@ -1,0 +1,55 @@
+name: DRNAS SAT V9.9 general routing
+on:
+  push:
+    branches: [experiment/drnas-sat-v99-general-20261031]
+    paths: ['research/drnas-sat-v9-9/**', '.github/workflows/drnas-v99-general.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile with pinned CaDiCaL 3.0.1
+        run: |
+          git clone -q --depth 1 -b rel-3.0.1 https://github.com/arminbiere/cadical cadical
+          test "$(git -C cadical rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical
+          (cd cadical && ./configure && make -j2 >build.log)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Icadical/src research/drnas-sat-v9-9/general.cpp cadical/build/libcadical.a -o drnas-sat -pthread -ldl -lz
+      - name: Check all routes against brute force
+        run: python3 research/drnas-sat-v9-9/check.py ./drnas-sat
+      - name: Paired test on 100 generated CNFs in five families
+        run: |
+          python3 research/drnas-sat-v9-9/benchmark.py ./drnas-sat results
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-v99-linux-x86_64-and-metrics
+          path: |
+            drnas-sat
+            results
+  replay:
+    runs-on: ubuntu-24.04
+    needs: validate
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v99-linux-x86_64-and-metrics
+      - name: Same-core comparison on three SHA-pinned SAT Competition 2026 inputs
+        run: |
+          chmod +x drnas-sat
+          python3 research/drnas-sat-v9-9/official_replay.py ./drnas-sat
+          cat official.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-v99-known-2026-replay
+          path: official.md
