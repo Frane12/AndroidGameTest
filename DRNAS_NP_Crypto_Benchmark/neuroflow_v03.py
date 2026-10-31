@@ -31,7 +31,9 @@ def profile(n, clauses):
     signed_bucket=int(4*positive/max(1,literal_count))
     lengths=(sum(len(c)==2 for c in clauses),sum(len(c)==3 for c in clauses),sum(len(c)>3 for c in clauses))
     dom=lengths.index(max(lengths))
-    return f"d{int(m/max(n,1)>=3)}-k{dom}-p{signed_bucket}"
+    density=m/max(n,1)
+    size_tier=0 if n<40 else (1 if n<80 else 2)
+    return f"d{int(density*2)}-n{size_tier}-k{dom}-p{signed_bucket}"
 
 def renamable_horn(n, clauses, probe_deadline=None, max_pairs=200000):
     """Exact polynomial 2-SAT recognition of Horn after variable polarity flips.
