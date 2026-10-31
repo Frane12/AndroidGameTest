@@ -140,7 +140,7 @@ def main():
                     "Time-outs right-censored; do not report them as a measured maximum completion time",
                     "All variants share same locally instrumented CaDiCaL build and same runner",
                     "SAT results native-witness-checked, UNSAT agrees with official labels; no independent UNSAT proof",
-                    "Some methods and heuristics explored previously: no claim of novelty/world record"]}
+                    "Some methods and heuristics explored previously: no claim of novelty/world record"]
     }
     Path("official_shortlong_prediction.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
     lines=["# DRNAS SAT — official 2026 CNF short / long / static prediction benchmark","",
