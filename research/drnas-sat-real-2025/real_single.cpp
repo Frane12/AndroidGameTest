@@ -11,6 +11,15 @@ int main(int argc, char **argv) {
             return 2;
         }
         const std::string method(argv[1]);
+        if(method=="features") {
+            const auto f=read_cnf(argv[2]);
+            const auto old=fast_gate(f);
+            const auto fresh=confidence_gate(f);
+            std::cout<<"DRNAS_FEATURES\t"<<(old.selected?1:0)<<"\t"<<(fresh.selected?1:0)
+                     <<"\t"<<std::setprecision(12)<<fresh.analysis_us
+                     <<"\t"<<fresh.pair_reuse<<"\t"<<f.vars<<"\t"<<f.clauses.size()<<"\n";
+            return 0;
+        }
         if (method != "plain" && method != "majority" &&
             method != "selective" && method != "confidence" &&
             method != "confidence_random") {
