@@ -1,0 +1,150 @@
+name: DRNAS NeuroFlow frozen train-test pilot
+on:
+  push:
+    paths:
+      - '.github/workflows/drnas-neuroflow-frozen-pilot.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install official CryptoMiniSat 5 for label audit
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+      - name: Regression tests for exact SAT behavior
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+      - name: Fetch original SATLIB160, verify canonical DIMACS
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python fetch_satlib.py --dir external_cases
+      - name: Strict heldout training versus testing (do not update frozen model)
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          import csv,random,time,statistics,json,subprocess
+          from pathlib import Path
+          from collections import defaultdict
+          from drnas_np_lab import read_dimacs,solve,solve_horn,check
+          from neuroflow_v03 import renamable_horn
+          from benchmark_neuroflow_v03 import control
+          out=Path('frozen_pilot_results');out.mkdir(exist_ok=True)
+          allrows=list(csv.DictReader(open('external_cases/manifest.csv')))
+          families=['uf20-91','uf50-218','uuf50-218','flat30-60']
+          src=defaultdict(list)
+          for r in allrows:src[r['family']].append(r)
+          def make(indices):
+              cases=[]
+              for fam in families:
+                  for idx in indices:
+                      row=src[fam][idx]
+                      p=Path('external_cases')/(row['case_id']+'.cnf')
+                      n,cnf=read_dimacs(p)
+                      cases.append((row['case_id'],fam,n,cnf,row['expected'],p))
+              return cases
+          train=make(range(5));test=make(range(5,10))
+          for n in (30,60,100):
+              for i in range(6):
+                  for stage,prefix,dest in [('train',720010,train),('test',830020,test)]:
+                      sat=i%2==0
+                      dest.append((stage+'-horn-'+str(n)+'-'+str(i),'constructed',n,
+                                   control(n,prefix+100*n+i,sat),'SAT' if sat else 'UNSAT',None))
+          assert len(train)==len(test)==38
+          assert not ({r[0] for r in train}&{r[0] for r in test})
+          def signature(n,clauses):
+              total=0;minors=0;counts=[[0,0] for _ in range(n)]
+              for c in clauses:
+                  for x in c:
+                      total+=1;counts[abs(x)-1][int(x>0)]+=1
+              minors=sum(min(a,b) for a,b in counts)
+              density=len(clauses)/max(1,n)
+              return 'n'+str(int(n>=45)+int(n>=90))+':d'+str(int(density>=3.6)+int(density>=4.8))+':b'+str(int(minors/max(1,total)>=.18)+int(minors/max(1,total)>=.28))
+          def run(n,cnf,probe):
+              start=time.perf_counter();recognized=False;probe_ms=0.
+              if probe:
+                  before=time.perf_counter()
+                  candidate,reason,pairs=renamable_horn(n,cnf,probe_deadline=before+.022)
+                  probe_ms=(time.perf_counter()-before)*1000
+                  if candidate is not None:
+                      recognized=True
+                      flips,transformed=candidate
+                      status,model=solve_horn(n,transformed)
+                      if model is not None:model=[bool(a)^bool(b) for a,b in zip(model,flips)]
+                  else:
+                      r=solve(n,cnf,budget=max(.0001,1.5-(time.perf_counter()-start)))
+                      status,model=r.status,r.assignment
+              else:
+                  r=solve(n,cnf,budget=1.5)
+                  status,model=r.status,r.assignment
+              if status=='SAT':assert model is not None and check(cnf,model)
+              return status,(time.perf_counter()-start)*1000,recognized,probe_ms
+          # Frozen policy learned only from these training cases.
+          samples=defaultdict(list)
+          for cid,fam,n,cnf,expected,p in train:
+              a=run(n,cnf,False);b=run(n,cnf,True)
+              assert a[0]==b[0]==expected,(cid,a,b)
+              samples[signature(n,cnf)].append((a[1]-b[1],b[2]))
+          policy={}
+          for key,vals in samples.items():
+              gains=[v[0] for v in vals]
+              positive=sum(g>.22 for g in gains)
+              recognition=sum(v[1] for v in vals)
+              policy[key]=(len(vals)>=3 and recognition/len(vals)>=.60 and
+                            positive/len(vals)>=.60 and statistics.median(gains)>.22)
+          (out/'frozen_model.json').write_text(json.dumps(dict(train_only=True,policy=policy,
+               sample_count={k:len(v) for k,v in samples.items()}),indent=2))
+          print('TRAIN',len(train),'enabled',sum(policy.values()),flush=True)
+          rows=[]
+          for cid,fam,n,cnf,expected,p in test:
+              if p:
+                  cmd=['cryptominisat5','--verb','0',str(p)]
+                  cms=subprocess.run(cmd,capture_output=True,text=True,timeout=3)
+                  cms_status='UNSAT' if 's UNSATISFIABLE' in cms.stdout else 'SAT' if 's SATISFIABLE' in cms.stdout else 'ERROR'
+                  assert cms_status==expected,(cid,cms_status,expected)
+              for rep in range(2):
+                  times={}
+                  for method in (['base','always','learned'] if rep==0 else ['learned','always','base']):
+                      tt=time.perf_counter()
+                      selected=(policy.get(signature(n,cnf),False) if method=='learned' else method=='always')
+                      decision_ms=(time.perf_counter()-tt)*1000 if method=='learned' else 0
+                      r=run(n,cnf,selected)
+                      assert r[0]==expected,(cid,method,r,expected)
+                      times[method]=r[1]+decision_ms
+                  rows.append(dict(case_id=cid,family=fam,repeat=rep,n=n,
+                      base_ms=round(times['base'],4),always_ms=round(times['always'],4),
+                      learned_ms=round(times['learned'],4),selected=policy.get(signature(n,cnf),False)))
+          with (out/'results.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+          summary=[]
+          for fam in sorted(set(r['family'] for r in rows)):
+              v=[r for r in rows if r['family']==fam]
+              gains=[r['base_ms']-r['learned_ms'] for r in v]
+              summary.append(dict(family=fam,cases=len(v)//2,
+                   base_median_ms=round(statistics.median(r['base_ms'] for r in v),3),
+                   always_median_ms=round(statistics.median(r['always_ms'] for r in v),3),
+                   learned_median_ms=round(statistics.median(r['learned_ms'] for r in v),3),
+                   paired_learned_gain_median_ms=round(statistics.median(gains),3),
+                   learned_wins=sum(g>0 for g in gains),selected=sum(r['selected'] for r in v)//2))
+          with (out/'summary.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(summary[0]));w.writeheader();w.writerows(summary)
+          print('FROZEN HELDOUT SUMMARY',flush=True)
+          for r in summary:print(json.dumps(r),flush=True)
+          (out/'limitations.txt').write_text('38 training and 38 heldout cases; original 160 SATLIB corpus was studied before this run. SATLIB train and test source files disjoint by case-id and seeded fixed ordering; original Horn controls have disjoint train/test seeds. 1 train measurement and 2 test repeats. No on-test learning. No P vs NP claim.')
+          PY
+      - name: Upload full A/B data and frozen model
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-neuroflow-v04-frozen-pilot
+          path: DRNAS_NP_Crypto_Benchmark/frozen_pilot_results/
+          if-no-files-found: warn
