@@ -150,9 +150,12 @@ for x in matched:
         "%.2fx"%ratio if ratio is not None else "n/a",
         "DRNAS faster (same HW)" if x["stronger_same_hardware"] else "Not confirmed"))
 lines+=["",
- "Numerically faster on SAME CPU against the corresponding 2026 champion: "+
+ "Numerically faster on SAME CPU against the corresponding 2026 champion (both solve 3/3): "+
  str(report["numeric_faster_same_cpu"])+"/5.",
- "By at least 1.25x on SAME CPU: "+str(report["large_win_same_cpu"])+"/5.",
+ "By at least 1.25x on SAME CPU with both solvers finished 3/3: "+str(report["large_win_same_cpu"])+"/5.",
+ "Additional instances where DRNAS solved 3/3 but champion timed out 3/3: "+
+ str(sum(x["best_drnas"]["solved"]==3 and x["matched_competitor"]["solved"]==0 for x in matched))+"/5.",
+ "These timeout-only advantages cannot be assigned finite speedup ratios.",
  "",
  "## Full 7-case aggregate including two UNSAT controls",
  "| Solver | Solved/21 | Mean per-case PAR2 s (lower better) |",
@@ -162,7 +165,7 @@ for mode in MODES:
     lines.append("| %s | %d/21 | %.4f |"%(mode,t["solved"],t["mean_PAR2"]))
 lines+=["",
  "## Individual outcomes (all candidates and UNSAT controls)",
- "| Formula | Official answer | CaDiCaL | DRNAS 96 | DRNAS 128 | MergeSAT-L | MergeSAT | Kissat-MAB-EAE2 | Kissat-LR-DS | official CaDiCaL3 |",
+ "| Formula | Official answer | DRNAS 96 | DRNAS 128 | Plain CaDiCaL | MergeSAT-L | MergeSAT | Kissat-MAB-EAE2 | Kissat-LR-DS | official CaDiCaL3 |",
  "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
 for x in sorted(per.values(),key=lambda x:x["id"]):
     lines.append("| %s | %s | "%(x["id"][:12],x["label"])+
