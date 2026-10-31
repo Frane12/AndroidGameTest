@@ -62,7 +62,9 @@ def read_dimacs(path):
     terms, clauses = [], []
     for raw in Path(path).read_text(encoding='utf-8').splitlines():
         line = raw.strip()
-        if not line or line.startswith('c') or line.startswith('%'):
+        if line.startswith('%'):
+            break  # SATLIB DIMACS EOF; trailing standalone 0 must NOT create empty clause
+        if not line or line.startswith('c'):
             continue
         if line.startswith('p'):
             parts = line.split()
