@@ -53,5 +53,20 @@ def validate_masked():
             assert r.status==family,(family,v,r)
             assert r.resolved_pairs>=k and r.interface==3
     print("PASS: 8 camouflaged parity systems")
+
+def validate_satlib_eof():
+    """SATLIB original files end with a percent terminator and trailing zero."""
+    import tempfile
+    from pathlib import Path
+    from drnas_np_lab import read_dimacs
+    with tempfile.TemporaryDirectory() as d:
+        p=Path(d)/'original.cnf'
+        p.write_text('c SATLIB original suffix\\np cnf 2 1\\n1 2 0\\n%\\n0\\n')
+        n, clauses=read_dimacs(p)
+        assert n==2 and clauses==[(1,2)], (n,clauses)
+        assert solve(n,clauses,budget=1).status=='SAT'
+    print('PASS: SATLIB percent EOF does not inject an empty clause')
+
 if __name__=="__main__":
+    validate_satlib_eof()
     validate_rewriting();validate_solver();validate_masked()
