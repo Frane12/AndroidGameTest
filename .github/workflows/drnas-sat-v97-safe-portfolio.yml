@@ -1,0 +1,112 @@
+name: DRNAS SAT V9.7 — Safe Dual-Core Prediction 24 New SATLIB
+on:
+  push:
+    branches: [experiment/drnas-sat-v97-safe-portfolio-20261031]
+    paths: ['.github/workflows/drnas-sat-v97-safe-portfolio.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: v97 safe predictor shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-OFFICIAL-SATLIB-225-250-FULL-AUDIT
+          run-id: 41231448657
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: previous_satlib
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v96-shard-*
+          run-id: 41236688021
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior_v96
+      - name: Freeze source integrity, compile unchanged V9.2 against instrumented CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v96_predictive_holdout.py \
+            research/drnas-sat-v7-8/v97_guarded_portfolio.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('research/drnas-sat-v7-7/v77_single.cpp')
+          src=p.read_text();marker="\nint main(int argc,char**argv) {"
+          assert src.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(src.split(marker,1)[0]+"\n")
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/v97-build.log 2>&1) || { tail -120 /tmp/v97-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v92_early_structural.cpp \
+            cadical-src/build/libcadical.a -o v92_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Original V9.6 audit from immutable saved results
+        if: matrix.shard == 0
+        shell: bash
+        run: |
+          python3 -u research/drnas-sat-v7-8/v97_guarded_portfolio.py audit-v96 \
+            --source previous_satlib --prior prior_v96
+      - name: Frozen zero-lookahead V9.7; 6 new CNFs × 3 repeats × 6 modes
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v97_guarded_portfolio.py bench \
+            --source previous_satlib --prior prior_v96 --shard "$SHARD" \
+            --out results --exe ./v92_probe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v97-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    name: Full V9.7 432-trial PAR2 and regret audit
+    needs: benchmark
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v97-shard-*
+          path: combined-v97
+      - name: Fail closed on missing / wrong status, aggregate portfolio regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v97_guarded_portfolio.py audit \
+            --source combined-v97 --out audit-v97
+          cat audit-v97/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V97-SAFE-PORTFOLIO-24-DISJOINT-432-TRIAL-AUDIT
+          path: |
+            combined-v97/
+            audit-v97/
+          if-no-files-found: warn
