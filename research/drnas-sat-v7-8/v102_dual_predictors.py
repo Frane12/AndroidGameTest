@@ -189,7 +189,7 @@ def markdown(report):
              "Two replays are merged into ONE independent case-level observation.",
              "Benefit = phase PAR2 advantage >=1s; risk = plain timeout in BOTH 18s trials.",
              "Scores >=0.65 predict YES; <=0.35 predict NO; otherwise ABSTAIN.",
-             "All thresholds fixed before examining V10.1 held-out outcomes.",
+             "Thresholds fixed in V10.2 code before audit; some V10.1 outcomes were already inspected.",
              "", "This is **retrospective** external evaluation, not a blind or official record.",
              "All eight 2025 evaluation CNFs appeared in older V7.2.1 work.",
              ""]
