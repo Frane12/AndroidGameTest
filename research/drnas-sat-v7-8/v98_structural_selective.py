@@ -237,8 +237,8 @@ def audit(args):
         for mode,mean in s["mean_PAR2"].items():
             lines.append(f"| {mode} | {mean:.4f} |")
         lines.append("")
-    lines += ["Fresh matches: phase-durable minus V9.8 selector PAR2 = "
-              str(report["match_phase_minus_selector_PAR2_s"])+" seconds",
+    lines += ["External matches: phase-durable minus V9.8 selector PAR2 = "
+              + str(report["match_phase_minus_selector_PAR2_s"]) + " seconds",
               f"wins/losses/ties = {report['match_wins']}/{report['match_losses']}/{report['match_ties']}",
               "", "## Individual CNFs", ""]
     for c in details:
