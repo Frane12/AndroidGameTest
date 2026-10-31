@@ -25,13 +25,13 @@ static Outcome75 solve75(const Formula& f, const std::string& mode, uint32_t see
     Outcome75 o;
     const bool plain=(mode=="plain");
     const bool full=(mode=="majority");
-    const bool segmented=(mode=="split_plain256");
-    const bool guided=(mode=="guided256" || mode=="guided1024" || mode=="random256");
+    const bool segmented=(mode=="split_plain256" || mode=="split_plain1024");
+    const bool guided=(mode=="guided256" || mode=="guided1024" || mode=="random256" || mode=="random1024");
     if(!plain&&!full&&!segmented&&!guided)
         throw std::runtime_error("Unknown mode "+mode);
     Hints hints;
     if(full||guided) {
-        add_phase_hints(f,hints,mode=="random256",seed);
+        add_phase_hints(f,hints,mode=="random256" || mode=="random1024",seed);
         o.hint_us=hints.analysis_us;
         o.proposed=(int)hints.literals.size();
         for(int lit:hints.literals) solver.phase(lit);
@@ -39,7 +39,7 @@ static Outcome75 solve75(const Formula& f, const std::string& mode, uint32_t see
     if(plain||full) {
         o.status=solver.solve();
     }else {
-        o.probe_limit=(mode=="guided1024")?1024:256;
+        o.probe_limit=(mode=="guided1024" || mode=="split_plain1024" || mode=="random1024")?1024:256;
         // This limit is for the NEXT solve() only; it is reset afterward.
         if(!solver.limit("conflicts",o.probe_limit))
             throw std::runtime_error("Unsupported CaDiCaL conflicts limit");
