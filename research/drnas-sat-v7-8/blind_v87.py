@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Prospective unseen synthetic SAT family holdout. No tuning on these cases.
+Frozen DRNAS v7.6 and v8.0 source; compare four modes on identical CNFs and CPU.
+"""
+import csv, hashlib, itertools, json, math, os, random, statistics, subprocess, time, sys
+from selector_v87 import get_features, predict
+from collections import defaultdict
+from pathlib import Path
+
+OUT=Path("blind-v87-results")/("shard-"+os.environ.get("SHARD","0"))
+CAP=3.0
+REPEATS=3
+MODES=("ca_plain","orig_v76_plain","orig_v76","adaptive_select")
+EXPERIMENT="drnas-blind-v87-20261031-50-untouched-seeds-v1"
+SPECS=[("random3",n) for n in (173,185,197,209,221,233,245,257,269,281)]
+SPECS += [("random4",n) for n in (103,113,123,133,143,153,163,173,183,193)]
+SPECS += [("color3",n) for n in (188,218,248,278,308,338,368,398,428,458)]
+SPECS += [("xor3",n) for n in (168,198,228,258,288,318,348,378,408,438)]
+SPECS += [("pigeonhole",n) for n in (6,7,8,9,10,11,12,13,14,15)]
+
+def random3(n,rng):
+    m=round(n*4.26)
+    rows=[]
+    for _ in range(m):
+        vs=rng.sample(range(1,n+1),3)
+        rows.append([v if rng.randrange(2) else -v for v in vs])
+    return n,rows,"unknown"
+
+def random4(n,rng):
+    rows=[]
+    for _ in range(round(n*9.88)):
+        vs=rng.sample(range(1,n+1),4)
+        rows.append([v if rng.randrange(2) else -v for v in vs])
+    return n,rows,"unknown"
+
+def color3(n,rng):
+    # Random unplanted G(n,4.7/n) near 3-colorability transition.
+    rows=[]
+    for i in range(n):
+        vs=[i*3+j+1 for j in range(3)]
+        rows.append(vs)
+        for a,b in itertools.combinations(vs,2):
+            rows.append([-a,-b])
+    for i in range(n):
+        for j in range(i+1,n):
+            if rng.random()<4.7/n:
+                for color in range(3):
+                    rows.append([-(i*3+color+1),-(j*3+color+1)])
+    return 3*n,rows,"unknown"
+
+def xor3(n,rng):
+    rows=[]
+    # Random parity checks (3-XORSAT) with overlap and hidden variable relabeling.
+    for _ in range(n+12):
+        vs=rng.sample(range(1,n+1),3)
+        parity=rng.randrange(2)
+        for bits in itertools.product((0,1),repeat=3):
+            if sum(bits)%2!=parity:
+                rows.append([(-v if bit else v) for v,bit in zip(vs,bits)])
+    return n,rows,"unknown"
+
+def pigeonhole(n,rng):
+    h=n-1; rows=[]
+    var=lambda p,j: p*h+j+1
+    for p in range(n):
+        rows.append([var(p,j) for j in range(h)])
+        for j,k in itertools.combinations(range(h),2):
+            rows.append([-var(p,j),-var(p,k)])
+    for j in range(h):
+        for p,q in itertools.combinations(range(n),2):
+            rows.append([-var(p,j),-var(q,j)])
+    return n*h,rows,"UNSAT-by-pigeonhole-principle"
+
+def make_case(family,n):
+    seed=int(hashlib.sha256((EXPERIMENT+":"+family+":"+str(n)).encode()).hexdigest()[:16],16)
+    rng=random.Random(seed)
+    nv,rows,known={"random3":random3,"random4":random4,"color3":color3,"xor3":xor3,"pigeonhole":pigeonhole}[family](n,rng)
+    # Blinded variable labels, randomized polarity, and clause order.
+    perm=list(range(1,nv+1)); rng.shuffle(perm)
+    flips=[rng.choice((-1,1)) for _ in range(nv)]
+    rows=[[int(math.copysign(1,lit))*perm[abs(lit)-1]*flips[abs(lit)-1]
+           for lit in clause] for clause in rows]
+    rng.shuffle(rows)
+    path=OUT/(family+"-"+str(n)+".cnf")
+    path.write_text("p cnf %d %d\n"%(nv,len(rows))+
+                    "".join(" ".join(map(str,row))+" 0\n" for row in rows))
+    return {"family":family,"size":n,"vars":nv,"clauses":len(rows),
+            "cnf":str(path),"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
+            "known_truth":known,"generator_seed":seed}
+
+def execute(case,mode,rep):
+    cnf=Path(case["cnf"])
+    if hashlib.sha256(cnf.read_bytes()).hexdigest()!=case["sha256"]:
+        raise RuntimeError("input mutated "+str(cnf))
+    seed=(830031+rep*527+int(case["sha256"][:8],16))%(2**32)
+    start=time.perf_counter()
+    selected=mode
+    if mode=="adaptive_select":
+        selected=predict(MODEL,get_features(cnf))
+    remaining=max(0.001,CAP-(time.perf_counter()-start))
+    try:
+        p=subprocess.run(["./v80_hybrid_probe",selected,str(cnf),str(seed)],
+            capture_output=True,text=True,timeout=remaining,check=False)
+    except subprocess.TimeoutExpired:
+        return {"status":"TIMEOUT","wall_s":CAP,"seed":seed,"selected_mode":selected}
+    wall=time.perf_counter()-start
+    if p.returncode!=0:
+        return {"status":"ERROR","wall_s":wall,"seed":seed,"selected_mode":selected,
+                "error":("rc="+str(p.returncode)+" "+p.stderr[-300:])}
+    lines=[x for x in p.stdout.splitlines() if x.startswith("DRNAS_CAUSAL\t")]
+    if len(lines)!=1:
+        return {"status":"ERROR","wall_s":wall,"seed":seed,"selected_mode":selected,"error":"bad output"}
+    d={}
+    for part in lines[0].split("\t")[1:]:
+        k,v=part.split("=",1);d[k]=v
+    if d.get("mode")!=selected:
+        return {"status":"ERROR","wall_s":wall,"seed":seed,"selected_mode":selected,"error":"wrong reported solver mode"}
+    result={"status":d["answer"],"wall_s":wall,"seed":seed,"selected_mode":selected}
+    for key in ("hints","learned_delta","threshold","offered","short_fraction",
+                "extended","gate_reason","active_256","resume_us","probe_us","extension_us"):
+        result[key]=d.get(key,"")
+    return result
+
+def main():
+    global MODEL
+    MODEL_PATH=Path("v87-model/model.json")
+    MODEL=json.loads(MODEL_PATH.read_text())
+    if MODEL["training_case_count"]!=40 or MODEL["train_source_run"]!=41224588277:
+        raise RuntimeError("Unexpected selector training source")
+    model_sha=hashlib.sha256(MODEL_PATH.read_bytes()).hexdigest()
+    OUT.mkdir(exist_ok=True)
+    affinity=os.sched_getaffinity(0)
+    os.sched_setaffinity(0,{min(affinity)})
+    manifest=[make_case(*item) for i,item in enumerate(SPECS) if i%5==int(os.environ.get("SHARD","0"))]
+    assert len(manifest)==10
+    (OUT/"manifest.json").write_text(json.dumps({"version":EXPERIMENT,
+        "cap_s":CAP,"repeats":REPEATS,"modes":MODES,"selector_sha256":model_sha,"selector_model":MODEL,"cases":manifest},indent=2))
+    rows=[]
+    fields=["family","size","case","sha256","mode","repeat","status","wall_s",
+            "seed","selected_mode","error","hints","learned_delta","threshold","offered",
+            "short_fraction","extended","gate_reason","active_256","resume_us",
+            "probe_us","extension_us"]
+    with (OUT/"raw.csv").open("w",newline="") as f:
+        w=csv.DictWriter(f,fields);w.writeheader()
+        for case in manifest:
+            for rep in range(REPEATS):
+                order=list(MODES)
+                random.Random(case["generator_seed"]+rep*941).shuffle(order)
+                for mode in order:
+                    result=execute(case,mode,rep)
+                    row=dict(family=case["family"],size=case["size"],
+                        case=Path(case["cnf"]).stem,sha256=case["sha256"],
+                        mode=mode,repeat=rep,**result)
+                    rows.append(row);w.writerow(row);f.flush()
+                    print("BLINDV86",row["case"],rep,mode,"selected",result.get("selected_mode",""),result["status"],
+                          round(result["wall_s"],5),"extended",result.get("extended",""),
+                          "learned",result.get("learned_delta",""),flush=True)
+    lines=["# DRNAS v8.7: 50 out-of-sample synthetic cases, shard "+os.environ.get("SHARD","0"), "",
+      "Frozen DRNAS v7.6 and unchanged CaDiCaL; selector trained ONLY on v8.5 hashes and never retrained here.",
+      "Three paired repeats per case, one CPU, 3 s per attempt, frozen solvers.",
+      "50 newly seeded CNFs in five families, split into five shards; family types/scales follow v8.5 development. Not a world record.",
+      "SAT witnesses are checked by the native C++ checker; UNSAT from random/xor cases lacks independent certificate.",
+      "", "| Case | CaDiCaL plain | DRNAS v7.6 no hints | v7.6 guided | v8.6 selector | v7.6 speedup | Hint effect (plain/guided) |",
+      "|---|---:|---:|---:|---:|---:|"]
+    family_results=defaultdict(list)
+    good_pair=[]
+    discrepancies=[]
+    for case in manifest:
+        name=Path(case["cnf"]).stem
+        these=[row for row in rows if row["case"]==name]
+        solved={x["status"] for x in these if x["status"] in ("SAT","UNSAT")}
+        if len(solved)>1:discrepancies.append(name)
+        if case["known_truth"]=="SAT-by-construction" and "UNSAT" in solved:discrepancies.append(name+" incorrect UNSAT")
+        if case["known_truth"].startswith("UNSAT") and "SAT" in solved:discrepancies.append(name+" incorrect SAT")
+        m={}
+        for mode in MODES:
+            block=[x for x in these if x["mode"]==mode]
+            assert len(block)==REPEATS
+            val=statistics.median(x["wall_s"] if x["status"] in ("SAT","UNSAT") else CAP*2 for x in block)
+            m[mode]=(val,sum(x["status"] in ("SAT","UNSAT") for x in block))
+        both=(m["ca_plain"][1]==REPEATS and m["orig_v76"][1]==REPEATS)
+        # Predeclared 50 ms threshold: micro timings do not support strong ratios.
+        measurable=both and m["ca_plain"][0]>=0.05
+        ratio=m["ca_plain"][0]/m["orig_v76"][0] if measurable else None
+        if ratio is not None:
+            family_results[case["family"]].append(ratio);good_pair.append((name,ratio))
+        fmt=lambda mode:"%.4f s (%d/%d)"%(m[mode][0],m[mode][1],REPEATS)
+        lines.append("| "+name+" | "+" | ".join(fmt(mode) for mode in MODES)+
+                     " | "+("%.2fx"%ratio if ratio is not None else "not measurable")+" | "+
+                     ("%.2fx"%(m["orig_v76_plain"][0]/m["orig_v76"][0]) if m["orig_v76_plain"][1]==REPEATS and m["orig_v76"][1]==REPEATS and m["ca_plain"][0]>=0.05 else "n/a")+" |")
+    lines.extend(["", "## Predeclared interpretation", "",
+     "Only paired fully solved cases with CaDiCaL baseline >=0.05 s count toward timing ratios. Hint effect controls for checkpoint stages.",
+     "A win means >1.25x; a loss means <0.8x; otherwise inconclusive. Timeouts are not wins. 3 repeats are not proof of statistical significance.",
+     "PAR2 uses 6 s for each timeout in the table. Family summaries are descriptive only.",
+     ""])
+    for family in sorted(set(c["family"] for c in manifest)):
+        ratios=family_results[family]
+        lines.append("- "+family+": "+str(len(ratios))+"/"+str(sum(c["family"]==family for c in manifest))+" measurable; "+
+           ("median baseline/v7.6 "+("%.3f"%statistics.median(ratios))+"x; "+
+            str(sum(r>1.25 for r in ratios))+" wins, "+
+            str(sum(r<0.8 for r in ratios))+" losses" if ratios else "no measurable paired cases"))
+    lines.append("")
+    lines.append("Contradictions: "+(str(discrepancies) if discrepancies else "none detected; UNSAT certificates not checked"))
+    lines.append("Selector has never used this test set for fitting. See full aggregate for out-of-sample performance.")
+    (OUT/"summary.md").write_text("\n".join(lines)+"\n")
+    with open(os.environ.get("GITHUB_STEP_SUMMARY",str(OUT/"actions_summary.md")),"a") as f:
+        f.write("\n".join(lines)+"\n")
+    print("\n".join(lines),flush=True)
+    if any(x["status"]=="ERROR" for x in rows) or discrepancies:
+        raise RuntimeError("Errors/contradictions; inspect raw rows")
+if __name__=="__main__":
+    main()
