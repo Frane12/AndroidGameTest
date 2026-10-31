@@ -1,0 +1,155 @@
+name: DRNAS SAT V7.6 Adaptive NeuroFlow Learned-Clause Yield
+on:
+  push:
+    branches:
+      - research/drnas-sat-neuroflow-v7-6
+    paths:
+      - research/drnas-sat-v7-6/**
+      - .github/workflows/drnas-sat-neuroflow-v76.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-v76-adaptive
+  cancel-in-progress: false
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile original CaDiCaL 3.0.1 and V7.6 with full errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-6/v76_single.cpp \
+            cadical-src/build/libcadical.a -o v76_single -pthread -ldl -lz
+      - name: Verify public SATLIB source hashes and identify five pilot cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-4/fetch_medium.py \
+            --manifest research/drnas-sat-v7-6/frozen_v76_sources.json \
+            --outdir "$GITHUB_WORKSPACE/v76_inputs" --shard 0 --shards 8
+      - name: Pilot tests source, correctness, learned-clause API and checkpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-6/benchmark.py \
+            --binary "$GITHUB_WORKSPACE/v76_single" \
+            --verification "$GITHUB_WORKSPACE/v76_inputs/source-verification.json" \
+            --group pilot --outdir "$GITHUB_WORKSPACE/v76_pilot" \
+            --timeout 12 --repeats 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-v76-pilot-results
+          path: |
+            cadical-source-commit.txt
+            v76_inputs/source-verification.json
+            v76_pilot/
+          if-no-files-found: warn
+
+  prospective-holdout:
+    needs: pilot
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build identical official CaDiCaL 3.0.1 and frozen V7.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-6/v76_single.cpp \
+            cadical-src/build/libcadical.a -o v76_single -pthread -ldl -lz
+      - name: Authenticate authentic frozen SATLIB CNFs (no replacing outliers)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-4/fetch_medium.py \
+            --manifest research/drnas-sat-v7-6/frozen_v76_sources.json \
+            --outdir "$GITHUB_WORKSPACE/v76_inputs" \
+            --shard ${{ matrix.shard }} --shards 8
+      - name: Run V7.6 adaptive vs matching controls on new holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-6/benchmark.py \
+            --binary "$GITHUB_WORKSPACE/v76_single" \
+            --verification "$GITHUB_WORKSPACE/v76_inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/v76_results" \
+            --timeout 12 --repeats 2
+      - name: Per-shard results, including PAR-2 timeouts
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v76_results/summary.json').read_text())
+          lines=[
+            f"## DRNAS V7.6 — {s['cases']} authentic held-out CNFs, 2 repeats, 12s cutoff",
+            '',
+            '| Mode | PAR2 (s) | Speed ratio vs plain | Solved runs | Extended cases |',
+            '|---|---:|---:|---:|---:|']
+          for key,v in s['modes'].items():
+            lines.append(f"| {key} | {v['par2_sum_case_medians_s']:.4f} | "
+                         f"{v['speedup_plain_over_mode']:.4f}x | "
+                         f"{v['solved_runs']}/{v['total_runs']} | {v['extended_cases']} |")
+          lines+=['','Learned-clause 256-conflict cutoff fixed before holdout; no tuning on these cases.']
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-v76-shard${{ matrix.shard }}-results
+          path: |
+            cadical-source-commit.txt
+            v76_inputs/source-verification.json
+            v76_results/
+          if-no-files-found: warn
+
+  combine:
+    needs: prospective-holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v76-shard*-results
+          path: all_shards
+          merge-multiple: false
+      - name: Combine ALL new holdout CNFs and compare matched adaptive control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-6/aggregate.py \
+            --root all_shards --out combined_v76 --repeats 2 --cutoff 12
+          cat combined_v76/research_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-SAT-V76-complete-adaptive-scientific-results
+          path: combined_v76/
+          if-no-files-found: error
