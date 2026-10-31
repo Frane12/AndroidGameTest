@@ -1,0 +1,64 @@
+name: DRNAS SAT V10.4 - SHA Disjoint Structural Router Audit
+
+on:
+  push:
+    branches: [experiment/drnas-sat-v104-structural-router-audit-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v104-router-audit.yml'
+      - 'research/drnas-sat-v7-8/v104_frozen_router_audit.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify V10.4 script syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v104_frozen_router_audit.py
+      - name: Fetch immutable completed V10.3 audit, no new measurements
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V103-new-CNF-locked-router-audit
+          run-id: 41249978820
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: v103
+      - name: Fetch immutable completed V11 audit
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V11-Unseen-2026-Holdout-Audit
+          run-id: 41250184539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: v11
+      - name: Verify frozen inputs unchanged
+        run: |
+          set -euo pipefail
+          (cd v103/frozen && sha256sum -c v103_manifest.sha256)
+          (cd v11/frozen && sha256sum -c v11_manifest.sha256)
+          test -f v103/combined/v103-shard-5/results/rows.json
+          test -f v11/combined/v11-shard-9/results/rows.json
+      - name: Audit 120 V10.3 CV and 12 SHA-disjoint V11 cases
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v104_frozen_router_audit.py \
+            --v103 v103 --v11 v11 --out v104-results
+          cat v104-results/v104_report.md >> "$GITHUB_STEP_SUMMARY"
+          sha256sum v104-results/* > v104-results.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V104-Structural-Router-Disjoint-Audit
+          path: |
+            v104-results/
+            v104-results.sha256
+          if-no-files-found: warn
