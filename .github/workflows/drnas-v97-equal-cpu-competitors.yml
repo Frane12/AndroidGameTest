@@ -1,0 +1,146 @@
+name: DRNAS V9.7 — Equal GitHub CPU vs Five Official 2026 Champions
+on:
+  push:
+    branches: [experiment/drnas-sat-v97-official-competitors-same-hardware-20261031]
+    paths: ['.github/workflows/drnas-v97-equal-cpu-competitors.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    runs-on: ubuntu-24.04
+    name: same-core-official-${{ matrix.shard }}
+    timeout-minutes: 34
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41232668762
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: manifests/old
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          run-id: 41237911915
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: manifests/new
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v97-compiled-official-*
+          run-id: 41239258943
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: official_bins
+      - name: Validate original competition executable SHA and build DRNAS Single96/128
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s manifests/old/official_v94_manifest.json
+          test -s manifests/new/official_v96_manifest.json
+          echo "OFFICIAL_BINARY_LAYOUT"
+          find official_bins -maxdepth 3 -type f | head -35
+          (cd official_bins && sha256sum -c bins/*.sha256)
+          for exe in mergesat-l mergesat kissat-mab-eae2 kissat-lr-ds cadical3; do
+            test -s "official_bins/bins/$exe"
+            chmod +x "official_bins/bins/$exe"
+          done
+          python3 -m py_compile research/drnas-sat-v7-8/v97_equal_hardware_run.py research/drnas-sat-v7-8/v97_equal_hardware_audit.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("research/drnas-sat-v7-7/v77_single.cpp").read_text()
+          marker="\nint main(int argc,char**argv) {"
+          assert src.count(marker)==1
+          Path("research/drnas-sat-v7-7/v77_embedded_functions.inc").write_text(src.split(marker,1)[0]+"\n")
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/v97-ca.log 2>&1) || {
+            tail -120 /tmp/v97-ca.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v96_single_checkpoint_grid.cpp \
+            cadical-src/build/libcadical.a -o v97_comparison -pthread -ldl -lz
+          sha256sum v97_comparison
+          echo "p cnf 1 1" > /tmp/v97-trivial.cnf
+          echo "1 0" >> /tmp/v97-trivial.cnf
+          for solver in mergesat-l mergesat kissat-mab-eae2 kissat-lr-ds cadical3; do
+            rc=0
+            timeout 10 "official_bins/bins/$solver" /tmp/v97-trivial.cnf >"/tmp/v97-$solver-out" 2>&1 || rc=$?
+            echo "OFFICIAL_COMPETITOR_SMOKE $solver rc=$rc"
+            tail -4 "/tmp/v97-$solver-out" || true
+            if test "$rc" != 10; then echo "INVALID_OFFICIAL_BINARY_$solver"; exit 1; fi
+          done
+          lscpu > cpu.txt
+      - name: Run SAME CPU official champion binaries against DRNAS for 5 candidates + 2 UNSAT
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v97_equal_hardware_run.py \
+            --shard "$SHARD" --output results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v97-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    needs: test
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41232668762
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: manifests/old
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          run-id: 41237911915
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: manifests/new
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v97-shard-*
+          path: v97-results
+      - name: Audit all 168 attempts, compare against actual submitted 2026 world best solver, case by case
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv \
+            -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 -u research/drnas-sat-v7-8/v97_equal_hardware_audit.py
+          cat v97-results/v97_final_audit.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v97-same-hardware-exact-official-2026-champions-record-audit
+          path: v97-results
+          if-no-files-found: warn
