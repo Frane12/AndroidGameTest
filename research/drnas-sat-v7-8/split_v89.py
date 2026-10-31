@@ -48,7 +48,9 @@ def specs(split):
     for family in FAMILIES:
         if family=="pigeonhole":
             for i,(holes,extra) in enumerate(PIGEON_PAIRS):
-                if i%2==(0 if split=="train" else 1):
+                # Checkerboard split: every hole count and surplus level
+                # occurs in BOTH splits, but no exact (holes,surplus) pair does.
+                if ((i//4)+(i%4))%2==(0 if split=="train" else 1):
                     result.append((family,holes,extra))
         else:
             for size in SIZES[family]:
