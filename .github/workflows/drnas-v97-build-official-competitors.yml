@@ -1,0 +1,73 @@
+name: DRNAS V9.7 — Build Five Exact Official 2026 Main Track Competitors
+on:
+  push:
+    branches: [experiment/drnas-sat-v97-official-competitors-same-hardware-20261031]
+    paths: ['.github/workflows/drnas-v97-build-official-competitors.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: mergesat-l, author: zhenwei}
+          - {target: mergesat, author: zhenwei}
+          - {target: kissat-mab-eae2, author: ding}
+          - {target: kissat-lr-ds, author: liang}
+          - {target: cadical3, author: biere}
+    name: build-official-${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v97-official-competitor-source-metadata
+          run-id: 41239150088
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: archives
+      - name: Build exact official author submission and record source/build hashes
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          AUTHOR: ${{ matrix.author }}
+        run: |
+          set -euo pipefail
+          mkdir -p official bins
+          test -s "archives/$AUTHOR.tar.xz"
+          sha256sum "archives/$AUTHOR.tar.xz"
+          tar -xf "archives/$AUTHOR.tar.xz" -C official --no-same-owner --no-same-permissions
+          src="official/$AUTHOR/$TARGET/src"
+          test -f "$src/build.sh"
+          echo "SOURCE_BUILD_SCRIPT:"
+          sed -n '1,125p' "$src/build.sh"
+          echo "SOURCE_RUN_SCRIPT:"
+          sed -n '1,95p' "$src/run.sh" || true
+          echo "PREBUILT EXECUTABLE CANDIDATES:"
+          find "$src" -maxdepth 5 -type f -executable | grep -E '/(kissat|mergesat|cadical|solver)(-[^/]*)?$' | head -20 || true
+          echo "START_BUILD"
+          (cd "$src"; timeout 420 bash ./build.sh >"$GITHUB_WORKSPACE/build-$TARGET.log" 2>&1) || {
+            echo "BUILD_FAILURE_TAIL"; tail -100 "build-$TARGET.log"; exit 1; }
+          tail -30 "build-$TARGET.log"
+          echo "EXECUTABLES_AFTER_BUILD:"
+          find "$src" -maxdepth 7 -type f -executable | grep -E '/(kissat|mergesat|cadical|solver)(-[^/]*)?$' | head -40 || true
+          found="$(find "$src" -maxdepth 7 -type f -executable | grep -E '/(kissat|mergesat|cadical|solver)(-[^/]*)?$' | grep -v '/test/' | head -1 || true)"
+          test -n "$found"
+          cp "$found" "bins/$TARGET"
+          chmod +x "bins/$TARGET"
+          sha256sum "bins/$TARGET" > "bins/$TARGET.sha256"
+          echo "BUILT_SUBMISSION=$TARGET FROM=$found"
+          cat "bins/$TARGET.sha256"
+          file "bins/$TARGET"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-v97-compiled-official-${{ matrix.target }}
+          path: |
+            bins/
+            build-*.log
+          if-no-files-found: warn
