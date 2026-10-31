@@ -29,7 +29,7 @@ def prior_cases():
         assert x['fetch_status']=='READY'
         path=ROOT/'nf063_external'/(x['case_id']+'.cnf')
         assert hashlib.sha256(path.read_bytes()).hexdigest()==x['canonical_sha256']
-        cases.append(dict(id=x['case_id'],family=x['source_group'],sha=x['original_sha256'],path=path))
+        cases.append(dict(id=x['case_id'],family=x['source_group'],sha=x['source_sha256'],path=path))
     for x in read_csv(ROOT/'nf091_holdout/manifest.csv'):
         path=ROOT/'nf091_holdout'/(x['id']+'.cnf')
         assert hashlib.sha256(path.read_bytes()).hexdigest()==x['canonical_sha256']
