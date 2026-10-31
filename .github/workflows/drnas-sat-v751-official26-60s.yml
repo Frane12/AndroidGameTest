@@ -1,0 +1,117 @@
+name: DRNAS SAT V7.5.1 official Competition 2026 60s PAR2
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-sat-v751-official26-60s
+    paths:
+      - 'research/drnas-sat-v7-5/official26_v751_*.py'
+      - '.github/workflows/drnas-sat-v751-official26-60s.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  authentic-official-2026:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        part: [0,1,2,3,4,5,6,7,8,9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build UNMODIFIED CaDiCaL 3.0.1 plus exact DRNAS SAT v7.5.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-301-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            -I cadical-src/src research/drnas-sat-v7-5/v75_single.cpp \
+            cadical-src/build/libcadical.a -o v751_official -pthread -ldl -lz
+          file v751_official
+      - name: Retrieve EXACT previous official source manifest (run 41204322891)
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-satcomp2026-official-instance-mini-par2
+          run-id: 41204322891
+          github-token: ${{ github.token }}
+          path: frozen_prev
+      - name: Fetch two SAME original official 2026 CNFs with SHA256 verification
+        env:
+          SHARD: ${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-5/official26_v751_fetch.py \
+            --previous frozen_prev/satcomp26_official/source_manifest.csv \
+            --outdir v751_sc26_sources \
+            --shard "$SHARD" --shards 10
+      - name: Same 60-second limit and randomized order for EIGHT v7.5.1 methods
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-5/official26_v751_run.py \
+            --binary "$GITHUB_WORKSPACE/v751_official" \
+            --sources v751_sc26_sources/selected.json \
+            --outdir v751_sc26 \
+            --timeout 60 --repeats 2
+      - name: Show shard methods, including unsolved and timeout penalties
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v751_sc26/summary.json').read_text())
+          lines=[f"# DRNAS SAT V7.5.1 official 2026 shard {os.environ.get('SHARD','')}",
+             f"{s['cases']} official GBD cases, cutoff=60s, repeats=2; PAR2 timeout penalty=120s",
+             "| Mode | PAR2 sum (s) | Ratio vs plain | Solved runs |",
+             "|---|---:|---:|---:|"]
+          for mode,d in s['modes'].items():
+              lines.append(f"| {mode} | {d['par2_sum_case_medians_s']:.3f} | "
+                f"{d['speedup_plain_over_mode']:.4f}x | {d['solved_runs']}/{d['total_runs']} |")
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+      - name: Upload individual shard even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v751-sc26-shard${{ matrix.part }}-results
+          path: |
+            cadical-301-source-commit.txt
+            v751_sc26_sources/selected.json
+            v751_sc26/
+          if-no-files-found: warn
+  combine-official-2026:
+    needs: authentic-official-2026
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v751-sc26-shard*-results
+          path: all_shards
+          merge-multiple: false
+      - name: Aggregate ALL 20 official CNFs and all 320 V7.5.1 attempts
+        run: |
+          python -u research/drnas-sat-v7-5/official26_v751_combine.py \
+            --root all_shards --outdir combined_official_2026
+          cat combined_official_2026/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-SAT-V751-SATCOMP2026-60s-all-results
+          path: combined_official_2026/
+          if-no-files-found: error
