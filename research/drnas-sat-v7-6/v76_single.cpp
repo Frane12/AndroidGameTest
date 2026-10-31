@@ -122,6 +122,7 @@ V76 run76(const Formula &f, const std::string &method,uint32_t seed) {
     v.total_us=std::chrono::duration<double,std::micro>(Clock::now()-start).count();
     return v;
 }
+#ifndef DRNAS_V76_EMBEDDED
 int main(int argc,char **argv) {
     try {
         if(argc!=4) {
@@ -159,3 +160,5 @@ int main(int argc,char **argv) {
         return 1;
     }
 }
+
+#endif // DRNAS_V76_EMBEDDED
