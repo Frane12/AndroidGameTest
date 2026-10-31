@@ -6,9 +6,9 @@
 // clauses, >=10 short clauses (size<=5), and >=20% short fraction.
 // Otherwise unphase and continue. No solver re-creation, learnt clauses stay.
 // Predeclared rule, prospective holdout, identical callback no-hint control.
-#define main drnas_v76_unused_main
+#define DRNAS_V76_EMBEDDED
 #include "../drnas-sat-v7-6/v76_single.cpp"
-#undef main
+#undef DRNAS_V76_EMBEDDED
 
 struct ClauseSizeObserver : CaDiCaL::Learner {
     uint64_t observed=0,short3=0,short5=0,short8=0,sum_len=0;
