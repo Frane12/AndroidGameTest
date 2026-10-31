@@ -37,14 +37,14 @@ def run_process(binpath, method, path, seed, timeout):
         return {"result":"ERROR","wall_s":wall,"native_ms":None,
                 "error":"Missing or multiple machine result markers"}
     parts=hits[0].split("\t")
-    if len(parts)!=9 or parts[1]!=method or parts[2] not in ("SAT","UNSAT"):
+    if len(parts)!=10 or parts[1]!=method or parts[2] not in ("SAT","UNSAT"):
         return {"result":"ERROR","wall_s":wall,"native_ms":None,
                 "error":"Invalid machine result markers"}
     try:
         return {"result":parts[2],"wall_s":wall,"native_ms":float(parts[3])/1000,
                 "selected":int(parts[4]),"hint_count":int(parts[5]),
                 "analysis_us":float(parts[6]),"pair_reuse":float(parts[7]),
-                "variables":int(parts[8]),"clauses":None,"error":""}
+                "variables":int(parts[8]),"clauses":int(parts[9]),"error":""}
     except ValueError as exc:
         return {"result":"ERROR","wall_s":wall,"native_ms":None,"error":str(exc)}
 
