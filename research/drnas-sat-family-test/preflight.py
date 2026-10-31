@@ -51,9 +51,20 @@ def main():
     spec=json.loads(Path(args.manifest).read_text())
     root=Path(args.outdir).resolve();root.mkdir(parents=True,exist_ok=True)
     entries=[row for i,row in enumerate(spec["samples"]) if i%args.shards==args.shard]
-    outcome=dict(shard=args.shard,expected=len(entries),preflight=[])
+    outcome=dict(shard=args.shard,expected=len(entries),preflight=[],excluded_for_size=[])
     for idx,row in enumerate(entries):
-        raw,meta=download(row,spec)
+        try:
+            raw,meta=download(row,spec)
+        except RuntimeError as exc:
+            # Only predeclared size-cap exclusions are allowed here.
+            # All actual download/hash/format failures remain fatal.
+            if "exceeds preregistered cap" not in str(exc):
+                raise
+            outcome["excluded_for_size"].append(dict(
+                name=row["name"],hash=row["hash"],reason=str(exc),
+                size_cap_bytes=spec["max_plain_bytes"]))
+            print("EXCLUDED_SIZE_LIMIT "+row["name"]+" "+str(exc),flush=True)
+            continue
         target=root/(row["hash"]+".cnf")
         target.write_bytes(raw)
         outcome["preflight"].append(meta)
@@ -62,6 +73,6 @@ def main():
               f"clauses={meta['clauses']} bytes={len(raw)} "
               f"SHA256={meta['sha256']}",flush=True)
     (root/"preflight.json").write_text(json.dumps(outcome,indent=2)+"\n")
-    if len(outcome["preflight"])!=len(entries):
+    if len(outcome["preflight"])+len(outcome["excluded_for_size"])!=len(entries):
         raise RuntimeError("Incomplete preregistered source set")
 if __name__=="__main__":main()
