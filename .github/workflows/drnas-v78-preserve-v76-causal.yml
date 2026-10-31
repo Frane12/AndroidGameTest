@@ -1,0 +1,108 @@
+name: DRNAS V7.8 Preserve V7.6 SAT2026 Causal Debug
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-sat-v78-preserve-v76-causal-audit
+    paths:
+      - '.github/workflows/drnas-v78-preserve-v76-causal.yml'
+      - 'research/drnas-sat-v7-8/**'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  same-original-CNF-ablation:
+    name: causal-control (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: winning-4ae685
+            shard: 4
+            case_id: 4ae685a11b5cecca76dc3d463481ce92
+            repeats: 3
+          - name: easy-control-0c9da4
+            shard: 0
+            case_id: 0c9da400944b002f90fd385d4fdab385
+            repeats: 2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build frozen unmodified CaDiCaL 3.0.1 + original untouched v7.6/v7.7
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical_sha.txt
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp | tee frozen_v76_v77_sha256.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v78_causal_probe.cpp \
+            cadical-src/build/libcadical.a -o v78_causal_probe -pthread -ldl -lz
+          test -x v78_causal_probe
+      - name: Read original 2026 official GBD manifest from previous frozen run
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-satcomp2026-official-instance-mini-par2
+          run-id: 41204322891
+          github-token: ${{ github.token }}
+          path: previous_manifest
+      - name: Download EXACT original official 2026 CNF with pinned source SHA256
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/official26_v77_fetch.py \
+            --previous previous_manifest/satcomp26_official/source_manifest.csv \
+            --outdir original_official_sources --shard "$SHARD" --shards 10
+      - name: Measure exact v7.6, v7.7 and six causal controls, paired seeds
+        env:
+          CASE_ID: ${{ matrix.case_id }}
+          REPEATS: ${{ matrix.repeats }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/causal_benchmark.py \
+            --sources original_official_sources/selected.json \
+            --binary "$GITHUB_WORKSPACE/v78_causal_probe" \
+            --case-id "$CASE_ID" --repeats "$REPEATS" \
+            --outdir causal_results
+          cat causal_results/causal_report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve original version hashes, exact official data and complete raw A/B traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: causal-v78-${{ matrix.name }}-all-traces
+          path: |
+            cadical_sha.txt
+            frozen_v76_v77_sha256.txt
+            original_official_sources/selected.json
+            causal_results/
+          if-no-files-found: warn
+  consolidate:
+    needs: same-original-CNF-ablation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: causal-v78-*-all-traces
+          path: all_cases
+      - name: Preserve separate regression & control case; no score pooling
+        run: |
+          set -euo pipefail
+          for d in all_cases/causal-v78-*/causal_results; do
+            echo "==== $d ===="
+            cat "$d/causal_report.md"
+            echo
+            cat "$d/causal_report.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V78-V76-Preserved-Official-2026-Causal-Audit
+          path: all_cases/
+          if-no-files-found: error
