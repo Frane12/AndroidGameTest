@@ -12,9 +12,9 @@
 // Feature telemetry is OBSERVATIONAL: not a trained predictor, and a
 // single trial cannot reveal the counterfactual unguided runtime.
 
-#define main drnas_v77_benchmark_main_unused
+#define DRNAS_V77_EMBEDDED
 #include "../drnas-sat-v7-7/v77_single.cpp"
-#undef main
+#undef DRNAS_V77_EMBEDDED
 
 struct V78Features {
     bool selected=false;
