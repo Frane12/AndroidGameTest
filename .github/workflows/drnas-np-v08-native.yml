@@ -1,0 +1,124 @@
+name: DRNAS NP v0.8 native C++ CaDiCaL
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/native_v08/**'
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v08_native_benchmark.py'
+      - '.github/workflows/drnas-np-v08-native.yml'
+permissions:
+  contents: read
+jobs:
+  native-cdcl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install development library and independent SAT oracle
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcadical-dev cadical cryptominisat
+          ls -l /usr/include/cadical.hpp
+          cadical --version
+      - name: Compile native C++ in-process CaDiCaL + NeuroFlow
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            native_v08/drnas_nf08.cpp -o native_v08/drnas_nf08 \
+            -lcadical -lz -pthread
+          file native_v08/drnas_nf08
+      - name: Exhaustive small-CNF correctness of all native paths
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          import json,random,subprocess,tempfile
+          from itertools import product
+          from pathlib import Path
+          rng=random.Random(202610310800)
+          count=0;horn_count=0
+          def sat(cnf,a):
+              return all(any(a[abs(l)-1]==(l>0) for l in c) for c in cnf)
+          for n in range(1,9):
+              for j in range(35):
+                  cnf=[]
+                  for k in range(18):
+                      sz=rng.randrange(min(n,4)+1)
+                      cnf.append(tuple(x if rng.getrandbits(1) else -x
+                          for x in rng.sample(range(1,n+1),sz)))
+                  expected='SAT' if any(sat(cnf,a) for a in product((False,True),repeat=n)) else 'UNSAT'
+                  with tempfile.TemporaryDirectory() as tmp:
+                      path=Path(tmp)/'tiny.cnf'
+                      path.write_text(f'p cnf {n} {len(cnf)}\n'+''.join(
+                          ' '.join(map(str,c))+' 0\n' for c in cnf))
+                      for mode in ('base','neuro','force'):
+                          proc=subprocess.run(['./native_v08/drnas_nf08','--input',
+                              str(path),'--mode',mode,'--budget-ms','2500'],
+                              capture_output=True,text=True,timeout=5)
+                          assert proc.returncode==0,(n,j,mode,proc.stderr,proc.stdout)
+                          result=json.loads(proc.stdout)
+                          assert result['status']==expected,(n,j,mode,result,expected)
+                          if expected=='SAT':assert result['witness_valid']
+                          horn_count+=('Horn' in result['route'])
+                          count+=1
+          print('PASS',count,'exhaustively-checked native outcomes/witnesses;',
+                horn_count,'Horn routes',flush=True)
+          PY
+      - name: Verify native recognition on large renamed Horn family
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          import json,random,subprocess,tempfile
+          from pathlib import Path
+          rng=random.Random(83110);recognized=0
+          for n in (30,60,100):
+              for k in range(10):
+                  flips=[rng.randrange(2) for _ in range(n)]
+                  clauses=[]
+                  for _ in range(3*n):
+                      vs=rng.sample(range(1,n+1),3)
+                      head=rng.randrange(4)
+                      clauses.append(tuple((v if i==head else -v)*
+                          (-1 if flips[v-1] else 1) for i,v in enumerate(vs)))
+                  with tempfile.TemporaryDirectory() as temp:
+                      f=Path(temp)/'horn.cnf'
+                      f.write_text(f'p cnf {n} {len(clauses)}\n'+''.join(
+                          ' '.join(map(str,c))+' 0\n' for c in clauses))
+                      for method in ('base','neuro','force'):
+                          p=subprocess.run(['./native_v08/drnas_nf08','--mode',method,
+                              '--input',str(f)],capture_output=True,text=True,timeout=6)
+                          assert p.returncode==0,p.stderr
+                          r=json.loads(p.stdout)
+                          assert r['status']=='SAT',r
+                          if method=='force':recognized+=('Horn' in r['route'])
+          assert recognized>=25,recognized
+          print('PASS',recognized,'/30 forced renamed Horn cases',flush=True)
+          PY
+      - name: Fetch pinned independent CNF publishers
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v063_external_fetch.py
+          test "$(($(wc -l < nf063_external/manifest.csv)-1))" -eq 60
+      - name: Same-process native benchmark vs baseline with separately labelled controls
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v08_native_benchmark.py
+      - name: Print native benchmark summary and protocol
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f native_v08/results/summary.csv; then cat native_v08/results/summary.csv; fi
+          if test -f native_v08/results/protocol.json; then cat native_v08/results/protocol.json; fi
+      - name: Archive executable, results and exact source provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-np-v08-native-cadical
+          path: |
+            DRNAS_NP_Crypto_Benchmark/native_v08/drnas_nf08
+            DRNAS_NP_Crypto_Benchmark/native_v08/results/
+            DRNAS_NP_Crypto_Benchmark/nf063_external/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf063_external/source_revisions.json
+          if-no-files-found: warn
