@@ -57,7 +57,7 @@ for case in cases:
     # completed run. Only downstream hints can differ.
     all_gates=[]
     for repeat in range(REPEATS):
-        early=[r for r in rs if r["repeat"]==repeat and r["mode"] in CAUSAL]
+        early=[r for r in rs if int(r["repeat"])==repeat and r["mode"] in CAUSAL]
         assert len(early)==3
         if any(r["status"] in ("TIMEOUT","ERROR") for r in early):continue
         for key in ("v90_learned_256","v90_lbd2_256","v90_lbd_sum_256",
