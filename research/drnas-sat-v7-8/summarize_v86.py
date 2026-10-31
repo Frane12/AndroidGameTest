@@ -26,7 +26,7 @@ for shard in range(5):
     all_cases.extend(manifest["cases"])
     with (path/"raw.csv").open(newline="") as f:
         all_rows.extend(csv.DictReader(f))
-assert len(all_cases)==50 and len({c["sha256"] for c in all_cases})==40
+assert len(all_cases)==50 and len({c["sha256"] for c in all_cases})==50
 assert len(all_rows)==50*REPEATS*len(MODES)
 
 def score(rs):
