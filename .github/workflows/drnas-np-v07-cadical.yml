@@ -1,0 +1,82 @@
+name: DRNAS NP v0.7 NeuroFlow plus CaDiCaL CDCL
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v07_*.py'
+      - '.github/workflows/drnas-np-v07-cadical.yml'
+permissions:
+  contents: read
+jobs:
+  cdcl-paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install SAME real CaDiCaL CDCL backend for both arms
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical cryptominisat
+          command -v cadical
+          cadical --version
+          command -v cryptominisat5
+      - name: Regress previous mathematical solvers
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+      - name: Exhaustive tiny SAT formulas against CaDiCaL and NeuroFlow front-end
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          from itertools import product
+          import random,tempfile
+          from pathlib import Path
+          from drnas_np_lab import normalize,check
+          from nf_v07_cadical_adapter import solve,FROZEN_V062
+          rng=random.Random(2026103116)
+          for n in range(1,9):
+              for j in range(34):
+                  clauses=normalize(n,[tuple(v if rng.getrandbits(1) else -v
+                      for v in rng.sample(range(1,n+1),rng.randint(0,min(n,4))))
+                      for _ in range(12)])
+                  expected='SAT' if any(check(clauses,model)
+                            for model in product((False,True),repeat=n)) else 'UNSAT'
+                  with tempfile.TemporaryDirectory() as temp:
+                      p=Path(temp)/'test.cnf'
+                      p.write_text(f'p cnf {n} {len(clauses)}\n'+
+                          ''.join(' '.join(map(str,c))+' 0\n' for c in clauses))
+                      for mode in ('base','neuroflow','force_horn'):
+                          r=solve(p,mode,n_hint=n,budget=2.0)
+                          assert r.status==expected,(n,j,mode,r.status,expected,r.route)
+                          if r.status=='SAT':assert r.witness_valid is True
+          print('PASS 272 random CNFs x 3 modes with brute force, CaDiCaL and verified SAT witnesses')
+          PY
+      - name: Retrieve 60 independently sourced circuit, software and external SAT CNFs
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v063_external_fetch.py
+          test "$(($(wc -l < nf063_external/manifest.csv)-1))" -eq 60
+      - name: Benchmark SAME CaDiCaL backend with/without NeuroFlow (3 repeats)
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v07_cadical_benchmark.py
+      - name: Display results, exceptions and policy
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f nf07_results/summary.csv; then cat nf07_results/summary.csv; fi
+          if test -f nf07_results/protocol.json; then cat nf07_results/protocol.json; fi
+      - name: Upload measured CSV, exact policy and external source provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-np-v07-cadical-paired
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf07_results/
+            DRNAS_NP_Crypto_Benchmark/nf063_external/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf063_external/source_revisions.json
+          if-no-files-found: warn
