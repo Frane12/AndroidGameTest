@@ -10,9 +10,12 @@ from pathlib import Path
 from collections import defaultdict
 from official_shortlong_select import download_and_features,REV,SCORES_GIT_BLOB
 SALT="DRNAS-v94-official-2026-new-holdout-12-20261031-v1"
-# Six SAT / six UNSAT; official CaDiCaL runtime fast=0.5..5s,
-# mid=5..25s; runtime only affects cohort selection, not gate features.
-QUOTAS={"sat_fast":3,"unsat_fast":3,"sat_mid":3,"unsat_mid":3}
+# Revised PRE-SOLVER cohort feasibility rule. Public official reference
+# times are used ONLY to select manageable files, NEVER as model features.
+# Require SIX SAT and SIX UNSAT. Pick instances near 5s competition
+# runtime first, expand progressively to 180s only if necessary. All
+# selected cases are evaluated at our fixed 15s cap with PAR2 timeouts.
+QUOTAS={"sat":6,"unsat":6}
 SOURCE="original_manifest/official_shortlong_manifest.json"
 def main():
     scores=Path("official_scores.csv")
@@ -28,18 +31,23 @@ def main():
         if row["instanceid"] in prior_ids:continue
         if row["status"] not in ("sat-verified","unsat-verified"):continue
         sec=float(row["runtime"])
-        if sec<.5 or sec>25:continue
-        grade="fast" if sec<5 else "mid"
+        if sec<.5 or sec>180:continue
+        grade="fast" if sec<5 else ("mid" if sec<30 else "slow")
         label="sat" if row["status"]=="sat-verified" else "unsat"
-        pools[label+"_"+grade].append(dict(id=row["instanceid"],
+        pools[label].append(dict(id=row["instanceid"],
                  official_label=label.upper(),stratum=label+"_"+grade,
                  official_baseline_s=sec))
     def order(s):return hashlib.sha256((SALT+"/"+s).encode()).hexdigest()
     cases=[];attempts=[]
+    import math
     for group,quota in QUOTAS.items():
-        candidates=sorted(pools[group],key=lambda x:order(group+"/"+x["id"]))
+        # No previous DRNAS result determines this ordering.
+        # Progressive preference for official CaDiCaL median difficulty.
+        candidates=sorted(pools[group],key=lambda x:(
+            abs(math.log(x["official_baseline_s"]/5.0)),
+            order(group+"/"+x["id"])))
         for item in candidates:
-            if len([x for x in cases if x["stratum"]==group])>=quota:break
+            if len([x for x in cases if x["official_label"]==group.upper()])>=quota:break
             try:
                 data=download_and_features(item["id"])
             except Exception as e:
@@ -51,7 +59,7 @@ def main():
             attempts.append({"id":item["id"],"stratum":group,"accepted":True})
             print("V94_ACCEPT",group,item["id"],item["official_baseline_s"],
                   data["cnf_bytes"],data["sha256"],flush=True)
-        got=len([x for x in cases if x["stratum"]==group])
+        got=len([x for x in cases if x["official_label"]==group.upper()])
         if got!=quota:raise RuntimeError(f"Insufficient suitable new CNFs for {group}: {got}/{quota}")
     assert len(cases)==12 and not ({x["id"] for x in cases}&prior_ids)
     cases.sort(key=lambda x:order("schedule/"+x["id"]))
