@@ -119,7 +119,9 @@ def collect(spec,outdir, shard, shard_count):
         pilot_num=spec["pilot_per_set"][name]
         count=spec["cases_per_set"][name]
         ordered=sorted(files,key=lambda filename:digest((name+"|"+filename).encode()))
-        selected=ordered[:count]
+        offset=spec.get("selection_skip_per_set",{}).get(name,0)
+        selected=ordered[offset:offset+count]
+        if len(selected)!=count:raise RuntimeError("Insufficient fresh archive members for "+name)
         print(f"VERIFIED {name}: archive SHA256={archive['archive_sha256']} "
               f"member_count={len(files)} selected={count}",flush=True)
         report["archives"].append({"set":name,"archive_sha256":archive["archive_sha256"],"selected":count})
