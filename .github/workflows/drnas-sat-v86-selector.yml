@@ -1,0 +1,136 @@
+name: DRNAS SAT v8.6 — Frozen Structural Selector / 50 Blind CNFs
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-v86-static-selector-20261031
+    paths:
+      - '.github/workflows/drnas-sat-v86-selector.yml'
+      - 'research/drnas-sat-v7-8/selector_v86.py'
+      - 'research/drnas-sat-v7-8/blind_v86.py'
+      - 'research/drnas-sat-v7-8/summarize_v86.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train-on-v85-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch ONLY frozen preexisting v8.5 data
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v85-40-CNF-complete-fixed-aggregate
+          run-id: 41224873765
+          github-token: ${{ github.token }}
+          repository: Frane12/AndroidGameTest
+          path: train-v85
+      - name: Train compact decision stump from 40 original v8.5 CNFs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/selector_v86.py
+          python3 -u research/drnas-sat-v7-8/selector_v86.py train-v85 v86-model
+          sha256sum v86-model/model.json > v86-model/model.sha256
+          cat v86-model/training_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-v86-FROZEN-model-v85-only
+          path: v86-model/
+          if-no-files-found: error
+
+  blind-evaluation:
+    needs: train-on-v85-only
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download PRETRAINED model from same run
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v86-FROZEN-model-v85-only
+          path: v86-model
+      - name: Audit frozen native solvers and build CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/blind_v86.py research/drnas-sat-v7-8/selector_v86.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          test "$(git hash-object research/drnas-sat-v7-8/v80_hybrid_probe.cpp)" = 208c8641c311fcb0940259c4ff2bc1c1e0f23838
+          mkdir -p blind-v86-results/shard-${{ matrix.shard }}
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp research/drnas-sat-v7-8/v80_hybrid_probe.cpp > blind-v86-results/shard-${{ matrix.shard }}/source_hashes.txt
+          sha256sum v86-model/model.json > blind-v86-results/shard-${{ matrix.shard }}/model.sha256
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2 > /tmp/ca-build.log 2>&1) || { tail -90 /tmp/ca-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v80_hybrid_probe.cpp \
+            cadical-src/build/libcadical.a -o v80_hybrid_probe -pthread -ldl -lz
+          lscpu > blind-v86-results/shard-${{ matrix.shard }}/cpu.txt
+      - name: Test 10 fresh formulas x 3 repeats x 4 modes, no retuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHARD=${{ matrix.shard }} python3 -u research/drnas-sat-v7-8/blind_v86.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v86-shard-${{ matrix.shard }}
+          path: blind-v86-results/shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  evaluate-and-audit:
+    needs: [train-on-v85-only, blind-evaluation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v86-shard-*
+          path: combined-v86-temp
+      - name: Normalize shard folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p combined-v86
+          for shard in 0 1 2 3 4; do
+            test -f "combined-v86-temp/v86-shard-$shard/manifest.json"
+            mv "combined-v86-temp/v86-shard-$shard" "combined-v86/shard-$shard"
+          done
+      - name: Compute raw 50-CNF held-out aggregate with all failures included
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/summarize_v86.py
+          python3 -u research/drnas-sat-v7-8/summarize_v86.py combined-v86
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v86-held-out-complete-audit
+          path: combined-v86/
+          if-no-files-found: warn
