@@ -1,0 +1,63 @@
+name: DRNAS NeuroFlow v0.5 structural holdout
+on:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/benchmark_neuroflow_v05.py'
+      - 'DRNAS_NP_Crypto_Benchmark/neuroflow_v05_structural.py'
+      - '.github/workflows/drnas-neuroflow-v05.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install independent reference solver
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version
+      - name: Correctness and structural gate smoke tests
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+          python - <<'PY'
+          from benchmark_neuroflow_v05 import control
+          from neuroflow_v05_structural import structure,execute
+          from drnas_np_lab import check
+          for n in (30,60,100):
+              for k in ('horn_sat','horn_unsat','near_sat'):
+                  clauses=control(n,10007+n,k)
+                  for mode in ('base','always','learned'):
+                      r=execute(n,clauses,mode,threshold=.18,budget=2.0)
+                      expect='UNSAT' if k=='horn_unsat' else 'SAT'
+                      assert r['status']==expect,(n,k,mode,r)
+                      if expect=='SAT':assert check(clauses,r['model'])
+          print('PASS 27 known-outcome structural gate smoke checks')
+          PY
+      - name: Train only, freeze, and compare on 232 NEW heldout cases
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u benchmark_neuroflow_v05.py
+      - name: Print final frozen thresholds and all group summaries
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f nf05_results/frozen_policy.json; then cat nf05_results/frozen_policy.json; fi
+          if test -f nf05_results/summary.csv; then cat nf05_results/summary.csv; fi
+      - name: Save raw test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-neuroflow-v05-structural-train-holdout
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf05_results/
+          if-no-files-found: warn
