@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Final strictly prospective original GBD polynomial family validation.
 
-Requires ALL five independently frozen shards. Pilot is excluded.
+Requires ALL fifteen independently frozen single-formula shards. Pilot is excluded.
 Every original input SHA256 has been locked before *any* solver timing.
 Known SAT/UNSAT results verified for each successful run; timeouts remain
 in PAR-2 with 2x cutoff penalty. Five repeats per mode. Paired bootstrap
@@ -22,8 +22,8 @@ FLOATS={"wall_s","native_s","short_fraction","probe_us","extension_us",
 def main(args):
     root=Path(args.root)
     shards=sorted(root.glob("drnas-polynomial-holdout-shard*-results/measurements/raw.csv"))
-    if len(shards)!=5:
-        raise RuntimeError(f"Require 5 independent shards, got {len(shards)}")
+    if len(shards)!=15:
+        raise RuntimeError(f"Require 15 independent single-formula shards, got {len(shards)}")
     seen={}
     rows=[]
     for shard in shards:
