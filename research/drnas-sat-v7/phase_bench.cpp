@@ -81,7 +81,7 @@ void assert_sat_model(CaDiCaL::Solver &solver,const CNFData &f){
  for(const auto &c:f.clauses){
   bool satisfied=false;
   for(int lit:c){
-   if(solver.val(lit)>0){satisfied=true;break;}
+   if(solver.val(lit)==lit){satisfied=true;break;}
   }
   if(!satisfied)throw std::runtime_error("CaDiCaL returned invalid SAT model");
  }
