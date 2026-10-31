@@ -52,7 +52,7 @@ def main():
     assert len(train)==9 and len(test)==9
     raw=[]
     for shard in range(6):
-        path=ROOT/f"official-shard-{shard}"/"raw.csv"
+        path=ROOT/f"official-shortlong-shard-{shard}"/"results"/"raw.csv"
         with path.open(newline="",encoding="utf8") as f:raw.extend(csv.DictReader(f))
     assert len(raw)==18*2*len(CAPS)*len(MODES)*2,len(raw)
     expected={(id,cap,mode,rep) for id in items for cap in CAPS
