@@ -1,0 +1,89 @@
+name: DRNAS SAT v8.5 — 40 Fresh CNFs / 5 Shards / Matched Hint Controls
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-blind-v85-40-20261031
+    paths:
+      - '.github/workflows/drnas-sat-blind-v85.yml'
+      - 'research/drnas-sat-v7-8/blind_v85.py'
+      - 'research/drnas-sat-v7-8/summarize_v85.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  blind-holdout:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Freeze source and compile unchanged DRNAS v7.6 and v8.0 solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/blind_v85.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          test "$(git hash-object research/drnas-sat-v7-8/v80_hybrid_probe.cpp)" = 208c8641c311fcb0940259c4ff2bc1c1e0f23838
+          mkdir -p blind-v85-results/shard-${{ matrix.shard }}
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp research/drnas-sat-v7-8/v80_hybrid_probe.cpp > blind-v85-results/shard-${{ matrix.shard }}/source_hashes.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2 > /tmp/ca-build.log 2>&1) || { tail -100 /tmp/ca-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v80_hybrid_probe.cpp \
+            cadical-src/build/libcadical.a -o v80_hybrid_probe -pthread -ldl -lz
+          lscpu > blind-v85-results/shard-${{ matrix.shard }}/cpu.txt
+      - name: Run frozen solvers on 8 fixed-seed fresh CNFs in shard, 3 repeats, 3 s cap
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHARD=${{ matrix.shard }} python3 -u research/drnas-sat-v7-8/blind_v85.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-${{ matrix.shard }}
+          path: blind-v85-results/shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  consolidate:
+    needs: blind-holdout
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download all five shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          path: combined-v85
+      - name: Validate all 40 and calculate per-family matched controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/summarize_v85.py
+          python3 -u research/drnas-sat-v7-8/summarize_v85.py combined-v85
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v85-40-CNF-audit-summary
+          path: combined-v85/
+          if-no-files-found: warn
