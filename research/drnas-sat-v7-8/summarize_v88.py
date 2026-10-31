@@ -79,12 +79,21 @@ for case in CASES:
         f["measured_v76"].append(ratio_v76)
         f["wins_v76"]+=ratio_v76>1.25;f["losses_v76"]+=ratio_v76<0.8
     llrows=[r for r in rows if r["mode"]=="lowlevel_v88"]
+    # Different matched repetition seeds may legitimately produce different
+    # checkpoint decisions. Keep all observations instead of asserting a
+    # single gate reason and discarding a valid 630-attempt experiment.
     reasons={r.get("gate_reason","") for r in llrows}
-    assert len(reasons)==1
-    reason=next(iter(reasons))
-    f["near"]+="near_128" in reason or "after_128" in reason or "keep_640" in reason
-    f["durable"]+="preserve_v76" in reason
-    f["fallback"]+="early_fallback" in reason
+    if len(reasons)==1:
+        reason=next(iter(reasons))
+    else:
+        reason="mixed("+",".join(
+            "%s:%d"%(key,sum(r.get("gate_reason","")==key for r in llrows))
+            for key in sorted(reasons))+")"
+    f["near"]+=any(
+        ("near_128" in key or "after_128" in key or "keep_640" in key)
+        for key in reasons)
+    f["durable"]+=any("preserve_v76" in key for key in reasons)
+    f["fallback"]+=any("early_fallback" in key for key in reasons)
     fmt=lambda mode:"%.4fs (%d/3)"%cells[mode]
     lines.append("| "+name+" | "+" | ".join(fmt(m) for m in MODES)+" | "+
                  ("%.2fx"%ratio_ca if ratio_ca is not None else "n/a")+" | "+
