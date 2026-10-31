@@ -1,0 +1,69 @@
+name: DRNAS SAT Matched20 against 2026 best official submission
+on:
+  push:
+    branches: [experiment/drnas-sat-official-best-matched-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-matched20-best.yml'
+      - 'research/drnas-sat-v7-8/matched20_best.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  same-machine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch and verify competition submissions and the two original CNFs
+        env:
+          UPSTREAM: https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/solvers
+        run: |
+          set -eu
+          mkdir -p matched-best-results
+          for item in 'anders 5ec9be607fbf762329176beb7068d574cd528b5b' 'liang abd58ef14809f7370e54ed30f73009ae3ab50837' 'gopalan f319a320214c3ddf6542b368ac530a01a0af57d0'; do
+            read -r name expected <<< "$item"
+            curl -fsSL --retry 3 --max-time 60 "$UPSTREAM/$name.tar.xz" -o "$name.tar.xz"
+            test "$(git hash-object "$name.tar.xz")" = "$expected"
+            tar --no-same-owner -xJf "$name.tar.xz"
+          done
+          find anders liang gopalan -type f \( -name run-parsl.sh -o -name run.sh -o -name build.sh -o -name build-parsl.sh \) | tee matched-best-results/launchers.txt
+          python3 research/drnas-sat-v7-8/matched20_best.py fetch
+      - name: Verify original frozen code, prepare diagnostic and build CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile research/drnas-sat-v7-8/v80_hybrid_benchmark.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp | tee frozen_hashes.txt
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1, 'Unexpected v7.7 main signature'
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical_sha.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v80_hybrid_probe.cpp \
+            cadical-src/build/libcadical.a -o v80_hybrid_probe -pthread -ldl -lz
+          test -x v80_hybrid_probe
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+      - name: Prepare the exact competition launchers
+        run: |
+          python3 research/drnas-sat-v7-8/matched20_best.py build
+          lscpu >matched-best-results/cpu.txt
+      - name: Six solvers on two verified original CNFs, two repeats, 20 seconds per mode
+        run: python3 -u research/drnas-sat-v7-8/matched20_best.py run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-Matched20-official-best-2026
+          path: matched-best-results/
+          if-no-files-found: error
