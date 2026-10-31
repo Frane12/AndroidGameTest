@@ -107,7 +107,7 @@ def main():
         if len(observed)>1:contradictions.append(name+" conflicting SAT/UNSAT")
         if case["known_truth"].startswith("UNSAT") and "SAT" in observed:
             contradictions.append(name+" wrong SAT")
-        if case["known_truth"]=="SAT-by-construction" and "UNSAT" in observed:
+        if case["known_truth"].startswith("SAT-") and "UNSAT" in observed:
             contradictions.append(name+" wrong UNSAT on planted SAT")
         if any(r["status"]=="ERROR" for r in block):
             contradictions.append(name+" error")
@@ -141,7 +141,8 @@ def main():
             assert len(paired)==2
             if any(r["status"] in ("TIMEOUT","ERROR") for r in paired):
                 continue
-            a,b=paired
+            a=next(x for x in paired if x["mode"]=="orig_v76")
+            b=next(x for x in paired if x["mode"]=="v92_full_compat")
             # The original frozen V7.6 intentionally leaves threshold,
             # active_256 and learned_delta zero if the FIRST 256-conflict
             # solve returned SAT/UNSAT immediately. The v9.2 diagnostic
