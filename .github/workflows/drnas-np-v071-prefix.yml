@@ -1,0 +1,88 @@
+name: DRNAS NP v0.7.1 prefix-gate CaDiCaL comparison
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v071_*.py'
+      - '.github/workflows/drnas-np-v071-prefix.yml'
+permissions:
+  contents: read
+jobs:
+  prefix-cdcl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install exact same CDCL tools in all solver paths
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical cryptominisat
+          command -v cadical
+          cadical --version
+      - name: Verify original exact SAT and renamable-Horn regressions
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+      - name: Truth-table correctness across old, new and forced Horn modes
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          from itertools import product
+          import random,tempfile
+          from pathlib import Path
+          from drnas_np_lab import normalize,check
+          from nf_v071_prefix_gate import solve,sample_prefix
+          rng=random.Random(716201)
+          count=0
+          for n in range(1,9):
+              for j in range(35):
+                  cnf=normalize(n,[tuple(v if rng.randrange(2) else -v for v
+                      in rng.sample(range(1,n+1),rng.randrange(min(n,4)+1))) for _ in range(15)])
+                  truth='SAT' if any(check(cnf,a) for a in product((False,True),repeat=n)) else 'UNSAT'
+                  with tempfile.TemporaryDirectory() as t:
+                      p=Path(t)/'test.cnf'
+                      p.write_text(f'p cnf {n} {len(cnf)}\n'+
+                          ''.join(' '.join(map(str,c))+' 0\n' for c in cnf))
+                      for variant in ('base','v07','prefix','force_horn'):
+                          r=solve(p,variant,n_hint=n,budget=1.5)
+                          assert r.status==truth,(n,j,variant,truth,r.status,r.route)
+                          if truth=='SAT':assert r.witness_valid is True
+                          count+=1
+          print('PASS',count,'exhaustive paired strategy checks')
+          PY
+      - name: Source-pinned independent published CNFs with SHA256
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v063_external_fetch.py
+          test "$(($(wc -l < nf063_external/manifest.csv)-1))" -eq 60
+      - name: Paired benchmark old v0.7 vs bounded prefix vs plain CaDiCaL
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v071_benchmark.py
+          python - <<'PY'
+          import csv
+          rows=list(csv.DictReader(open('nf071_results/summary.csv')))
+          h=next(r for r in rows if r['family']=='constructed_horn_sat')
+          print('Horn SAT v071 recognized:',h['horn_recognized'])
+          # A routing-performance refactor must preserve most recognitions.
+          assert int(h['horn_recognized'])>=8,h
+          PY
+      - name: Show all actual performance and coverage results
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f nf071_results/summary.csv; then cat nf071_results/summary.csv; fi
+      - name: Archive source provenance and matched per-instance measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-np-v071-prefix-benchmark
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf071_results/
+            DRNAS_NP_Crypto_Benchmark/nf063_external/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf063_external/source_revisions.json
+          if-no-files-found: warn
