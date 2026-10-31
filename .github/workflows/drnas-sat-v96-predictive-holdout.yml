@@ -1,0 +1,97 @@
+name: DRNAS SAT V9.6 — Frozen Predictor, 24 Unscreened SATLIB Holdout
+on:
+  push:
+    branches: [experiment/drnas-sat-v96-predictive-holdout-20261031]
+    paths: ['.github/workflows/drnas-sat-v96-predictive-holdout.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  bench:
+    name: V9.6 unscreened SATLIB shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-OFFICIAL-SATLIB-225-250-FULL-AUDIT
+          repository: Frane12/AndroidGameTest
+          run-id: 41231448657
+          github-token: ${{ github.token }}
+          path: previous_satlib
+      - name: Verify frozen sources and build unchanged V9.2 solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v96_predictive_holdout.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("research/drnas-sat-v7-7/v77_single.cpp")
+          src=p.read_text();marker="\nint main(int argc,char**argv) {"
+          assert src.count(marker)==1
+          Path("research/drnas-sat-v7-7/v77_embedded_functions.inc").write_text(src.split(marker,1)[0]+"\n")
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/v96-build.log 2>&1) || { tail -80 /tmp/v96-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v92_early_structural.cpp \
+            cadical-src/build/libcadical.a -o v92_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: 6 never-screened CNFs per family, four arms, three repeats; prediction cost included
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v96_predictive_holdout.py bench \
+            --source previous_satlib --shard "$SHARD" --out results --exe ./v92_probe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v96-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    name: Fail-closed 288-attempt audit
+    runs-on: ubuntu-24.04
+    needs: bench
+    if: always()
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v96-shard-*
+          path: combined-v96
+      - name: Validate every result and write paired PAR2 report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v96_predictive_holdout.py audit \
+            --source combined-v96 --out audit-v96
+          cat audit-v96/v96_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V96-PREDICTIVE-24-UNSCREENED-FULL-REPORT
+          path: |
+            combined-v96/
+            audit-v96/
+          if-no-files-found: warn
