@@ -142,7 +142,7 @@ def main():
                     print("BLINDV85",row["case"],rep,mode,result["status"],
                           round(result["wall_s"],5),"extended",result.get("extended",""),
                           "learned",result.get("learned_delta",""),flush=True)
-    lines=["# DRNAS v8.5: 40 fresh synthetic cases, shard "+os.environ.get("SHARD","0")", "",
+    lines=["# DRNAS v8.5: 40 fresh synthetic cases, shard "+os.environ.get("SHARD","0"), "",
       "Frozen DRNAS v7.6 and v8.0 code. Newly deterministically generated formulas; source and seed hashed in manifest.",
       "Three paired repeats per case, one CPU, 3 s per attempt, frozen solvers.",
       "40 fresh formulas in five families, split into five shards; scales chosen after v8.4 exploration. Not a formal competition record.",
