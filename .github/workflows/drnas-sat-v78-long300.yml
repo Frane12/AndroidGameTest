@@ -1,0 +1,191 @@
+name: DRNAS SAT V7.8 — 300s hard CNFs and gate-matched analysis
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-v78-long300-20261031
+    paths:
+      - research/drnas-sat-v7-8/benchmark_long300.py
+      - research/drnas-sat-v7-8/aggregate_long300.py
+      - .github/workflows/drnas-sat-v78-long300.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-v78-long300-isolated
+  cancel-in-progress: false
+jobs:
+  pilot:
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [competition]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile unchanged official CaDiCaL 3.0.1 plus V7.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v78_single.cpp cadical-src/build/libcadical.a \
+            -o v78_single -pthread -ldl -lz
+      - name: SHA256 verify predeclared authentic pilot formulas
+        env:
+          SOURCE: ${{ matrix.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE" = "satlib" ]; then
+            python -u research/drnas-sat-v7-4/fetch_medium.py \
+              --manifest research/drnas-sat-v7-8/frozen_satlib_v78.json \
+              --outdir "$GITHUB_WORKSPACE/v78_inputs" --shard 0 --shards 5
+          else
+            python -u research/drnas-sat-v7-8/fetch_competition.py \
+              --manifest research/drnas-sat-v7-8/frozen_competition_v78.json \
+              --outdir "$GITHUB_WORKSPACE/v78_inputs" --shard 0 --shards 3 --pilot-only
+          fi
+      - name: Check original answer labels and V7.8 C++ output schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/benchmark_long300.py \
+            --binary "$GITHUB_WORKSPACE/v78_single" \
+            --verification "$GITHUB_WORKSPACE/v78_inputs/source-verification.json" \
+            --group pilot --outdir "$GITHUB_WORKSPACE/v78_pilot" \
+            --timeout 12 --repeats 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-v78-pilot-${{ matrix.source }}-results
+          path: |
+            cadical-source-commit.txt
+            v78_inputs/source-verification.json
+            v78_pilot/
+          if-no-files-found: warn
+
+  holdout:
+    needs: pilot
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { source: competition, shard: 0, shards: 11, repeats: 2 }
+          - { source: competition, shard: 1, shards: 11, repeats: 2 }
+          - { source: competition, shard: 2, shards: 11, repeats: 2 }
+          - { source: competition, shard: 3, shards: 11, repeats: 2 }
+          - { source: competition, shard: 4, shards: 11, repeats: 2 }
+          - { source: competition, shard: 5, shards: 11, repeats: 2 }
+          - { source: competition, shard: 6, shards: 11, repeats: 2 }
+          - { source: competition, shard: 7, shards: 11, repeats: 2 }
+          - { source: competition, shard: 8, shards: 11, repeats: 2 }
+          - { source: competition, shard: 9, shards: 11, repeats: 2 }
+          - { source: competition, shard: 10, shards: 11, repeats: 2 }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build official unmodified CaDiCaL 3.0.1 (same compiler flags)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v78_single.cpp cadical-src/build/libcadical.a \
+            -o v78_single -pthread -ldl -lz
+      - name: Verify frozen SATLIB or SAT Competition SHA256s without substitution
+        env:
+          SOURCE: ${{ matrix.source }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE" = "satlib" ]; then
+            python -u research/drnas-sat-v7-4/fetch_medium.py \
+              --manifest research/drnas-sat-v7-8/frozen_satlib_v78.json \
+              --outdir "$GITHUB_WORKSPACE/v78_inputs" \
+              --shard "$SHARD" --shards "$SHARDS"
+          else
+            python -u research/drnas-sat-v7-8/fetch_competition.py \
+              --manifest research/drnas-sat-v7-8/frozen_competition_v78.json \
+              --outdir "$GITHUB_WORKSPACE/v78_inputs" \
+              --shard "$SHARD" --shards "$SHARDS"
+          fi
+      - name: Ten-method independent V7.8 with matched controls
+        env:
+          SOURCE: ${{ matrix.source }}
+          REPEATS: ${{ matrix.repeats }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/benchmark.py \
+            --binary "$GITHUB_WORKSPACE/v78_single" \
+            --verification "$GITHUB_WORKSPACE/v78_inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/v78_results" \
+            --timeout 300 --repeats "$REPEATS"
+      - name: Show individual progress without excluding timeouts
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v78_results/summary.json').read_text())
+          lines=[f"## V7.8 holdout: {s['n_instances']} external formulas",
+                 f"Cutoff {s['cutoff_s']}s, {s['repetitions']} repetitions, PAR-2.",
+                 "","| Method | PAR2 (s) | CaDiCaL/method | Solved | Gated |",
+                 "|---|---:|---:|---:|---:|"]
+          for key,v in s['methods'].items():
+            lines.append(f"| {key} | {v['PAR2_sum_case_medians_s']:.4f} | "
+                         f"{v['speed_ratio_plain_over_method']:.4f}x | "
+                         f"{v['solved_runs']}/{v['total_runs']} | {v['gated_instances']} |")
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-v78-long300-${{ matrix.source }}-shard${{ matrix.shard }}-results
+          path: |
+            cadical-source-commit.txt
+            v78_inputs/source-verification.json
+            v78_results/
+          if-no-files-found: warn
+
+  combine:
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v78-long300-competition-shard*-results
+          path: all_shards
+          merge-multiple: false
+      - name: Validate and combine all independent SATLIB and Competition 2025 results
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-8/aggregate_long300.py \
+            --root all_shards --out combined_v78
+          cat combined_v78/research_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-SAT-V78-long300-complete-gate-matched-results
+          path: combined_v78/
+          if-no-files-found: error
