@@ -1,0 +1,111 @@
+name: DRNAS V9.9 Auto vs six SAT Competition 2026 submissions
+on:
+  push:
+    branches: [experiment/drnas-sat-v99-official-20261031]
+    paths: ['research/drnas-sat-v9-9/competition.py', '.github/workflows/drnas-v99-competition.yml']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41232668762
+          github-token: ${{ github.token }}
+          path: old
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-v96-frozen-new12-source-and-record-timings
+          run-id: 41237911915
+          github-token: ${{ github.token }}
+          path: new
+      - name: Freeze three replay and six new-to-V9.9 CNFs before solving
+        run: |
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv -o scores.csv
+          test "$(git hash-object scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 research/drnas-sat-v9-9/competition.py freeze
+      - uses: actions/upload-artifact@v4
+        with: {name: v99-2026-frozen-plan, path: plan.json}
+  compare:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        instance: [0,1,2,3,4,5,6,7,8]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: v99-2026-frozen-plan}
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v99-linux-x86_64-and-metrics
+          run-id: 41244333679
+          github-token: ${{ github.token }}
+          path: drnas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v97-compiled-official-*
+          merge-multiple: true
+          run-id: 41239258943
+          github-token: ${{ github.token }}
+          path: official
+      - uses: actions/download-artifact@v4
+        with:
+          name: v99-satsuma-iter-kissat
+          run-id: 41244749579
+          github-token: ${{ github.token }}
+          path: champion
+      - name: Prepare exact solver executables
+        run: |
+          set -eu
+          (cd official && sha256sum -c bins/*.sha256)
+          chmod +x drnas/drnas-sat official/bins/{cadical3,mergesat,mergesat-l,kissat-mab-eae2,kissat-lr-ds}
+          mkdir winner
+          tar -xzf champion/satsuma-runtime.tgz -C winner
+          cat winner/run_base.sh
+          printf '%s\n' '#!/bin/bash' 'exec "$GITHUB_WORKSPACE/winner/original-run.sh" "$1" "$2"' > winner-launch
+          chmod +x winner-launch
+          sha256sum drnas/drnas-sat winner/solver/kissat/build/kissat winner/satsuma
+      - name: Same-core paired trials, verify SAT witnesses and official labels
+        run: python3 -u research/drnas-sat-v9-9/competition.py trial ${{ matrix.instance }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v99-competition-raw-${{ matrix.instance }}
+          path: trial-*.json
+          if-no-files-found: error
+  report:
+    needs: compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: v99-2026-frozen-plan}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v99-competition-raw-*
+          merge-multiple: true
+          path: trials
+      - name: Check 126 measurements and report frozen-sample statistics
+        run: |
+          python3 research/drnas-sat-v9-9/competition.py audit
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V99-vs-official-2026-final
+          path: |
+            plan.json
+            results.csv
+            summary.md
