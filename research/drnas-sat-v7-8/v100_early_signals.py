@@ -70,65 +70,47 @@ def gates(t):
     }
 
 def freeze(args):
-    older=json.loads(Path(args.v96).read_text())
+    # V10 preflight feasibility repair. The 2026 scoreboard candidate pool was
+    # mostly beyond the fixed 96-MiB runner cap. Instead use independently
+    # verified 2025 archival source hashes EXCLUDING six cases in V9.8.
+    # No V10 solver result was run before this change.
+    old=json.loads(Path(args.v96).read_text())
+    v98=json.loads(Path(args.v98).read_text())
+    source=json.loads(Path(args.source2025).read_text())
     known=[]
     for prefix in KNOWN_PREFIXES:
-        candidates=[x for x in older["known_diagnostic"] if x["id"].startswith(prefix)]
-        assert len(candidates)==1,prefix
-        known.append({**candidates[0],"group":"known_2026_diagnostic"})
-    excluded=set(older["prior_54_excluded"])
-    excluded|={x["id"] for x in older["new_prospective"]}
-    excluded|={x["id"] for x in older["known_diagnostic"]}
-    assert len(excluded)==66,len(excluded)
-    with Path(args.scores).open(newline="",encoding="utf8") as f:
-        records=[x for x in csv.DictReader(f) if x["solverid"]=="biere_cadical3[main]"]
-    assert len(records)==400
-    # Selection repair BEFORE any V10 solver timings: original SAT_fast quota
-    # contained too few downloadable CNFs. Retain four SAT + four UNSAT
-    # independently of the runner's performance, using pinned official labels
-    # and hash order, with medium-size-time priority for practicality.
-    groups=defaultdict(list)
-    for row in records:
-        label=label_from_score(row["status"])
-        ident=row["instanceid"]
-        if label is None or ident in excluded:continue
-        t=float(row["runtime"])
-        if not (0<t<=180):continue
-        band=("medium" if 5<=t<=60 else
-              "fast" if t<5 else "long")
-        groups[label].append((0 if band=="medium" else 1 if band=="fast" else 2,
-                              row,band))
-    accepted=[];attempts=[];selected=set()
-    for label in ("SAT","UNSAT"):
-        rank=sorted(groups[label],key=lambda t:(t[0],hash_order(t[1]["instanceid"])))
-        for priority,row,band in rank:
-            if sum(x["official_label"]==label for x in accepted)>=4:break
-            ident=row["instanceid"]
-            if ident in selected:continue
-            try:
-                info=src.download_and_features(ident)
-                selected.add(ident)
-                accepted.append({**info,"group":"new_2026_holdout",
-                    "official_label":label,"stratum":label+"_"+band,
-                    "official_ca3_s":float(row["runtime"])})
-                attempts.append({"id":ident,"status":"accepted",
-                                 "stratum":label+"_"+band})
-                print("V100_FROZEN_ACCEPT",ident,label,band,flush=True)
-            except Exception as exc:
-                attempts.append({"id":ident,"status":"reject",
-                                 "stratum":label+"_"+band,
-                                 "reason":str(exc)[:250]})
-                print("V100_REJECT",ident,label,band,str(exc)[:90],flush=True)
-        if sum(x["official_label"]==label for x in accepted)<4:
-            raise RuntimeError("Fewer than 4 downloadable "+label+
-                               " 2026 CNFs after checking "+str(len(rank))+" candidates")
-    assert len(accepted)==8
-    accepted.sort(key=lambda x:hash_order("selected/"+x["id"]))
-    assert len({c["id"] for c in known+accepted})==12
-    save(args.out,dict(protocol=SALT,known=known,holdout=accepted,
-        cases=known+accepted,arms=ARMS,cap=CAP,repeats=REPEATS,
-        excluded_previous_ids=sorted(excluded),attempts=attempts,
-        source_commit=REV,source_scores_git_blob=SCORES_GIT_BLOB,
+        cc=[x for x in old["known_diagnostic"] if x["id"].startswith(prefix)]
+        assert len(cc)==1,prefix
+        known.append({**cc[0],"group":"known_2026_diagnostic"})
+    previous2025={x["id"] for x in v98["new"]}
+    assert len(previous2025)==6 and len(source["holdout"])==32
+    ranked=sorted(source["holdout"],
+                  key=lambda c:hash_order(c["url"].rstrip("/").split("/")[-1]))
+    picked=[];attempts=[]
+    for c in ranked:
+        ident=c["url"].rstrip("/").split("/")[-1]
+        if ident in previous2025:
+            attempts.append({"id":ident,"status":"exclude_prior_V98"})
+            continue
+        if len(picked)>=8:break
+        try:
+            check=src.download_and_features(ident)
+            if check["sha256"]!=c["sha256"]:
+                raise RuntimeError("Archived 2025 content digest mismatch")
+            assert c["status"] in ("SAT","UNSAT")
+            picked.append({**check,"group":"archived_2025_new_to_v100",
+                "official_label":c["status"],"source_family":c["family"]})
+            attempts.append({"id":ident,"status":"accepted"})
+            print("V100_FROZEN_ACCEPT",ident,c["family"],flush=True)
+        except Exception as exc:
+            attempts.append({"id":ident,"status":"reject","reason":str(exc)[:250]})
+            print("V100_REJECT",ident,str(exc)[:100],flush=True)
+    if len(picked)!=8:raise RuntimeError("Not enough verified 2025 archived CNFs")
+    assert len(known)==4 and len({c["id"] for c in known+picked})==12
+    save(args.out,dict(protocol=SALT,known=known,holdout=picked,
+        cases=known+picked,arms=ARMS,cap=CAP,repeats=REPEATS,
+        excluded_v98_2025_ids=sorted(previous2025),attempts=attempts,
+        source2025_commit=source["source_commit"],source2025_title=source["title"],
         precommitted_gates={
           "lbd":"learned>=20 and LBD2>=6% of learned",
           "prop":"conflicts>=32 and >=32 propagations per conflict",
@@ -136,13 +118,13 @@ def freeze(args):
           "joint":"LBD AND propagation AND jump",
           "legacy":"LBD AND propagation",
         },limitations=[
-          "Four known selected diagnostic cases do not establish generalization",
-          "Eight new cases exclude earlier 54+12 2026 manifests, not an exhaustive global repo audit",
-          "Official reference times used only for stratified preselection, NEVER routing",
-          "Label quotas, official baseline-time priority and size caps bias sampling",
-          "Two fixed-seed repeated orders and 18s caps, not official competition rules",
-          "SAT model check by solver; UNSAT certificates not separately verified"]))
-    print("V100_FROZEN",len(known),len(accepted),len(attempts),flush=True)
+          "Four known 2026 cases were selected diagnostically, not blindly",
+          "Eight 2025 CNFs are disjoint from V9.8 but were in older V7.2.1 archives",
+          "Originally planned eight new 2026 CNFs were infeasible under size caps",
+          "Selection uses archived input hash and fixed order, never V10 timing",
+          "Two seeded runs, 18s budget, not official SAT Competition scoring",
+          "SAT solver models checked; UNSAT certificates not independently verified"]))
+    print("V100_FROZEN",len(known),len(picked),len(attempts),flush=True)
 
 def run(args):
     manifest=json.loads(Path(args.manifest).read_text())
@@ -268,7 +250,7 @@ def audit(args):
                 jump_depth_sum=int(first["v90_jumpdepth_256"]),
                 activations={k:int(v) for k,v in gate.items()}))
     cohorts={}
-    for group in ("known_2026_diagnostic","new_2026_holdout","all"):
+    for group in ("known_2026_diagnostic","archived_2025_new_to_v100","all"):
         records=[r for r in rows if group=="all" or r["group"]==group]
         by_arm={}
         for mode in ARMS:
@@ -303,7 +285,7 @@ def audit(args):
         "No historical or official leaderboard claim.","",
         "## Gate activation counts (of 24 case/repeat pairs)",""]
     for name,n in activation.items():lines.append("- "+name+": "+str(n)+"/24")
-    for group in ("known_2026_diagnostic","new_2026_holdout","all"):
+    for group in ("known_2026_diagnostic","archived_2025_new_to_v100","all"):
         lines.extend(["","## "+group,"",
             "| Method | Solved | Mean PAR2 s (lower is better) |",
             "|---|---:|---:|"])
@@ -318,8 +300,8 @@ def audit(args):
             ", prop gate: "+format(c["PAR2"]["v100_late_prop_force"],".3f")+
             ", jump gate: "+format(c["PAR2"]["v100_late_jump_force"],".3f")+
             ", joint: "+format(c["PAR2"]["v100_late_joint_force"],".3f"))
-    lines.extend(["","Eight holdout CNFs exclude 66 prior official 2026 identifiers only.",
-        "SAT/UNSAT labels are from the official 2026 scoreboard;",
+    lines.extend(["","Eight archived 2025 CNFs exclude the six V9.8 external members, but were seen in earlier V7.2.1 work.",
+        "SAT/UNSAT labels come from archived official 2025 and 2026 source metadata;",
         "UNSAT proofs were not independently checked."])
     Path(args.md).write_text("\n".join(lines)+"\n")
     print("\n".join(lines),flush=True)
@@ -327,7 +309,7 @@ def audit(args):
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     sub=p.add_subparsers(dest="cmd",required=True)
-    for mode,params in (("freeze",("v96","scores","out")),
+    for mode,params in (("freeze",("v96","v98","source2025","out")),
                         ("run",("manifest","exe","out")),
                         ("audit",("manifest","combined","out","md"))):
         a=sub.add_parser(mode)
