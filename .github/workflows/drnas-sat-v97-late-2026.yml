@@ -1,0 +1,140 @@
+name: DRNAS SAT V9.7 — Late Learning Gate 252 Paired Official Trials
+on:
+  push:
+    branches: [experiment/drnas-sat-v97-late-learning-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-v97-late-2026.yml'
+      - 'research/drnas-sat-v7-8/v97_late_learning.cpp'
+      - 'research/drnas-sat-v7-8/v97_late_experiment.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze 12 never-tested official 2026 CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v96-frozen-causal-input-manifest
+          run-id: 41239813760
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior_v96
+      - name: Freeze 12 new CNFs, exclude all prior 66; 6 diagnostic only
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v97_late_experiment.py
+          curl -fL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv \
+            -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 -u research/drnas-sat-v7-8/v97_late_experiment.py freeze \
+            --previous prior_v96/v96_manifest.json \
+            --scores official_scores.csv --out v97_manifest.json
+          sha256sum v97_manifest.json | tee v97_manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v97-frozen-12-fresh-6-diagnostic
+          path: |
+            v97_manifest.json
+            v97_manifest.sha256
+          if-no-files-found: warn
+  benchmark:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    name: v97-matched-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v97-frozen-12-fresh-6-diagnostic
+          path: frozen
+      - name: Compile pinned CaDiCaL 3.0.1 and identical late-gate C++ modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v97_manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert s.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(s.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 > /tmp/v97-build.log 2>&1) \
+            || { tail -100 /tmp/v97-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v97_late_learning.cpp \
+            cadical-src/build/libcadical.a -o v97_late_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Paired 7 modes x 3 CNFs x 2 repeats, 15s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v97_late_experiment.py run \
+            --manifest frozen/v97_manifest.json --shard "$SHARD" \
+            --exe ./v97_late_probe --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v97-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    needs: [freeze,benchmark]
+    if: always()
+    name: Validate 252 trials and late-gate 64-128-256 trajectory invariants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v97-frozen-12-fresh-6-diagnostic
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v97-shard-*
+          path: combined
+      - name: Fail-closed science and correctness audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v97_late_experiment.py audit \
+            --manifest frozen/v97_manifest.json \
+            --combined combined --out v97_report.json --md v97_report.md
+          cat v97_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v97-252-paired-late-quality-holdout-results
+          path: |
+            frozen/
+            combined/
+            v97_report.json
+            v97_report.md
+          if-no-files-found: warn
