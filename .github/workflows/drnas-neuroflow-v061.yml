@@ -1,0 +1,80 @@
+name: DRNAS NeuroFlow v0.6.1 two-stage heldout
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v061_*.py'
+      - '.github/workflows/drnas-neuroflow-v061.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  measured-two-stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real CryptoMiniSat for independent result validation
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5
+      - name: Verify existing exact SAT implementations
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+      - name: Exhaustive truth-table tests for two-stage policy paths
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          from itertools import product
+          from drnas_np_lab import normalize,check
+          from nf_v061_two_stage import run,cheap_scan,choose_model
+          import random
+          rng=random.Random(110619)
+          for n in range(1,10):
+              for index in range(43):
+                  clauses=normalize(n,[tuple(v if rng.randrange(2) else -v for v in
+                      rng.sample(range(1,n+1),rng.randrange(min(n,4)+1))) for _ in range(12)])
+                  expected='SAT' if any(check(clauses,a) for a in product((False,True),repeat=n)) else 'UNSAT'
+                  for config in ({'enabled':False}, {'enabled':True,'min_n':0,'max_minority':1.0,
+                                  'max_unit_share':1.0,'max_defect':1.0}):
+                      res=run(n,clauses,'two-stage',config,budget=1.0)
+                      assert res.status==expected,(n,index,res)
+                      if expected=='SAT':assert check(clauses,res.model)
+                      if not config['enabled']:assert res.cheap_ms==res.full_ms==0.
+                  res=run(n,clauses,'force-gates',budget=1.0)
+                  assert res.status==expected,(n,index,res)
+          print('PASS 387 random exhaustive checks: disabled/full-gate/forced')
+          PY
+      - name: Fetch SHA-disjoint SATLIB 160 train and 160 completely new test
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v061_fetch.py
+          test "$(($(wc -l < nf061_train_satlib/manifest.csv)-1))" -eq 160
+          test "$(($(wc -l < nf061_holdout_satlib/manifest.csv)-1))" -eq 160
+      - name: Train and freeze two-stage policy; paired benchmark on unseen cases
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v061_benchmark.py
+      - name: Print final measured times and gate decisions
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f nf061_results/frozen_policy.json; then cat nf061_results/frozen_policy.json; fi
+          if test -f nf061_results/summary.csv; then cat nf061_results/summary.csv; fi
+      - name: Save raw independent measurements and source fingerprints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-neuroflow-v061-two-stage
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf061_results/
+            DRNAS_NP_Crypto_Benchmark/nf061_train_satlib/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf061_holdout_satlib/manifest.csv
+          if-no-files-found: warn
