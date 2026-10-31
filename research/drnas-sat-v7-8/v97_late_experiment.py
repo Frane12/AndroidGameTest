@@ -49,7 +49,9 @@ def freeze(args):
         id=row["instanceid"]
         if id in exclude or row["status"] not in ("sat-verified","unsat-verified"):continue
         t=float(row["runtime"])
-        if not (.5<=t<=180):continue
+        # Include hard official cases as well: old <=180s 2026 cohort was
+        # exhausted after excluding prior 66. Frozen sampling, no DRNAS feedback.
+        if not (.5<=t<=5000):continue
         label="SAT" if row["status"]=="sat-verified" else "UNSAT"
         grade="fast" if t<5 else ("mid" if t<30 else "slow")
         candidates[label+"_"+grade].append({"id":id,
@@ -101,6 +103,7 @@ def freeze(args):
         "limitations":["Known six are outcome-selected and NOT prospective",
           "12 new official 2026 published CNFs exclude every prior project problem",
           "Baseline competition runtimes used only for size-screened stratification, NEVER routing",
+          "Broader <=5000s official-time cohort may have many 15-second timeouts",
           "No official competition ranking or world record claimed"]})
     print("V97_MANIFEST_FROZEN",len(chosen),digest(args.out),flush=True)
 def run(args):
