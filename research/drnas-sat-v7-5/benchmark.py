@@ -14,7 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
-METHODS=("plain","majority","split_plain256","guided256","guided1024","random256")
+METHODS=("plain","majority","split_plain256","split_plain1024","guided256","guided1024","random256","random1024")
 FIELDS=("case","family","answer_expected","method","repeat","answer","elapsed_s","native_s",
         "hints","limit_conflicts","stage1_status","resumed","hint_us","stage1_us",
         "stage2_us","variables","clauses","error","cutoff_s")
