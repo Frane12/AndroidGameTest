@@ -1,0 +1,211 @@
+name: DRNAS SAT V8.9 — 20 train + 20 unseen test per class
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-v89-train100-holdout100-20261031
+    paths:
+      - '.github/workflows/drnas-sat-v89-train100-holdout100.yml'
+      - 'research/drnas-sat-v7-8/split_v89.py'
+      - 'research/drnas-sat-v7-8/audit_split_v89.py'
+      - 'research/drnas-sat-v7-8/v89_yield_probe.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  verify-novelty:
+    name: SHA256 audit — 100 train, 100 test, no historical overlap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight dataset identity and static-feature invariance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/drnas-sat-v7-8/split_v89.py \
+            research/drnas-sat-v7-8/audit_split_v89.py \
+            research/drnas-sat-v7-8/structural_pilot_v89.py
+          python3 research/drnas-sat-v7-8/test_structural_v89.py
+          PREFLIGHT_ONLY=1 python3 -u research/drnas-sat-v7-8/split_v89.py
+
+  train-shard:
+    needs: verify-novelty
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Frozen source audit, compile unchanged CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          mkdir -p structural-v89-200/train/shard-${{ matrix.shard }}
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp research/drnas-sat-v7-8/v89_yield_probe.cpp > structural-v89-200/train/shard-${{ matrix.shard }}/source_hashes.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert source.count(marker)==1
+          pre=source.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2 >/tmp/ca-build.log 2>&1) || { tail -100 /tmp/ca-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v89_yield_probe.cpp \
+            cadical-src/build/libcadical.a -o v89_yield_probe -pthread -ldl -lz
+          lscpu > structural-v89-200/train/shard-${{ matrix.shard }}/cpu.txt
+      - name: TRAIN — 20 novel cases x 3 repeats x 3 controls
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          STAGE: train
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/split_v89.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v89-train-shard-${{ matrix.shard }}
+          path: structural-v89-200/train/shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  fit-train-only:
+    needs: train-shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v89-train-shard-*
+          path: train-temp
+      - name: Fit feature threshold exclusively on 100 TRAIN formulas
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p combined-v89-train trained-model
+          for s in 0 1 2 3 4; do
+            test -f "train-temp/v89-train-shard-$s/manifest.json"
+            mv "train-temp/v89-train-shard-$s" "combined-v89-train/shard-$s"
+          done
+          python3 -u research/drnas-sat-v7-8/audit_split_v89.py train combined-v89-train | tee combined-v89-train/actions-summary.md
+          cp combined-v89-train/model.json combined-v89-train/train_hashes.json trained-model/
+          cat combined-v89-train/actions-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v89-trained-model
+          path: trained-model/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v89-train100-full-audit
+          path: combined-v89-train/
+          if-no-files-found: error
+
+  holdout-shard:
+    needs: fit-train-only
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v89-trained-model
+          path: trained-model
+      - name: Rebuild source-identical CaDiCaL probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          mkdir -p structural-v89-200/test/shard-${{ matrix.shard }}
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp research/drnas-sat-v7-8/v89_yield_probe.cpp > structural-v89-200/test/shard-${{ matrix.shard }}/source_hashes.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert source.count(marker)==1
+          pre=source.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2 >/tmp/ca-build.log 2>&1) || { tail -100 /tmp/ca-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v89_yield_probe.cpp \
+            cadical-src/build/libcadical.a -o v89_yield_probe -pthread -ldl -lz
+          lscpu > structural-v89-200/test/shard-${{ matrix.shard }}/cpu.txt
+      - name: HOLDOUT — 20 unseen cases x 3 repeats x 4 modes
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          STAGE: test
+          MODEL_FILE: trained-model/model.json
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/split_v89.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v89-holdout-shard-${{ matrix.shard }}
+          path: structural-v89-200/test/shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  holdout-audit:
+    needs: holdout-shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v89-trained-model
+          path: trained-model
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v89-holdout-shard-*
+          path: holdout-temp
+      - name: FINAL independent 100-CNF holdout audit and paired bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p combined-v89-test
+          for s in 0 1 2 3 4; do
+            test -f "holdout-temp/v89-holdout-shard-$s/manifest.json"
+            mv "holdout-temp/v89-holdout-shard-$s" "combined-v89-test/shard-$s"
+          done
+          python3 -u research/drnas-sat-v7-8/audit_split_v89.py test combined-v89-test | tee combined-v89-test/actions-summary.md
+          cat combined-v89-test/actions-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v89-training100-holdout100-final-audit
+          path: combined-v89-test/
+          if-no-files-found: warn
