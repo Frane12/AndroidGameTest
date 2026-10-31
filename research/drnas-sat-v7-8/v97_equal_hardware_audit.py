@@ -31,7 +31,7 @@ with Path("official_scores.csv").open(newline="",encoding="utf8") as fh:
         if k not in original_best or t<original_best[k][0]:
             original_best[k]=(t,r["solverid"])
 rows=[]
-for i in range(4):
+for i in range(3):
     with (Path("v97-results")/f"v97-shard-{i}"/"results"/"raw.csv").open(newline="") as f:
         rows+=list(csv.DictReader(f))
 assert len(rows)==7*len(MODES)*3, len(rows)
