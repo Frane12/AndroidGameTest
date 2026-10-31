@@ -83,7 +83,7 @@ def run(n,clauses,variant='adaptive',policy=None,budget=2.5):
         status,model=solve_horn(n,transformed)
         route='direct-Horn'
     else:
-        limit=max(.0001,min(float(policy['pair_budget_ms'])/1000,
+        limit=max(.0001,min(float(policy.get('pair_budget_ms',12.0))/1000,
                        budget-(time.perf_counter()-t0)))
         candidate,reason,_=renamable_horn(n,clauses,probe_deadline=time.perf_counter()+limit)
         if candidate is None:
