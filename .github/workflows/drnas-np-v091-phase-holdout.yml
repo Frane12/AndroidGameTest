@@ -1,0 +1,55 @@
+name: DRNAS NP v0.9.1 independent phase hint confirmation
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v091_*.py'
+      - '.github/workflows/drnas-np-v091-phase-holdout.yml'
+permissions:
+  contents: read
+jobs:
+  new-external:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install same CaDiCaL native C++ backend and independent oracle
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcadical-dev cadical cryptominisat
+      - name: Compile fixed native C++ v0.9 WITHOUT changing phase thresholds
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            native_v09/drnas_nf09.cpp -lcadical -lz -pthread \
+            -o native_v09/drnas_nf09
+      - name: Fetch previous set metadata for strict exclusion
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v063_external_fetch.py
+      - name: Deterministically fetch NEW SAT/UNSAT heldout CNFs
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v091_fetch.py
+          test "$(($(wc -l < nf091_holdout/manifest.csv)-1))" -eq 20
+      - name: Compare frozen strategies on 20 untouched Byt-Wyze CNFs
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v091_holdout_benchmark.py
+      - name: Print honest heldout coverage and paired statistics
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f native_v09/holdout_results/summary.csv; then cat native_v09/holdout_results/summary.csv; fi
+      - name: Archive original fingerprints, frozen heldout and complete timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-np-v091-independent-20
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf091_holdout/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/native_v09/holdout_results/
+          if-no-files-found: warn
