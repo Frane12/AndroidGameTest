@@ -61,7 +61,12 @@ def validate_satlib_eof():
     from drnas_np_lab import read_dimacs
     with tempfile.TemporaryDirectory() as d:
         p=Path(d)/'original.cnf'
-        p.write_text('c SATLIB original suffix\\np cnf 2 1\\n1 2 0\\n%\\n0\\n')
+        p.write_text("""c SATLIB original suffix
+p cnf 2 1
+1 2 0
+%
+0
+""")
         n, clauses=read_dimacs(p)
         assert n==2 and clauses==[(1,2)], (n,clauses)
         assert solve(n,clauses,budget=1).status=='SAT'
