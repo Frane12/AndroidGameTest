@@ -1,0 +1,118 @@
+name: DRNAS SAT V8.9 Clauses per CPU-Time & Conflict — 25 Fresh CNFs
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-v89-yield-cpu-20261031
+    paths:
+      - '.github/workflows/drnas-sat-v89-yield.yml'
+      - 'research/drnas-sat-v7-8/blind_v89.py'
+      - 'research/drnas-sat-v7-8/v89_yield_probe.cpp'
+      - 'research/drnas-sat-v7-8/summarize_v89.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  blind-v88:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify frozen legacy sources and compile separate optimized experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/blind_v89.py research/drnas-sat-v7-8/summarize_v89.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          test "$(git hash-object research/drnas-sat-v7-8/v80_hybrid_probe.cpp)" = 208c8641c311fcb0940259c4ff2bc1c1e0f23838
+          mkdir -p blind-v89-results/shard-${{ matrix.shard }}
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp research/drnas-sat-v7-8/v89_yield_probe.cpp > blind-v89-results/shard-${{ matrix.shard }}/source_hashes.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2 > /tmp/ca-build.log 2>&1) || { tail -100 /tmp/ca-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v89_yield_probe.cpp \
+            cadical-src/build/libcadical.a -o v89_yield_probe -pthread -ldl -lz
+          lscpu > blind-v89-results/shard-${{ matrix.shard }}/cpu.txt
+      - name: Run 5 new CNFs x 3 repeats x 6 modes (3-second cap)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHARD=${{ matrix.shard }} python3 -u research/drnas-sat-v7-8/blind_v89.py
+      - name: Optional hardware counters on one held-out case (never affects main results)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="blind-v89-results/shard-${{ matrix.shard }}"
+          mkdir -p "$OUT"
+          printf 'perf_event_paranoid=' > "$OUT/perf_access.txt"
+          cat /proc/sys/kernel/perf_event_paranoid >> "$OUT/perf_access.txt" 2>/dev/null || echo 'unknown' >> "$OUT/perf_access.txt"
+          if command -v perf >/dev/null 2>&1 && test -f ./v89_yield_probe; then
+            CNF="$(find "$OUT" -name 'random3-*.cnf' -print -quit)"
+            if test -n "$CNF"; then
+              for mode in ca_plain v89_rate_no_hints v89_rate_late_hints; do
+                printf 'mode=%s file=%s\n' "$mode" "$CNF" >> "$OUT/perf_access.txt"
+                if perf stat -e cycles,instructions,branches,branch-misses,cache-misses -x, \
+                    -- ./v89_yield_probe "$mode" "$CNF" 83419 \
+                    > "$OUT/perf_$mode.stdout" 2> "$OUT/perf_$mode.stderr"; then
+                  echo "$mode:perf_counters_captured" >> "$OUT/perf_access.txt"
+                else
+                  echo "$mode:perf_unavailable_or_denied" >> "$OUT/perf_access.txt"
+                fi
+              done
+            fi
+          else
+            echo 'perf_command_unavailable_or_binary_missing' >> "$OUT/perf_access.txt"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v89-shard-${{ matrix.shard }}
+          path: blind-v89-results/shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+  audit-v88:
+    needs: blind-v88
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v89-shard-*
+          path: combined-v89-temp
+      - name: Validate all 25 cases and summarize all 450 measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p combined-v89
+          for shard in 0 1 2 3 4; do
+            test -f "combined-v89-temp/v89-shard-$shard/manifest.json"
+            mv "combined-v89-temp/v89-shard-$shard" "combined-v89/shard-$shard"
+          done
+          python3 -u research/drnas-sat-v7-8/summarize_v89.py combined-v89
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v89-25-CNF-full-audit
+          path: combined-v89/
+          if-no-files-found: warn
