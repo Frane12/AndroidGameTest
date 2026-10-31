@@ -38,7 +38,7 @@ def canonical_dimacs(data):
         line=raw.strip()
         if not line:
             continue
-        if line.startswith(b"c "):
+        if line.startswith(b"c"):
             continue
         if line.startswith(b"p "):
             pieces=line.decode("ascii").split()
