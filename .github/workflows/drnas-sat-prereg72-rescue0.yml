@@ -1,0 +1,78 @@
+name: DRNAS SAT 72-CNF oversized-input rescue shard0
+on:
+  push:
+    branches: [experiment/drnas-sat-prereg72-oversize-rescue-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-prereg72-rescue0.yml'
+      - 'research/drnas-sat-v7-8/prereg72_rescue_run.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  rescue:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0]
+    name: rescue-original-shard0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Retrieve unchanged pre-registered 72 instance IDs
+        uses: actions/download-artifact@v4
+        with:
+          name: prereg72-selection-frozen
+          run-id: 41222491055
+          github-token: ${{ github.token }}
+          path: prereg
+      - name: Validate frozen sources and build identical original CaDiCaL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile research/drnas-sat-v7-8/prereg72_rescue_run.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          (cd prereg && sha256sum -c prereg72_manifest.sha256)
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v80_hybrid_probe.cpp \
+            cadical-src/build/libcadical.a -o v80_hybrid_probe -pthread -ldl -lz
+          test -x v80_hybrid_probe
+      - name: Run ORIGINAL six instances with streaming bounded downloads
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/prereg72_rescue_run.py \
+            --manifest prereg/prereg72_manifest.json \
+            --shard "$SHARD" \
+            --binary "$GITHUB_WORKSPACE/v80_hybrid_probe" \
+            --outdir results
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve full raw results, errors, and original manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prereg72-rescue0-shard-${{ matrix.shard }}
+          path: |
+            prereg/prereg72_manifest.json
+            results/
+          if-no-files-found: warn
