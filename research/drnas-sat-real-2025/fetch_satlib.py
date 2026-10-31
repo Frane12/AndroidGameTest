@@ -119,6 +119,20 @@ def fetch_one(entry,target):
                 dest.parent.mkdir(parents=True,exist_ok=True)
                 normalized=normal[name]
                 payload,header_info=canonical_dimacs(normalized)
+                if header_info["header_corrected"]:
+                    # A mismatched clause count indicates incomplete or malformed
+                    # historical CNF. Do not silently repair or substitute it.
+                    out.append(("invalid_sources",dict(
+                        name=filename,source_set=entry["set"],
+                        intended_group=group,family=entry["family"],
+                        declared_clauses=header_info["declared_clauses"],
+                        actual_clauses=header_info["canonical_clauses"],
+                        member_raw_sha256=originals[name],
+                        normalized_sha256=sha(normalized),
+                        archive_sha256=entry["archive_sha256"],
+                        reason="source DIMACS clause count mismatch: cannot certify the intended original benchmark"
+                    )))
+                    continue
                 dest.write_bytes(payload)
                 out.append((group,dict(
                     name=filename,original_member=name,
@@ -145,7 +159,7 @@ def main(spec_path,outdir):
     out=Path(outdir).resolve()
     out.mkdir(parents=True,exist_ok=True)
     report={"source":spec["source_corpus"],"source_commit":spec["source_commit"],
-            "selection_rule":spec["selection_rule"],"pilot":[],"holdout":[]}
+            "selection_rule":spec["selection_rule"],"pilot":[],"holdout":[],"invalid_sources":[]}
     for idx,entry in enumerate(spec["archives"]):
         selected=fetch_one(entry,out)
         for group,record in selected:report[group].append(record)
