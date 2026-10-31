@@ -1,0 +1,89 @@
+name: DRNAS SAT V10.2 - Two Independent Predictors LOCO and Holdout
+on:
+  push:
+    branches: [experiment/drnas-sat-v102-dual-predictors-20261031]
+    paths:
+      - 'research/drnas-sat-v7-8/v102_dual_predictors.py'
+      - '.github/workflows/drnas-sat-v102-dual-predictors.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and deterministic synthetic-data selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v102_dual_predictors.py
+          python3 research/drnas-sat-v7-8/v102_dual_predictors.py selftest
+
+  evaluate:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Wait for the six pre-existing V10.1 raw benchmark shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 28); do
+            available=$(gh api 'repos/Frane12/AndroidGameTest/actions/runs/41246747906/artifacts?per_page=100' \
+              --jq '[.artifacts[].name | select(startswith("v101-shard-"))] | length')
+            echo "Pinned V10.1 raw shards: $available/6"
+            if [ "$available" -eq 6 ]; then exit 0; fi
+            sleep 45
+          done
+          echo "V10.1 has not produced six full raw shards; no partial or fabricated audit" >&2
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: v100-frozen-protocol-and-inputs
+          run-id: 41245906965
+          github-token: ${{ github.token }}
+          path: v100
+      - uses: actions/download-artifact@v4
+        with:
+          name: v101-frozen-protocol-and-inputs
+          run-id: 41246747906
+          github-token: ${{ github.token }}
+          path: v101
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v100-shard-*
+          run-id: 41245906965
+          github-token: ${{ github.token }}
+          path: v100
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v101-shard-*
+          run-id: 41246747906
+          github-token: ${{ github.token }}
+          path: v101
+      - name: Verify frozen inputs and independently audit two targets
+        run: |
+          set -euo pipefail
+          (cd v100 && sha256sum -c v100_manifest.sha256)
+          (cd v101 && sha256sum -c v101_manifest.sha256)
+          python3 research/drnas-sat-v7-8/v102_dual_predictors.py audit \
+            --v100 v100 --v101 v101 \
+            --out v102-dual-report.json --md v102-dual-report.md
+          cat v102-dual-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V102-Dual-Predictor-Holdout-Audit
+          path: |
+            v102-dual-report.json
+            v102-dual-report.md
+          if-no-files-found: warn
