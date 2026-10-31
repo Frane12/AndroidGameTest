@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Paired, zero-shot v0.7 evaluation: CaDiCaL vs NeuroFlow->CaDiCaL.
+"""Paired v0.7.1 prefix gate evaluation: CaDiCaL vs NeuroFlow->CaDiCaL.
 
 60 independently sourced CNFs from two publishers (frozen policy never
-retuned on them), plus 36 NEW *separately labelled constructed* controls.
+retuned on them), plus 36 separately labelled NEW constructed controls.
 3 matched repetitions in rotating order. Total wall time includes:
 Python parsing, NeuroFlow gates, Horn solver, CDCL subprocess startup and
 SAT witness checks. Reference CryptoMiniSat result is independent.
@@ -145,7 +145,7 @@ def main():
            base_completed=sum(r['status'] in ('SAT','UNSAT') for r in perarm['base'])//REPEATS,
            prefix_completed=sum(r['status'] in ('SAT','UNSAT') for r in perarm['prefix'])//REPEATS,
            base_timeout=sum(r['status']=='TIMEOUT' for r in perarm['base'])//REPEATS,
-           prefix_timeout=sum(r['status']=='TIMEOUT' for r in perarm['neuroflow'])//REPEATS,
+           prefix_timeout=sum(r['status']=='TIMEOUT' for r in perarm['prefix'])//REPEATS,
            same_complete_pairs=len(matched),
            base_median_ms=round(statistics.median(x[0] for x in matched),4) if matched else '',
            prefix_median_ms=round(statistics.median(x[1] for x in matched),4) if matched else '',
@@ -153,9 +153,12 @@ def main():
            mean_paired_gain_ms=round(statistics.mean(a-b for a,b in matched),4) if matched else '',
            median_paired_gain_ms=round(statistics.median(a-b for a,b in matched),4) if matched else '',
            adaptive_wins=sum(a>b for a,b in matched),
-           horn_recognized=len({r['case_id'] for r in perarm['neuroflow'] if 'Horn' in r['route']}),
-           stage1_skipped=len({r['case_id'] for r in perarm['neuroflow'] if r['route']=='stage1-skip'}),
-           stage2_skipped=len({r['case_id'] for r in perarm['neuroflow'] if r['route']=='stage2-skip'}))
+           horn_recognized=len({r['case_id'] for r in perarm['prefix'] if 'Horn' in r['route']}),
+           stage1_skipped=len({r['case_id'] for r in perarm['prefix'] if 'stage1-skip' in r['route']}),
+           prefix_early_reject=len({r['case_id'] for r in perarm['prefix'] if r['route'].startswith('prefix-') and r['route'].endswith('->cadical') and 'disabled' not in r['route']}),
+           stage2_skipped=len({r['case_id'] for r in perarm['prefix'] if 'stage2-skip' in r['route']}),
+           prefix_advanced=len({r['case_id'] for r in perarm['prefix'] if 'prefix-candidate->' in r['route']}),
+           prefix_uncertain=len({r['case_id'] for r in perarm['prefix'] if 'prefix-uncertain->' in r['route']}))
         summaries.append(summarized)
     write_csv(OUTPUT/'summary.csv',summaries)
     (OUTPUT/'policy.json').write_text(json.dumps(FROZEN_V062,indent=2))
