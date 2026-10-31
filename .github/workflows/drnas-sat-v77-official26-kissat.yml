@@ -1,0 +1,104 @@
+name: DRNAS SAT V7.7 vs CaDiCaL Kissat on SATComp 2026
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-sat-v77-official26-kissat-60s
+    paths:
+      - 'research/drnas-sat-v7-7/official26_v77_*.py'
+      - '.github/workflows/drnas-sat-v77-official26-kissat.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  official-2026-comparison:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile unmodified CaDiCaL 3.0.1 with frozen DRNAS V7.7 C++ Learner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-7/v77_single.cpp \
+            cadical-src/build/libcadical.a -o v77_official -pthread -ldl -lz
+          test -s v77_official
+      - name: Independently compile unmodified Kissat 4.0.4 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          git -C kissat-src rev-parse HEAD | tee kissat-commit.txt
+          (cd kissat-src && ./configure && make -j2)
+          test -x kissat-src/build/kissat
+          kissat-src/build/kissat --version
+      - name: Retrieve original official 2026 GBD source manifest from previous comparison
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-satcomp2026-official-instance-mini-par2
+          run-id: 41204322891
+          github-token: ${{ github.token }}
+          path: previous_manifest
+      - name: Re-download two EXACT original official CNFs with SHA256 validation
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/official26_v77_fetch.py \
+            --previous previous_manifest/satcomp26_official/source_manifest.csv \
+            --outdir v77_official_sources --shard "$SHARD" --shards 10
+      - name: Benchmark exact V7.7 quality controls against CaDiCaL and Kissat
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/official26_v77_run.py \
+            --native "$GITHUB_WORKSPACE/v77_official" \
+            --kissat "$GITHUB_WORKSPACE/kissat-src/build/kissat" \
+            --sources v77_official_sources/selected.json \
+            --outdir v77_sc26 --timeout 60 --repeats 2
+      - name: Archive full per-shard runs, correctness results and original hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v77-sat26-shard${{ matrix.shard }}-results
+          path: |
+            cadical-commit.txt
+            kissat-commit.txt
+            v77_official_sources/selected.json
+            v77_sc26/
+          if-no-files-found: warn
+  aggregate-par2:
+    needs: official-2026-comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v77-sat26-shard*-results
+          path: shards
+          merge-multiple: false
+      - name: Calculate complete 20-CNF/280-attempt local PAR-2 and bootstrap
+        run: |
+          python -u research/drnas-sat-v7-7/official26_v77_combine.py \
+            --root shards --outdir combined_v77_official26
+          cat combined_v77_official26/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V77-CaDiCaL-Kissat-SATCOMP26-60s-results
+          path: combined_v77_official26/
+          if-no-files-found: error
