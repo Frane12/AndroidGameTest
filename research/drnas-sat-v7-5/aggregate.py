@@ -12,7 +12,7 @@ from benchmark import FIELDS, METHODS, report
 
 def main(root,out,repeats,cutoff):
     root=Path(root);out=Path(out);out.mkdir(parents=True,exist_ok=True)
-    sources=sorted(root.glob("drnas-v75-shard*-results/v75_results/raw.csv"))
+    sources=sorted(root.glob("drnas-v75*-shard*-results/v75_results/raw.csv"))
     if len(sources)!=8:
         raise RuntimeError(f"Expected all 8 holdout shards, got {len(sources)}: {sources}")
     rows=[]
