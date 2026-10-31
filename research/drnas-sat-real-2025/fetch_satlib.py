@@ -24,6 +24,60 @@ def normalized_satlib(data):
         lines.append(line)
     return b"\n".join(lines)+b"\n"
 
+
+def canonical_dimacs(data):
+    """Copy identical SAT clauses into strict DIMACS.
+    Historical SATLIB files can declare a wrong clause count.
+    This only corrects the header; no clause/literal is modified.
+    """
+    declared_vars=None
+    declared_clauses=None
+    clauses=[]
+    pending=[]
+    for raw in data.splitlines():
+        line=raw.strip()
+        if not line:
+            continue
+        if line.startswith(b"c "):
+            continue
+        if line.startswith(b"p "):
+            pieces=line.decode("ascii").split()
+            if len(pieces)<4 or pieces[1].lower()!="cnf":
+                raise ValueError("Invalid original DIMACS header")
+            if declared_vars is not None:
+                raise ValueError("Repeated DIMACS header")
+            declared_vars=int(pieces[2])
+            declared_clauses=int(pieces[3])
+            continue
+        if line.startswith(b"%"):
+            break
+        for word in line.split():
+            try:
+                lit=int(word)
+            except ValueError as error:
+                raise ValueError("Non-integer literal in original CNF") from error
+            if lit==0:
+                clauses.append(tuple(pending))
+                pending=[]
+            else:
+                pending.append(lit)
+    if pending:
+        raise ValueError("Unterminated CNF clause")
+    if declared_vars is None:
+        raise ValueError("Missing CNF header")
+    maxvar=max((abs(l) for cl in clauses for l in cl),default=0)
+    if maxvar>declared_vars:
+        raise ValueError("Original literal exceeds declared variable count")
+    header=("p cnf %d %d\n"%(declared_vars,len(clauses))).encode("ascii")
+    data=header+b"".join(
+        b" ".join(str(l).encode("ascii") for l in cl)+b" 0\n"
+        for cl in clauses
+    )
+    return data,{"declared_vars":declared_vars,
+                 "declared_clauses":declared_clauses,
+                 "canonical_clauses":len(clauses),
+                 "header_corrected":declared_clauses!=len(clauses)}
+
 def fetch_one(entry,target):
     last=None
     for attempt in range(3):
@@ -63,7 +117,8 @@ def fetch_one(entry,target):
                 filename=f"{entry['set']}__{name}"
                 dest=target/group/filename
                 dest.parent.mkdir(parents=True,exist_ok=True)
-                payload=normal[name]
+                normalized=normal[name]
+                payload,header_info=canonical_dimacs(normalized)
                 dest.write_bytes(payload)
                 out.append((group,dict(
                     name=filename,original_member=name,
@@ -72,11 +127,12 @@ def fetch_one(entry,target):
                     source="SATLIB external benchmark",
                     archive_sha256=entry["archive_sha256"],
                     member_raw_sha256=originals[name],
-                    normalized_sha256=sha(payload),
+                    normalized_sha256=sha(normalized),
+                    canonical_dimacs_header=header_info,
                     expected_sha256=sha(payload),
                     observed_sha256=sha(payload),
                     path=str(dest.resolve()),
-                    normalization="Only SATLIB '%' trailer and line endings removed",
+                    normalization="Legacy SATLIB '%' trailer and line endings removed",
                     bytes=len(payload))))
             return out
         except (OSError,RuntimeError,tarfile.TarError) as exc:
