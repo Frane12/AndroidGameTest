@@ -47,63 +47,52 @@ def select_mode(features):
     return "v96_plain_durable" if target_profile(features) else "orig_v76"
 
 def freeze(args):
+    """Deterministic external challenge using pinned real 2025 CNFs."""
     older = json.loads(Path(args.v96).read_text())
-    newer = json.loads(Path(args.v97).read_text())
     diag, = [x for x in older["all_cases"] if x["id"] == TARGET]
     assert diag["official_label"] == "SAT" and target_profile(diag["features"])
     diag = {**diag, "group": "known_target"}
-    excluded = set(older["prior_54_excluded"])
-    excluded.update(x["id"] for x in older["all_cases"])
-    excluded.update(x["id"] for x in newer["cases"])
-    # No use of experimental solver results to choose prospective instances.
-    with Path(args.scores).open(newline="", encoding="utf8") as f:
-        scores = list(csv.DictReader(f))
-    records = [r for r in scores if r["solverid"] == "biere_cadical3[main]"]
-    assert len(records) == 400
-    candidates = []
-    for r in records:
-        if r["instanceid"] in excluded or r["status"] not in (
-                "sat-verified", "unsat-verified"):
-            continue
-        t = float(r["runtime"])
-        if not (0.5 <= t <= 180.0):
-            continue
-        candidates.append({"id": r["instanceid"], "official_label":
-                            "SAT" if r["status"] == "sat-verified" else "UNSAT",
-                            "official_baseline_s": t})
-    candidates.sort(key=lambda x: candidate_order(x["id"]))
-    matched = []
-    controls = []
-    attempts = []
-    for c in candidates:
-        if len(matched) == 3 and len(controls) == 3:
-            break
+    source2025 = json.loads(Path(args.source2025).read_text())
+    assert len(source2025["holdout"]) == 32
+    rows = sorted(source2025["holdout"],
+                  key=lambda x:candidate_order(x["url"].split("/")[-1]))
+    matched, controls, attempts = [], [], []
+    for c in rows:
+        ident = c["url"].rstrip("/").split("/")[-1]
         try:
-            info = src.download_and_features(c["id"])
+            info = src.download_and_features(ident)
+            if info["sha256"] != c["sha256"]:
+                raise RuntimeError("Published 2025 SHA mismatch")
             is_match = target_profile(info["features"])
+            attempts.append({"id":ident,"match":is_match,"ok":True})
             bucket = matched if is_match else controls
-            attempts.append({"id": c["id"], "match": is_match, "ok": True})
-            if len(bucket) < 3:
-                bucket.append({**c, **info, "group":
-                               "fresh_match" if is_match else "fresh_control"})
-                print("V98_FROZEN_CASE", c["id"], is_match, flush=True)
+            bucket.append({**info, "official_label":c["status"],
+                           "source_family":c["family"],
+                           "group":"external_match" if is_match else
+                                   "external_control"})
+            print("V98_EXTERNAL_CASE",ident,is_match,c["family"],flush=True)
         except Exception as e:
-            attempts.append({"id": c["id"], "ok": False, "error": str(e)})
-            print("V98_SKIP", c["id"], str(e)[:100], flush=True)
-    if len(matched) != 3 or len(controls) != 3:
-        raise RuntimeError("Incomplete predeclared structural quotas: " +
-                           str((len(matched), len(controls))))
-    all_new = sorted(matched + controls, key=lambda x: candidate_order("run/"+x["id"]))
-    save(args.out, {"protocol": SALT, "rule": "width>=5; abs polarity<=.15;"
-                    " majority<=.35; binary<=.05", "target": diag,
-                    "new": all_new, "attempts": attempts,
-                    "excluded_count": len(excluded),
-                    "official_commit": src.REV,
-                    "official_scores_blob": src.SCORES_GIT_BLOB,
-                    "limitations": ["Target is post-hoc diagnostic, not holdout",
-                    "Preselected structural strata and public baseline-time "
-                    "bounds do not represent full SAT Competition 2026"]})
-    print("V98_FROZEN", len(all_new), len(attempts), flush=True)
+            attempts.append({"id":ident,"ok":False,"error":str(e)})
+            print("V98_SKIP",ident,str(e)[:100],flush=True)
+        if len(matched)>=3 and len(controls)>=6: break
+    selected_matches = matched[:3]
+    needed = 6-len(selected_matches)
+    if len(controls)<needed:
+        raise RuntimeError("Fewer than 6 valid external 2025 CNFs")
+    chosen = sorted(selected_matches+controls[:needed],
+                    key=lambda x:candidate_order("run/"+x["id"]))
+    assert len(chosen)==6 and len({c["id"] for c in chosen})==6
+    save(args.out,{"protocol":SALT,"target":diag,"new":chosen,
+         "predeclared_rule":"width>=5, polarity<=0.15, majority<=0.35, binary<=0.05",
+         "number_matching":len(selected_matches),
+         "source_title":source2025["title"],
+         "source_commit":source2025["source_commit"],
+         "attempts":attempts,
+         "limitations":["2025 CNFs previously used by V7.2.1 work: not globally pristine",
+         "Structural selection is post-hoc on known 2026 target",
+         "Matched count may be 0; never invent analogs",
+         "Small 2025 cases may not resemble 2026 high-difficulty cases"]})
+    print("V98_FROZEN",len(chosen),len(selected_matches),len(attempts),flush=True)
 
 def run(args):
     data = json.loads(Path(args.manifest).read_text())
@@ -216,18 +205,18 @@ def audit(args):
                         "mean_PAR2":{m:statistics.mean(by_case[c["id"]][m])
                                      for m in modes}})
     cohorts = {}
-    for group in ("fresh_match","fresh_control"):
+    for group in ("external_match","external_control"):
         relevant = [c for c in details if c["group"] == group]
-        cohorts[group] = {"n":len(relevant),"mean_PAR2":{
+        cohorts[group] = {"n":len(relevant),"mean_PAR2":({
             m:statistics.mean(c["mean_PAR2"][m] for c in relevant)
-            for m in NEW_MODES}}
-    matched = [c for c in details if c["group"]=="fresh_match"]
+            for m in NEW_MODES} if relevant else {})}
+    matched = [c for c in details if c["group"]=="external_match"]
     # Observationally selected target never included in holdout aggregates.
     differences = [c["mean_PAR2"]["v96_phase_durable"] -
                    c["mean_PAR2"]["v98_selective"] for c in matched]
     report = {"protocol":SALT,"trials":len(allrows),"cases":details,
               "cohorts":cohorts,"match_phase_minus_selector_PAR2_s":
-              statistics.mean(differences),
+              (statistics.mean(differences) if differences else None),
               "match_wins":sum(v>0 for v in differences),
               "match_losses":sum(v<0 for v in differences),
               "match_ties":sum(v==0 for v in differences),
@@ -237,10 +226,10 @@ def audit(args):
               "UNSAT external certificates not independently verified"]}
     save(args.out,report)
     lines = ["# DRNAS V9.8 structural phase-selective test", "",
-             "76 completed paired attempts, 1 known target plus 6 unseen official CNFs.",
+             "76 completed paired attempts, 1 known 2026 target plus 6 archived 2025 external CNFs.",
              "Predeclared post-hoc selector: weak polarity + wide, nonbinary clauses"
              " -> no initial phase hints; otherwise frozen V7.6.", ""]
-    for name in ("fresh_match","fresh_control"):
+    for name in ("external_match","external_control"):
         s = cohorts[name]
         lines += [f"## {name}: {s['n']} independent CNFs", "",
                   "| Method | Mean PAR2 seconds (lower better) |",
@@ -249,21 +238,21 @@ def audit(args):
             lines.append(f"| {mode} | {mean:.4f} |")
         lines.append("")
     lines += ["Fresh matches: phase-durable minus V9.8 selector PAR2 = "
-              f"{report['match_phase_minus_selector_PAR2_s']:.4f} seconds",
+              str(report["match_phase_minus_selector_PAR2_s"])+" seconds",
               f"wins/losses/ties = {report['match_wins']}/{report['match_losses']}/{report['match_ties']}",
               "", "## Individual CNFs", ""]
     for c in details:
         lines.append(f"- {c['id'][:12]} ({c['group']}) selected "
                      f"{c['selected']} | "+", ".join(
                          f"{m}={v:.3f}" for m,v in c["mean_PAR2"].items()))
-    lines += ["","No official competition placing or generality claim."]
+    lines += ["","2025 CNFs previously benchmarked by V7.2.1. No official placing or generality claim."]
     Path(args.md).write_text("\n".join(lines)+"\n")
     print("\n".join(lines),flush=True)
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     s = p.add_subparsers(dest="cmd", required=True)
-    for cmd, fields in (("freeze", ("v96","v97","scores","out")),
+    for cmd, fields in (("freeze", ("v96","source2025","out")),
                         ("run", ("manifest","exe","out")),
                         ("audit",("manifest","combined","out","md"))):
         parser=s.add_parser(cmd)
