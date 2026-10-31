@@ -1,0 +1,111 @@
+name: DRNAS NP v0.9 native CaDiCaL phase hints
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/native_v09/**'
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v09_phase_benchmark.py'
+      - '.github/workflows/drnas-np-v09-native-phase.yml'
+permissions:
+  contents: read
+jobs:
+  phase-hints:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install EXACT same CaDiCaL C++ library and independent oracle
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcadical-dev cadical cryptominisat
+          cadical --version
+      - name: Compile native v0.9 C++ phase-hint driver
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            native_v09/drnas_nf09.cpp -lcadical -lz -pthread \
+            -o native_v09/drnas_nf09
+          file native_v09/drnas_nf09
+      - name: Exhaustive truth-table correctness across 7 C++ modes
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          import json,random,subprocess,tempfile
+          from itertools import product
+          from pathlib import Path
+          rng=random.Random(202610310909)
+          modes=['base','neuro','force','phase-majority','phase-minority','phase-selective','neuro-phase']
+          verified=0;hinted=0
+          def satisfies(cnf,model):
+              return all(any(model[abs(lit)-1]==(lit>0) for lit in cl) for cl in cnf)
+          for n in range(1,9):
+              for j in range(30):
+                  cnf=[]
+                  for k in range(15):
+                      sz=rng.randrange(min(n,4)+1)
+                      cnf.append(tuple(v if rng.getrandbits(1) else -v
+                          for v in rng.sample(range(1,n+1),sz)))
+                  status='SAT' if any(satisfies(cnf,values)
+                       for values in product((False,True),repeat=n)) else 'UNSAT'
+                  with tempfile.TemporaryDirectory() as t:
+                      path=Path(t)/'test.cnf'
+                      path.write_text(f'p cnf {n} {len(cnf)}\n'+
+                          ''.join(' '.join(map(str,cl))+' 0\n' for cl in cnf))
+                      for mode in modes:
+                          p=subprocess.run(['./native_v09/drnas_nf09','--input',
+                              str(path),'--mode',mode,'--budget-ms','2500'],
+                              capture_output=True,text=True,timeout=5)
+                          assert p.returncode==0,(n,j,mode,p.stderr[-500:])
+                          r=json.loads(p.stdout)
+                          assert r['status']==status,(n,j,mode,status,r)
+                          if status=='SAT':assert r['witness_valid'] is True
+                          hinted+=r['phase_count']
+                          verified+=1
+          assert hinted>0
+          print('PASS',verified,'native exact outcomes and witnesses; phase hints applied',hinted,flush=True)
+          PY
+      - name: Check phase hints cannot force SAT/UNSAT using contradictory and renamable Horn cases
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          import json,subprocess,tempfile
+          from pathlib import Path
+          for n in (30,60,100):
+              with tempfile.TemporaryDirectory() as tmp:
+                  p=Path(tmp)/'unsat.cnf'
+                  p.write_text('p cnf %d 2\n1 0\n-1 0\n'%n)
+                  for mode in ('base','phase-majority','phase-minority','phase-selective','neuro-phase'):
+                      s=subprocess.run(['./native_v09/drnas_nf09','--input',str(p),
+                          '--mode',mode],capture_output=True,text=True,timeout=5)
+                      assert s.returncode==0,s.stderr
+                      assert json.loads(s.stdout)['status']=='UNSAT'
+          print('PASS contradictory formula unchanged by phase()',flush=True)
+          PY
+      - name: Fetch pinned independent-source regression CNFs (60 real published)
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v063_external_fetch.py
+          test "$(($(wc -l < nf063_external/manifest.csv)-1))" -eq 60
+      - name: Compare frozen phase strategies on same CDCL and CNFs
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v09_phase_benchmark.py
+      - name: Print per-family phase-hint results, including overhead
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f native_v09/results/summary.csv; then cat native_v09/results/summary.csv; fi
+      - name: Save native binary and individual source/timing audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-np-v09-native-phase-hints
+          path: |
+            DRNAS_NP_Crypto_Benchmark/native_v09/drnas_nf09
+            DRNAS_NP_Crypto_Benchmark/native_v09/results/
+            DRNAS_NP_Crypto_Benchmark/nf063_external/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf063_external/source_revisions.json
+          if-no-files-found: warn
