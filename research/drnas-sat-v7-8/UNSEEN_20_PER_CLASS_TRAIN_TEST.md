@@ -32,8 +32,8 @@ Date: 2026-10-31. Research status: experimental; results must be measured, not p
 
 V8.8 (30 formulas, run 41226463135): CaDiCaL 58.39163, V7.6 guided 61.80261, V7.6 plain **56.21829**, experimental V8.8 61.95462 seconds of sum of per-formula median PAR-2.
 
-V8.8b (25 formulas, run 41226986357): CaDiCaL 40.04418, V7.6 guided 37.69604, V7.6 plain **36.64113**, experimental delayed V8.8b 36.95592 seconds.
+V8.8b (25 formulas, run 41226986357): CaDiCaL 40.04418, V7.6 guided 37.69604, V7.6 plain 36.64113, experimental delayed V8.8b 36.95592, and delayed V8.8b **without hints** 36.61991 seconds.
 
-Within each benchmark, the unhinted frozen V7.6 control is the strongest aggregate measured comparator. V8.8b improved versus always-guided V7.6 but was slower than no-hint v7.6. No world record, general structural SAT subclass or asymptotic complexity claim follows.
+The v8.8b delayed-no-hints variant was 0.02122 seconds faster than the original V7.6 plain (approximately 0.058%); this negligible observed difference on a separate small batch is not evidence of a new general improvement. V8.8b with hints improved versus always-guided V7.6 but was slower than frozen V7.6 no-hints. The V8.8 best run was original V7.6 no-hints. No world record, general structural SAT subclass or asymptotic complexity claim follows.
 
 New V8.9 200-formula experiment values must come from the new GitHub Actions artifact. Do not reuse or interpret preliminary training fit as an independent held-out improvement.
