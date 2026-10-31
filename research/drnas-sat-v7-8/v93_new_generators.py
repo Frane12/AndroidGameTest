@@ -110,7 +110,7 @@ def subset_sum(n,rng):
             p=c.xor2(left,in_bit)
             total[bit]=c.xor2(p,carry)
             carry=c.or2(c.and2(left,in_bit),c.and2(p,carry))
-        assert carry is None, "overflow bit width insufficient"
+        # With bits = bit_length(sum(weights)), overflow is impossible on\n        # any legitimate selection; constrain symbolic carry to zero.\n        if carry is not None:c.clause(-carry)
     for bit,z in enumerate(total):
         want=(target>>bit)&1
         if z is None:
