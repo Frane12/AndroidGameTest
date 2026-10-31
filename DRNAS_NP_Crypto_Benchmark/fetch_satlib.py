@@ -34,6 +34,7 @@ def fetch(url):
 def build(destination="external_cases",per_group=20):
     out=Path(destination);out.mkdir(parents=True,exist_ok=True)
     (out/"archives.sha256").write_text("")
+    (out/"originals").mkdir(exist_ok=True)
     records=[]; hashes=set()
     for group_idx,(group,path,expected) in enumerate(SOURCES):
         url=BASE+"/"+path;blob=fetch(url)
@@ -52,14 +53,26 @@ def build(destination="external_cases",per_group=20):
                 if h in hashes:raise AssertionError(f"Duplicate CNF across corpus: {member.name}")
                 hashes.add(h)
                 i=len(records)+1;case_id=f"satlib_{i:04d}";cnf_path=out/f"{case_id}.cnf"
+                (out/"originals"/f"{case_id}.original.cnf").write_bytes(raw)
+                # Parse the original SATLIB '%' EOF correctly; serialize canonical
+                # DIMACS without its terminator, which CryptoMiniSat rejects.
+                # BOTH solvers receive these IDENTICAL, equivalence-preserving CNF bytes.
                 cnf_path.write_bytes(raw)
                 n,clauses=read_dimacs(cnf_path)
                 if n<1 or not clauses:raise ValueError(f"Empty or malformed CNF: {member.name}")
                 if max((abs(lit) for c in clauses for lit in c),default=0)>n:raise ValueError("Bad DIMACS")
+                canonical=(f"c canonical DIMACS of SATLIB original {member.name}\\n"
+                           +f"p cnf {n} {len(clauses)}\\n"
+                           +"".join(" ".join(map(str,cl))+" 0\\n" for cl in clauses))
+                cnf_path.write_text(canonical,encoding="utf-8")
+                canonical_sha=hashlib.sha256(cnf_path.read_bytes()).hexdigest()
+                n2,c2=read_dimacs(cnf_path)
+                assert n2==n and c2==clauses
                 records.append(dict(case_id=case_id,family=group,n=n,m=len(clauses),
                     seed="SATLIB_original",expected=expected,
-                    description="Independent SATLIB original; no planted structure by DRNAS",
-                    source_url=url,original_name=member.name,archive_sha256=archive_sha,cnf_sha256=h))
+                    description="Independent SATLIB source; canonical DIMACS sent identically to both solvers",
+                    source_url=url,original_name=member.name,archive_sha256=archive_sha,
+                    source_sha256=h,cnf_sha256=canonical_sha))
         print(f"Fetched {group}: {per_group} original CNFs; archive sha256={archive_sha[:16]}",flush=True)
     assert len(records)==8*per_group and len(records)==160
     with (out/"manifest.csv").open("w",newline="",encoding="utf-8") as f:
