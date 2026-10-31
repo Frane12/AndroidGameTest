@@ -52,7 +52,7 @@ for case in cases:
     assert len(r)==18 and {x["sha256"] for x in r}=={case["sha256"]}
     truth={x["status"] for x in r if x["status"] in ("SAT","UNSAT")}
     if len(truth)>1:errors.append(name+" contradictory SAT and UNSAT")
-    if case["known_truth"]=="SAT-by-construction" and "UNSAT" in truth:
+    if case["known_truth"].startswith("SAT-") and "UNSAT" in truth:
         errors.append(name+" contradicts planted SAT witness")
     if case["known_truth"].startswith("UNSAT") and "SAT" in truth:
         errors.append(name+" contradicts known UNSAT")
