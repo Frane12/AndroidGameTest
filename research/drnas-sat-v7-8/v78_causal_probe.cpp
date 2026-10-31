@@ -1,9 +1,10 @@
 // DRNAS V7.8 CAUSAL DIAGNOSTIC ONLY. Does NOT alter V7.6 or V7.7 code.
 // Include both original frozen implementations. All additional modes are
 // strictly experimental controls; never publish as measured speedups.
-#define main drnas_original_v77_main_unused
-#include "../drnas-sat-v7-7/v77_single.cpp"
-#undef main
+// The build deterministically extracts frozen v7.7 source *before*
+// its only int main(...) entrypoint. This avoids the internal main
+// preprocessor undef in original v7.6 without editing either file.
+#include "../drnas-sat-v7-7/v77_embedded_functions.inc"
 #include <map>
 
 struct Audit {
