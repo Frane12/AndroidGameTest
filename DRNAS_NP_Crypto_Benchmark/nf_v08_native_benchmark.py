@@ -139,8 +139,8 @@ def benchmark():
                     if item['status'] in ('SAT','UNSAT'):
                         closed[key]+=1
                 a,b=trials['base'],trials['neuro']
-                if c['reference'] in ('SAT','UNSAT') and
-                  a['status']==b['status']==c['reference']):
+                if (c['reference'] in ('SAT','UNSAT') and
+                    a['status']==b['status']==c['reference']):
                     pairs.append((float(a['total_ms']),float(b['total_ms'])))
                 by_route[trials['neuro']['route']]=by_route.get(trials['neuro']['route'],0)+1
         gains=[a-b for a,b in pairs]
