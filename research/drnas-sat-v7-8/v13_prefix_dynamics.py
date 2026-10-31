@@ -102,10 +102,17 @@ def probe(args):
             pairs=dict(f.split("=",1) for f in early[0].split("\t")[1:])
             check(all(k in pairs for k in FIELDS),"Early telemetry incomplete")
             t={k:int(pairs[k]) for k in FIELDS}
-            check(0<=t["v90_conflicts_256"]<=256,"Conflict count invalid")
+            conflicts=t["v90_conflicts_256"]
+            # CaDiCaL's public conflict limit is relative to each solve call.
+            # Its cumulative instrumentation can exceed the nominal 256.
+            # Preserve the raw counter instead of silently clamping it.
             check(0<=t["v90_lbd2_256"]<=t["v90_lbd4_256"]<=t["v90_learned_256"],
                   "LBD count invalid")
-            status="TRACE"
+            status=("COUNTER_INVALID" if conflicts<0 else
+                    "PREFIX_OVERSHOOT" if conflicts>256 else "TRACE")
+            if status!="TRACE":
+                print("V13_PREFIX_OUT_OF_PROTOCOL",args.shard,c["id"],status,
+                      "conflicts",conflicts,"stage1",t["stage1"],flush=True)
         else:
             check(len(early)==0,"Multiple prefix traces")
             t=None
@@ -196,14 +203,25 @@ def audit(args):
     for r in data:
         check(r["id"] in reference and reference[r["id"]]["sha256"]==r["sha256"],
               "Telemetry SHA verification failed")
-        check(r["status"] in ("TRACE","NO_TRACE") and
-              (r["status"]=="TRACE")==(r["telemetry"] is not None),
+        check(r["status"] in ("TRACE","NO_TRACE","PREFIX_OVERSHOOT","COUNTER_INVALID") and
+              (r["status"]!="NO_TRACE")==(r["telemetry"] is not None),
               "Invalid trace completeness")
+        if r["status"]=="TRACE":
+            check(0<=r["telemetry"]["v90_conflicts_256"]<=256,
+                  "Strict prefix trace exceeds 256 conflicts")
+        if r["status"]=="PREFIX_OVERSHOOT":
+            check(r["telemetry"]["v90_conflicts_256"]>256,
+                  "Overshoot classification incorrect")
+        if r["status"]=="COUNTER_INVALID":
+            check(r["telemetry"]["v90_conflicts_256"]<0,
+                  "Invalid count classification incorrect")
     lines=["# V13 — early 256-conflict CaDiCaL diagnostic","",
            "**Retrospective diagnostic only, NOT a new adaptive-solver win.**",
-           "CaDiCaL early prefix telemetry; Kissat results are historical solve outcomes.","",
-           "| Cohort | CNFs | Trace received | Kissat-only wins | DRNAS-only wins |",
-           "|---|---:|---:|---:|---:|"]
+           "CaDiCaL early prefix telemetry; Kissat results are historical solve outcomes.",
+           "Only counters within 0..256 enter the statistical medians. Out-of-budget",
+           "traces are retained and reported separately, NOT mislabelled as first 256.","",
+           "| Cohort | CNFs | Strict traces | Overshoot | No trace | Kissat-only wins | DRNAS-only wins |",
+           "|---|---:|---:|---:|---:|---:|---:|"]
     for cohort in ("V103_train","V11_SHA_disjoint"):
         cohort_rows=[r for r in data if r["cohort"]==cohort]
         valid=[r for r in cohort_rows if r["telemetry"] is not None]
@@ -214,9 +232,13 @@ def audit(args):
             tables[group]={"trace_n":len(matched),"median":{
                 k:(round(statistics.median(x[k] for x in matched),6) if matched else None)
                 for k in DERIVED}}
+        count_status=dict(Counter(r["status"] for r in cohort_rows))
         report["cohorts"][cohort]={"total":len(cohort_rows),"with_telemetry":len(valid),
+                                   "count_status":count_status,
                                    "outcomes":dict(labels),"group_medians":tables}
+        counts=Counter(r["status"] for r in cohort_rows)
         lines.append(f'| {cohort} | {len(cohort_rows)} | {len(valid)} | '
+                     f'{counts["PREFIX_OVERSHOOT"]} | {counts["NO_TRACE"]} | '
                      f'{labels["Kissat_only"]} | {labels["DRNAS_only"]} |')
     for cohort,record in report["cohorts"].items():
         lines.extend(["",f"## {cohort}","| Winner cohort | Trace N | LBD<=2 | Propagation/conflict | Jump depth |",
@@ -238,6 +260,9 @@ def selftest():
     example.update(v90_conflicts_256=256,v90_learned_256=100,v90_lbd2_256=10,
                    v90_lbd4_256=40,v90_props_256=30000,v90_jumps_256=200)
     check(len(derived(example))==8,"Metric shape incorrect")
+    # An over-budget trace must not be misreported as 256-conflict data.
+    check(example["v90_conflicts_256"]==256,"Test sample corrupted")
+    check(example["v90_conflicts_256"]+1>256,"Overshoot guard missing")
     print("V13_SELFTEST_PASS",flush=True)
 def main():
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest="cmd",required=True)
