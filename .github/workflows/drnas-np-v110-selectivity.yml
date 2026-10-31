@@ -1,0 +1,118 @@
+name: DRNAS NP v1.1 native structural selectivity
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/native_v110/**'
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v110_*.py'
+      - '.github/workflows/drnas-np-v110-selectivity.yml'
+permissions:
+  contents: read
+jobs:
+  train-freeze-new-external:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native in-process CaDiCaL and independent oracle
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcadical-dev cadical cryptominisat
+          cadical --version
+      - name: Compile C++ frozen two-stage structural selector
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            native_v110/drnas_nf110.cpp -lcadical -lz -pthread \
+            -o native_v110/drnas_nf110
+          file native_v110/drnas_nf110
+      - name: Exhaustive truth tables for baseline, two-rule auto and static phases
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          import json,random,subprocess,tempfile
+          from itertools import product
+          from pathlib import Path
+          rng=random.Random(202611031110)
+          modes=('base','auto','phase-majority','phase-selective','neuro')
+          checked=0
+          for n in range(1,9):
+            for k in range(25):
+              cnf=[]
+              for j in range(12):
+                sz=rng.randrange(min(n,4)+1)
+                cnf.append(tuple(v if rng.getrandbits(1) else -v
+                   for v in rng.sample(range(1,n+1),sz)))
+              truth='SAT' if any(all(any(
+                 a[abs(l)-1]==(l>0) for l in c) for c in cnf)
+                 for a in product((False,True),repeat=n)) else 'UNSAT'
+              with tempfile.TemporaryDirectory() as t:
+                path=Path(t)/'f.cnf'
+                path.write_text(f'p cnf {n} {len(cnf)}\n'+
+                    ''.join(' '.join(map(str,c))+' 0\n' for c in cnf))
+                policy=Path(t)/'frozen.txt'
+                policy.write_text('DRNAS_V110_POLICY 2 majority 0 2000000 0 1e20 0 1 0 1 0 1 1 selective 0 2000000 0 1e20 0 1 0 1 0 1 1\n')
+                for mode in modes:
+                  args=['./native_v110/drnas_nf110','--input',
+                        str(path),'--mode',mode]
+                  if mode=='auto':args+=['--policy',str(policy)]
+                  done=subprocess.run(args,capture_output=True,text=True,timeout=5)
+                  assert done.returncode==0,(n,k,mode,done.stderr)
+                  result=json.loads(done.stdout.strip())
+                  assert result['status']==truth,(n,k,mode,truth,result)
+                  if truth=='SAT':assert result['witness_valid'] is True
+                  if mode=='auto':assert result['selected']=='majority'
+                  checked+=1
+                policy.write_text('DRNAS_V110_POLICY 0\n')
+                done=subprocess.run(['./native_v110/drnas_nf110','--input',str(path),
+                          '--mode','auto','--policy',str(policy)],
+                          capture_output=True,text=True,timeout=5)
+                assert done.returncode==0,done.stderr
+                result=json.loads(done.stdout)
+                assert result['status']==truth and result['selected']=='base'
+                checked+=1
+          print('PASS',checked,'exact native structure+CDCL cases; OFF bypass works',flush=True)
+          PY
+      - name: Rebuild 60 previously used THIRD-PARTY training files
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: python -u nf_v063_external_fetch.py
+      - name: Rebuild old 20 v0.9.1 training files
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: python -u nf_v091_fetch.py
+      - name: Rebuild old 20 v1.0 training files
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: python -u nf_v100_fetch.py
+      - name: TRAIN only, validation check, then freeze v1.1 selector
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v110_train.py
+          sha256sum native_v110/training/frozen_policy.txt
+          cat native_v110/training/frozen_decision.json
+      - name: ONLY AFTER FREEZE fetch 42 new never-used CNF originals
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v110_fetch.py
+          test "$(($(wc -l < nf110_holdout/manifest.csv)-1))" -eq 42
+      - name: Independent benchmark same libCaDiCaL against frozen learned selector
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: python -u nf_v110_benchmark.py
+      - name: Show complete performance, statuses and source provenance
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f native_v110/results/summary.csv; then cat native_v110/results/summary.csv; fi
+          if test -f native_v110/training/frozen_decision.json; then cat native_v110/training/frozen_decision.json; fi
+      - name: Archive C++ Linux binary, frozen selector, all raw timing and SHA records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-np-v110-native-42-external
+          path: |
+            DRNAS_NP_Crypto_Benchmark/native_v110/drnas_nf110
+            DRNAS_NP_Crypto_Benchmark/native_v110/training/
+            DRNAS_NP_Crypto_Benchmark/native_v110/results/
+            DRNAS_NP_Crypto_Benchmark/nf110_holdout/manifest.csv
+          if-no-files-found: warn
