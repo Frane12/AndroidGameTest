@@ -1,0 +1,140 @@
+name: DRNAS SAT — Independent Polynomial Family Validation
+on:
+  push:
+    branches:
+      - research/drnas-sat-polynomial-family-validation
+    paths:
+      - research/drnas-sat-family-test/fetch_verified.py
+      - research/drnas-sat-family-test/benchmark.py
+      - research/drnas-sat-family-test/aggregate.py
+      - research/drnas-sat-family-test/frozen_verified_gbd_family.json
+      - .github/workflows/drnas-sat-polynomial-family-benchmark.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-original-gbd-polynomial-family-benchmark
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile official unchanged CaDiCaL 3.0.1 and original DRNAS V7.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v78_single.cpp \
+            cadical-src/build/libcadical.a -o v78_single -pthread -ldl -lz
+      - name: Recheck original GBD pilot CNF SHA256 before loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-family-test/fetch_verified.py \
+            --manifest research/drnas-sat-family-test/frozen_verified_gbd_family.json \
+            --group pilot --shard 0 --shards 1 --outdir "$GITHUB_WORKSPACE/inputs"
+      - name: Pilot source parsing SAT models and nine controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-family-test/benchmark.py \
+            --binary "$GITHUB_WORKSPACE/v78_single" \
+            --verification "$GITHUB_WORKSPACE/inputs/source-verification.json" \
+            --group pilot --outdir "$GITHUB_WORKSPACE/measurements" \
+            --timeout 15 --repeats 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-polynomial-pilot-results
+          path: |
+            inputs/source-verification.json
+            cadical-source-commit.txt
+            measurements/
+          if-no-files-found: warn
+
+  holdout:
+    needs: pilot
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 43
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile official unchanged CaDiCaL 3.0.1 with identical settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v78_single.cpp \
+            cadical-src/build/libcadical.a -o v78_single -pthread -ldl -lz
+      - name: Recheck original precommitted SHA256 and known SAT class
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-family-test/fetch_verified.py \
+            --manifest research/drnas-sat-family-test/frozen_verified_gbd_family.json \
+            --group holdout --shard ${{ matrix.shard }} --shards 5 \
+            --outdir "$GITHUB_WORKSPACE/inputs"
+      - name: Run five randomized paired attempts of nine original solver modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-family-test/benchmark.py \
+            --binary "$GITHUB_WORKSPACE/v78_single" \
+            --verification "$GITHUB_WORKSPACE/inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/measurements" \
+            --timeout 15 --repeats 5
+      - name: Preserve all timings, timeouts, and source verification
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-polynomial-holdout-shard${{ matrix.shard }}-results
+          path: |
+            inputs/source-verification.json
+            cadical-source-commit.txt
+            measurements/
+          if-no-files-found: warn
+
+  combined-results:
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-polynomial-holdout-shard*-results
+          path: all_shards
+          merge-multiple: false
+      - name: Combine ALL 15 independent original CNFs with five paired repeats
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-family-test/aggregate.py \
+            --root all_shards --out full_report
+          cat full_report/research_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-SAT-polynomial-family-independent-validation-results
+          path: full_report/
+          if-no-files-found: error
