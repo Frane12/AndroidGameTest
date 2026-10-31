@@ -51,6 +51,7 @@ def freeze(args):
     newer = json.loads(Path(args.v97).read_text())
     diag, = [x for x in older["all_cases"] if x["id"] == TARGET]
     assert diag["official_label"] == "SAT" and target_profile(diag["features"])
+    diag = {**diag, "group": "known_target"}
     excluded = set(older["prior_54_excluded"])
     excluded.update(x["id"] for x in older["all_cases"])
     excluded.update(x["id"] for x in newer["cases"])
@@ -138,23 +139,23 @@ def run(args):
                     if p.returncode:
                         raise RuntimeError("exit "+str(p.returncode)+" "+p.stderr[-250:])
                     detail = [line for line in p.stdout.splitlines()
-                              if line.startswith("DRNAS_CAUSAL\\t")]
+                              if line.startswith("DRNAS_CAUSAL\t")]
                     if len(detail) != 1:
                         raise RuntimeError("Missing complete solver result")
-                    vals = dict(kv.split("=",1) for kv in detail[0].split("\\t")[1:])
+                    vals = dict(kv.split("=",1) for kv in detail[0].split("\t")[1:])
                     status = vals["answer"]
                     if status != c["official_label"]:
                         raise RuntimeError("Solver result contradicts official label")
-                    early = "\\n".join(line for line in p.stdout.splitlines()
-                                      if line.startswith("DRNAS_EARLY\\t"))
+                    early = "\n".join(line for line in p.stdout.splitlines()
+                                      if line.startswith("DRNAS_EARLY\t"))
                 except subprocess.TimeoutExpired as e:
                     status = "TIMEOUT"
                     sec = cap
                     output = e.stdout or b""
                     if isinstance(output, bytes):
                         output = output.decode("utf8", "replace")
-                    early = "\\n".join(line for line in output.splitlines()
-                                      if line.startswith("DRNAS_EARLY\\t"))
+                    early = "\n".join(line for line in output.splitlines()
+                                      if line.startswith("DRNAS_EARLY\t"))
                 except Exception as e:
                     status = "ERROR"
                     sec = __import__("time").monotonic() - t0
