@@ -1,0 +1,80 @@
+name: DRNAS NeuroFlow v0.6.2 fast-Horn heldout
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DRNAS_NP_Crypto_Benchmark/nf_v062_*.py'
+      - '.github/workflows/drnas-neuroflow-v062.yml'
+permissions:
+  contents: read
+jobs:
+  fast-horn:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CryptoMiniSat independent status reference
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version
+      - name: Old solver and Horn correctness regressions
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python drnas_np_lab.py test
+          python test_neuroflow_v03.py
+      - name: Exhaustive small formulas test every fast-Horn path
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python - <<'PY'
+          from itertools import product
+          from drnas_np_lab import normalize,check
+          from nf_v062_hornfast import run
+          import random
+          rnd=random.Random(621710)
+          controls=({'enabled':False},
+                    {'enabled':True,'min_n':0,'minority_min':0.,'minority_max':1.,
+                     'unit_max':1.,'defect_max':1.,'pair_budget_ms':30.})
+          for n in range(1,10):
+              for i in range(50):
+                  cnf=normalize(n,[tuple(x if rnd.getrandbits(1) else -x
+                          for x in rnd.sample(range(1,n+1),rnd.randint(0,min(n,4))))
+                          for _ in range(15)])
+                  truth='SAT' if any(check(cnf,v) for v in product((False,True),repeat=n)) else 'UNSAT'
+                  for setting in controls:
+                      for variant in ('adaptive','force'):
+                          r=run(n,cnf,variant,setting,budget=1.)
+                          assert r.status==truth,(n,i,variant,setting,r)
+                          if truth=='SAT':assert check(cnf,r.model)
+                      if not setting['enabled']:
+                          r=run(n,cnf,'adaptive',setting,budget=1.)
+                          assert r.first_ms==r.defect_ms==r.exact_ms==0.
+          print('PASS 450 exhaustively checked CNFs, all strategy paths')
+          PY
+      - name: Download untouched SATLIB sources with SHA256 audit
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v062_fetch.py
+      - name: Train on old problems, lock decision, test on new problems
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          python -u nf_v062_benchmark.py
+      - name: Show final training policy and measured timings
+        if: always()
+        working-directory: DRNAS_NP_Crypto_Benchmark
+        run: |
+          if test -f nf062_results/frozen_policy.json; then cat nf062_results/frozen_policy.json; fi
+          if test -f nf062_results/summary.csv; then cat nf062_results/summary.csv; fi
+      - name: Save source SHA256 and all paired timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-neuroflow-v062-fast-horn
+          path: |
+            DRNAS_NP_Crypto_Benchmark/nf062_results/
+            DRNAS_NP_Crypto_Benchmark/nf062_train_satlib/manifest.csv
+            DRNAS_NP_Crypto_Benchmark/nf062_holdout_satlib/manifest.csv
+          if-no-files-found: warn
