@@ -8,7 +8,8 @@ from collections import defaultdict
 import sys
 
 ROOT=Path(sys.argv[1]) if len(sys.argv)>1 else Path("combined-v85")
-MODES=("ca_plain","orig_v76_plain","orig_v76","hybrid_gate_with_observer")
+MODES=("ca_plain","orig_v76","orig_v76_plain","hybrid_gate_with_observer")
+DISPLAY_MODES=("ca_plain","orig_v76_plain","orig_v76","hybrid_gate_with_observer")
 FAMILIES=("random3","random4","color3","xor3","pigeonhole")
 REPEATS=3
 CAP=3.0
@@ -64,7 +65,7 @@ for case in all_cases:
     if any(r["status"]=="ERROR" for r in rows):
         inconsistencies.append(name+" solver error")
     cells={m:score([r for r in rows if r["mode"]==m]) for m in MODES}
-    base,plain,guided,hybrid=(cells[m] for m in MODES)
+    base,guided,plain,hybrid=(cells[m] for m in MODES)
     if any(cell[1]<REPEATS for cell in cells.values()):f["incomplete"]+=1
     measurable=base[1]==REPEATS and guided[1]==REPEATS and base[0]>=0.05
     ratio=base[0]/guided[0] if measurable else None
@@ -74,7 +75,7 @@ for case in all_cases:
         f["wins"]+=ratio>1.25;f["losses"]+=ratio<0.8
     if hint is not None:f["hint_effects"].append(hint)
     fmt=lambda cell:"%.4fs (%d/3)"%(cell[0],cell[1])
-    lines.append("| "+name+" | "+" | ".join(fmt(cells[m]) for m in MODES)+" | "+
+    lines.append("| "+name+" | "+" | ".join(fmt(cells[m]) for m in DISPLAY_MODES)+" | "+
                  ("%.2fx"%ratio if ratio is not None else "n/a")+" | "+
                  ("%.2fx"%hint if hint is not None else "n/a")+" |")
     gr=[r for r in rows if r["mode"]=="orig_v76"]
