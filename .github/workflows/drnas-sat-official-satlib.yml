@@ -1,0 +1,97 @@
+name: DRNAS SAT OFFICIAL SATLIB 225/250 — Medium SAT+UNSAT Against Frozen DRNAS
+on:
+  push:
+    branches:
+      - experiment/drnas-sat-official-satlib-225-250-20261031
+    paths:
+      - '.github/workflows/drnas-sat-official-satlib.yml'
+      - 'research/drnas-sat-v7-8/official_satlib_bench.py'
+      - 'research/drnas-sat-v7-8/official_satlib_audit.py'
+      - 'research/drnas-sat-v7-8/v92_early_structural.cpp'
+      - 'research/drnas-sat-v7-8/official_satlib_audit.py'
+      - 'research/drnas-sat-v7-8/patch_cadical_v90.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  blind-official:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify frozen legacy sources and compile separate optimized experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/official_satlib_bench.py research/drnas-sat-v7-8/official_satlib_audit.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          test "$(git hash-object research/drnas-sat-v7-8/v80_hybrid_probe.cpp)" = 208c8641c311fcb0940259c4ff2bc1c1e0f23838
+          mkdir -p satlib-official-results/shard-${{ matrix.shard }}
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp research/drnas-sat-v7-8/v92_early_structural.cpp > satlib-official-results/shard-${{ matrix.shard }}/source_hashes.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          # Instrument ONLY this temporary local clone, never the pinned source repository.
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          sha256sum cadical-src/src/{cadical.hpp,stats.hpp,analyze.cpp,solver.cpp} > satlib-official-results/shard-${{ matrix.shard }}/instrumented_hashes.txt
+          (cd cadical-src && ./configure && make -j2 > /tmp/ca-build.log 2>&1) || { tail -100 /tmp/ca-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v92_early_structural.cpp \
+            cadical-src/build/libcadical.a -o v92_early_structural -pthread -ldl -lz
+          lscpu > satlib-official-results/shard-${{ matrix.shard }}/cpu.txt
+      - name: Download official SATLIB, screen neutral medium cases, then 3 repeats x 5 frozen modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHARD=${{ matrix.shard }} python3 -u research/drnas-sat-v7-8/official_satlib_bench.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: satlib-shard-${{ matrix.shard }}
+          path: satlib-official-results/shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+  audit-official:
+    needs: blind-official
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: satlib-shard-*
+          path: combined-official-temp
+      - name: Audit ALL selected official SATLIB 225/250 cases and summarize strongest/total
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p combined-official
+          for shard in 0 1 2 3; do
+            test -f "combined-official-temp/satlib-shard-$shard/manifest.json"
+            mv "combined-official-temp/satlib-shard-$shard" "combined-official/shard-$shard"
+          done
+          python3 -u research/drnas-sat-v7-8/official_satlib_audit.py combined-official
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-OFFICIAL-SATLIB-225-250-FULL-AUDIT
+          path: combined-official/
+          if-no-files-found: warn
