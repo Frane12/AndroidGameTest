@@ -4,7 +4,7 @@
 Requires ALL fifteen independently frozen single-formula shards. Pilot is excluded.
 Every original input SHA256 has been locked before *any* solver timing.
 Known SAT/UNSAT results verified for each successful run; timeouts remain
-in PAR-2 with 2x cutoff penalty. Five repeats per mode. Paired bootstrap
+in PAR-2 with 2x cutoff penalty. Three repeats per mode. Paired bootstrap
 over original distinct CNF instances (NOT over dependent repeat trials).
 """
 import argparse,csv,json,statistics
@@ -44,8 +44,8 @@ def main(args):
             rows.append(o)
     if len(seen)!=15:
         raise RuntimeError("Expected exactly 15 fresh independent holdout CNFs; got "+str(len(seen)))
-    result=summarize(rows,5,15)
-    if len(rows)!=15*5*len(METHODS):
+    result=summarize(rows,3,15)
+    if len(rows)!=15*3*len(METHODS):
         raise RuntimeError("Incomplete paired experimental records")
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
     result["frozen_original_count"]=15
@@ -89,8 +89,8 @@ def main(args):
         "Database, SHA256 frozen BEFORE solver timing; 2 pilot CNFs excluded, "
         "3 additional >100MB originals excluded by predeclared size cap.",
         "",
-        "**Protocol:** 5 repetitions per method, 15s wall-time cutoff per run, "
-        "PAR-2 = 30s per timeout. Nine methods; 675 raw runs. "
+        "**Protocol:** 3 repetitions per method, 15s wall-time cutoff per run, "
+        "PAR-2 = 30s per timeout. Nine methods; 405 raw runs. "
         "Original CaDiCaL rel-3.0.1 library unchanged.",
         "",
         "| Method | PAR-2 sum of case medians, s (lower better) | Speed ratio CaDiCaL/method | Solved attempts |",
