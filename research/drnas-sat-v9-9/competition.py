@@ -1,6 +1,5 @@
 """Pinned V9.9 Auto vs six 2026 submissions. 9 CNFs x 7 solvers x 2 repeats."""
 import csv
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -130,7 +129,11 @@ def trial(index):
                     rc, elapsed, output, err = launch(cmd, cwd)
                     status = "timeout" if rc is None else "solved"
                     check = ""
-                    if rc is not None:
+                    if rc is not None and rc not in (0, 10, 20) and not any(
+                            line.startswith("s ") for line in output.splitlines()):
+                        status = "execution-failure"
+                        check = f"exit={rc} stderr={err[-2400:]} stdout={output[-300:]}"
+                    elif rc is not None:
                         try:
                             check = check_result(output, rc, case, clauses)
                         except ValueError as exc:
@@ -150,28 +153,29 @@ def audit():
     rows = [r for p in sorted(Path("trials").glob("trial-*.json")) for r in json.loads(p.read_text())]
     keys = [(r["case"], r["mode"], r["repeat"]) for r in rows]
     assert len(keys) == 126 and set(keys) == {(c["id"], m, n) for c in plan for m in MODES for n in (1, 2)}
-    assert all(r["status"] in ("timeout", "solved") for r in rows)
+    assert all(r["status"] in ("timeout", "solved", "execution-failure") for r in rows)
     cost = lambda r: r["wall_s"] if r["status"] == "solved" else 2 * CAP
     with Path("results.csv").open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0])
         writer.writeheader()
         writer.writerows(rows)
-    lines = ["| Solver | Solved runs /18 | New /12 | Replay /6 | Mean PAR-2 s |",
-             "|---|---:|---:|---:|---:|"]
+    lines = ["| Solver | Solved runs /18 | New /12 | Replay /6 | Execution failures | Mean PAR-2 s |",
+             "|---|---:|---:|---:|---:|---:|"]
     for m in sorted(MODES, key=lambda m: sum(cost(r) for r in rows if r["mode"] == m)):
         sample = [r for r in rows if r["mode"] == m]
         good = [r for r in sample if r["status"] == "solved"]
         new = sum(r["group"] == "new-to-V99" for r in good)
-        lines.append(f"| {m} | {len(good)} | {new} | {len(good)-new} | {statistics.mean(map(cost,sample)):.3f} |")
+        lines.append(f"| {m} | {len(good)} | {new} | {len(good)-new} | {sum(r['status'] == 'execution-failure' for r in sample)} | {statistics.mean(map(cost,sample)):.3f} |")
     lines += ["", "| CNF / group | " + " | ".join(MODES) + " |", "|---|" + "---:|" * len(MODES)]
     for c in plan:
         cells = []
         for m in MODES:
             times = [r["wall_s"] for r in rows if r["case"] == c["id"] and r["mode"] == m and r["status"] == "solved"]
-            cells.append(">15" if not times else f"{statistics.mean(times):.3f}" + (" (1/2)" if len(times) == 1 else ""))
+            failed = sum(r["case"] == c["id"] and r["mode"] == m and r["status"] == "execution-failure" for r in rows)
+            cells.append((f"error ({failed}/2)" if failed else ">15") if not times else f"{statistics.mean(times):.3f}" + (" (1/2)" if len(times) == 1 else ""))
         lines.append("| " + c["id"][:12] + " " + c["group"] + " | " + " | ".join(cells) + " |")
     lines += ["", "Published times are in the fixed plan; this is a single-core, capped wall-clock decision benchmark.",
-              "SAT witnesses are checked when emitted. UNSAT agrees with verified official labels; local UNSAT proofs are not certified."]
+              "Unsolved executions and timeouts each cost 30 seconds; execution failures are listed separately. The original Satsuma launcher also generates a proof file. SAT witnesses are checked when emitted. UNSAT agrees with verified official labels; local UNSAT proofs are not certified."]
     report = "\n".join(lines)
     Path("summary.md").write_text(report + "\n")
     print(report)
