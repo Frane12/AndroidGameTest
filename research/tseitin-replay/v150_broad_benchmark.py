@@ -7,6 +7,7 @@ This is not a blind test or an official SAT competition evaluation.
 import json,random,statistics,subprocess,time
 from pathlib import Path
 from collections import defaultdict
+from v150_proof_checker import verify_certificate
 OUT=Path("v150-broad-regression");OUT.mkdir(exist_ok=True)
 SOLVERS={"v148":Path("/tmp/v148_xor4"),"v1410":Path("/tmp/v1410_xor4"),
          "v150":Path("/tmp/v150_broad"),"kissat":Path("/tmp/kissat_solver")}
@@ -126,9 +127,11 @@ def solve(name,exe,case):
         elif "s SATISFIABLE" in p.stdout:status="SAT"
         else:status="UNKNOWN"
         valid=(sat_witness_ok(p.stdout,payload,case) if status=="SAT" else None)
+        proof_ok=(verify_certificate(payload,case["clauses"])
+                  if name=="v150" and status=="UNSAT" else None)
         return {"seconds":secs,"status":status,
-                "correct":status==case["expected"] and valid is not False,
-                "witness_ok":valid,"path":payload.get("path") if payload else "kissat",
+                "correct":status==case["expected"] and valid is not False and proof_ok is not False,
+                "witness_ok":valid,"proof_ok":proof_ok,"path":payload.get("path") if payload else "kissat",
                 "exit_code":p.returncode}
     except subprocess.TimeoutExpired:
         return {"seconds":TIMEOUT,"status":"TIMEOUT","correct":False,
