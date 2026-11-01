@@ -1,0 +1,90 @@
+name: DRNAS SAT V17.0 frozen relational k-core shock test
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v170-shock-relations-factorial-20261101'
+    paths:
+      - 'experiments/drnas_v16/shock_relations_v170.py'
+      - '.github/workflows/drnas-sat-v170-shock-relations.yml'
+
+jobs:
+  blind-kcore-factorial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen protocol before generating 170xxx CNFs
+        run: |
+          python3 -m py_compile experiments/drnas_v16/shock_relations_v170.py
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "experiments/drnas_v16")
+          import shock_relations_v170 as m
+          assert m.PINNED == "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert m.CORE_THRESHOLD == 16.50
+          assert m.HOLDOUT == tuple(range(170000, 170030))
+          assert m.CONTROLS == tuple(range(170030, 170036))
+          assert set(m.MODES) == {"baseline", "target-only", "restart-only", "sat-fixed", "core-gate"}
+          assert not Path("drnas-v170-results/cnf").exists()
+          print("V170_SOURCE_POLICY_FROZEN_BEFORE_HOLDOUT")
+          PY
+      - name: Compile exact pinned Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v170
+          cd /tmp/kissat-v170
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Run 30 blind formulas and 6 density controls across five modes
+        run: |
+          python3 -u experiments/drnas_v16/shock_relations_v170.py \
+            --solver /tmp/kissat-v170/build/kissat \
+            --root drnas-v170-results --timeout 6 --repeats 2
+      - name: Audit identities, pair completeness, gate freeze and wall budgets
+        run: |
+          python3 - <<'PY'
+          import csv, json
+          from collections import defaultdict
+          from pathlib import Path
+          root = Path("drnas-v170-results")
+          with (root / "measurements.csv").open(newline="") as source:
+              rows = list(csv.DictReader(source))
+          with (root / "identities.csv").open(newline="") as source:
+              identities = list(csv.DictReader(source))
+          manifest = json.loads((root / "manifest.json").read_text())
+          summary = json.loads((root / "summary.json").read_text())
+          assert len(rows) == 36 * 5 * 2 == 360
+          assert len(identities) == len(manifest["cases"]) == 36
+          assert manifest["frozen_mean_core_threshold"] == 16.5
+          assert {int(x["seed"]) for x in identities} == set(range(170000, 170036))
+          paired = defaultdict(dict)
+          for row in rows:
+              assert row["status"] in ("SAT", "UNSAT", "TIMEOUT")
+              assert float(row["total_seconds"]) <= 6.25
+              paired[(row["seed"], row["repeat"])][row["mode"]] = row
+              if row["mode"] == "core-gate":
+                  expected = "sat-fixed" if (
+                      row["group"] == "holdout" and float(row["mean_core"]) <= 16.5
+                  ) else "baseline"
+                  assert row["selected"] == expected, row
+              elif row["mode"] == "sat-fixed":
+                  assert row["selected"] == "sat-fixed"
+          assert len(paired) == 72
+          assert all(len(modes) == 5 for modes in paired.values())
+          assert summary["pin"] == "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          print("V170_INDEPENDENT_AUDIT_PASS", len(rows), "paired measurements")
+          PY
+      - name: Upload blind relational and factorial results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V170-frozen-kcore-shock-factorial
+          path: |
+            drnas-v170-results/manifest.json
+            drnas-v170-results/identities.csv
+            drnas-v170-results/measurements.csv
+            drnas-v170-results/summary.json
+          if-no-files-found: warn
