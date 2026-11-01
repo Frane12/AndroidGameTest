@@ -281,7 +281,8 @@ int main(int argc,char**argv) {
    struct stat st{};
    if(stat(input.c_str(),&st)!=0)throw runtime_error("Input stat failed");
    if(st.st_size<=32*1024*1024) {
-     Cnf f=parse(input);
+     try {
+       Cnf f=parse(input);
      vector<Eq> equations;
      if(xor_extract(f,equations)) {
        Answer a=solve_exact(f,equations);
@@ -292,6 +293,10 @@ int main(int argc,char**argv) {
      if(complete_php_proof(f,holes,birds)) {
        json_php(holes,birds);
        return 0;
+     }
+     } catch(const std::runtime_error& /*unsupported DIMACS*/ ) {
+       // Safe fallback for noncanonical, oversized, or unsupported DIMACS.
+       // Never report SAT/UNSAT based on a partial or failed structural parse.
      }
    }
    // General SAT fallback: original C++ V7.6, bypass Python on non-XOR input.
