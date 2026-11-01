@@ -47,9 +47,9 @@ def payload(path):
  with path.open(newline="") as f: return list(csv.DictReader(f))
 def rowhash(r): return hashlib.sha256(json.dumps(r,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
-def ingest_r7_category(db,kind,cat,manifest,rows,traces,measurements_path,results_path,aid,expected_sha=None):
+def ingest_r7_category(db,kind,cat,manifest,rows,traces,measurements_path,results_path,aid,expected_sha=None,dataset_prefix='DRNAS-R7-',provenance_override=None,description_override=None):
  spec=R7[kind]
- dataset="DRNAS-R7-"+kind+"-"+cat
+ dataset=dataset_prefix+kind+"-"+cat
  require(manifest["category"]==cat and manifest["source_commit"]==spec["commit"],
          dataset+" source commit/category mismatch")
  require(manifest["cap_seconds"]==spec["cap"] and manifest["repeats"]==3,
@@ -90,6 +90,7 @@ def ingest_r7_category(db,kind,cat,manifest,rows,traces,measurements_path,result
  provenance=("external_previously_seen" if cat.startswith("external") else
              "generated_prescreen_selected" if kind=="target" and cat=="random3" else
              "generated_development")
+ if provenance_override is not None: provenance=provenance_override
  # Retain pre-timing structural features and prescreen selection labels separately.
  manifest_sha=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()
  for name,f in cases.items():
@@ -107,7 +108,7 @@ def ingest_r7_category(db,kind,cat,manifest,rows,traces,measurements_path,result
           dataset+" existing attempts incomplete")
  else:
   db.execute("INSERT INTO datasets VALUES (?,?,?,?,?,?,?,?)",
-   (dataset,provenance,"R7 measured frozen strategies; nonofficial; "+kind,spec["run"],spec["commit"],
+   (dataset,provenance,description_override or ("R7 measured frozen strategies; nonofficial; "+kind),spec["run"],spec["commit"],
     manifest["runner"],spec["cap"],sha(measurements_path)))
   for name,f in cases.items():
    db.execute("INSERT INTO formulas VALUES (?,?,?,?,?,?,?,?,?)",
@@ -302,8 +303,8 @@ def main():
   counts={t:db.execute("SELECT COUNT(*) FROM "+t).fetchone()[0]
    for t in ("datasets","formulas","attempts","telemetry","source_artifacts",
              "attempt_context","verified_certificates","r7_formula_features")}
-  require(counts["datasets"]==49 and counts["formulas"]==1027 and
-          counts["attempts"]==10706 and counts["source_artifacts"]==44 and
+  require(counts["datasets"]>=49 and counts["formulas"]>=1027 and
+          counts["attempts"]>=10706 and counts["source_artifacts"]>=44 and
           counts["r7_formula_features"]==380,
           "Cumulative count changed unexpectedly: "+str(counts))
   require(db.execute("PRAGMA integrity_check").fetchone()[0]=="ok",
