@@ -15,8 +15,14 @@ struct Propagated145 {
  bool conflict=false;
  int derived=0;
 };
-static Propagated145 propagate145(const Cnf& f) {
+static Propagated145 propagate145(const Cnf& f,const vector<Parity144>& eq) {
  Propagated145 p;
+ // Leave already certified multi-variable XOR clauses for GF(2), not CNF UP.
+ // Unit implications can use all remaining clauses, with original reasons.
+ vector<char> parity_used(f.clauses.size(),0);
+ for(const auto& e:eq)if(e.vars.size()>1)
+   for(int clause:e.clauses)if(clause>=0 && clause<(int)f.clauses.size())
+     parity_used[clause]=1;
  const int max_steps=4096;
  const int max_scans=160000;
  vector<int8_t> values(f.n+1,0);
@@ -25,6 +31,7 @@ static Propagated145 propagate145(const Cnf& f) {
  while(changed) {
    changed=false;
    for(int i=0;i<(int)f.clauses.size();i++) {
+     if(parity_used[i])continue;
      if(++scans>max_scans) {p.complete=false;return p;}
      const auto& clause=f.clauses[i];
      bool sat=false,unknown=false;
@@ -88,7 +95,7 @@ int main(int argc,char**argv) {
          return e.vars.size()>1;
        });
        if(nontrivial) {
-         const Propagated145 propagation=propagate145(f);
+         const Propagated145 propagation=propagate145(f,eq);
          unit_count=(int)propagation.steps.size();
          candidate=propagation.complete && !propagation.conflict &&
                    propagation.derived>0;
