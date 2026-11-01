@@ -14,6 +14,7 @@ import v1531_structural_fingerprints as structure
 
 ROOT=Path("crossfamily-validation")
 CONFIG=Path("research/tseitin-replay/v1531_crossfamily_preregister.json")
+AMENDMENT=Path("research/tseitin-replay/v1531_crossfamily_source_inventory_amendment.json")
 MEDIUM=Path("research/sat-analytics-data/medium40/results.json")
 SHORT=Path("research/sat-analytics-data/short40/results.json")
 TRIALS=5000
@@ -63,14 +64,17 @@ def ingest_inputs(category):
   if any(m.name.startswith("/") or ".." in Path(m.name).parts for m in members):
    raise RuntimeError("Unsafe SATLIB source archive paths")
   names=index_by_name(members)
-  if len(names)!=100:raise RuntimeError("Expected exact 100 source CNFs, got "+str(len(names)))
+  amendment=json.loads(AMENDMENT.read_text())
+  expected_archive_n=99 if category=="uuf200-860" else 100
+  if len(names)!=expected_archive_n:raise RuntimeError("Pinned original archive count changed; expected "+str(expected_archive_n)+", got "+str(len(names)))
   if category=="flat200-479":
    rng=random.Random(config["graph_filename_selection_seed"])
    candidates=sorted(names)
    rng.shuffle(candidates)
    chosen=sorted(candidates[:40])
   else:chosen=sorted(set(names)-old)
-  if len(chosen)!=40:raise RuntimeError("Frozen holdout is not 40 files")
+  expected_n=amendment["amended_family_count"][category]
+  if len(chosen)!=expected_n:raise RuntimeError("Source-integrity amended holdout mismatch; expected "+str(expected_n)+", got "+str(len(chosen)))
   seen=set()
   manifest=[]
   with tempfile.TemporaryDirectory() as folder:
@@ -101,6 +105,7 @@ def ingest_inputs(category):
    "source_archive_url":"https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/"+f["archive_path"],
    "source_archive_sha1":f["sha1"],"source_archive_sha256":sha(archive),
    "preregistration_sha256":sha(CONFIG.read_bytes()),
+   "source_inventory_amendment_sha256":sha(AMENDMENT.read_bytes()),
    "previous_training_run":config["observed_training_run"],
    "previous_confirmation_run":config["observed_untouched_confirmation_run"],
    "category":category,"selected_names":chosen,"previous_pilot_names":sorted(old),
@@ -154,7 +159,8 @@ def run_family(category):
  outjson(out/"results.json",dataset)
  (out/"runner.txt").write_text(platform.platform()+"\n"+subprocess.run(
    ["lscpu"],text=True,capture_output=True).stdout)
- assert len(rows)==40 and sum(len(x["runs"]) for x in rows)==80
+ assert len(rows)==json.loads(AMENDMENT.read_text())["amended_family_count"][category]
+ assert sum(len(x["runs"]) for x in rows)==2*len(rows)
  print("CROSSFAMILY_CATEGORY_COMPLETE",category,
     "correct",sum(y["correct"] for x in rows for y in x["runs"]),
     "timeouts",sum(y["status"]=="TIMEOUT" for x in rows for y in x["runs"]),flush=True)
@@ -202,7 +208,10 @@ def csvout(path,rows):
 def aggregate():
  config=json.loads(CONFIG.read_text())
  families=[x["category"] for x in config["test_families"]]
- if len(families)!=4 or config["per_family_cases"]!=40:raise RuntimeError("Preregister drift")
+ amendment=json.loads(AMENDMENT.read_text())
+ if len(families)!=4 or config["per_family_cases"]!=40:raise RuntimeError("Original preregister drift")
+ expected_per_family=amendment["amended_family_count"]
+ if sum(expected_per_family.values())!=159 or amendment["amended_attempts"]!=318:raise RuntimeError("Amended inventory drift")
  rows=[];measurements=[];sources=[]
  for family in families:
   p=ROOT/family
@@ -210,7 +219,7 @@ def aggregate():
   dataset=json.loads((p/"results.json").read_text())
   if not freeze["frozen_before_solver_execution"] or dataset["repetitions"]!=2 or dataset["timeout_seconds"]!=5.3:
    raise RuntimeError("Missing frozen manifest or cap changed")
-  if len(dataset["manifest"])!=40 or len(dataset["results"])!=40:
+  if len(dataset["manifest"])!=expected_per_family[family] or len(dataset["results"])!=expected_per_family[family]:
    raise RuntimeError("Missing source formulas")
   expected={x["id"]:x for x in freeze["manifest"]}
   actual={x["id"]:x for x in dataset["manifest"]}
@@ -243,8 +252,8 @@ def aggregate():
      "manifest_sha256":freeze["manifest_sha256"],
      "run":dataset["dataset_meta"]["source_run"],
      "sha":dataset["dataset_meta"]["source_sha"]})
- if len(rows)!=160 or len(measurements)!=320:raise RuntimeError("Missing all 160 cases/320 attempts")
- if len({x["sha256_normalized"] for x in rows})!=160:raise RuntimeError("Duplicate input")
+ if len(rows)!=159 or len(measurements)!=318:raise RuntimeError("Missing 159 cases/318 attempts after UUF200 archive correction")
+ if len({x["sha256_normalized"] for x in rows})!=159:raise RuntimeError("Duplicate input")
  grouped={f:[x for x in rows if x["family"]==f] for f in families}
  tests=[]
  for i,f in enumerate(families):
@@ -252,7 +261,7 @@ def aggregate():
   for j,feature in enumerate(FEATURES):
    xs=[x[feature] for x in grouped[f]]
    rho=corr(xs,ys)
-   tests.append({"family":f,"predictor":feature,"n":40,
+   tests.append({"family":f,"predictor":feature,"n":len(grouped[f]),
      "spearman_rho":rho,"permutation_p_two_sided":permutation(xs,ys,rho,
        seed=3191201+i*300+j*13),"bh_q_all_family_predictor_tests":None})
  ids=sorted(range(len(tests)),key=lambda i:tests[i]["permutation_p_two_sided"] or 1)
@@ -264,7 +273,7 @@ def aggregate():
  for j,feature in enumerate(FEATURES):
   r=stratified_rho(grouped,feature)
   p=stratified_p(grouped,feature,r,624190+j*31)
-  pooled.append({"feature":feature,"n_formulas":160,"families":4,
+  pooled.append({"feature":feature,"n_formulas":159,"families":4,
     "stratified_fisher_z_rho":r,"permutation_p_two_sided":p,"bh_q_three_pooled":None})
  ids=sorted(range(len(pooled)),key=lambda i:pooled[i]["permutation_p_two_sided"] or 1)
  q=1.
@@ -280,8 +289,9 @@ def aggregate():
          and next(x for x in pooled if x["feature"]==feature)["bh_q_three_pooled"]<.05
           for feature in ("degree_gini","degree_cv")))
  summary={
-  "pre_registration_sha256":sha(CONFIG.read_bytes()),"source_run_ids":sources,
-  "sample_count":160,"attempt_count":320,"family_counts":{f:len(grouped[f]) for f in families},
+  "pre_registration_sha256":sha(CONFIG.read_bytes()),
+  "source_inventory_amendment_sha256":sha(AMENDMENT.read_bytes()),"source_run_ids":sources,
+  "sample_count":159,"attempt_count":318,"family_counts":{f:len(grouped[f]) for f in families},
   "timeouts_by_family":{f:sum(x["timeout_attempts"] for x in grouped[f]) for f in families},
   "correct_attempt_count":sum(1 for x in measurements if x["correct"]),
   "total_timeouts":sum(x["timeout_attempts"] for x in rows),
@@ -297,6 +307,7 @@ def aggregate():
     "12 within-family tests BH adjusted; 3 pooled tests separately BH adjusted.",
     "Known labels do not independently verify original Kissat UNSAT proofs.",
     "No changes to V15.3.1 source, no training/threshold adjustment from these test outcomes.",
+    "UUF200 original archive actually has 99 not 100 CNFs; source inventory amendment fixed n=39 before UUF200 measurement.",
     "No claim of general mathematical law or causality."]}
  ROOT.mkdir(exist_ok=True)
  outjson(ROOT/"aggregate.json",summary)
@@ -305,11 +316,11 @@ def aggregate():
  csvout(ROOT/"family_tests.csv",tests)
  csvout(ROOT/"pooled_tests.csv",pooled)
  report=["# DRNAS SAT -- preregistered cross-family structural transfer",
-  f"**160 real SATLIB formulas, 4 families x 40, 320 upstream Kissat attempts.**",
+  f"**159 real SATLIB formulas, 40+40+39+40, 318 upstream Kissat attempts.**",
   f"Prespecified transfer criterion met: **{success}**.",
   "All inputs SHA-1 verified, per-formula SHA-256 frozen before timing.",
   "",
-  "| Family | Gini rho | Degree CV rho | Pair reuse rho | Timeout attempts /80 |",
+  "| Family | Gini rho | Degree CV rho | Pair reuse rho | Timeout attempts / category |"
   "|---|---:|---:|---:|---:|"]
  for f in families:
   get=lambda feat:next(x for x in tests if x["family"]==f and x["predictor"]==feat)["spearman_rho"]
