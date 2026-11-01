@@ -47,7 +47,7 @@ def configure():
     fixed.CAP=CAP;old.CAP=CAP
     check(fixed.GATE_MAX_BYTES==96*1024 and fixed.GATE_MIN_XOR==16,
           "V13.15 fixed gate drift")
-    check(fixed.MODES==ACTIONS,"V13.15 modes changed")
+    check(fixed.MODES==("Kissat404","DRNAS_Legacy","V1312_XOR_Kissat","V1315_SELECTIVE_XOR"),"V13.15 modes changed")
 
 def features_from_metadata(c):
     n=int(c["variables"]);m=int(c["clauses"])
