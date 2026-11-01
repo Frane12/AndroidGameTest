@@ -1,0 +1,77 @@
+name: DRNAS V14.2 XOR4 vs SATComp 2026 overall winner on SC2024 grids
+on:
+  push:
+    branches: [experiment/drnas-v142-xor4-vs-satcomp26-winner-20261101]
+    paths:
+      - '.github/workflows/drnas-v142-xor4-vs-satcomp26-winner.yml'
+      - 'research/tseitin-replay/satcomp26_winner_benchmark.py'
+      - 'research/drnas-sat-v7-8/v142*.cpp'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  head-to-head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Verify baselines and compile V14.2 XOR4
+        run: |
+          set -euo pipefail
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'ce981216e879c9fce381f7e73429f614a55e118b2ae21700533d3a8a21b8078d  bin/v142_fastgate' | sha256sum -c -
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          chmod +x bin/v142_fastgate bin/kissat_solver
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/drnas-sat-v7-8/v142_xor4.cpp -o bin/v142_xor4
+          python3 -m py_compile research/tseitin-replay/satcomp26_winner_benchmark.py
+          python3 research/tseitin-replay/xor4_benchmark.py --controls
+      - name: Fetch exact official 2026 winner submission
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official-winner
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/satcompetition/2026/main/downloads/solvers/anders.tar.xz \
+            --output official-winner/anders.tar.xz
+          actual="$(git hash-object official-winner/anders.tar.xz)"
+          test "$actual" = 5ec9be607fbf762329176beb7068d574cd528b5b
+          mkdir official-winner/unpacked
+          tar -xJf official-winner/anders.tar.xz -C official-winner/unpacked
+          run_script="$(find official-winner/unpacked -type f -name run.sh -print -quit)"
+          test -n "$run_script"
+          solver_dir="$(dirname "$run_script")"
+          test -f "$solver_dir/build.sh"
+          chmod +x "$solver_dir/build.sh" "$solver_dir/run.sh"
+          (cd "$solver_dir" && ./build.sh)
+          echo "SATCOMP26_SOLVER_DIR=$GITHUB_WORKSPACE/$solver_dir" >> "$GITHUB_ENV"
+          echo "SATCOMP26_ARCHIVE_GIT_BLOB_SHA=$actual" >> "$GITHUB_ENV"
+          {
+            echo "Official archive Git blob SHA: $actual"
+            echo "Submission entry points:"
+            find "$solver_dir" -maxdepth 2 -type f -printf '%P\n' | sort | head -80
+          } > official-winner/provenance.txt
+      - name: Download original grids and independently replay UNSAT certificates
+        run: python3 research/tseitin-replay/grid_certificates.py
+      - name: Run matched 8-second head-to-head, three repeats
+        run: python3 -u research/tseitin-replay/satcomp26_winner_benchmark.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V142-XOR4-vs-SATComp2026-Overall-Winner
+          path: |
+            xor4-results/satcomp26_winner_results.json
+            xor4-results/satcomp26_winner_results.md
+            xor4-results/champion-proof/
+            grid-proofs/
+            official-winner/provenance.txt
+          if-no-files-found: warn
