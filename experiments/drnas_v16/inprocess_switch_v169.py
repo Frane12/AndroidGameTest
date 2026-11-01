@@ -162,12 +162,14 @@ def main():
     parser.add_argument("--timeout",type=float,default=25)
     parser.add_argument("--probe-timeout",type=float,default=3)
     parser.add_argument("--repeats",type=int,default=2)
+    parser.add_argument("--group",choices=("replay","holdout","all"),default="all")
     a=parser.parse_args()
     if a.repeats<1 or a.timeout<1 or a.probe_timeout<=0:
         parser.error("Invalid limits")
     a.root.mkdir(parents=True,exist_ok=True)
+    selected_cases=tuple(x for x in CASES if a.group=="all" or x[0]==a.group)
     rows=[];identities=[]
-    for group,n,seed in CASES:
+    for group,n,seed in selected_cases:
         cnf=a.root/"cnf"/group/f"{seed}.cnf"
         digest=make_cnf(cnf,n,seed)
         identities.append(dict(group=group,seed=seed,nvars=n,sha256=digest))
@@ -187,7 +189,7 @@ def main():
                     raise RuntimeError(f"Unexpected result: {details}")
     csvout(a.root/"identities.csv",identities)
     csvout(a.root/"measurements.csv",rows)
-    assert len(rows)==len(CASES)*len(MODES)*a.repeats,len(rows)
+    assert len(rows)==len(selected_cases)*len(MODES)*a.repeats,len(rows)
     groups=defaultdict(dict)
     for r in rows:
         groups[(r["seed"],r["repeat"])][r["mode"]]=r
@@ -209,6 +211,8 @@ def main():
          "Cold portfolio stops and reconstructs a NEW solver (for comparison).",
          "No tuning with unseen CNF results. 25s budget applies to full run."]
     for group in ("replay","holdout"):
+        if not any(r["group"]==group for r in rows):
+            continue
         txt.append(f"GROUP {group}")
         for mode in MODES:
             subset=[r for r in rows if r["group"]==group and r["mode"]==mode]
