@@ -96,7 +96,7 @@ def gen(family,i):
   # Unit guard activates one of two contradictory parity equations.
   a,b,c,g=1,2,3,4
   cl+=xor([a,b,c],0,rng)
-  for row in xor([a,b,c],1,rng):cl.append(row+([g] if unsat else [-g]))
+  for row in xor([a,b,c],1,rng):cl.append(row+[g])
   cl.append([-g] if unsat else [g])
  else:raise ValueError(family)
  # Add only redundant weakened clauses from exact original base.
