@@ -877,8 +877,8 @@ static int kissat_fallback(char **argv) {
  return 3;
 }
 int main(int argc,char**argv) {
- if(!(argc==4||(argc==5&&(string(argv[4])=="--classify-only"||string(argv[4])=="--derive-only")))) {
-   cerr<<"Usage: v162_bridge INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";
+ if(!(argc==4||(argc==5&&(string(argv[4])=="--classify-only"||string(argv[4])=="--derive-only"||string(argv[4])=="--bridge-first")))) {
+   cerr<<"Usage: v162_bridge INPUT_CNF KISSAT_BINARY SEED [--classify-only|--derive-only|--bridge-first]\n";
    return 2;
  }
  try {
@@ -908,6 +908,11 @@ int main(int argc,char**argv) {
    }
    // The V15.3 core remains unchanged; only work-avoidance is new.
    V1531Signals signals=v1531_signals(f);
+   // Explicit diagnostic mode: exercise full exact-unit propagation -> Kissat
+   // before other structural solvers. Never enabled in production defaults.
+   if(argc==5 && string(argv[4])=="--bridge-first")
+     return v162_augmented_fallback(f,signals);
+
    const auto structural_start=std::chrono::steady_clock::now();
    const auto time_exceeded=[&](){
      return std::chrono::duration_cast<std::chrono::milliseconds>(
