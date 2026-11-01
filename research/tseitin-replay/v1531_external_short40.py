@@ -3,7 +3,10 @@
 
 The 40 file choices below were fixed before any short40 timing was collected.
 They exclude the 13..20 instances used by frozen V15.3.1 SATLIB F regression.
-They have NOT been proven unseen in all historical DRNAS experiments.\nThe original frozen selection included dubois100.cnf, which was rejected before\nbenchmarking because its header claimed 800 clauses but only 598 existed; it\nwas replaced by verified well-formed dubois21.cnf, without timing-based filtering.
+They have NOT been proven unseen in all historical DRNAS experiments.
+The original frozen selection included dubois100.cnf, which was rejected before
+benchmarking because its header claimed 800 clauses but only 598 existed; it
+was replaced by verified well-formed dubois21.cnf, without timing-based filtering.
 This is NOT an official SAT Competition benchmark.
 """
 import argparse, hashlib, json, os, random, statistics, subprocess, sys, time
@@ -116,7 +119,8 @@ def aggregate(root):
      "Each paired solver comparison is made within one GitHub runner per family.",
      "SAT checked against original clauses; DRNAS native UNSAT checked where proof emitted.",
      "Kissat UNSAT and DRNAS Kissat-fallback UNSAT labels do **not** constitute independently verified UNSAT proofs.",
-     "Not known globally unseen across historical experiments; 13–20 previously used in the V15.3.1 baseline were excluded.",\n     "Input validation exclusion: dubois100.cnf has 598 clauses against claimed 800; replaced with dubois21.cnf before new timing.","",
+     "Not known globally unseen across historical experiments; 13–20 previously used in the V15.3.1 baseline were excluded.",
+     "Input validation exclusion: dubois100.cnf has 598 clauses against claimed 800; replaced with dubois21.cnf before new timing.","",
      "| Family | Solver | Correct attempts | Timeouts | PAR-2 total (s) | Median wall (s) |",
      "|---|---|---:|---:|---:|---:|"]
  summary={}
