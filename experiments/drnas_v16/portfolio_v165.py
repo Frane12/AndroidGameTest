@@ -167,9 +167,17 @@ def run(args):
             # Rotate execution order, retaining identical files and hardware.
             order=MODES[rep%len(MODES):]+MODES[:rep%len(MODES)]
             for mode in order:
-                started=time.perf_counter()
-                flags=() if mode=="baseline" else ("--sat",) if mode=="sat-fixed" else select_profile(f)
-                gate_sec=time.perf_counter()-started if mode=="adaptive" else 0.0
+                if mode=="baseline":
+                    flags=()
+                    gate_sec=0.0
+                elif mode=="sat-fixed":
+                    flags=("--sat",)
+                    gate_sec=0.0
+                else:
+                    # Include the complete DIMACS feature-pass in adaptive timing.
+                    started=time.perf_counter()
+                    flags=select_profile(describe(path))
+                    gate_sec=time.perf_counter()-started
                 result,solve_sec,rc=measure(args.solver,flags,path,args.timeout)
                 row={
                     "group":path.parent.name,"file":path.name,"repeat":rep,
