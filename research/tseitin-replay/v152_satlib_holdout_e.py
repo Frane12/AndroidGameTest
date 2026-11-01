@@ -123,10 +123,14 @@ def run(name,exe,case):
 def main():
     for name,p in SOLVERS.items():
         if not p.is_file():raise RuntimeError(f"Missing native solver {name}")
-    cases=[];manifest=[]
+    cases=[];manifest=[];rejected=[]
     for i,(rel,expected,family) in enumerate(CASES):
         src=ROOT/rel
-        raw,clean,n,clauses,trailer=normalize_satlib(src)
+        try:
+            raw,clean,n,clauses,trailer=normalize_satlib(src)
+        except (ValueError,OSError) as err:
+            rejected.append({"source":rel,"expected":expected,"reason":str(err)})
+            continue
         dst=OUT/f"case_{i:02d}.cnf"
         dst.write_bytes(clean)
         cases.append({"file":dst,"family":family,"expected":expected,"n":n,"clauses":clauses})
@@ -159,9 +163,10 @@ def main():
     (OUT/"results.json").write_text(json.dumps({"source":SOURCE,"revision":REV,
         "benchmark":"SATLIB public external holdout E; not an official competition",
         "timeout_seconds":TIMEOUT,"repetitions":REPS,
-        "manifest":manifest,"summary":summary,"results":results},indent=2))
+        "manifest":manifest,"rejected_invalid_input":rejected,
+        "summary":summary,"results":results},indent=2))
     rows=["# V15.2 expanded on independent SATLIB public holdout E",
-          "48 fixed SATLIB instances, 6 distinct families, same runner, 3 repeats.",
+          f"Frozen 48 candidates, {len(cases)} valid, {len(rejected)} excluded as malformed; 3 repeats.",
           "Original source SHA-256, normalized hashes and suffix markers documented in JSON.",
           "2 s per attempt, PAR-2; native UNSAT independently checked, SAT models clause-validated.",
           "NOT official SAT Competition ranking.","",
@@ -171,6 +176,7 @@ def main():
         rows.append(f"| {name} | {s['solved']}/{s['cases']} | {s['median_seconds']:.6f} | {s['sum_medians']:.6f} | {s['par2']:.6f} |")
     (OUT/"results.md").write_text("\n".join(rows)+"\n")
     print("\n".join(rows))
+    for r in rejected:print("REJECTED_INVALID_INPUT",r["source"],r["reason"])
     for name,s in summary.items():print("ROUTES",name,json.dumps(s["routes"],sort_keys=True))
     if any(x["status"] in ("SAT","UNSAT") and not x["correct"]
            for row in results for x in row["runs"]):
