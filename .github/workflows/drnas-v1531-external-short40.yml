@@ -1,0 +1,130 @@
+name: DRNAS V15.3.1 frozen external SATLIB short40 paired holdout
+on:
+  push:
+    branches:
+      - experiment/drnas-v1531-external-short40-20261101
+    paths:
+      - 'research/tseitin-replay/v1531_external_short40.py'
+      - '.github/workflows/drnas-v1531-external-short40.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  paired_short:
+    name: External short40 - ${{ matrix.category }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        category: [uniform_sat, graph_coloring, uniform_unsat, dubois_unsat]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen V15.3.1 source and compile
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = "d280a2ffa28d72aec183323bbea40544d676112d"
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          test -x /tmp/v1531_nohang
+      - name: Compile pinned original Kissat (identical on same runner)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+      - name: Fetch pinned real SATLIB corpus
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-repo
+          git -C /tmp/satlib-repo fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-repo checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-repo rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+          python3 -m py_compile research/tseitin-replay/v1531_external_short40.py
+      - name: Benchmark frozen external ten SATLIB formulas (3 paired repeats)
+        run: |
+          set -euo pipefail
+          uname -a
+          grep -m1 "model name" /proc/cpuinfo || true
+          python3 -u research/tseitin-replay/v1531_external_short40.py --category ${{ matrix.category }}
+      - name: Upload per-family raw benchmark even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: short40-${{ matrix.category }}
+          path: short40-${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+  analysis:
+    name: Assemble results, SQLite and scatterplots
+    needs: paired_short
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve four measured category artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: short40-*
+          path: .
+          merge-multiple: false
+      - name: Verify 40 distinct external DIMACS files and 240 attempts
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_external_short40.py --aggregate
+      - name: Download historical V15.3.1 artifacts for cumulative analytics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p raw-artifacts
+          gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
+          cp -r DRNAS-V1531-External-Short40 raw-artifacts/
+      - name: Generate full SQLite and scatterplots
+        run: |
+          set -euo pipefail
+          python3 -m venv .analytics-venv
+          .analytics-venv/bin/pip install matplotlib
+          .analytics-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
+            --input raw-artifacts \
+            --out sat-analysis \
+            --source-run 41278912894 \
+            --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
+            --runner github-hosted-ubuntu-24.04
+          test -s sat-analysis/sat_analytics.sqlite
+          test -s sat-analysis/scatter_paired_v1531.png
+      - name: Upload benchmark + cumulative analytics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-External-Short40-Analysis
+          path: |
+            DRNAS-V1531-External-Short40/
+            sat-analysis/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Persist cumulative database snapshot in experiment branch
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/short40
+          cp sat-analysis/sat_analytics.sqlite research/sat-analytics-data/short40/
+          cp sat-analysis/summary.json research/sat-analytics-data/short40/
+          cp sat-analysis/grouped.csv research/sat-analytics-data/short40/
+          cp sat-analysis/paired.csv research/sat-analytics-data/short40/
+          cp DRNAS-V1531-External-Short40/results.json research/sat-analytics-data/short40/
+          cp DRNAS-V1531-External-Short40/results.md research/sat-analytics-data/short40/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/sat-analytics-data/short40
+          if ! git diff --cached --quiet; then
+            git commit -m "data: freeze external short40 cumulative analytical snapshot [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
