@@ -1,0 +1,281 @@
+name: DRNAS V13.18 - Learned SAT Routing vs Blind New 30 CNFs
+on:
+  push:
+    branches:
+      - experiment/drnas-v1318-learned-select-holdout-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v1318-adaptive-blind.yml'
+      - 'research/drnas-sat-v7-8/v1318_adaptive_selector.py'
+      - 'research/drnas-sat-v7-8/v1318_fresh30_freeze.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax check and deterministic supervised split unit test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v1318_adaptive_selector.py research/drnas-sat-v7-8/v1318_fresh30_freeze.py
+          python3 -u research/drnas-sat-v7-8/v1318_adaptive_selector.py selftest
+          test "$(git rev-parse HEAD:research/drnas-sat-v7-8/v1315_selective_xor.py)" = "2b1b14d9d58459e350a0906d356c5003a6105d64"
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1317-new30-SC2024-SHA-frozen
+          run-id: 41265468187
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: training
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1317-fresh30-20s-final-audit
+          run-id: 41265468187
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-audit
+      - name: Learn locked one-split rule from V13.17 training formulas only
+        run: |
+          set -euo pipefail
+          (cd training && sha256sum -c v1313_30_manifest.sha256)
+          mkdir -p model
+          python3 -u research/drnas-sat-v7-8/v1318_adaptive_selector.py train \
+            --manifest training/v1313_30_manifest.json \
+            --audit prior-audit/v1317_fixed20_final_audit.json \
+            --out model/v1318_locked_model.json
+          (cd model && sha256sum v1318_locked_model.json > v1318_model.sha256)
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          m=json.load(open("model/v1318_locked_model.json"))
+          print("## Locked selector trained exclusively on 30 historical V13.17 CNFs")
+          print("- Rule:",m["rule"])
+          print("- Training gain (not validation):",m["training_gain_s"])
+          print("- Training cases:",m["training_cnfs"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1318-locked-trained-model
+          path: model/
+          if-no-files-found: error
+
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V131-exact256-132-retrospective-audit
+          run-id: 41255417615
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior131
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-UnOfficial-SATComp2026-Mini-216-Matched
+          run-id: 41248293940
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-mini
+      - uses: actions/download-artifact@v4
+        with:
+          name: v100-frozen-protocol-and-inputs
+          run-id: 41245906965
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v100
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V132-frozen-24-new-inputs
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v132
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V138-external2026-18-CNF-final-audit
+          run-id: 41260140613
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v138
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-new-SC2024-12-frozen-verified-CNFs
+          run-id: 41261415700
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v139
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1313-30-fresh-SC2024-SHA-frozen
+          run-id: 41263304031
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v1313
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1316-blind30-new-SC2024-SHA-locked
+          run-id: 41264586616
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v1316
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1317-new30-SC2024-SHA-frozen
+          run-id: 41265468187
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v1317
+      - name: Validate all historical SHA manifests and generate no-leak holdout
+        run: |
+          set -euo pipefail
+          (cd prior131/frozen && sha256sum -c v13_manifest.sha256)
+          (cd prior-mini/frozen && sha256sum -c official_mini_manifest.sha256)
+          (cd prior-v100 && sha256sum -c v100_manifest.sha256)
+          (cd prior-v132 && sha256sum -c v132_manifest.sha256)
+          (cd prior-v139 && sha256sum -c v139_selector.sha256 && sha256sum -c v139_manifest.sha256)
+          (cd prior-v1313 && sha256sum -c v1313_30_manifest.sha256)
+          (cd prior-v1316 && sha256sum -c v1313_30_manifest.sha256)
+          (cd prior-v1317 && sha256sum -c v1313_30_manifest.sha256)
+          mkdir -p frozen
+          python3 -u research/drnas-sat-v7-8/v1318_fresh30_freeze.py \
+            --v131 prior131/frozen/v13_manifest.json \
+            --mini prior-mini/frozen/official_mini_manifest.json \
+            --v100 prior-v100/v100_manifest.json \
+            --v132 prior-v132/v132_manifest.json \
+            --v138 prior-v138/frozen/v138_manifest.json \
+            --v139 prior-v139/v139_selector.json \
+            --v1313 prior-v1313/v1313_30_manifest.json \
+            --v1316 prior-v1316/v1313_30_manifest.json \
+            --v1317 prior-v1317/v1313_30_manifest.json \
+            --out frozen/v1313_30_manifest.json
+          (cd frozen && sha256sum v1313_30_manifest.json > v1313_30_manifest.sha256)
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          h=json.load(open("frozen/v1313_30_manifest.json"))
+          t=json.load(open("prior-v1317/v1313_30_manifest.json"))
+          assert len(h["cases"])==30
+          assert h["holdout_protocol"]=="DRNAS-V1318-UNSEEN30-LEARNED-SELECTOR-20261101-v1"
+          assert not {x["sha256"] for x in h["cases"]}&{x["sha256"] for x in t["cases"]}
+          print("## V13.18 holdout frozen before any new solver measurement")
+          print("- New formulas: 30; published SAT 15 / UNSAT 15")
+          print("- Excluded historic CNF SHA identities:",h["unseen_excluded_shas"])
+          print("- Different families:",len(h["families"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1318-blind30-SC2024-SHA-frozen
+          path: frozen/
+          if-no-files-found: error
+
+  benchmark:
+    needs: [train, freeze]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    name: v1318-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1318-blind30-SC2024-SHA-frozen
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1318-locked-trained-model
+          path: model
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V132-three-pinned-binaries
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify immutable benchmark inputs, model and original solver binaries
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v1313_30_manifest.sha256)
+          (cd model && sha256sum -c v1318_model.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          test "$(git rev-parse HEAD:research/drnas-sat-v7-8/v1315_selective_xor.py)" = "2b1b14d9d58459e350a0906d356c5003a6105d64"
+          chmod +x bin/v132_drnas bin/v132_kissat
+      - name: Run 3 new CNFs x 4 methods x 2 repeats at same 20s cutoff
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v1318_adaptive_selector.py run \
+            --manifest frozen/v1313_30_manifest.json \
+            --model model/v1318_locked_model.json \
+            --kissat bin/v132_kissat --drnas bin/v132_drnas \
+            --shard "$SHARD" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v1318-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  audit:
+    needs: [train, freeze, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1318-blind30-SC2024-SHA-frozen
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1318-locked-trained-model
+          path: model
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1317-new30-SC2024-SHA-frozen
+          run-id: 41265468187
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: training
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v1318-shard-*
+          path: combined
+          merge-multiple: false
+      - name: Audit 240 trials and replay locked adaptive choices
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v1313_30_manifest.sha256)
+          (cd model && sha256sum -c v1318_model.sha256)
+          (cd training && sha256sum -c v1313_30_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v1318_adaptive_selector.py audit \
+            --manifest frozen/v1313_30_manifest.json \
+            --model model/v1318_locked_model.json \
+            --train-manifest training/v1313_30_manifest.json \
+            --combined combined \
+            --json v1318_adaptive_final_audit.json --md v1318_adaptive_final_audit.md
+          cat v1318_adaptive_final_audit.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V1318-30-fresh-adaptive-final-audit
+          path: |
+            v1318_adaptive_final_audit.json
+            v1318_adaptive_final_audit.md
+          if-no-files-found: warn
