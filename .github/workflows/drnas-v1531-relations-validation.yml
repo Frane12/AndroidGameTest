@@ -1,0 +1,163 @@
+name: DRNAS V15.3.1 preregistered structural UUF250 holdout
+on:
+  push:
+    branches: [experiment/drnas-v1531-relations-audit-20261101]
+    paths:
+      - research/tseitin-replay/v1531_structural_holdout_uuf250_frozen.json
+      - research/tseitin-replay/v1531_structural_holdout_uuf250.py
+      - .github/workflows/drnas-v1531-relations-validation.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-structural-confirmation-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    name: Genuine 40-unseen-formula structural holdout (original Kissat only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze read-only analytic code and preregistration
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/tseitin-replay/v1531_structural_holdout_uuf250.py research/tseitin-replay/v1531_structural_fingerprints.py
+          test -s research/tseitin-replay/v1531_structural_holdout_uuf250_frozen.json
+          sha256sum research/tseitin-replay/v1531_structural_holdout_uuf250_frozen.json
+      - name: Compile unmodified pinned upstream Kissat
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+      - name: Verify pinned untouched SATLIB UUF250 archive
+        run: |
+          set -euo pipefail
+          curl -fLsS --connect-timeout 10 --max-time 65 --retry 2 \
+            "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/uuf250-1065.tar.gz" \
+            -o /tmp/uuf250-1065.tar.gz
+          echo "138484766c966e3f18395db92cf6d69d3c442a3e  /tmp/uuf250-1065.tar.gz" | sha1sum -c -
+      - name: Freeze 40 untouched hashes then run original Kissat twice per case
+        run: |
+          set -euo pipefail
+          grep -m1 'model name' /proc/cpuinfo || true
+          python3 -u research/tseitin-replay/v1531_structural_holdout_uuf250.py
+          test -s uuf250-structural-validation/results.json
+          test -s uuf250-structural-validation/validation.json
+      - name: Archive raw and verified holdout outcomes even if interrupted
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Structural-UUF250-Unseen40-Raw
+          path: uuf250-structural-validation/
+          if-no-files-found: warn
+          retention-days: 60
+
+  combine:
+    name: Update cumulative analytics SQLite + plot preregistered holdout
+    needs: validate
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve raw structural-validation outcomes
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-Structural-UUF250-Unseen40-Raw
+          path: uuf250-structural-validation
+      - name: Confirm complete holdout and original source identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("uuf250-structural-validation")
+          m=json.loads((p/"frozen_before_timing.json").read_text())
+          z=json.loads((p/"results.json").read_text())
+          r=json.loads((p/"validation.json").read_text())
+          assert len(m["manifest"])==len(z["manifest"])==40
+          assert len(z["results"])==40
+          assert all(len(x["runs"])==2 for x in z["results"])
+          assert r["n"]==40 and r["attempts"]==80
+          assert r["all_source_hashes_unique"]
+          print("VALIDATION_40X2_COMPLETE",r["preregistered_success_rule_met"])
+          PY
+      - name: Retrieve frozen historical datasets into cumulative warehouse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p raw-artifacts
+          gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
+          mkdir -p raw-artifacts/DRNAS-V1531-External-Short40 raw-artifacts/DRNAS-V1531-External-Medium40 raw-artifacts/DRNAS-V1531-Structural-UUF250-Validation
+          cp research/sat-analytics-data/short40/results.json raw-artifacts/DRNAS-V1531-External-Short40/results.json
+          cp research/sat-analytics-data/medium40/results.json raw-artifacts/DRNAS-V1531-External-Medium40/results.json
+          cp uuf250-structural-validation/results.json raw-artifacts/DRNAS-V1531-Structural-UUF250-Validation/results.json
+      - name: Rebuild SQLite, export grouped pairs and all plots
+        run: |
+          set -euo pipefail
+          python3 -m venv .validation-venv
+          .validation-venv/bin/pip install matplotlib
+          .validation-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
+            --input raw-artifacts \
+            --out validation-warehouse \
+            --source-run 41278912894 \
+            --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
+            --runner github-hosted-ubuntu-24.04
+          .validation-venv/bin/python - <<'PY'
+          import json,matplotlib
+          matplotlib.use("Agg")
+          import matplotlib.pyplot as plt
+          from pathlib import Path
+          p=Path("uuf250-structural-validation")
+          with (p/"features_outcomes.csv").open() as f:
+            import csv
+            data=list(csv.DictReader(f))
+          for feature in ("degree_gini","degree_cv","reused_varpair_fraction"):
+            fig,ax=plt.subplots(figsize=(8,5))
+            ax.scatter([float(z[feature]) for z in data],
+                       [float(z["par2_median_seconds"]) for z in data],alpha=.8)
+            ax.set(xlabel=feature,ylabel="Original Kissat PAR-2 median (s)",
+                   title="Untouched external UUF250 (n=40): frozen predictor test")
+            fig.tight_layout();fig.savefig(p/("validate_"+feature+".png"),dpi=160)
+            plt.close(fig)
+          assert Path("validation-warehouse/sat_analytics.sqlite").stat().st_size>1000
+          print(json.dumps(json.loads((p/"validation.json").read_text()),indent=2))
+          PY
+      - name: Publish full reproducible validation + cumulative DB
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-UUF250-Structural-Validation-Analysis
+          path: |
+            uuf250-structural-validation/validation.json
+            uuf250-structural-validation/report.md
+            uuf250-structural-validation/features_outcomes.csv
+            uuf250-structural-validation/frozen_before_timing.json
+            uuf250-structural-validation/results.json
+            uuf250-structural-validation/validate_*.png
+            validation-warehouse/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Persist versioned external-validation results and database
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/relations-validation
+          cp uuf250-structural-validation/{validation.json,report.md,features_outcomes.csv,frozen_before_timing.json,results.json} research/sat-analytics-data/relations-validation/
+          cp uuf250-structural-validation/validate_*.png research/sat-analytics-data/relations-validation/
+          cp validation-warehouse/{sat_analytics.sqlite,summary.json,grouped.csv,paired.csv} research/sat-analytics-data/relations-validation/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/sat-analytics-data/relations-validation
+          if ! git diff --cached --quiet; then
+            git commit -m "data: untouched UUF250 structural validation and cumulative SQL snapshot [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
