@@ -16,9 +16,9 @@ OUT=Path("v152-satlib-external-holdout-e")
 OUT.mkdir(exist_ok=True)
 CASES=[]
 for number in range(5,13):
-    CASES.append((f"sat-uniform-20-91/uf20-{number:02d}.cnf","SAT","uniform20"))
+    CASES.append((f"sat-uniform-20-91/uf20-0{number}.cnf","SAT","uniform20"))
     CASES.append((f"sat-flat125-301/flat125-{number}.cnf","SAT","graph_coloring"))
-    CASES.append((f"unsat-uniform-50-218/uuf50-{number:02d}.cnf","UNSAT","uniform50"))
+    CASES.append((f"unsat-uniform-50-218/uuf50-0{number}.cnf","UNSAT","uniform50"))
 for size in list(range(24,31))+[100]:
     CASES.append((f"unsat-dimacs-dubois/dubois{size}.cnf","UNSAT","dubois"))
 for size in (100,200):
