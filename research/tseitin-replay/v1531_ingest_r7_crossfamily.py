@@ -22,6 +22,14 @@ R7 = {
   modes=("original_kissat","stable_v1531","monitor","forced_restart25","r7_gate"),
   cats=tuple("random%d_%d"%(n,k) for n in (200,220,240) for k in range(4))+
        ("graphcolor","xor","external_flat","external_aim"))
+ "prop": dict(run="41345148256",commit="1b35042c1650c933a190064ea4e3f54d602b1a32",
+  artifact=13097934951,formulas=40,attempts=480,percat=10,cap=8,
+  modes=("stable_v1531","monitor","forced_restart25","r7_gate"),
+  cats=("random3","graphcolor","xor","external_satlib")),
+ "target": dict(run="41345312821",commit="f26e98eda6abdbd36ad78bff09fcd78a124cdd08",
+  artifact=13098956328,formulas=40,attempts=480,percat=10,cap=8,
+  modes=("stable_v1531","monitor","forced_restart25","r7_gate"),
+  cats=("random3","graphcolor","xor","external_satlib"))
 }
 CROSS = dict(run="41345835957",commit="ab32a2c7f452cb02e8ba599a5fc2987c13bf6cea",
  artifact=13098709066,families={"uf200-860":(40,80),"uf250-1065":(40,80),
@@ -79,7 +87,9 @@ def ingest_r7_category(db,kind,cat,manifest,rows,traces,measurements_path,result
    seed=cases[r["formula"]].get("metadata",{}).get("seed")
    require(seed is None or str(seed)==str(r["seed"]),dataset+" seed mismatch")
  require(all(len(v)<=1 for v in bycase.values()),dataset+" SAT/UNSAT disagreement")
- provenance="external_previously_seen" if cat.startswith("external") else "generated_development"
+ provenance=("external_previously_seen" if cat.startswith("external") else
+             "generated_prescreen_selected" if kind=="target" and cat=="random3" else
+             "generated_development")
  existing=db.execute("SELECT source_run,source_sha FROM datasets WHERE dataset=?",(dataset,)).fetchone()
  if existing:
   require(tuple(existing)==(spec["run"],spec["commit"]),dataset+" existing dataset provenance changed")
@@ -200,7 +210,7 @@ def new_pairs(db,out):
  JOIN datasets d ON d.dataset=a.dataset
  WHERE a.dataset LIKE 'DRNAS-R7-%' AND a.solver!='monitor'
  ORDER BY a.dataset,a.case_name,a.repeat,a.solver""")
- require(len(records)==3480,"Expected 3480 matched R7 attempts")
+ require(len(records)==4200,"Expected 4200 matched R7 attempts")
  cols=("dataset","case_name","repeat","treatment","monitor_par2","treatment_par2",
        "speedup","category","provenance")
  base.export_csv(out/"r7_paired.csv",records,cols)
@@ -251,8 +261,8 @@ def main():
   counts={t:db.execute("SELECT COUNT(*) FROM "+t).fetchone()[0]
    for t in ("datasets","formulas","attempts","telemetry","source_artifacts",
              "attempt_context","verified_certificates")}
-  require(counts["datasets"]==41 and counts["formulas"]==947 and
-          counts["attempts"]==9746 and counts["source_artifacts"]==36,
+  require(counts["datasets"]==49 and counts["formulas"]==1027 and
+          counts["attempts"]==10706 and counts["source_artifacts"]==44,
           "Cumulative count changed unexpectedly: "+str(counts))
   require(db.execute("PRAGMA integrity_check").fetchone()[0]=="ok",
           "SQLite integrity_check failed")
@@ -268,7 +278,8 @@ def main():
   audit["cautions"]+=["R7 generated and previously public SATLIB: not official/unseen.",
     "R7 original Kissat and stable V15.3.1 are not architecture-identical.",
     "Crossfamily is preregistered external transfer of Kissat hardness, not DRNAS speedup.",
-    "Repeated formula attempts are paired; independent sample size is formulas."]
+    "Repeated formula attempts are paired; independent sample size is formulas.",
+    "R7 targeted random3 cases were prescreen-selected on monitor signal; selection bias."]
   (a.out/"ingest_audit.json").write_text(json.dumps(audit,indent=2))
   summary=json.loads((a.out/"summary.json").read_text())
   summary["incremental_ingest"]=audit
