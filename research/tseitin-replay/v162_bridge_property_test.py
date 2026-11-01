@@ -97,7 +97,7 @@ for i in range(120):
  # embedded Kissat. Merely finding units in --derive-only is insufficient.
  forced=run(SOLVER,path,["--bridge-first"])
  assert forced.returncode==0,(i,forced.stderr[-300:],forced.stdout[-300:])
- got=('"status":"'+expect+'") in forced.stdout or (
+ got=(f'"status":"{expect}"' in forced.stdout or (
      ('s SATISFIABLE' if expect=="SAT" else 's UNSATISFIABLE') in forced.stdout)
  assert got,(i,expect,forced.stdout[-300:])
  if models:
