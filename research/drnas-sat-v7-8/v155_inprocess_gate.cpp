@@ -2,9 +2,7 @@
 // v155_native_gate.cpp. Avoid a second executable startup for the V15.3 path.
 // On unmatched inputs call V15.3's original main in this process directly.
 // This is an ENGINEERING optimization, not an improvement of the SAT theorem.
-#define main drnas_v153_embedded_main
-#include "v153_unified.cpp"
-#undef main
+#include "v155_embedded_v153.cpp"
 #define main drnas_v155_external_main
 #include "v155_native_gate.cpp"
 #undef main
