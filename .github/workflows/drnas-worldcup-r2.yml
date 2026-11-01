@@ -1,0 +1,123 @@
+name: DRNAS World Cup R2 - official moderate paired directional response
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-worldcup-r2-directional-20261101]
+    paths:
+      - ".github/workflows/drnas-worldcup-r2.yml"
+      - "experiments/drnas_v16/worldcup_r2.py"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: Official medium CNFs shard ${{ matrix.batch }} - seven strategies same runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        batch: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze source and ensure 12 moderate official 2026 inputs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{worldcup_r2,official_parallel_v180,predict_conflict_patch_v177}.py
+          python3 - <<'PY'
+          import json
+          data=json.load(open("experiments/drnas_v16/v180_official_seeds.json"))
+          cases=[x for shard in data["shards"] for x in shard]
+          assert len(cases)==12 and len({x["gbd_hash"] for x in cases})==12
+          assert sum(x["official_kissat"]["result"]=="sat" for x in cases)==6
+          assert sum(x["official_kissat"]["result"]=="unsat" for x in cases)==6
+          print("R2_FROZEN_12_OFFICIAL_FORMULAS_OK")
+          PY
+      - name: Compile truly unmodified pinned Kissat reference
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r2-original
+          git -C /tmp/kissat-r2-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r2-original rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-r2-original && ./configure && make -j2)
+      - name: Compile separately patched Kissat for directional policies
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-v180
+          git -C /tmp/kissat-v180 checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v180
+          (cd /tmp/kissat-v180 && ./configure && make -j2)
+      - name: Compile stable DRNAS V15.3.1 and pinned CaDiCaL 3.0.1
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/cadical-v180
+          git -C /tmp/cadical-v180 checkout -q --detach c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd /tmp/cadical-v180 && ./configure && make -j2)
+      - name: Check SAT UNSAT statuses and restartint availability
+        run: |
+          set -euo pipefail
+          printf 'p cnf 1 1\n1 0\n' >/tmp/r2_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r2_unsat.cnf
+          for solver in /tmp/kissat-r2-original/build/kissat /tmp/kissat-v180/build/kissat /tmp/cadical-v180/build/cadical; do
+            set +e
+            "$solver" /tmp/r2_sat.cnf >/tmp/r2_sat.log 2>&1
+            sat=$?
+            "$solver" /tmp/r2_unsat.cnf >/tmp/r2_unsat.log 2>&1
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          /tmp/kissat-v180/build/kissat --help | grep -q 'restartint'
+          echo R2_SMOKE_AND_RESTART_CONTROL_PASS
+      - name: Paired randomized seven-mode official 2026 diagnostic
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/worldcup_r2.py --batch "${{ matrix.batch }}"
+      - name: Preserve measurements, partial results, hashes, runner fingerprint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2_batch_${{ matrix.batch }}
+          path: |
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/manifest.json
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/official_track_uri_sha256.txt
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/frozen_v177_rule.txt
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/measurements.partial.csv
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/measurements.csv
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/summary.json
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/r2_environment.json
+            drnas-worldcup-r2-results/batch_${{ matrix.batch }}/r2_protocol.json
+          retention-days: 45
+          if-no-files-found: warn
+  aggregate:
+    name: Combined R2 same-runner PAR-2 and 95pct interval audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r2_batch_*
+          path: /tmp/r2-results
+      - name: Reassemble four paired shards and audit score
+        run: |
+          set -euo pipefail
+          mkdir -p drnas-worldcup-r2-results
+          for i in 0 1 2 3; do
+            test -s "/tmp/r2-results/r2_batch_${i}/measurements.csv"
+            cp -a "/tmp/r2-results/r2_batch_${i}" "drnas-worldcup-r2-results/batch_${i}"
+          done
+          python3 -u experiments/drnas_v16/worldcup_r2.py --aggregate
+      - name: Publish final scoreboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-WorldCup-R2-Moderate-Official-2026
+          path: drnas-worldcup-r2-results/aggregate.json
+          retention-days: 60
