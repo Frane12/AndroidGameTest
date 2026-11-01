@@ -1,0 +1,9 @@
+# Experimental learned structural selector
+
+Opt-in wrapper for two existing solver routes. It reads the DIMACS header and selects stable V15.3.1 when clause/variable ratio <= 3.2039999961853027; otherwise it selects the monitor Kissat executable. The default solver is not replaced. If a usable header is absent, it chooses monitor.
+
+Build: `c++ -O3 -std=c++17 selector.cpp -o drnas-selector`
+Run: `./drnas-selector MONITOR STABLE ORIGINAL_KISSAT formula.cnf`
+Arguments must be paths to existing executables. The stable route is called as `STABLE formula.cnf ORIGINAL_KISSAT 1`, as in R9. Monitor is called as `MONITOR -s formula.cnf`. The selector uses exec so exit codes and output are those of the chosen route. Execution failure returns 127.
+
+The rule is the >10% predicted gain leaf of a depth-2 regression tree trained on median R9 per-formula wall PAR2 results for stable_v1531 versus monitor. Features are variable count, density, binary and ternary clause fraction, and positive literal fraction. R9 is development data, not a holdout. Tree training and five-fold formula-level stratified exploratory cross-validation are reproducible with `python3 train_audit.py R9_ARTIFACTS_DIRECTORY` (requires numpy and scikit-learn); each category's R9 zip must be extracted into that directory. In exploratory cross-validation, selection occurred on 25 XOR instances, with mean estimated gain across all 100 instances 5.81% excluding selector overhead. Instances are short and the result may be dominated by startup and timing noise. No fresh holdout, end-to-end speedup, proof audit or new solver correctness validation is claimed. Keep the existing solver available and independently test on new formula hashes, including end-to-end feature and startup time, SAT witness validation, and UNSAT certificates where available.
