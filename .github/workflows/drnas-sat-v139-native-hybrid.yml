@@ -1,0 +1,240 @@
+name: DRNAS V13.9 - Native Exact GF2 Hybrid vs V13.7 and V7.6
+on:
+  push:
+    branches: [experiment/drnas-v139-native-affine-hybrid-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v139-native-hybrid.yml'
+      - 'research/drnas-sat-v7-8/v139_evaluate.py'
+      - 'research/drnas-sat-v7-8/v139_native_hybrid.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify fixed 48 XOR plus non-XOR source classes
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v139_evaluate.py
+          python3 research/drnas-sat-v7-8/v139_evaluate.py selftest
+          test "$(git hash-object research/drnas-sat-v7-8/v137_fastpath.py)" = e4f44436ef53682a514fbb852e876c5c0d0a2ee3
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V761-49-exact-and-new-CNF-manifest
+          run-id: 41259920685
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original_xor
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V134-30-case-structural-ladder-audit
+          run-id: 41257840485
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original_mixed
+      - name: Strictly pin 48 preexisting XOR and 12 mixed fallback formulas
+        run: |
+          set -euo pipefail
+          (cd original_xor && sha256sum -c v761_manifest.sha256)
+          (cd original_mixed/frozen && sha256sum -c v134_manifest.sha256)
+          mkdir -p frozen
+          python3 -u research/drnas-sat-v7-8/v139_evaluate.py freeze \
+            --xor_manifest original_xor/v761_manifest.json \
+            --mixed_manifest original_mixed/frozen/v134_manifest.json \
+            --out frozen/v139_manifest.json
+          (cd frozen && sha256sum v139_manifest.json > v139_manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V139-60-old-locked-CNFs
+          path: frozen/
+          if-no-files-found: error
+
+  build:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V76V134-byte-pinned-three-binaries
+          run-id: 41258686315
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original_bin
+      - name: Compile native C++ GF2 proof engine with original V7.6 fallback
+        run: |
+          set -euo pipefail
+          (cd original_bin && sha256sum -c binaries.sha256)
+          mkdir -p output
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic \
+            research/drnas-sat-v7-8/v139_native_hybrid.cpp -o output/v139_native
+          cp original_bin/v76_solver output/v76_solver
+          cp original_bin/legacy_solver output/legacy_solver
+          cp original_bin/kissat_solver output/kissat_solver
+          chmod +x output/v139_native output/v76_solver output/legacy_solver output/kissat_solver
+          (cd output && sha256sum v139_native v76_solver legacy_solver kissat_solver > binaries.sha256)
+      - name: C++ SAT witness, UNSAT GF2 certificate and fallback smoke tests
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          sys.path.insert(0,"research/drnas-sat-v7-8")
+          import v761_xor_holdout as xor
+          import v134_constructive as original
+          import v137_fastpath as reference
+          v76=str(Path("output/v76_solver").resolve())
+          native=str(Path("output/v139_native").resolve())
+          for i in (0,5,6,11,18,23,35,47):
+              meta,cnf=xor.make(i)
+              path=Path("/tmp/v139_xor_smoke.cnf");path.write_bytes(cnf)
+              p=subprocess.run([native,str(path),v76,"1342026"],capture_output=True,text=True)
+              assert p.returncode==0,(i,p.stderr,p.stdout)
+              lines=[x for x in p.stdout.splitlines() if x.startswith("DRNAS_HYBRID_RESULT\t")]
+              assert len(lines)==1,(i,p.stdout)
+              result=json.loads(lines[0].split("\t",1)[1])
+              assert result["status"]==meta["official_label"] and result["path"]=="affine_exact"
+              n,clauses=reference.read_dimacs(cnf)
+              assert reference.verify(n,clauses,result),(i,result)
+          for family in ("planted3_sat","color3_sat"):
+              meta,cnf=original.make(family,0)
+              path=Path("/tmp/v139_fallback_smoke.cnf");path.write_bytes(cnf)
+              p=subprocess.run([native,str(path),v76,"1342026"],capture_output=True,text=True)
+              assert p.returncode==0,(family,p.stderr,p.stdout)
+              assert "DRNAS_HYBRID_ROUTE\tfallback_v76" in p.stdout
+              assert "DRNAS_RESULT\tadaptive_plain\tSAT" in p.stdout
+          print("V139_NATIVE_SMOKE_PASS 8 exact + 2 fallback")
+          PY
+          (cd output && sha256sum -c binaries.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V139-Native-and-three-pinned-solvers
+          path: output/
+          if-no-files-found: error
+
+  xor:
+    needs: [freeze,build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: v139-xor-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-60-old-locked-CNFs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-Native-and-three-pinned-solvers
+          path: bin
+      - name: Verify locked manifest and byte-pinned binaries
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v139_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/v139_native bin/v76_solver bin/legacy_solver bin/kissat_solver
+      - name: Paired V13.9 Native / V13.7 Python / V7.6 / Kissat trials
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v139_evaluate.py runxor \
+            --manifest frozen/v139_manifest.json --shard "$SHARD" \
+            --native bin/v139_native --v76 bin/v76_solver \
+            --legacy bin/legacy_solver --kissat bin/kissat_solver --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v139-xor-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  fallback:
+    needs: [freeze,build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-60-old-locked-CNFs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-Native-and-three-pinned-solvers
+          path: bin
+      - name: Test unrecognized 3SAT and graph-coloring CNFs reach V7.6 fallback
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v139_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/v139_native bin/v76_solver bin/legacy_solver bin/kissat_solver
+          python3 -u research/drnas-sat-v7-8/v139_evaluate.py runfallback \
+            --manifest frozen/v139_manifest.json \
+            --native bin/v139_native --v76 bin/v76_solver \
+            --legacy bin/legacy_solver --kissat bin/kissat_solver --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v139-fallback-12
+          path: results/
+          if-no-files-found: warn
+
+  audit:
+    needs: [freeze,build,xor,fallback]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-60-old-locked-CNFs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v139-xor-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          name: v139-fallback-12
+          path: fallback
+      - name: Strict 48 XOR plus 12 non-XOR paired SHA and proof audit
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v139_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v139_evaluate.py audit \
+            --manifest frozen/v139_manifest.json --combined combined \
+            --fallback fallback --out v139_report.json --md v139_report.md
+          cat v139_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V139-60-CNF-native-hybrid-final-audit
+          path: |
+            frozen/
+            combined/
+            fallback/
+            v139_report.json
+            v139_report.md
+          if-no-files-found: warn
