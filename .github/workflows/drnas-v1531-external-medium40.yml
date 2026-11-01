@@ -1,0 +1,146 @@
+name: DRNAS V15.3.1 external SATLIB medium40 — Kissat-calibrated paired
+on:
+  push:
+    branches: [experiment/drnas-v1531-external-medium40-20261101]
+    paths:
+      - research/tseitin-replay/v1531_external_medium40.py
+      - research/tseitin-replay/v1531_analytics_db.py
+      - .github/workflows/drnas-v1531-external-medium40.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  benchmark:
+    name: Matched medium SATLIB — ${{ matrix.corpus }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        corpus: [uf200-860,uf250-1065,uuf200-860,uuf250-1065]
+        include:
+          - corpus: uf200-860
+            sha1: e27208778d47d2405a9368cad3ab8dfb41206be8
+          - corpus: uf250-1065
+            sha1: acaf37c9e92694a38974a6a1a9647e0f9bcf80b2
+          - corpus: uuf200-860
+            sha1: 05aacf179ed739a8311f2821874183daa5a9b134
+          - corpus: uuf250-1065
+            sha1: 138484766c966e3f18395db92cf6d69d3c442a3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate unchanged stable V15.3.1, build native comparator
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          test -x /tmp/v1531_nohang
+      - name: Build truly unmodified pinned original Kissat
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+      - name: Download original SATLIB archive and verify published SHA1
+        run: |
+          set -euo pipefail
+          name="${{ matrix.corpus }}"
+          curl -fLsS --connect-timeout 10 --max-time 60 --retry 2 "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/$name.tar.gz" -o "/tmp/$name.tar.gz"
+          echo "${{ matrix.sha1 }}  /tmp/$name.tar.gz" | sha1sum -c -
+          python3 -m py_compile research/tseitin-replay/v1531_external_medium40.py
+      - name: Freeze pilot, Kissat calibration, paired 10-case benchmark (three repeats)
+        run: |
+          set -euo pipefail
+          echo "CPU MODEL"
+          grep -m1 'model name' /proc/cpuinfo || true
+          python3 -u research/tseitin-replay/v1531_external_medium40.py --category "${{ matrix.corpus }}"
+      - name: Preserve raw and partial data even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medium40-${{ matrix.corpus }}
+          path: |
+            medium40-${{ matrix.corpus }}/part.json
+            medium40-${{ matrix.corpus }}/pilot_all.json
+            medium40-${{ matrix.corpus }}/pilot_frozen_before_timing.json
+            medium40-${{ matrix.corpus }}/measurements.partial.json
+            medium40-${{ matrix.corpus }}/runner.txt
+          if-no-files-found: warn
+          retention-days: 45
+
+  aggregate:
+    name: Assemble medium results, maintain cumulative SQLite, plot scatter
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve four matched category artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: medium40-*
+          path: .
+          merge-multiple: false
+      - name: Freeze 40-case performance tables and full pilot disclosure
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_external_medium40.py --aggregate
+      - name: Retrieve V15.3.1 historic and external short40 sets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p raw-artifacts historical
+          gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
+          gh run download 41340619884 --repo "$GITHUB_REPOSITORY" --name DRNAS-V1531-External-Short40-Analysis --dir historical
+          mkdir -p raw-artifacts/DRNAS-V1531-External-Short40
+          cp historical/DRNAS-V1531-External-Short40/results.json raw-artifacts/DRNAS-V1531-External-Short40/results.json
+          cp -r medium40 raw-artifacts/DRNAS-V1531-External-Medium40
+      - name: Build cumulative analytical warehouse and scatterplots
+        run: |
+          set -euo pipefail
+          python3 -m venv .analytics-venv
+          .analytics-venv/bin/pip install matplotlib
+          .analytics-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
+            --input raw-artifacts \
+            --out sat-analysis \
+            --source-run 41278912894 \
+            --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
+            --runner github-hosted-ubuntu-24.04
+          test -s sat-analysis/sat_analytics.sqlite
+          test -s sat-analysis/paired.csv
+          test -s sat-analysis/scatter_paired_v1531.png
+      - name: Upload complete timed results and scatterplots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-External-Medium40-Analysis
+          path: |
+            medium40/
+            sat-analysis/
+          if-no-files-found: warn
+          retention-days: 45
+      - name: Commit versioned successful analytical snapshot
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/medium40
+          cp sat-analysis/sat_analytics.sqlite research/sat-analytics-data/medium40/
+          cp sat-analysis/summary.json research/sat-analytics-data/medium40/
+          cp sat-analysis/grouped.csv research/sat-analytics-data/medium40/
+          cp sat-analysis/paired.csv research/sat-analytics-data/medium40/
+          cp medium40/results.json research/sat-analytics-data/medium40/
+          cp medium40/results.md research/sat-analytics-data/medium40/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/sat-analytics-data/medium40
+          if ! git diff --cached --quiet; then
+            git commit -m "data: freeze SATLIB medium40 measured analytical snapshot [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
