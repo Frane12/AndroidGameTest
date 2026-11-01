@@ -50,7 +50,7 @@ Gate inspect_fast(const string &cnf) {
  g.maybe_php=php;
  return g;
 }
-int main(int argc,char**argv) {
+int v142_embedded_main(int argc,char**argv) {
  if(!(argc==4||(argc==5&&string(argv[4])=="--classify-only"))) {
    cerr<<"Usage: v142_fastgate INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";
    return 2;
