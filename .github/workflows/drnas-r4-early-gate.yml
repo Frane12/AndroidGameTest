@@ -1,0 +1,170 @@
+name: DRNAS R4 - frozen early restart <=20 official 2026 holdout
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-r4-r512-holdout-20261101]
+    paths:
+      - ".github/workflows/drnas-r4-early-gate.yml"
+      - "experiments/drnas_v16/patch_r4_restart_gate.py"
+      - "experiments/drnas_v16/official_r4_restart_gate.py"
+      - "experiments/drnas_v16/r4_frozen_official_candidates.json"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r4-frozen-gate-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: Freeze audit and real in-process Kissat gate smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate frozen input, Python, policy and labels
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r4_restart_gate,official_r4_restart_gate,predict_conflict_patch_v177,official_parallel_v180}.py
+          python3 - <<'PY'
+          import json
+          d=json.load(open("experiments/drnas_v16/r4_frozen_official_candidates.json"))
+          assert len(d["groups"])==4 and all(len(x)==6 for x in d["groups"])
+          x=[e["index"] for g in d["groups"] for e in g]
+          assert len(x)==len(set(x))==24
+          assert d["early_restarts_leq"]==20
+          assert d["threshold_at_conflict"]==512
+          assert d["intervention_conflict"]==2048
+          assert d["intervention_restartint"]==25
+          assert d["max_downloaded_per_shard"]==4
+          assert d["repeats"]==2 and d["caps_seconds"]==45
+          assert all(e["index"]>=130 and e["official_kissat"]["status"] in ("sat-verified","unsat-verified") for g in d["groups"] for e in g)
+          print("R4_INPUTS_RULES_FROZEN_OK",x)
+          PY
+      - name: Compile pinned truly original Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r4-original
+          git -C /tmp/kissat-r4-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r4-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r4-original && ./configure && make -j2)
+      - name: Compile exactly same source with frozen R4 C patch
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r4-patched
+          git -C /tmp/kissat-r4-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r4_restart_gate.py --kissat-root /tmp/kissat-r4-patched
+          (cd /tmp/kissat-r4-patched && ./configure && make -j2)
+          strings /tmp/kissat-r4-patched/build/kissat > /tmp/r4_strings.txt
+          grep -Fq R4_EARLY /tmp/r4_strings.txt
+          grep -Fq DRNAS_V177_SWITCH /tmp/r4_strings.txt
+      - name: Check official SAT-UNSAT correctness on synthetic smoke
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/r4_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/r4_unsat.cnf
+          for solver in /tmp/kissat-r4-original/build/kissat /tmp/kissat-r4-patched/build/kissat; do
+            set +e
+            "$solver" -s /tmp/r4_sat.cnf > /tmp/r4_sat.log 2>&1
+            sat=$?
+            "$solver" -s /tmp/r4_unsat.cnf > /tmp/r4_unsat.log 2>&1
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          echo R4_SYNTHETIC_SAT_UNSAT_SMOKE_PASS
+      - name: Verify actual 512-conflict frozen R4 decision on synthetic hard CNF
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import random
+          r=random.Random(4182301)
+          n=240;m=1040
+          with open("/tmp/r4_random_hard.cnf","w") as f:
+            print(f"p cnf {n} {m}",file=f)
+            for _ in range(m):
+              vs=r.sample(range(1,n+1),3)
+              print(*[(v if r.getrandbits(1) else -v) for v in vs],0,file=f)
+          PY
+          set +e
+          DRNAS_V177_MODE=r4_gate timeout 12s /tmp/kissat-r4-patched/build/kissat -s /tmp/r4_random_hard.cnf > /tmp/r4_gate_smoke.log 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 10 -o "$code" -eq 20 -o "$code" -eq 124
+          grep -F "c R4_EARLY" /tmp/r4_gate_smoke.log
+          grep -Fq "threshold=20" /tmp/r4_gate_smoke.log
+          echo R4_REAL_IN_PROCESS_GATE_SMOKE_PASS
+  holdout:
+    name: Unseen official 2026 R4 shard ${{ matrix.shard }} paired six policies
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile real unmodified upstream Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r4-original
+          git -C /tmp/kissat-r4-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r4-original && ./configure && make -j2)
+      - name: Compile R4 patched in-process Kissat from fresh original source
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r4-patched
+          git -C /tmp/kissat-r4-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r4_restart_gate.py --kissat-root /tmp/kissat-r4-patched
+          (cd /tmp/kissat-r4-patched && ./configure && make -j2)
+          strings /tmp/kissat-r4-patched/build/kissat > /tmp/r4_strings.txt
+          grep -Fq R4_EARLY /tmp/r4_strings.txt
+      - name: Compile stable V15.3.1 No-Hang comparator
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-v1531-r4
+      - name: Run official 2026 prespecified candidates without performance-based re-selection
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_r4_restart_gate.py --shard "${{ matrix.shard }}"
+      - name: Preserve complete or partial timings and input SHA-256
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r4_shard_${{ matrix.shard }}
+          path: |
+            drnas-r4-r512-official-results/shard_${{ matrix.shard }}/manifest.json
+            drnas-r4-r512-official-results/shard_${{ matrix.shard }}/track_uri_sha256.txt
+            drnas-r4-r512-official-results/shard_${{ matrix.shard }}/measurements.partial.csv
+            drnas-r4-r512-official-results/shard_${{ matrix.shard }}/measurements.csv
+            drnas-r4-r512-official-results/shard_${{ matrix.shard }}/summary.json
+          retention-days: 60
+          if-no-files-found: warn
+  aggregate:
+    name: Aggregate paired official PAR-2, regression audit and original Kissat comparison
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r4_shard_*
+          path: /tmp/r4-download
+      - name: Reassemble four frozen official holdout shards
+        run: |
+          set -euo pipefail
+          mkdir -p drnas-r4-r512-official-results
+          for i in 0 1 2 3; do
+            test -s "/tmp/r4-download/r4_shard_${i}/measurements.csv"
+            cp -a "/tmp/r4-download/r4_shard_${i}" "drnas-r4-r512-official-results/shard_${i}"
+          done
+          python3 -u experiments/drnas_v16/official_r4_restart_gate.py --aggregate
+      - name: Publish all six policy results and paired per-formula comparisons
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R4-Frozen-R512-Official-2026-Holdout
+          path: drnas-r4-r512-official-results/aggregate.json
+          retention-days: 60
