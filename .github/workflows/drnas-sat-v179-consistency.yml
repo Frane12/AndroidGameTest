@@ -1,0 +1,68 @@
+name: DRNAS SAT V17.9 reproducible state action outcome audit
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v179-state-action-outcome-template-20261101'
+    paths:
+      - 'experiments/drnas_v16/state_action_ledger_v179.py'
+      - 'experiments/drnas_v16/state_action_benchmark_v179.py'
+      - 'experiments/drnas_v16/STATE_ACTION_PROTOCOL.md'
+      - '.github/workflows/drnas-sat-v179-consistency.yml'
+concurrency:
+  group: drnas-v179-consistency
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: 144 frozen paired trials + raw events + reproducibility audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check schema, early audit, hypothesis falsification and fixed matrix
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            experiments/drnas_v16/state_action_ledger_v179.py \
+            experiments/drnas_v16/state_action_benchmark_v179.py
+          python3 experiments/drnas_v16/state_action_ledger_v179.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import state_action_benchmark_v179 as m
+          assert m.SEEDS==tuple(range(179100,179112))
+          assert m.REPEATS==2 and len(m.MODES)==6 and m.CAP==2.5
+          assert len(m.SEEDS)*m.REPEATS*len(m.MODES)==144
+          print("V179_MATRIX_PRE_REGISTERED_PASS")
+          PY
+      - name: Compile exact pinned Kissat with in-process telemetry
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v179
+          git -C /tmp/kissat-v179 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/feedback_patch_v178.py --kissat-root /tmp/kissat-v179
+          cd /tmp/kissat-v179
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: State/action/feedback/outcome ledger, raw logs and paired audit
+        shell: bash
+        run: |
+          python3 -u experiments/drnas_v16/state_action_benchmark_v179.py \
+            --solver /tmp/kissat-v179/build/kissat \
+            --rule experiments/drnas_v16/frozen_rule_v178.txt \
+            --root drnas-v179-results
+      - name: Publish reproducible raw test evidence including partial progress
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V179-state-action-consistency-audit
+          if-no-files-found: warn
+          path: |
+            drnas-v179-results/manifest.json
+            drnas-v179-results/state_action_events.jsonl
+            drnas-v179-results/measurements.partial.csv
+            drnas-v179-results/measurements.csv
+            drnas-v179-results/ranking.csv
+            drnas-v179-results/consistency_audit.json
+            drnas-v179-results/raw_logs/*.log
