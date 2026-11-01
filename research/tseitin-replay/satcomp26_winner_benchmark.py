@@ -85,7 +85,7 @@ def main():
         nvars, clauses = dimacs(cnf)
         cert = make(clauses)
         replay(clauses, cert)
-        for rep in range(3):
+        for rep in range(3, 6):
             order = SOLVERS.copy()
             rng.shuffle(order)
             for solver in order:
@@ -127,7 +127,7 @@ def main():
         "official_winner_archive_git_blob_sha": EXPECTED_ARCHIVE_BLOB,
         "cap_seconds": CAP, "memory_limit_bytes": 3 * 1024**3,
         "cpu_affinity": sorted(os.sched_getaffinity(0)),
-        "repetitions_per_instance": 3, "independent_parity_replay": True,
+        "repetitions_per_instance": 3,\n        "repetition_indices": [3, 4, 5], "independent_parity_replay": True,
         "gate_controls_passed": control_count,
     }
     result = {"protocol": protocol, "summary": summarize(trials), "trials": trials}
