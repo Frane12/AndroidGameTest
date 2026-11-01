@@ -10,7 +10,6 @@ must be separately measured before speed claims.
 import collections,hashlib,json,statistics,random,sys,time
 from pathlib import Path
 import v160_hidden_keys as g
-from v158_math_relations import relations
 SEED="V161-PROSPECTIVE-20261101-NOT-TOUCHED"
 ROOT=Path("v161-prospective")
 SOLVERS=("kissat_api","v1531","v159")
