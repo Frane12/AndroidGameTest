@@ -104,7 +104,7 @@ bool local_contradiction(const vector<LocalEq>& eqs,set<int>& proof,size_t& oper
  }
  return false;
 }
-int main(int argc,char**argv) {
+int v143_embedded_main(int argc,char**argv) {
  if(!(argc==4||(argc==5&&string(argv[4])=="--classify-only"))) {
    cerr<<"Usage: v143 INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";return 2;
  }
