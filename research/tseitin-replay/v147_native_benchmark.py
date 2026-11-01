@@ -20,7 +20,7 @@ def make(seed,unsat):
   cl.append(cl[-1][:])
  r.shuffle(cl)
  p=ROOT/f"case_{seed:02d}_{'unsat' if unsat else 'sat'}.cnf"
- p.write_text(f"p cnf {n} {len(cl)}\\n"+"".join(" ".join(map(str,c))+" 0\\n" for c in cl))
+ p.write_text(f"p cnf {n} {len(cl)}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in cl))
  return p
 def run(exe,p,kissat):
  args=[str(exe.resolve()),str(p),str(kissat.resolve()),"1"]
@@ -54,7 +54,7 @@ def main():
  (ROOT/"results.json").write_text(json.dumps({"summary":summary,"results":results},indent=2))
  md=["# DRNAS V14.7 native benchmark (30 generated XOR4 CNFs)","","3 repetitions; same GitHub runner; wall-clock including process startup; deterministic constructed cases, not blind.","","| Solver | Correct cases | Median seconds | Sum of per-case medians (s) |","|---|---:|---:|---:|"]
  for name,s in summary.items():md.append(f"| {name} | {s['correct_cases']}/30 | {s['median_seconds']:.6f} | {s['sum_case_medians_seconds']:.6f} |")
- (ROOT/"results.md").write_text("\\n".join(md)+"\\n")
- print("\\n".join(md))
+ (ROOT/"results.md").write_text("\n".join(md)+"\n")
+ print("\n".join(md))
  if any(s["correct_cases"]!=30 for s in summary.values()):raise SystemExit("At least one solver incorrect; inspect results.json")
 if __name__=="__main__":main()
