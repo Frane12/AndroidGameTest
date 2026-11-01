@@ -29,13 +29,14 @@ def formula(family,index):
     if family.startswith("xor"):
         width=int(family[-1]);n=max(16,width*2)
         vars_=rng.sample(range(1,n+1),width)
-        rhs=rng.randrange(2)
+        planted=[rng.randrange(2) for _ in range(n+1)]
+        rhs=sum(planted[v] for v in vars_)%2
         clauses+=exact_xor(vars_,rhs,rng)
         if unsat:clauses+=exact_xor(vars_,rhs^1,rng)
         # Add a second, independent XOR with overlapping variables.
         vars2=rng.sample(range(1,n+1),width)
-        planted=[rng.randrange(2) for _ in range(n+1)]
-        clauses+=exact_xor(vars2,sum(planted[v] for v in vars2)%2,rng) if not unsat else []
+        if not unsat:
+            clauses+=exact_xor(vars2,sum(planted[v] for v in vars2)%2,rng)
     elif family=="2sat":
         n=26
         for i in range(1,n):
