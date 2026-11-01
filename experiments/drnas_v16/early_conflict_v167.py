@@ -295,8 +295,9 @@ def evaluation(args):
                         returncode=r["returncode"],nearest_seed="",
                         nearest_distance="",second_distance="",confident="")
                 else:
+                    adaptive_start=time.perf_counter()
                     probe_folder=args.root/"evaluation"/f"probe_{seed}_{rep}"
-                    probes,details,probe_sec=probes_for(
+                    probes,details,_=probes_for(
                         args.solver,path,seed,probe_folder,args.probe_timeout)
                     for x in details:
                         probe_rows.append(dict(rep=rep,**x))
@@ -306,6 +307,8 @@ def evaluation(args):
                     except ValueError as e:
                         print("FAIL_CLOSED",seed,str(e),flush=True)
                         selected="baseline";d1=d2=float("nan");confident=False;neighbor=-1
+                    # Charge parsing, structural extraction and selection too.
+                    probe_sec=time.perf_counter()-adaptive_start
                     # Wall-clock fairness: 25s INCLUDES all probe and feature costs.
                     remaining=max(0.0,args.timeout-probe_sec)
                     if remaining < .02:
