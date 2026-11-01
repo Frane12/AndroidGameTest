@@ -137,8 +137,8 @@ def invoke_champion(cnf, outdir):
 
 def official_labels():
     meta = pinned(META_URL, META_SHA256)
-    rows = list(csv.DictReader(io.StringIO(meta.decode("utf-8"))))
-    by_id = {row["hash"]: row for row in rows}
+    rows = [line.split() for line in meta.decode("utf-8").splitlines()[1:] if line.strip()]
+    by_id = {row[0]: {"hash": row[0], "filename": row[1], "family": row[2]} for row in rows}
     for ident, filename in CASES:
         assert ident in by_id, ident
         assert by_id[ident]["family"] == "tseitin", by_id[ident]
@@ -169,6 +169,7 @@ def main():
             "variables": nvars, "clauses": len(clauses),
             "exact_xor_equations": len(equations) if equations is not None else None,
             "gf2_unsat_witness_rows": witness,
+            "equations": equations,
             "path": path, "clauses_data": clauses,
         })
     available = os.sched_getaffinity(0)
