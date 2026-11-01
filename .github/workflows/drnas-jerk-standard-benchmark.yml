@@ -1,0 +1,45 @@
+name: DRNAS Jerk V1 standard paired replay benchmark
+on:
+  push:
+    branches: [experiment/drnas-jerk-law-v1-20261101]
+    paths: ['.github/workflows/drnas-jerk-standard-benchmark.yml']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  paired-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve pinned validated benchmark data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 41344728214 --repo "$GITHUB_REPOSITORY" --name DRNAS-V1531-SQLite-Analytics --dir input
+          test -s input/attempts.csv
+          test -s input/paired.csv
+          test -s input/telemetry.csv
+      - name: Compute jerk and validate paired benchmark replay
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/jerk_law_v1.py --telemetry input/telemetry.csv --paired input/paired.csv --out results
+          python3 - <<'PY'
+          import csv,json,collections,statistics,pathlib
+          p=pathlib.Path('results')
+          rows=list(csv.DictReader(open('input/attempts.csv')))
+          groups=collections.defaultdict(list)
+          for r in rows:groups[(r['provenance'],r['category'],r['solver'])].append(r)
+          report=[]
+          for (provenance,category,solver),rr in sorted(groups.items()):
+              ps=[float(r['par2_seconds']) for r in rr if r.get('par2_seconds') not in ('',None)]
+              report.append(dict(provenance=provenance,category=category,solver=solver,attempts=len(rr),correct=sum(r.get('correct')=='1' for r in rr),timeouts=sum(r.get('status')=='TIMEOUT' for r in rr),par2_sum=sum(ps) if len(ps)==len(rr) else None,median_seconds=statistics.median(float(r['seconds']) for r in rr if r.get('seconds') not in ('',None)) if any(r.get('seconds') not in ('',None) for r in rr) else None))
+          (p/'standard_replay_summary.json').write_text(json.dumps({'type':'historical paired replay, NOT new solver execution','groups':report},indent=2))
+          print('Validated historical attempts:',len(rows),'groups:',len(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Jerk-V1-Standard-Paired-Replay
+          path: results/
