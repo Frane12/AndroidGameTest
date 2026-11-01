@@ -9,7 +9,7 @@ from collections import Counter,defaultdict
 from pathlib import Path
 import official_shortlong_select as source
 
-PROTOCOL="DRNAS-V13-CaDiCaL256-RETROSPECTIVE-v1"
+PROTOCOL="DRNAS-V131-CaDiCaL-exact256-RETROSPECTIVE-v1"
 SHARDS=8
 CAP=14.0
 MAX_MEM=3*1024**3
@@ -18,7 +18,7 @@ FIELDS=("v90_conflicts_256","v90_learned_256","v90_lbd2_256","v90_lbd4_256",
         "v90_jumpdepth_256","v90_backtracks_256","active_256","stage1","cpu_256_ns")
 DERIVED=("LBD2_fraction","LBD4_fraction","mean_raw_LBD",
          "propagations_per_conflict","jump_depth_per_jump","learned_per_conflict",
-         "conflicts_before_stop","prefix_cpu_ms")
+         "conflicts_before_stop","cpu_at_probe_return_ms")
 
 def check(v,msg):
     if not v:raise RuntimeError(msg)
@@ -57,6 +57,8 @@ def freeze(args):
       "v103_manifest_sha256":digest(Path(args.v103)/"frozen/v103_manifest.json"),
       "v11_manifest_sha256":digest(Path(args.v11)/"frozen/v11_manifest.json"),
       "warnings":["NOT a blind model test: historical solver results were already known.",
+                  "V13.1 uses a snapshot at conflict counter increment 256, before that conflict\u0027s clause analysis completes.",
+                  "CPU measurement is at solve return, not exact snapshot; omit as exact-prefix causal evidence.",
                   "No Kissat first-256 telemetry; only CaDiCaL counters are measured.",
                   "V11 12 cases are source-disjoint but are NOT newly unseen to researchers.",
                   "Some cases may not reach 256 conflicts before the time cap.",
@@ -108,6 +110,8 @@ def probe(args):
             # Preserve the raw counter instead of silently clamping it.
             check(0<=t["v90_lbd2_256"]<=t["v90_lbd4_256"]<=t["v90_learned_256"],
                   "LBD count invalid")
+            if t["stage1"]==0:
+                check(conflicts==256,"Unresolved case missing exact 256th-conflict snapshot")
             status=("COUNTER_INVALID" if conflicts<0 else
                     "PREFIX_OVERSHOOT" if conflicts>256 else "TRACE")
             if status!="TRACE":
@@ -174,7 +178,7 @@ def derived(t):
         "jump_depth_per_jump":t["v90_jumpdepth_256"]/j,
         "learned_per_conflict":t["v90_learned_256"]/c,
         "conflicts_before_stop":t["v90_conflicts_256"],
-        "prefix_cpu_ms":t["cpu_256_ns"]/1e6,
+        "cpu_at_probe_return_ms":t["cpu_256_ns"]/1e6,
     }
 def audit(args):
     manifest=read(args.manifest)
@@ -196,6 +200,8 @@ def audit(args):
     check(len(binaries)==1,"Different probe binary across runners")
     check(len(data)==132 and len({r["id"] for r in data})==132,
           "Missing/duplicate telemetry formula")
+    check(all(r["status"]=="TRACE" for r in data),
+          "V13.1 exact256 audit requires every formula to have an in-budget trace")
     report={"protocol":PROTOCOL,"source_v103_run":41249978820,
             "source_v11_run":41250184539,"total_cases":132,
             "probe_binary_sha256":next(iter(binaries)),
@@ -215,11 +221,12 @@ def audit(args):
         if r["status"]=="COUNTER_INVALID":
             check(r["telemetry"]["v90_conflicts_256"]<0,
                   "Invalid count classification incorrect")
-    lines=["# V13 — early 256-conflict CaDiCaL diagnostic","",
+    lines=["# V13.1 — exact conflict-256 counter snapshot diagnostic","",
            "**Retrospective diagnostic only, NOT a new adaptive-solver win.**",
            "CaDiCaL early prefix telemetry; Kissat results are historical solve outcomes.",
-           "Only counters within 0..256 enter the statistical medians. Out-of-budget",
-           "traces are retained and reported separately, NOT mislabelled as first 256.","",
+           "Exact counter snapshot taken at conflict 256, BEFORE its learned-clause analysis.",
+           "CPU duration is measured at solve return and is not exact snapshot timing.",
+           "All 132 traces must be in-budget or the final audit fails.","",
            "| Cohort | CNFs | Strict traces | Overshoot | No trace | Kissat-only wins | DRNAS-only wins |",
            "|---|---:|---:|---:|---:|---:|---:|"]
     for cohort in ("V103_train","V11_SHA_disjoint"):
