@@ -1,0 +1,90 @@
+name: DRNAS SAT V16.7 Early CDCL Dynamics Frozen Probe
+on:
+  push:
+    branches: [experiment/drnas-v167-early-dynamics-20261101]
+    paths:
+      - '.github/workflows/drnas-v167-early-dynamics.yml'
+      - 'experiments/drnas_v16/early_cdcl_v167.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  first-100-conflicts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight Python script
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/early_cdcl_v167.py
+          python3 -m py_compile experiments/drnas_v16/generate_v165_blind.py
+          python3 -m py_compile experiments/drnas_v16/relations_v166b.py
+      - name: Build fixed upstream Kissat 4.0.4 with statistics
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          git -C /tmp/kissat-upstream checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-upstream rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-upstream && ./configure && make -j2)
+          /tmp/kissat-upstream/build/kissat --version
+          /tmp/kissat-upstream/build/kissat --help | grep -E 'conflicts|statistics|--sat' | head -n 15
+      - name: Verify conflict budget limit, statistics and SAT witnesses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          path=Path('/tmp/v167-smoke.cnf')
+          path.write_text('p cnf 3 3\n1 2 0\n-1 3 0\n-3 2 0\n')
+          cmd=['/tmp/kissat-upstream/build/kissat','-s','--conflicts=64',str(path)]
+          p=subprocess.run(cmd,capture_output=True,text=True)
+          assert p.returncode in (0,10,20),(p.returncode,p.stdout[-400:],p.stderr[-400:])
+          assert 'c ' in p.stdout,p.stdout
+          print('V167_PINNED_PROBE_SMOKE',p.returncode)
+          print('\n'.join(x for x in p.stdout.splitlines()
+            if any(z in x.lower() for z in ('conflicts','decisions','restarts','propagations')))[:2000])
+          PY
+      - name: Freeze and measure 4 old cases plus 8 unseen seeds
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/early_cdcl_v167.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --root v167-investigation \
+            --probe-timeout 2 --solve-timeout 6 \
+            | tee v167-run.log
+      - name: Assert original frozen split and complete comparative benchmark
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,hashlib,json
+          from pathlib import Path
+          p=Path('v167-investigation')
+          manifest=json.loads((p/'frozen-manifest.json').read_text())['cases']
+          assert len(manifest)==14
+          assert len([x for x in manifest if x['group']=='holdout'])==8
+          for x in manifest:
+            assert hashlib.sha256(Path(x['path']).read_bytes()).hexdigest()==x['sha256']
+          probes=list(csv.DictReader((p/'probe.csv').open(newline='')))
+          solves=list(csv.DictReader((p/'solve.csv').open(newline='')))
+          assert len(probes)==56,(len(probes))
+          assert len(solves)==72,(len(solves))
+          assert len([x for x in solves if x['group']=='holdout'])==32
+          assert all(x['status']!='INVALID_SAT_MODEL' for x in solves)
+          assert all(x['status']!='ERROR' for x in solves)
+          summary=json.loads((p/'summary.json').read_text())
+          assert set(summary['group_summaries'])=={'development','holdout','control'}
+          print('V167_FINAL_AUDIT_PASSED 56 probes 72 full solves 8 untouched originals')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V167-CDCL-64-256-Conflicts-Prospective-Holdout
+          path: |
+            v167-run.log
+            v167-investigation/frozen-manifest.json
+            v167-investigation/probe.csv
+            v167-investigation/solve.csv
+            v167-investigation/summary.json
+            v167-investigation/probe_logs/
+          if-no-files-found: warn
