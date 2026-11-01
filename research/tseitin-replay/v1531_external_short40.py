@@ -3,7 +3,7 @@
 
 The 40 file choices below were fixed before any short40 timing was collected.
 They exclude the 13..20 instances used by frozen V15.3.1 SATLIB F regression.
-They have NOT been proven unseen in all historical DRNAS experiments.
+They have NOT been proven unseen in all historical DRNAS experiments.\nThe original frozen selection included dubois100.cnf, which was rejected before\nbenchmarking because its header claimed 800 clauses but only 598 existed; it\nwas replaced by verified well-formed dubois21.cnf, without timing-based filtering.
 This is NOT an official SAT Competition benchmark.
 """
 import argparse, hashlib, json, os, random, statistics, subprocess, sys, time
@@ -20,7 +20,7 @@ CHOICES={
  "uniform_sat": [(f"sat-uniform-20-91/uf20-0{x}.cnf","SAT") for x in (11,35,52,58,66,67,69,77,89,97)],
  "graph_coloring": [(f"sat-flat125-301/flat125-{x}.cnf","SAT") for x in (5,11,24,29,35,41,45,61,75,77)],
  "uniform_unsat": [(f"unsat-uniform-50-218/uuf50-0{x}.cnf","UNSAT") for x in (8,31,43,59,61,71,72,75,86,87)],
- "dubois_unsat": [(f"unsat-dimacs-dubois/dubois{x}.cnf","UNSAT") for x in (22,24,25,26,27,28,29,30,50,100)]
+ "dubois_unsat": [(f"unsat-dimacs-dubois/dubois{x}.cnf","UNSAT") for x in (22,24,25,26,27,28,29,30,50,21)]
 }
 legacy.TIMEOUT=CAP
 
@@ -116,7 +116,7 @@ def aggregate(root):
      "Each paired solver comparison is made within one GitHub runner per family.",
      "SAT checked against original clauses; DRNAS native UNSAT checked where proof emitted.",
      "Kissat UNSAT and DRNAS Kissat-fallback UNSAT labels do **not** constitute independently verified UNSAT proofs.",
-     "Not known globally unseen across historical experiments; 13–20 previously used in the V15.3.1 baseline were excluded.","",
+     "Not known globally unseen across historical experiments; 13–20 previously used in the V15.3.1 baseline were excluded.",\n     "Input validation exclusion: dubois100.cnf has 598 clauses against claimed 800; replaced with dubois21.cnf before new timing.","",
      "| Family | Solver | Correct attempts | Timeouts | PAR-2 total (s) | Median wall (s) |",
      "|---|---|---:|---:|---:|---:|"]
  summary={}
