@@ -1,0 +1,120 @@
+name: DRNAS V15.0 experimental Hall matching vs V14.10 and official 2026
+on:
+  push:
+    branches: [experiment/drnas-v150-hall-matching-20261101]
+    paths:
+      - '.github/workflows/drnas-v150-hall-experiment.yml'
+      - 'research/drnas-sat-v7-8/v150_hall_matching.cpp'
+      - 'research/tseitin-replay/v150_hall_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  synthetic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [0,1,2,3]
+    name: v150-synthetic-${{ matrix.slot }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Compile V15.0 and V14.10 and verify pinned Kissat
+        run: |
+          set -euo pipefail
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/drnas-sat-v7-8/v150_hall_matching.cpp -o bin/v150_hall
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/drnas-sat-v7-8/v1410_xor4.cpp -o bin/v1410_xor4
+          chmod +x bin/v150_hall bin/v1410_xor4 bin/kissat_solver
+          python3 -m py_compile research/tseitin-replay/v150_hall_benchmark.py
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          sha256sum bin/v150_hall bin/v1410_xor4 bin/kissat_solver
+      - name: Matched two-repeat Hall and non-Hall SAT controls
+        run: python3 -u research/tseitin-replay/v150_hall_benchmark.py measure ${{ matrix.slot }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v150-synthetic-${{ matrix.slot }}
+          path: out/
+          if-no-files-found: warn
+  official:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [0,1]
+    name: v150-official-${{ matrix.slot }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41274374244
+          github-token: ${{ github.token }}
+          name: v148-sc2026-preregistered-6-inputs
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Compile unchanged baselines and verify original official CNF manifest
+        run: |
+          set -euo pipefail
+          (cd prior && sha256sum -c v148-frozen-manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/drnas-sat-v7-8/v150_hall_matching.cpp -o bin/v150_hall
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/drnas-sat-v7-8/v1410_xor4.cpp -o bin/v1410_xor4
+          chmod +x bin/v150_hall bin/v1410_xor4 bin/kissat_solver
+      - name: Test 6 pinned original SC2026 formulas - safe fallback overhead
+        run: python3 -u research/tseitin-replay/v150_hall_benchmark.py official ${{ matrix.slot }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v150-official-${{ matrix.slot }}
+          path: out/
+          if-no-files-found: warn
+  audit:
+    needs: [synthetic,official]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v150-*
+          path: all
+      - name: Audit 100 executions, independent Hall proofs and official regression
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v150_hall_benchmark.py audit
+          cat v150-final.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V150-Hall-Matching-Experimental-Final
+          path: |
+            v150-final.json
+            all/
+          if-no-files-found: warn
