@@ -118,6 +118,10 @@ def load_runner(path: Path):
         source,
         'if len(cases)!=10 or len({c["formula_sha256"] for c in cases})!=10:',
         'if len(cases)!=25 or len({c["formula_sha256"] for c in cases})!=25:')
+    source = replace_once(
+        source,
+        'if len(rows)!=120:',
+        'if len(rows)!=len(cases)*REPEATS*len(MODES):')
     spec = importlib.util.spec_from_loader("r6_holdout_runner", loader=None)
     module = importlib.util.module_from_spec(spec)
     module.__file__ = str(path)
