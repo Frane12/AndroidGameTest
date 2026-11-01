@@ -47,7 +47,7 @@ def feature(points):
  third=[samples[i]-3*samples[i-1]+3*samples[i-2]-samples[i-3] for i in range(3,len(samples))]
  denom=max(1.0,samples[-1]-samples[0])
  return dict(jerk_abs_norm=statistics.mean(map(abs,third))/denom,
-             jerk_signed_norm=statistics.mean(third)/den,
+             jerk_signed_norm=statistics.mean(third)/denom,
              prefix_duration_s=duration,prefix_checkpoints=len(eligible),
              prefix_first_conflict=c[0],prefix_last_conflict=c[-1]),None
 def main():
