@@ -36,7 +36,7 @@ def invoke_champion(cnf, outdir):
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
-        return "TIMEOUT", CAP, {"returncode": 124, "proof_present": False, "stdout": ""}
+        return "TIMEOUT", CAP, {"returncode": 124, "proof_present": False, "proof_bytes": 0, "stdout": "", "stderr_tail": ""}
     elapsed = time.perf_counter() - start
     lines = {line.strip() for line in stdout.splitlines()}
     if "s UNSATISFIABLE" in lines:
