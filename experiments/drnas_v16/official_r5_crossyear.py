@@ -251,7 +251,7 @@ def batch(shard):
                 rows.append(run_one(case,repeat,mode))
                 csvwrite(out/"measurements.partial.csv",rows)
             answers={x["status"] for x in rows if
-                     x["index"]==case["index"] and x["repeat"]==repeat and
+                     x["year"]==case["year"] and x["index"]==case["index"] and x["repeat"]==repeat and
                      x["status"] in ("SAT","UNSAT")}
             if len(answers)>1:
                 raise RuntimeError(f"Contradiction among policies on {case['year']} {case['index']}")
@@ -327,8 +327,32 @@ def aggregate():
               original_par2_mean_s=round(original,6),
               r5_par2_mean_s=round(new,6),
               improvement_s=round(original-new,6),
-              early_restarts=vals,passed_gate=[x<=20 for x in vals],
+              early_restarts=vals,
+              passed_gate=[bool(int(x["r5_eligible"])) for x in monitor if x["r5_eligible"]],
               r5_actual_switch_count=sum(bool(x["switch_at"]) for x in group if x["mode"]=="r5_multisignal")))
+    cohort_summaries=[]
+    for year in (2025,2026):
+        cohort_keys={k:group for k,group in keys.items() if int(k[0])==year}
+        if not cohort_keys:
+            cohort_summaries.append(dict(year=year,formula_count=0,
+                note="No downloaded official formulas for this cohort"))
+            continue
+        baseline=sum(float(x["par2_s"]) for group in cohort_keys.values()
+                     for x in group if x["mode"]=="original")
+        by_mode=[]
+        for mode in MODES:
+            xs=[x for group in cohort_keys.values() for x in group if x["mode"]==mode]
+            total=sum(float(x["par2_s"]) for x in xs)
+            by_mode.append(dict(mode=mode,attempts=len(xs),
+                solved=sum(x["status"] in ("SAT","UNSAT") for x in xs),
+                total_par2_s=round(total,6),
+                improvement_pct=round(100*(1-total/baseline),4),
+                switches=sum(bool(x["switch_at"]) for x in xs),
+                validated_sat_models=sum(x["sat_witness_verified"]=="True" for x in xs)))
+        cohort_summaries.append(dict(year=year,formula_count=len(cohort_keys),
+            reference_labels=("Published 2026 verified SAT/UNSAT statuses" if year==2026
+               else "No frozen 2025 per-formula verified status; SAT models checked"),
+            strategies=by_mode))
     final=dict(experiment="DRNAS SAT R5.0 multi-signal frozen 2025+2026 holdout",
         complete_shards=4,formula_count=len(keys),attempts=len(rows),
         official_input_source="SAT Competition 2025 and 2026 Main Track, pinned URI lists",
@@ -341,7 +365,7 @@ def aggregate():
         policy_not_tuned_on_r5_holdout=True,
         candidates_frozen_before_results=True,
         formula_selection_skips=[{"shard":x["shard"],"skips":x["skips"]} for x in manifest],
-        strategies=output,paired_formulas=paired)
+        strategies=output,cohorts=cohort_summaries,paired_formulas=paired)
     (ROOT/"aggregate.json").write_text(json.dumps(final,indent=2))
     print("R5_OFFICIAL_FINAL",json.dumps({k:v for k,v in final.items() if k!="paired_formulas"},separators=(",",":")),flush=True)
     for x in paired:print("R5_PAIRED",json.dumps(x,separators=(",",":")),flush=True)
