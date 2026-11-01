@@ -1,0 +1,178 @@
+name: DRNAS V15.3.1 structural transfer — four external SATLIB families
+on:
+  push:
+    branches: [experiment/drnas-v1531-crossfamily-transfer-20261101]
+    paths:
+      - research/tseitin-replay/v1531_crossfamily_transfer.py
+      - research/tseitin-replay/v1531_crossfamily_preregister.json
+      - .github/workflows/drnas-crossfamily-transfer.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-preregistered-crossfamily-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: Unseen structural test — ${{ matrix.family }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        family: [uf200-860,uf250-1065,uuf200-860,flat200-479]
+        include:
+          - family: uf200-860
+            group: RND3SAT
+            sha1: e27208778d47d2405a9368cad3ab8dfb41206be8
+          - family: uf250-1065
+            group: RND3SAT
+            sha1: acaf37c9e92694a38974a6a1a9647e0f9bcf80b2
+          - family: uuf200-860
+            group: RND3SAT
+            sha1: 05aacf179ed739a8311f2821874183daa5a9b134
+          - family: flat200-479
+            group: GCP
+            sha1: 001aa0da7a2954dbb8e4dd1cb7aba6e0a4979a2d
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert frozen V15.3.1 and prespecified structural protocol
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = "d280a2ffa28d72aec183323bbea40544d676112d"
+          python3 -m py_compile research/tseitin-replay/v1531_crossfamily_transfer.py
+          python3 -m py_compile research/tseitin-replay/v1531_structural_fingerprints.py
+          sha256sum research/tseitin-replay/v1531_crossfamily_preregister.json
+      - name: Compile exactly original pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+      - name: Check SHA1 of original real SATLIB archive
+        run: |
+          set -euo pipefail
+          name="${{ matrix.family }}"
+          curl -fLsS --connect-timeout 10 --max-time 60 --retry 2 \
+            "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/${{ matrix.group }}/$name.tar.gz" \
+            -o "/tmp/$name.tar.gz"
+          echo "${{ matrix.sha1 }}  /tmp/$name.tar.gz" | sha1sum -c -
+      - name: Freeze 40 identities + structural features before measuring, then original Kissat twice
+        run: |
+          set -euo pipefail
+          echo "FAMILY ${{ matrix.family }}"
+          grep -m1 "model name" /proc/cpuinfo || true
+          python3 -u research/tseitin-replay/v1531_crossfamily_transfer.py --family "${{ matrix.family }}"
+      - name: Preserve raw timings, frozen inputs and partial attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crossfamily-raw-${{ matrix.family }}
+          path: crossfamily-validation/${{ matrix.family }}/
+          if-no-files-found: warn
+          retention-days: 60
+  aggregate:
+    name: Preregistered cross-family statistical verdict + refreshed SQLite
+    needs: evaluate
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all four independently timed families
+        uses: actions/download-artifact@v4
+        with:
+          pattern: crossfamily-raw-*
+          path: downloaded
+      - name: Verify all 160 frozen input identities and combine 320 paired repetitions
+        run: |
+          set -euo pipefail
+          for category in uf200-860 uf250-1065 uuf200-860 flat200-479; do
+            test -s "downloaded/crossfamily-raw-$category/manifest_frozen_before_timing.json"
+            test -s "downloaded/crossfamily-raw-$category/results.json"
+            mkdir -p "crossfamily-validation/$category"
+            cp -a "downloaded/crossfamily-raw-$category/." "crossfamily-validation/$category/"
+          done
+          python3 -u research/tseitin-replay/v1531_crossfamily_transfer.py --aggregate
+          test -s crossfamily-validation/aggregate.json
+          test -s crossfamily-validation/report.md
+          test -s crossfamily-validation/formula_structures_and_outcomes.csv
+      - name: Rebuild full analytical SQLite from unchanged historical and new measurement rows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p raw-artifacts
+          gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
+          for item in DRNAS-V1531-External-Short40 DRNAS-V1531-External-Medium40 DRNAS-V1531-Structural-UUF250-Validation; do
+            mkdir -p "raw-artifacts/$item"
+          done
+          cp research/sat-analytics-data/short40/results.json raw-artifacts/DRNAS-V1531-External-Short40/results.json
+          cp research/sat-analytics-data/medium40/results.json raw-artifacts/DRNAS-V1531-External-Medium40/results.json
+          cp research/sat-analytics-data/relations-validation/results.json raw-artifacts/DRNAS-V1531-Structural-UUF250-Validation/results.json
+          for category in uf200-860 uf250-1065 uuf200-860 flat200-479; do
+            target="raw-artifacts/DRNAS-V1531-CrossFamily-$category"
+            mkdir -p "$target"
+            cp "crossfamily-validation/$category/results.json" "$target/results.json"
+          done
+          python3 -m venv .analytics-venv
+          .analytics-venv/bin/pip install matplotlib
+          .analytics-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
+            --input raw-artifacts \
+            --out crossfamily-warehouse \
+            --source-run 41278912894 \
+            --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
+            --runner github-hosted-ubuntu-24.04
+          .analytics-venv/bin/python research/tseitin-replay/v1531_crossfamily_transfer.py --aggregate
+          python3 - <<'PY'
+          import sqlite3,json
+          from pathlib import Path
+          db=sqlite3.connect('crossfamily-warehouse/sat_analytics.sqlite')
+          assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]==4696
+          assert db.execute("SELECT COUNT(*) FROM formulas").fetchone()[0]==592
+          assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+          for d in ("uf200-860","uf250-1065","uuf200-860","flat200-479"):
+            assert db.execute("SELECT COUNT(*) FROM attempts WHERE dataset=?",
+                              ("DRNAS-V1531-CrossFamily-"+d,)).fetchone()[0]==80
+          print("FULL_SQLITE_592_CASES_4696_ATTEMPTS_PASS")
+          db.close()
+          PY
+      - name: Publish frozen manifests, per-category outcomes, cross-family tests and refreshed warehouse
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-Structural-CrossFamily-Validation
+          path: |
+            crossfamily-validation/aggregate.json
+            crossfamily-validation/report.md
+            crossfamily-validation/formula_structures_and_outcomes.csv
+            crossfamily-validation/individual_attempts.csv
+            crossfamily-validation/family_tests.csv
+            crossfamily-validation/pooled_tests.csv
+            crossfamily-validation/scatter_*.png
+            crossfamily-validation/*/manifest_frozen_before_timing.json
+            crossfamily-validation/*/results.json
+            crossfamily-warehouse/
+          retention-days: 60
+          if-no-files-found: warn
+      - name: Preserve cumulative SQLite and all new structural reports in versioned branch
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/crossfamily-transfer
+          cp crossfamily-validation/{aggregate.json,report.md,formula_structures_and_outcomes.csv,individual_attempts.csv,family_tests.csv,pooled_tests.csv} research/sat-analytics-data/crossfamily-transfer/
+          cp crossfamily-validation/scatter_*.png research/sat-analytics-data/crossfamily-transfer/
+          cp crossfamily-warehouse/{sat_analytics.sqlite,summary.json,grouped.csv,paired.csv} research/sat-analytics-data/crossfamily-transfer/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/sat-analytics-data/crossfamily-transfer
+          if ! git diff --cached --quiet; then
+            git commit -m "data: freeze cross-family validation and cumulative SQL [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
