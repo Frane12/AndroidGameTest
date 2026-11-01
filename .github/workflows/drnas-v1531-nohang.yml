@@ -1,0 +1,92 @@
+name: DRNAS V15.3.1 No-Hang protected V15.3 baseline
+on:
+  push:
+    branches: [experiment/drnas-v153-base-nohang-v1531-20261101]
+    paths:
+      - 'research/drnas-sat-v7-8/v1531_nohang.cpp'
+      - 'research/tseitin-replay/v1531_*.py'
+      - '.github/workflows/drnas-v1531-nohang.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness_and_perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python benchmark syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v1531_regression.py \
+            research/tseitin-replay/v1531_mixed.py \
+            research/tseitin-replay/v1531_satlib.py \
+            research/tseitin-replay/v1531_nohang_stress.py
+      - name: Compile original V15.3 and guarded V15.3.1
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o /tmp/v153_unified
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          test -x /tmp/v153_unified
+          test -x /tmp/v1531_nohang
+      - name: Build identical pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Eight adversarial anti-hang cases, three repetitions
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_nohang_stress.py
+      - name: Upload anti-hang stress results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-NoHang-Stress
+          path: v1531-nohang-stress/
+          if-no-files-found: warn
+      - name: Regression 168 cases, 14 structural families
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_regression.py
+      - name: Upload V15.3.1 versus V15.3 168-case regression
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-Regression-168
+          path: v1531-regression-168/
+          if-no-files-found: warn
+      - name: Regression 96 mixed XOR-plus-unit cases
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_mixed.py
+      - name: Upload mixed XOR case audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-Mixed-96
+          path: v1531-mixed-96/
+          if-no-files-found: warn
+      - name: Checkout pinned SATLIB for previously measured external F comparison
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-repo
+          git -C /tmp/satlib-repo fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-repo checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-repo rev-parse HEAD)" = "fc0e735aff48989326f256121b5ed6fc585858c3"
+      - name: Compare on 40 public SATLIB F instances (previously seen)
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_satlib.py
+      - name: Upload external regression
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-SATLIB-40-Regression
+          path: v1531-satlib-f/
+          if-no-files-found: warn
