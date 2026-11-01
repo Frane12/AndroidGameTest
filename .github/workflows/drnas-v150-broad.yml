@@ -1,0 +1,67 @@
+name: DRNAS V15.0 Broad native structural audit
+on:
+  push:
+    branches: [experiment/drnas-v147-xor4-robust-proof-20261101]
+    paths:
+      - 'research/drnas-sat-v7-8/v150_broad.cpp'
+      - 'research/tseitin-replay/v150_broad_benchmark.py'
+      - 'research/tseitin-replay/v150_external_holdout_c.py'
+      - 'research/tseitin-replay/v150_proof_checker.py'
+      - '.github/workflows/drnas-v150-broad.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  broad_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native DRNAS V14.8 V14.10 V15.0
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v148_xor4.cpp -o /tmp/v148_xor4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1410_xor4.cpp -o /tmp/v1410_xor4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v150_broad.cpp -o /tmp/v150_broad
+          test -x /tmp/v150_broad
+      - name: Build pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Audit 96 cases across eight structural families
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v150_broad_benchmark.py
+          echo 8af8e56f174b778aef3aa45af9f739b2a5f492c2 > v150-broad-regression/kissat-commit.txt
+      - name: Upload 96 case regression and native proof certificates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V150-Broad-96
+          path: v150-broad-regression/
+          if-no-files-found: warn
+      - name: Check out frozen independent public SAT holdout C
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/Byt-wyze-technology/sat-instances-library.git /tmp/sat-external
+          git -C /tmp/sat-external fetch --depth 1 origin 0a150d63fb86d0eb344d65c6b2cf94be24bbfd11
+          git -C /tmp/sat-external checkout --detach 0a150d63fb86d0eb344d65c6b2cf94be24bbfd11
+          test "$(git -C /tmp/sat-external rev-parse HEAD)" = "0a150d63fb86d0eb344d65c6b2cf94be24bbfd11"
+      - name: Run V15 public external holdout C
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v150_external_holdout_c.py
+          echo 8af8e56f174b778aef3aa45af9f739b2a5f492c2 > v150-external-holdout-c/kissat-commit.txt
+      - name: Upload external C holdout
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V150-External-Unseen-12-C
+          path: v150-external-holdout-c/
+          if-no-files-found: warn
