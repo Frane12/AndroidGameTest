@@ -148,7 +148,7 @@ def measure(slot):
     print("V147_SLOT_PASS",slot,label,flush=True)
 
 def audit():
-    paths=sorted(Path("all").glob("nongrid-case-*/results.json"))
+    paths=sorted(Path("all").glob("v147-nongrid-case-*/results.json"))
     assert len(paths)==4
     reports=[json.loads(p.read_text()) for p in paths]
     assert [r["slot"] for r in reports]==list(range(4))
