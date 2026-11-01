@@ -118,8 +118,10 @@ def summarize(rows):
     groups=defaultdict(list)
     for r in rows:
         groups["all"].append(r)
-        groups["constructive" if r["source"]=="synthetic" else "official2026_prior_pilot"].append(r)
-        groups[r["family"]].append(r)
+        cohort="constructive" if r["source"]=="synthetic" else "official2026_prior_pilot"
+        groups[cohort].append(r)
+        if r["family"]!=cohort:
+            groups[r["family"]].append(r)
     summary={}
     for name,v in groups.items():
         conf=Counter();classes=Counter();solved=Counter();costs=defaultdict(list)
