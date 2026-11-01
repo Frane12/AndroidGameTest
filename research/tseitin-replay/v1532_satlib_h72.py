@@ -110,7 +110,7 @@ def run(name,exe,case):
             
         if name=="v1531" and "DRNAS_V153_ROUTE\tkissat_augmented" in p.stdout:
             route="kissat_augmented"
-        elif name=="v1532" and "DRNAS_V1532_ROUTE\\tprefix_kissat_direct" in p.stdout:
+        elif name=="v1532" and "DRNAS_V1532_ROUTE\tprefix_kissat_direct" in p.stdout:
             route="prefix_kissat_direct"
         else:route=payload.get("path") if payload else "kissat"
         correct=(status==case["expected"] and model_ok is not False and
