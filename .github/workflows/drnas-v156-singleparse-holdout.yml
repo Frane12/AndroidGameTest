@@ -1,0 +1,88 @@
+name: DRNAS V15.6 SinglePass Budgeted vs Kissat API and official 2026
+on:
+  push:
+    branches: [experiment/drnas-v156-singleparse-budgeted-holdout-20261101]
+    paths:
+      - '.github/workflows/drnas-v156-singleparse-holdout.yml'
+      - 'research/drnas-sat-v7-8/v156_budgeted_inprocess.cpp'
+      - 'research/tseitin-replay/v156_singleparse_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [generated, official]
+    name: v156-${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        if: matrix.mode == 'official'
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41276825851
+          github-token: ${{ github.token }}
+          name: v152-2026-preregistered-16-new-inputs
+          path: prev
+      - name: Compile and preflight benchmark and proof checker
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/tseitin-replay/v156_singleparse_benchmark.py \
+            research/tseitin-replay/v155_training.py \
+            research/tseitin-replay/v153_proof_checker.py
+          if [[ "${{ matrix.mode }}" == "official" ]]; then
+            (cd prev && sha256sum -c v152-frozen.sha256)
+          fi
+      - name: Pin Kissat 4.0.4 CLI and static in-process API
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          mkdir -p bin
+          cp /tmp/kissat-source/build/kissat bin/kissat_solver
+          test -s /tmp/kissat-source/build/libkissat.a
+          bin/kissat_solver --version
+      - name: Build all five candidates in the same environment
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v153_unified.cpp -o bin/v153_unified
+          for pair in 'kissat_api_control.cpp kissat_api_control' 'v154_inprocess.cpp v154_inprocess' 'v156_budgeted_inprocess.cpp v156_budgeted_inprocess'; do
+            read -r src out <<< "$pair"
+            g++ -std=c++17 -O3 -DNDEBUG \
+              -I/tmp/kissat-source/src "research/drnas-sat-v7-8/$src" \
+              /tmp/kissat-source/build/libkissat.a -lm -o "bin/$out"
+          done
+          sha256sum bin/kissat_solver bin/kissat_api_control bin/v153_unified \
+            bin/v154_inprocess bin/v156_budgeted_inprocess
+      - name: Smoke SAT and UNSAT with independent models and certificates
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' > /tmp/sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/unsat.cnf
+          bin/v156_budgeted_inprocess /tmp/sat.cnf "$(pwd)/bin/kissat_solver" 1 | grep -Eq 's SATISFIABLE|"status":"SAT"'
+          bin/v156_budgeted_inprocess /tmp/unsat.cnf "$(pwd)/bin/kissat_solver" 1 | grep -Eq 's UNSATISFIABLE|"status":"UNSAT"'
+      - name: Independent 160 generated controls or 12 frozen ORIGINAL SAT Competition 2026 formulas
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v156_singleparse_benchmark.py ${{ matrix.mode }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V156-SinglePass-${{ matrix.mode }}-RawAudit
+          path: |
+            v156-${{ matrix.mode }}-results.json
+            v156-${{ matrix.mode }}-progress.json
+            v156-${{ matrix.mode }}-12-manifest.json
+            v156-generated-160-manifest.json
+          if-no-files-found: warn
