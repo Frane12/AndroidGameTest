@@ -32,7 +32,7 @@ for seed in range(160):
         assert entails(n,cls,entry["vars"],entry["rhs"]),(seed,entry)
     tests+=1
 # Hall candidates, NOT certified contradictions.
-hall=[(1,2,3),(4,5,6),(7,8,9),(-1,-4),(-2,-5),(-3,-6)]
+hall=[(1,2,3),(4,5,6),(7,8,9),(-1,-4),(-2,-5),(-7,-6)]
 d=rel.relations(9,hall)
 assert d["signals"]["positive_alo"]==3
 assert d["signals"]["negative_amo"]==3
