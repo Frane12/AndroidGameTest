@@ -902,7 +902,7 @@ int main(int argc,char**argv) {
    if(f.n>4096)
      return argc==5?(cout<<"DRNAS_V153_ROUTE\tkissat_direct\n",0):kissat_fallback(argv);
    // Classification is side-effect free and has no SAT/UNSAT answer.
-   if(argc==5) {
+   if(argc==5 && string(argv[4])=="--classify-only") {
      cout<<"DRNAS_V153_ROUTE\tstructural_analysis\n";
      return 0;
    }
