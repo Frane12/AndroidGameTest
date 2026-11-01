@@ -1,0 +1,105 @@
+name: DRNAS SAT V17.2 frozen live conflict guard
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v172-live-conflict-guard-20261101'
+    paths:
+      - '.github/workflows/drnas-sat-v172-live-guard.yml'
+      - 'experiments/drnas_v16/live_guard_v172.py'
+      - 'experiments/drnas_v16/patch_kissat_v172.py'
+
+jobs:
+  live-conflict-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate frozen source and graph-core unit tests
+        run: |
+          python3 -m py_compile experiments/drnas_v16/live_guard_v172.py experiments/drnas_v16/patch_kissat_v172.py
+          python3 - <<'PY'
+          import sys, tempfile
+          from pathlib import Path
+          sys.path.insert(0, 'experiments/drnas_v16')
+          import live_guard_v172 as m
+          assert m.PINNED == '8af8e56f174b778aef3aa45af9f739b2a5f492c2'
+          assert m.CAP == 6.0 and m.REPEATS == 2
+          assert m.HOLDOUT == tuple(range(172000,172030))
+          assert m.CONTROLS == tuple(range(172030,172036))
+          assert set(m.MODES) == {'baseline','target-only','restart-only','live-observe','live-adapt'}
+          assert not Path('drnas-v172-results/cnf').exists()
+          with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'core.cnf'
+            p.write_text('p cnf 4 4\n1 2 3 0\n1 2 4 0\n1 3 4 0\n2 3 4 0\n')
+            assert m.corrected_core(p)['mean_core_corrected'] == 3
+            p.write_text('p cnf 3 2\n1 2 0\n2 3 0\n')
+            assert m.corrected_core(p)['max_core_corrected'] == 1
+          print('V172_FROZEN_AND_CORE_UNIT_AUDIT_PASS')
+          PY
+      - name: Build pinned Kissat 4.0.4 with in-process live hook
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v172
+          git -C /tmp/kissat-v172 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_kissat_v172.py --kissat-root /tmp/kissat-v172
+          cd /tmp/kissat-v172
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Smoke-test unmodified and instrumented Kissat modes
+        run: |
+          printf 'p cnf 3 2\n1 2 0\n-1 3 0\n' > /tmp/drnas-v172-smoke.cnf
+          set +e
+          /tmp/kissat-v172/build/kissat -s /tmp/drnas-v172-smoke.cnf > /tmp/baseline.txt
+          base=$?
+          DRNAS_LIVE_MODE=observe /tmp/kissat-v172/build/kissat -s /tmp/drnas-v172-smoke.cnf > /tmp/observe.txt
+          obs=$?
+          DRNAS_LIVE_MODE=adapt /tmp/kissat-v172/build/kissat -s /tmp/drnas-v172-smoke.cnf > /tmp/adapt.txt
+          ada=$?
+          set -e
+          test "$base" -eq 10 && test "$obs" -eq 10 && test "$ada" -eq 10
+          echo V172_SMOKE_PASS
+      - name: Run 30 unseen SAT instances and six density controls
+        run: |
+          python3 -u experiments/drnas_v16/live_guard_v172.py \
+            --solver /tmp/kissat-v172/build/kissat \
+            --root drnas-v172-results --timeout 6 --repeats 2
+      - name: Independently audit pair completeness, wall cap and mode safety
+        run: |
+          python3 - <<'PY'
+          import csv, json
+          from collections import defaultdict
+          from pathlib import Path
+          p=Path('drnas-v172-results')
+          with (p/'measurements.csv').open(newline='') as f: rows=list(csv.DictReader(f))
+          manifest=json.loads((p/'manifest.json').read_text())
+          summary=json.loads((p/'summary.json').read_text())
+          assert len(rows)==360 and len(manifest['cases'])==36
+          assert manifest['checkpoint_conflicts']==[1024,4096]
+          assert manifest['no_holdout_tuning'] is True
+          assert {r['seed'] for r in rows} == {str(x) for x in range(172000,172036)}
+          pairs=defaultdict(dict)
+          for r in rows:
+            assert r['status'] in ('SAT','UNSAT','TIMEOUT')
+            assert float(r['total_seconds'])<=6.25
+            if r['group']=='control' or r['mode']!='live-adapt': assert r['changed']=='0'
+            if r['changed']=='1':
+              assert r['stagnant']=='1' and int(r['checkpoint'])>=4096
+            pairs[(r['seed'],r['repeat'])][r['mode']]=r
+          assert len(pairs)==72 and all(len(x)==5 for x in pairs.values())
+          for group in ('holdout','control'):
+            for mode in ('baseline','target-only','restart-only','live-observe','live-adapt'):
+              assert summary['groups'][group][mode]['attempts']==(60 if group=='holdout' else 12)
+          print('V172_INDEPENDENT_AUDIT_PASS',len(rows),'measurements')
+          PY
+      - name: Publish partial or complete experiment artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V172-frozen-live-conflict-guard
+          path: |
+            drnas-v172-results/manifest.json
+            drnas-v172-results/measurements.partial.csv
+            drnas-v172-results/measurements.csv
+            drnas-v172-results/summary.json
+          if-no-files-found: warn
