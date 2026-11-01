@@ -272,7 +272,7 @@ void json_php(int holes,int birds) {
 }
 
 int main(int argc,char**argv) {
- if(argc!=4) {
+ if(argc!=4 && !(argc==5 && string(argv[4])=="--classify-only")) {
    cerr<<"Usage: native_hybrid INPUT_CNF ORIGINAL_V76_BINARY SEED\n";
    return 2;
  }
@@ -297,6 +297,7 @@ int main(int argc,char**argv) {
    // General SAT fallback: original C++ V7.6, bypass Python on non-XOR input.
    cout<<"DRNAS_HYBRID_ROUTE\tfallback_v76\n"<<flush;
    char *av[]={argv[2],const_cast<char*>("adaptive_plain"),argv[1],argv[3],nullptr};
+   if(argc==5)return 0; // structural-only audit; never invoke fallback solver
    execv(argv[2],av);
    throw runtime_error("execv fallback failed (ensure absolute binary path)");
  } catch(const exception& e) {
