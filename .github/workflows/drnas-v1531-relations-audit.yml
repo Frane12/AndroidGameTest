@@ -1,0 +1,106 @@
+name: DRNAS V15.3.1 mathematical relations audit (read-only)
+on:
+  push:
+    branches:
+      - experiment/drnas-v1531-relations-audit-20261101
+    paths:
+      - research/tseitin-replay/v1531_relations_audit.py
+      - research/tseitin-replay/v1531_structural_fingerprints.py
+      - .github/workflows/drnas-v1531-relations-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-v1531-mathematical-relations-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  relations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify unchanged frozen V15.3.1 and source files
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = "d280a2ffa28d72aec183323bbea40544d676112d"
+          test -s research/sat-analytics-data/medium40/sat_analytics.sqlite
+          test -s research/sat-analytics-data/medium40/results.json
+          test -s research/sat-analytics-data/short40/results.json
+          python3 -m py_compile research/tseitin-replay/v1531_relations_audit.py research/tseitin-replay/v1531_structural_fingerprints.py
+      - name: Prespecified statistical audit of existing 392-formula database
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v1531_relations_audit.py \
+            --db research/sat-analytics-data/medium40/sat_analytics.sqlite \
+            --medium research/sat-analytics-data/medium40/results.json \
+            --out relation-analysis
+      - name: Fetch four original SATLIB archives and verify pinned SHA1
+        run: |
+          set -euo pipefail
+          for item in \
+            'uf200-860:e27208778d47d2405a9368cad3ab8dfb41206be8' \
+            'uf250-1065:acaf37c9e92694a38974a6a1a9647e0f9bcf80b2' \
+            'uuf200-860:05aacf179ed739a8311f2821874183daa5a9b134' \
+            'uuf250-1065:138484766c966e3f18395db92cf6d69d3c442a3e'
+          do
+            name="${item%%:*}"
+            expected="${item#*:}"
+            curl -fLsS --connect-timeout 10 --max-time 65 --retry 2 \
+             "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/$name.tar.gz" -o "/tmp/$name.tar.gz"
+            echo "$expected  /tmp/$name.tar.gz" | sha1sum -c -
+          done
+      - name: Fetch pinned original short40 SATLIB corpus
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-go
+          git -C /tmp/satlib-go fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-go checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-go rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+      - name: Reconstruct clause incidence fingerprints and check exploratory correlations
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v1531_structural_fingerprints.py \
+            --medium research/sat-analytics-data/medium40/results.json \
+            --short research/sat-analytics-data/short40/results.json \
+            --out relation-analysis
+      - name: Plot structural associations, route and residual scatterplots
+        run: |
+          set -euo pipefail
+          python3 -m venv .relations-venv
+          .relations-venv/bin/pip install matplotlib
+          .relations-venv/bin/python research/tseitin-replay/v1531_relations_audit.py \
+            --db research/sat-analytics-data/medium40/sat_analytics.sqlite \
+            --medium research/sat-analytics-data/medium40/results.json \
+            --out relation-analysis
+          .relations-venv/bin/python research/tseitin-replay/v1531_structural_fingerprints.py \
+            --medium research/sat-analytics-data/medium40/results.json \
+            --short research/sat-analytics-data/short40/results.json \
+            --out relation-analysis
+          test -s relation-analysis/relation_audit.json
+          test -s relation-analysis/structural_audit.json
+          test -s relation-analysis/medium_240_pilot_fingerprints.csv
+          test -s relation-analysis/scatter_route_short.png
+          test -s relation-analysis/structural_pair_reuse.png
+      - name: Upload independently reproducible report and graphs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-Mathematical-Relations-Audit
+          path: relation-analysis/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Commit results to dedicated experimental analysis branch
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/relations-audit
+          cp -a relation-analysis/. research/sat-analytics-data/relations-audit/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/sat-analytics-data/relations-audit/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: read-only relational SAT audit and structural fingerprints [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
