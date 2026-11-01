@@ -954,6 +954,9 @@ int main(int argc,char**argv) {
      vector<vector<int>> additions=implied_clauses(f,xr,implication);
      if(!additions.empty())try_augmented_kissat(argv,f,additions);
    }
+   // In-process Kissat consumes exactly the CNF already parsed above.
+   // If parsing fails, the catch path delegates to untouched Kissat CLI.
+   return drnas_kissat_inprocess(f,"v157_api_fallback");
  } catch(const exception& e) {
    cerr<<"DRNAS_V153_FALLBACK "<<e.what()<<"\n";
  }
