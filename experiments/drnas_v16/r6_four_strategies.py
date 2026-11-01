@@ -458,7 +458,7 @@ def aggregate():
     traces=[]
     manifests=[]
     for category in CATEGORIES:
-        folder=root/f"r6-{category}"/category
+        folder=root/f"r6-{category}"
         if not folder.exists():
             raise RuntimeError("Missing shard "+str(folder))
         with (folder/"measurements.csv").open(newline="") as f:
@@ -495,6 +495,17 @@ def aggregate():
         # Prefix evidence is from read-only monitoring, never from the outcome.
         gate=bt.get("gate",{})
         signal=(gate.get("eligible") if gate else "missing")
+        if gate:
+            restart=float(gate["restarts"]); glue=float(gate["g"])
+            propagation=float(gate["p"]); decisions=float(gate["d"])
+            signal_classes=[
+                "gate_eligible" if signal=="1" else "gate_ineligible",
+                "restart_le20" if restart<=20 else "restart_gt20",
+                "glue_lt0965" if glue<0.965 else "glue_ge0965",
+                "prop_lt60" if propagation<60 else "prop_60_200" if propagation<=200 else "prop_gt200",
+                "decisions_le215" if decisions<=2.15 else "decisions_gt215"]
+        else:
+            signal_classes=["missing_512_checkpoint"]
         metrics={m:float(d[m]["par2_s"]) for m in MODES}
         trace_map={m:by_trace.get((*key,m),{}).get("points",[]) for m in
             ("monitor","forced_restart25","r5_frozen_gate")}
@@ -518,7 +529,8 @@ def aggregate():
                 speedup=round(ratio,6),verdict=verdict,early_gate=signal,
                 intervention_applied=bool(d[mode]["switch_at"]))
             pairs.append(row)
-            patterns[(mode,signal)].append(row)
+            for feature in signal_classes:
+                patterns[(mode,feature)].append(row)
     out=OUT/"aggregate"
     out.mkdir(parents=True,exist_ok=True)
     write_csv(out/"measurements.csv",rows)
@@ -529,7 +541,7 @@ def aggregate():
         writer.writeheader();writer.writerows(pairs)
     pattern_rows=[]
     for (mode,signal),sub in sorted(patterns.items()):
-        pattern_rows.append(dict(mode=mode,early_gate=signal,
+        pattern_rows.append(dict(mode=mode,signal_class=signal,
             paired_attempts=len(sub),
             intervention_applied=sum(x["intervention_applied"] for x in sub),
             gains=sum(x["verdict"]=="gain" for x in sub),
@@ -566,10 +578,10 @@ def aggregate():
         for mode,item in stats.items():
             summary.append(f"| {cat} | {mode} | {item['solved']}/{item['n']} | {item['sum_par2']:.5f} | {item.get('speedup_vs_monitor',0):.4f}x |")
     summary.extend(["","## Early-signal association with changes (exploratory)",
-        "| Mode | Gate eligibility | Pairs | Applied | Gains | Regressions |",
+        "| Mode | Early feature (overlapping groups) | Pairs | Applied | Gains | Regressions |",
         "|---|---|---:|---:|---:|---:|"])
     for p in pattern_rows:
-        summary.append(f"| {p['mode']} | {p['early_gate']} | {p['paired_attempts']} | {p['intervention_applied']} | {p['gains']} | {p['regressions']} |")
+        summary.append(f"| {p['mode']} | {p['signal_class']} | {p['paired_attempts']} | {p['intervention_applied']} | {p['gains']} | {p['regressions']} |")
     summary.append(f"\nPrefix comparison mismatches: {len(deviations)} (review determinism and instrumentation before interpreting effects).")
     (out/"results.md").write_text("\n".join(summary)+"\n")
     print("\n".join(summary),flush=True)
