@@ -198,7 +198,7 @@ def analyze(events):
                         float(x["cost_ns"]) for x in window
                     ])[0])
             out.append(dict(index=key[0],repetition=key[1],mode=key[2],
-               stage="search",rounds=None,samples=len(vals),
+               stage="search",rounds=None,samples=len(ordered),
                cpu_elapsed_ns=None,third_diff_available=bool(jerks),
                max_abs_third_diff_ns=round(max(map(abs,jerks)),5) if jerks else None,
                note="256-conflict samples only before budget-abort; sparse retained checkpoints"))
