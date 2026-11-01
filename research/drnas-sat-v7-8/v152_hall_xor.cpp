@@ -1,4 +1,4 @@
-// DRNAS SAT V15.2 HALL AND HIDDEN STRUCTURES: sound structural routes on arbitrary DIMACS CNF.
+// DRNAS SAT V15.2 HALL, EQUIVALENCES AND GF2 MIXED CNF: sound structural routes on arbitrary DIMACS CNF.
 // No labels or filenames used for solver selection. Every result is implied
 // by the entire original CNF, otherwise invoke untouched Kissat.
 // Non-affine supported routes: certified unit propagation, binary implication
@@ -128,6 +128,7 @@ struct ImplicationProof {
  int variable=0;
  vector<int> path_pos_to_neg,path_neg_to_pos;
  vector<int> candidate_model;
+ vector<pair<int,int>> equivalence_links;
  int binary_count=0;
 };
 static vector<int> implication_path(int start,int target,
@@ -203,6 +204,24 @@ static ImplicationProof binary_scc_conflict(const Cnf& f) {
    if(!verify_path(proof.path_pos_to_neg)||!verify_path(proof.path_neg_to_pos))
      throw runtime_error("Invalid implication proof");
    return proof;
+ }
+ // Every pair of literals in the same SCC is equivalent under the
+ // original binary/unit clauses. Record canonical links for augmentation.
+ map<int,int> representatives;
+ for(int node=0;node<N;node++){
+   int component=comp[node];
+   auto it=representatives.find(component);
+   if(it==representatives.end() ||
+      abs(node_lit(node))<abs(node_lit(it->second)))
+     representatives[component]=node;
+ }
+ for(int node=0;node<N;node++){
+   int representative=representatives[comp[node]];
+   if(node!=representative &&
+      abs(node_lit(node))!=abs(node_lit(representative)) &&
+      proof.equivalence_links.size()<512)
+     proof.equivalence_links.push_back(
+       {node_lit(representative),node_lit(node)});
  }
  // If the binary/units subset is satisfiable, its SCC topological
  // assignment may also satisfy all higher-arity clauses. Never return SAT
@@ -503,6 +522,130 @@ static void emit_hall(const HallResult& h) {
    cout<<(i?",":"")<<h.hall_birds[i];
  cout<<"]}\n";
 }
+
+// Derive unit and binary parity clauses from a REDUCED GF(2) basis.
+// Every new clause is implied by full-support XOR encodings in original CNF.
+// Only a low-cost, bounded experiment on mixed CNF: never replace an
+// original clause or trust an unverified SAT model.
+static vector<vector<int>> xor_shortcuts(const vector<Eq>& equations,int n){
+ vector<vector<int>> clauses;
+ if(equations.size()<2||n>512||equations.size()>1024)return clauses;
+ const int words=(n+63)/64;
+ vector<Eq> pivot(n);
+ vector<char> present(n,0);
+ for(const Eq& source:equations){
+   vector<uint64_t> bits=source.bits;
+   int rhs=source.rhs;
+   for(;;){
+     int hi=highest(bits);
+     if(hi<0)break;
+     if(!present[hi]) {
+       present[hi]=1;pivot[hi].bits=move(bits);
+       pivot[hi].rhs=rhs;
+       break;
+     }
+     xor_inplace(bits,pivot[hi].bits);
+     rhs^=pivot[hi].rhs;
+   }
+ }
+ // Clear pivot columns from higher rows; descending order ensures any
+ // newly introduced lower pivot bit will be handled later.
+ for(int low=n-1;low>=0;low--)if(present[low]){
+   for(int high=low+1;high<n;high++)if(present[high]){
+     if(bit(pivot[high].bits,low)){
+       xor_inplace(pivot[high].bits,pivot[low].bits);
+       pivot[high].rhs^=pivot[low].rhs;
+     }
+   }
+ }
+ for(int i=0;i<n;i++)if(present[i]){
+   vector<int> variables;
+   for(int k=0;k<words;k++){
+     uint64_t w=pivot[i].bits[k];
+     while(w){
+       int j=64*k+__builtin_ctzll(w);
+       if(j<n)variables.push_back(j+1);
+       w&=w-1;
+       if(variables.size()>2)break;
+     }
+     if(variables.size()>2)break;
+   }
+   if(variables.size()==1){
+     int v=variables[0];
+     clauses.push_back({pivot[i].rhs?v:-v});
+   }else if(variables.size()==2){
+     int x=variables[0],y=variables[1];
+     if(pivot[i].rhs==0){
+       clauses.push_back({-x,y});
+       clauses.push_back({x,-y});
+     }else{
+       clauses.push_back({x,y});
+       clauses.push_back({-x,-y});
+     }
+   }
+   if(clauses.size()>=160)break;
+ }
+ return clauses;
+}
+static vector<vector<int>> implied_clauses(
+       const Cnf& f,const Xor10Result& xr,const ImplicationProof& ip) {
+ vector<vector<int>> out;
+ if(f.n>512||f.clauses.size()>20000)return out;
+ if(xr.equations.size()>=2)out=xor_shortcuts(xr.equations,f.n);
+ for(const auto& pair:ip.equivalence_links){
+   if(out.size()>200)break;
+   int a=pair.first,b=pair.second;
+   if(a==b||a==-b)continue;
+   out.push_back({-a,b});
+   out.push_back({a,-b});
+ }
+ // No reason to incur disk I/O for fewer than four useful consequences.
+ if(out.size()<4)return {};
+ set<vector<int>> known,unique;
+ for(const auto& cl:f.clauses)
+   if(cl.size()<=2){
+     vector<int> sorted=cl;
+     sort(sorted.begin(),sorted.end());
+     known.insert(move(sorted));
+   }
+ vector<vector<int>> addition;
+ for(auto clause:out) {
+   sort(clause.begin(),clause.end());
+   if(clause.size()==2 && clause[0]==-clause[1])continue;
+   if(!known.count(clause)&&unique.insert(clause).second)
+     addition.push_back(move(clause));
+ }
+ return addition.size()>=4?addition:vector<vector<int>>{};
+}
+// Kissat still sees every ORIGINAL clause. Added clauses only express
+// logically implied GF(2) rows or binary SCC equivalences. A SAT output
+// is therefore an assignment for the original variable numbering.
+static bool try_augmented_kissat(char** argv,const Cnf& f,
+                                const vector<vector<int>>& additions){
+ if(additions.empty())return false;
+ char filename[]="/tmp/drnas-v152-XXXXXX";
+ int fd=mkstemp(filename);
+ if(fd<0)return false;
+ FILE* fp=fdopen(fd,"w");
+ if(!fp){close(fd);unlink(filename);return false;}
+ bool ok=fprintf(fp,"p cnf %d %zu\n",f.n,
+                 f.clauses.size()+additions.size())>0;
+ if(ok)for(const auto& cl:f.clauses){
+   for(int v:cl)if(fprintf(fp,"%d ",v)<0){ok=false;break;}
+   if(!ok||fprintf(fp,"0\n")<0){ok=false;break;}
+ }
+ if(ok)for(const auto& cl:additions){
+   for(int v:cl)if(fprintf(fp,"%d ",v)<0){ok=false;break;}
+   if(!ok||fprintf(fp,"0\n")<0){ok=false;break;}
+ }
+ if(fclose(fp)!=0)ok=false;
+ if(!ok){unlink(filename);return false;}
+ cout<<"DRNAS_V152_ROUTE\tkissat_augmented\t"<<additions.size()<<"\n"<<flush;
+ char* av[]={argv[2],filename,nullptr};
+ execv(av[0],av);
+ unlink(filename);
+ return false;
+}
 static int kissat_fallback(char **argv) {
  char *av[]={argv[2],argv[1],nullptr};
  cout<<"DRNAS_V152_ROUTE\tkissat_direct\n"<<flush;
@@ -572,6 +715,10 @@ int main(int argc,char**argv) {
      else emit_sat(f,php.model,"v152_php_sat_verified");
      return 0;
    }
+   // Experimental cross-structure integration is only a preprocessing route.
+   // The original clauses are retained for Kissat: no unsound extrapolation.
+   vector<vector<int>> additions=implied_clauses(f,xr,implication);
+   if(!additions.empty())try_augmented_kissat(argv,f,additions);
  } catch(const exception& e) {
    cerr<<"DRNAS_V152_FALLBACK "<<e.what()<<"\n";
  }
