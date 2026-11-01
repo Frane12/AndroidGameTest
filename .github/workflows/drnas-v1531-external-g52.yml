@@ -1,0 +1,52 @@
+name: DRNAS V15.3.1 external 52-case 7-repeat no-hang validation
+on:
+  push:
+    branches: [experiment/drnas-v153-base-nohang-v1531-20261101]
+    paths:
+      - 'research/tseitin-replay/v1531_satlib_g52.py'
+      - '.github/workflows/drnas-v1531-external-g52.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  external_g52:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v1531_satlib_g52.py
+      - name: Compile original V15.3 and no-hang V15.3.1
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v153_unified.cpp -o /tmp/v153_unified
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+      - name: Build same pinned Kissat baseline
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+      - name: Checkout external SATLIB at pinned source commit
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-repo
+          git -C /tmp/satlib-repo fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-repo checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-repo rev-parse HEAD)" = "fc0e735aff48989326f256121b5ed6fc585858c3"
+      - name: External 52 SATLIB G formulas, 7 repeats, 6-second timeout
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1531_satlib_g52.py
+      - name: Upload all trial measurements and SHA256 input manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-External-G52-SevenRepeats
+          path: v1531-satlib-g-52/
+          if-no-files-found: warn
