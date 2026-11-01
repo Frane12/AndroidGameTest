@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DRNAS V16.4: reproducible external benchmark, no training/tuning.
+"""DRNAS V16.4: reproducible external binary relations benchmark, no training/tuning.
 Two suites:
  - dimacs: the original 1993 Rutgers DIMACS pigeonhole instances hole6..10,
    downloaded as UNIX compress .Z, each with native SAT/UNSAT provenance.
@@ -20,7 +20,8 @@ SOLVERS={"kissat":Path("/tmp/kissat_solver"),
          "kissat_api":Path("/tmp/kissat_api_control"),
          "v1531":Path("/tmp/v1531_nohang"),
          "v159":Path("/tmp/v159_relational_dispatch"),
-         "v162":Path("/tmp/v164_binary_bridge")}
+         "v162":Path("/tmp/v162_bridge_solver"),
+         "v164":Path("/tmp/v164_binary_bridge")}
 DIMACS=["hole6","hole7","hole8","hole9","hole10"]
 CONTROL_ROOT=Path("/tmp/independent-controls/LogicalOptimizer.Benchmarks/SatCorpus")
 CONTROL=["uf075-01","uf080-01","uf090-01","uf095-01","uf100-01",
