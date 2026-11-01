@@ -8,6 +8,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_r5.py'
       - 'research/tseitin-replay/v1531_ingest_new.py'
       - 'research/tseitin-replay/v1531_ingest_r7_crossfamily.py'
+      - 'research/tseitin-replay/v1531_ingest_r8_r9.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -32,7 +33,8 @@ jobs:
             research/tseitin-replay/v1531_analytics_db.py \
             research/tseitin-replay/v1531_ingest_r5.py \
             research/tseitin-replay/v1531_ingest_new.py \
-            research/tseitin-replay/v1531_ingest_r7_crossfamily.py
+            research/tseitin-replay/v1531_ingest_r7_crossfamily.py \
+            research/tseitin-replay/v1531_ingest_r8_r9.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -160,6 +162,41 @@ jobs:
           test -s sat-analysis/r7_formula_features.csv
           test -s sat-analysis/r7_target_signal_buckets.csv
 
+      - name: Download only new verified R8 and R9 holdout artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for spec in 'r8 41352136853 DRNAS-Jerk-R8-Hash-New-Holdout' 'r9 41353826120 DRNAS-Jerk-R9-Median-Gate-Holdout'; do
+            read -r kind run analysis <<< "$spec"
+            mkdir -p "new-input/$kind"
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$analysis" --dir "new-input/$kind"
+            for cat in random3 graphcolor xor external_satlib; do
+              mkdir -p "new-input/$kind/raw-$cat" "new-input/$kind/$cat"
+              gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "jerk-$kind-$cat" --dir "new-input/$kind/raw-$cat"
+              test -s "new-input/$kind/raw-$cat/$cat/measurements.csv"
+              test -s "new-input/$kind/raw-$cat/$cat/traces.jsonl"
+              test -s "new-input/$kind/raw-$cat/$cat/manifest.json"
+              test -s "new-input/$kind/raw-$cat/protocol.json"
+              cp "new-input/$kind/raw-$cat/$cat/"{measurements.csv,traces.jsonl,manifest.json} "new-input/$kind/$cat/"
+              cp "new-input/$kind/raw-$cat/protocol.json" "new-input/$kind/$cat/protocol.json"
+            done
+          done
+          test -s new-input/r8/jerk_holdout_report.json
+          test -s new-input/r9/jerk_gate_report.json
+
+      - name: Append only hash-verified R8/R9 measurements and regenerate cumulative analytics
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r8_r9.py \\
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input
+          test -s sat-analysis/holdout_source_audit.json
+          test -s sat-analysis/holdout_paired.csv
+          test -s sat-analysis/holdout_paired_summary.csv
+          test -s sat-analysis/holdout_formula_features.csv
+          test -s sat-analysis/scatter_holdout_r8.png
+          test -s sat-analysis/scatter_holdout_r9.png
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -179,7 +216,9 @@ jobs:
                    r6_signals.csv verified_certificates.csv r6_paired.csv \
                    r6_paired_summary.csv cross_dataset_hash_overlaps.csv ingest_audit.json \
                    r7_paired.csv r7_paired_summary.csv new_source_audit.json \
-                   r7_formula_features.csv r7_target_signal_buckets.csv; do
+                   r7_formula_features.csv r7_target_signal_buckets.csv \
+                   holdout_source_audit.json holdout_paired.csv \
+                   holdout_paired_summary.csv holdout_formula_features.csv; do
             cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
           done
           git config user.name "github-actions[bot]"
