@@ -7,7 +7,7 @@
 // This is standard polynomial-time algebraic preprocessing, not P=NP.
 #include "v144_v143_embedded.inc"
 #include <sys/types.h>
-#include <sys/wait.h>
+#include <sys/syscall.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
@@ -191,29 +191,25 @@ static void append_cnf144(const Cnf& f,const Output144& p,const string& filename
   file.flush();
   if(!file)throw runtime_error("Temporary CNF write failed");
 }
+// Use a non-CLOEXEC anonymous in-memory DIMACS and execv in the SAME PID.
+// External timeout therefore kills Kissat itself, with no orphaned solver,
+// no left-behind /tmp file, and no unfair cross-trial CPU contamination.
 static int kissat_augmented144(const Cnf& f,const Output144& out,const string& kissat) {
-  char name[]="/tmp/drnas_v144_cnf_XXXXXX";
-  int fd=mkstemp(name);
-  if(fd<0)throw runtime_error("mkstemp failed");
-  close(fd);
+  int fd=int(syscall(SYS_memfd_create,"drnas_v144_cnf",0));
+  if(fd<0)throw runtime_error("memfd_create unavailable: fail safely, no SAT answer");
+  const string name="/proc/self/fd/"+to_string(fd);
   try {append_cnf144(f,out,name);}
-  catch(...) {unlink(name);throw;}
-  pid_t child=fork();
-  if(child<0){unlink(name);throw runtime_error("fork failed");}
-  if(child==0) {
-    char* args[]={const_cast<char*>(kissat.c_str()),name,nullptr};
-    execv(args[0],args);
-    _exit(127);
+  catch(...) {close(fd);throw;}
+  if(lseek(fd,0,SEEK_SET)<0) {
+    close(fd);throw runtime_error("memfd lseek failed");
   }
-  int result=0;
-  while(waitpid(child,&result,0)<0) {
-    if(errno!=EINTR){unlink(name);throw runtime_error("waitpid failed");}
-  }
-  unlink(name);
-  if(WIFEXITED(result))return WEXITSTATUS(result);
-  if(WIFSIGNALED(result))return 128+WTERMSIG(result);
-  return 3;
+  char* args[]={const_cast<char*>(kissat.c_str()),const_cast<char*>(name.c_str()),nullptr};
+  execv(args[0],args);
+  const int err=errno;
+  close(fd);
+  throw runtime_error("execv pinned Kissat failed: "+to_string(err));
 }
+
 int main(int argc,char**argv) {
   if(!(argc==4||(argc==5&&string(argv[4])=="--classify-only"))) {
     cerr<<"Usage: v144 INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";
