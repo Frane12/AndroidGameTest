@@ -1,0 +1,120 @@
+name: DRNAS V13.6 - Frozen Symbolic Router 40 New CNFs
+on:
+  push:
+    branches: [experiment/drnas-v136-symbolic-structural-router-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v136-symbolic.yml'
+      - 'research/drnas-sat-v7-8/v136_symbolic.py'
+      - 'research/drnas-sat-v7-8/v136_evaluate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and test label-blind structural recognition
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v136_symbolic.py research/drnas-sat-v7-8/v136_evaluate.py
+          python3 research/drnas-sat-v7-8/v136_evaluate.py selftest
+      - name: Freeze 40 new SHA distinct CNFs and immutable detector code
+        run: |
+          set -euo pipefail
+          mkdir -p frozen
+          python3 research/drnas-sat-v7-8/v136_evaluate.py freeze \
+            --router-source research/drnas-sat-v7-8/v136_symbolic.py \
+            --out frozen/v136_manifest.json
+          (cd frozen && sha256sum v136_manifest.json > v136_manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V136-frozen-40-synthetic
+          path: frozen/
+          if-no-files-found: error
+  benchmark:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: v136-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V136-frozen-40-synthetic
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V132-three-pinned-binaries
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify the SHA-pinned solvers and prospective rule
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v136_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/v132_drnas bin/v132_kissat
+      - name: Three-policy benchmark including real router invocation
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v136_evaluate.py run \
+            --manifest frozen/v136_manifest.json --shard "$SHARD" \
+            --router-source research/drnas-sat-v7-8/v136_symbolic.py \
+            --generator-source research/drnas-sat-v7-8/v136_symbolic.py \
+            --drnas bin/v132_drnas --kissat bin/v132_kissat --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v136-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+  audit:
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V136-frozen-40-synthetic
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v136-shard-*
+          path: combined
+          merge-multiple: false
+      - name: Strict frozen protocol audit with measured PAR2
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v136_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v136_evaluate.py audit \
+            --manifest frozen/v136_manifest.json --combined combined \
+            --out v136_report.json --md v136_report.md
+          cat v136_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V136-40-structural-officially-unranked-audit
+          path: |
+            frozen/
+            v136_report.json
+            v136_report.md
+          if-no-files-found: warn
