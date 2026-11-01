@@ -30,7 +30,7 @@ def run_category(category):
  if category not in CHOICES:raise ValueError(category)
  if subprocess.check_output(["git","-C","/tmp/satlib-repo","rev-parse","HEAD"],text=True).strip()!=PIN:
   raise RuntimeError("Source commit drift")
- for name,p in legacy.SOLVERS.items():
+ for name,p in ((name,legacy.SOLVERS[name]) for name in ("kissat","v1531")):
   if not p.exists():raise RuntimeError(f"Missing {name}: {p}")
  out=Path(f"short40-{category}")
  out.mkdir(exist_ok=True)
