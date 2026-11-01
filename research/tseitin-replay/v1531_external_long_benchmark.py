@@ -150,7 +150,11 @@ def prepare_control():
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--suite",choices=["dimacs","controls"],required=True)
+    ap.add_argument("--timeout",type=float,default=12.0)
     args=ap.parse_args()
+    global TIMEOUT
+    TIMEOUT=args.timeout
+    if not 0<TIMEOUT<=30:raise ValueError("Unsafe timeout")
     for name,path in SOLVERS.items():
         if not path.is_file():raise RuntimeError(f"Missing binary {name}: {path}")
     suite=args.suite
@@ -211,7 +215,7 @@ def main():
        "3 repetitions, original SAT models checked, native UNSAT independently replayed.",
        "Original DIMACS archive, not an official SAT Competition 2026 ranking." if suite=="dimacs"
        else "Third-party SEEDED SAT-style corpus; not original SATLIB or an official competition.",
-       "12 second timeout per attempt, PAR-2 for unsolved cases; same GitHub runner for each solver.","",
+       f"{TIMEOUT:g} second timeout per attempt, PAR-2 for unsolved cases; same GitHub runner for each solver.","",
        "| Solver | Solved | Timeouts | Sum medians (s) | PAR-2 (s) |",
        "|---|---:|---:|---:|---:|"]
     for name,z in summary.items():
