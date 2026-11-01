@@ -50,14 +50,14 @@ Cnf parse(const string& path) {
      if(value==0) {
        if(pending.empty())throw runtime_error("Empty clause unsupported");
        f.clauses.push_back(move(pending));pending={};
-       if(long long(f.clauses.size())>expected)throw runtime_error("Excess clauses");
+       if(static_cast<long long>(f.clauses.size())>expected)throw runtime_error("Excess clauses");
      } else {
        pending.push_back(int(value));
        if(pending.size()>100000)throw runtime_error("Excessive clause");
      }
    } while(iss>>token);
  }
- if(!header||!pending.empty()||long long(f.clauses.size())!=expected)
+ if(!header||!pending.empty()||static_cast<long long>(f.clauses.size())!=expected)
    throw runtime_error("Incomplete DIMACS");
  return f;
 }
