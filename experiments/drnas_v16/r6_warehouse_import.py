@@ -56,7 +56,7 @@ def hashfile(path):
  return hashlib.sha256(path.read_bytes()).hexdigest()
 
 def numeric(value,integer=False):
- if value in (None,"","None","null"):return None
+ if value in (None,"","None","null","missing"):return None
  n=float(value)
  if not math.isfinite(n):raise ValueError("Nonfinite metric")
  return int(n) if integer else n
