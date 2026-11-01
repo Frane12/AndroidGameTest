@@ -30,7 +30,8 @@ static inline bool drnas_kissat_model_valid(const Cnf& f,
  return true;
 }
 static inline int drnas_kissat_inprocess(const Cnf& f,
-                                         const char* route) {
+                                         const char* route,
+                                         const std::vector<std::vector<int>>* additions=nullptr) {
  kissat* solver=kissat_init();
  if(!solver)throw std::runtime_error("kissat_init failed");
  int status=0;
@@ -38,6 +39,10 @@ static inline int drnas_kissat_inprocess(const Cnf& f,
  try {
    kissat_reserve(solver,f.n);
    for(const auto& clause:f.clauses) {
+     for(int lit:clause)kissat_add(solver,lit);
+     kissat_add(solver,0);
+   }
+   if(additions)for(const auto& clause:*additions) {
      for(int lit:clause)kissat_add(solver,lit);
      kissat_add(solver,0);
    }
