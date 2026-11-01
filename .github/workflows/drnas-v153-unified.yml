@@ -1,0 +1,86 @@
+name: DRNAS V15.3 Unified GF2 Unit SCC native proofs
+on:
+  push:
+    branches: [experiment/drnas-v147-xor4-robust-proof-20261101]
+    paths:
+      - 'research/drnas-sat-v7-8/v153_unified.cpp'
+      - 'research/tseitin-replay/v153_proof_checker.py'
+      - 'research/tseitin-replay/v153_regression.py'
+      - 'research/tseitin-replay/v153_mixed_holdout.py'
+      - 'research/tseitin-replay/v153_satlib_holdout_f.py'
+      - '.github/workflows/drnas-v153-unified.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight Python
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/tseitin-replay/v153_proof_checker.py \
+            research/tseitin-replay/v153_regression.py \
+            research/tseitin-replay/v153_mixed_holdout.py \
+            research/tseitin-replay/v153_satlib_holdout_f.py
+      - name: Compile native V14.8 V15.1 V15.2 V15.3
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v148_xor4.cpp -o /tmp/v148_xor4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v151_expanded.cpp -o /tmp/v151_expanded
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v152_hall_xor.cpp -o /tmp/v152_hall_xor
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o /tmp/v153_unified
+          test -x /tmp/v153_unified
+      - name: Build pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Regression 168 previously measured structural cases
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v153_regression.py
+      - name: Upload V15.3 regression
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V153-Regression-168
+          path: v153-regression-168/
+          if-no-files-found: warn
+      - name: Independent 96 newly generated mixed XOR plus unit cases
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v153_mixed_holdout.py
+      - name: Upload mixed XOR and original-unit certificates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V153-Mixed-XOR-96
+          path: v153-mixed-xor-holdout/
+          if-no-files-found: warn
+      - name: Fetch frozen SATLIB at pinned upstream SHA
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-repo
+          git -C /tmp/satlib-repo fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-repo checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-repo rev-parse HEAD)" = "fc0e735aff48989326f256121b5ed6fc585858c3"
+      - name: External SATLIB split F 40 never-used public instances
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v153_satlib_holdout_f.py
+      - name: Upload SATLIB F
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V153-SATLIB-Unseen-40
+          path: v153-satlib-external-holdout-f/
+          if-no-files-found: warn
