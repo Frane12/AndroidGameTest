@@ -245,8 +245,8 @@ if __name__=="__main__":
     dev=stage_report("diagnostic")
     holdout=stage_report("holdout")
     final=dict(diagnostic=dev,holdout=holdout,
-       "experiment_completeness":"Only successfully fetched complete cases",
-       "no_strategy_promoted":True)
+       experiment_completeness="Only successfully fetched complete cases",
+       no_strategy_promoted=True)
     (ROOT/"combined.json").write_text(json.dumps(final,indent=2))
     print("V181_FINAL",json.dumps({
        "diagnostic_cases":dev["formula_count"],
