@@ -172,6 +172,10 @@ def main():
             "equations": equations,
             "path": path, "clauses_data": clauses,
         })
+    (OUT / "frozen_manifest.json").write_text(json.dumps([
+        {k:v for k,v in case.items() if k not in ("path", "clauses_data", "equations")}
+        for case in cases
+    ], indent=2))
     available = os.sched_getaffinity(0)
     protocol = {
         "scope": "two previously unused original SAT Competition 2024 Tseitin-family formulas",
