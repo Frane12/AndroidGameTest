@@ -8,7 +8,7 @@ import collections,itertools,json,random,subprocess,statistics,hashlib
 from pathlib import Path
 from v153_proof_checker import verify_certificate
 ROOT=Path("v165-binary-relation-property");ROOT.mkdir(exist_ok=True)
-S=Path("bin/v165_binary_bridge").resolve()
+S=Path("bin/v165_selective_bridge").resolve()
 K=Path("bin/kissat_solver").resolve()
 C=Path("bin/kissat_api_control").resolve()
 B=Path("bin/v159_relational_dispatch").resolve()
