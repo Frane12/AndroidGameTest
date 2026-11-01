@@ -21,7 +21,7 @@ R7 = {
   artifact=13100071477, formulas=160, attempts=2400, percat=10, cap=12,
   modes=("original_kissat","stable_v1531","monitor","forced_restart25","r7_gate"),
   cats=tuple("random%d_%d"%(n,k) for n in (200,220,240) for k in range(4))+
-       ("graphcolor","xor","external_flat","external_aim"))
+       ("graphcolor","xor","external_flat","external_aim")),
  "prop": dict(run="41345148256",commit="1b35042c1650c933a190064ea4e3f54d602b1a32",
   artifact=13097934951,formulas=40,attempts=480,percat=10,cap=8,
   modes=("stable_v1531","monitor","forced_restart25","r7_gate"),
