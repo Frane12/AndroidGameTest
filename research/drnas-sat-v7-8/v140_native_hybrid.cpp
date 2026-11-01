@@ -71,37 +71,47 @@ inline int bit(const vector<uint64_t>& x,int b) {
 inline void xor_inplace(vector<uint64_t>& a,const vector<uint64_t>& b) {
  for(size_t j=0;j<a.size();j++)a[j]^=b[j];
 }
-bool xor_extract(const Cnf &f, vector<Eq>& out) {
- if(f.n>4096 || f.clauses.size()%4 != 0)return false;
- map<array<int,3>,uint8_t> groups;
- for(auto cl:f.clauses) {
-   if(cl.size()!=3)return false;
-   sort(cl.begin(),cl.end(),[](int a,int b){return abs(a)<abs(b);});
-   array<int,3> vars={abs(cl[0]),abs(cl[1]),abs(cl[2])};
-   if(vars[0]==vars[1]||vars[1]==vars[2])return false;
-   int mask=0;
-   for(int j=0;j<3;j++)if(cl[j]<0)mask|=1<<j;
-   auto &entry=groups[vars];
-   if(entry & (1<<mask))return false; // duplicate: no exact encoding
-   entry|=1<<mask;
- }
- if(groups.size()*4!=f.clauses.size())return false;
- const int words=(f.n+63)/64;
- for(const auto &p:groups) {
-   auto masks=p.second;
-   int parity=-1;
-   for(int m=0;m<8;m++)if(masks&(1<<m)) {
-     const int q=__builtin_popcount(unsigned(m))%2;
-     if(parity!=-1 && parity!=q)return false;
-     parity=q;
+// Every sign pattern identifies the single assignment that falsifies its clause.
+// A complete XOR encoding forbids exactly all even or all odd assignments.
+bool xor_extract(const Cnf &f, vector<Eq>& out, bool allow_mixed_widths=false) {
+ if(f.n>4096 || (!allow_mixed_widths && f.clauses.size()%4!=0))return false;
+ map<array<int,4>,uint16_t> groups;
+ for(const auto &cl:f.clauses) {
+   if(allow_mixed_widths ? (cl.size()<2 || cl.size()>4) : cl.size()!=3)
+     return false;
+   array<int,4> support{};
+   auto literals=cl;
+   sort(literals.begin(),literals.end(),[](int a,int b){return abs(a)<abs(b);});
+   unsigned mask=0;
+   for(size_t j=0;j<cl.size();++j) {
+     support[j]=abs(literals[j]);
+     if(j>0 && support[j]==support[j-1])return false;
+     if(literals[j]<0)mask|=1u<<j;
    }
-   if(__builtin_popcount(unsigned(masks))!=4||parity<0)return false;
-   for(int m=0;m<8;m++)
-     if(bool(masks&(1<<m))!=(__builtin_popcount(unsigned(m))%2==parity))
-       return false;
-   Eq e;e.bits.assign(words,0);e.rhs=1-parity;
-   for(int v:p.first)e.bits[(v-1)/64]|=1ULL<<((v-1)%64);
-   out.push_back(move(e));
+   auto &patterns=groups[support];
+   const unsigned pattern=1u<<mask;
+   if(patterns & pattern)return false;
+   patterns|=pattern;
+   if(allow_mixed_widths && groups.size()>4096)return false;
+ }
+ const int words=(f.n+63)/64;
+ for(const auto &[support,patterns]:groups) {
+   int width=0;
+   while(width<4 && support[width])++width;
+   // Bit 0 is the all-zero assignment (even). Its exclusion fixes RHS=1.
+   const int rhs=patterns & 1u;
+   for(unsigned mask=0; mask<(1u<<width);++mask) {
+     const bool forbidden=bool(patterns & (1u<<mask));
+     if(forbidden != ((__builtin_popcount(mask)&1)!=rhs))return false;
+   }
+   Eq equation;
+   equation.bits.assign(words,0);
+   equation.rhs=rhs;
+   for(int j=0;j<width;++j) {
+     int b=support[j]-1;
+     equation.bits[b/64]|=1ULL<<(b%64);
+   }
+   out.push_back(move(equation));
  }
  return true;
 }
@@ -172,9 +182,9 @@ Answer solve_exact(const Cnf& f,const vector<Eq>& equations) {
  for(int i=0;i<n;i++)a.model.push_back(assign[i]?i+1:-(i+1));
  return a;
 }
-void json_answer(const Answer &a,int n,int m) {
+void json_answer(const Answer &a,int n,int m,const char *path="affine_exact") {
  cout<<"DRNAS_HYBRID_RESULT\t{\"status\":\""<<a.status
-     <<"\",\"path\":\"affine_exact\",\"verified\":true,\"variables\":"
+     <<"\",\"path\":\""<<path<<"\",\"verified\":true,\"variables\":"
      <<n<<",\"equations\":"<<m;
  if(a.status=="SAT") {
    cout<<",\"model\":[";
@@ -309,3 +319,4 @@ int main(int argc,char**argv) {
    cerr<<"DRNAS_NATIVE_HYBRID_ERROR "<<e.what()<<"\n";return 3;
  }
 }
+
