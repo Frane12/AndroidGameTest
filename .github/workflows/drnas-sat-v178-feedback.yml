@@ -1,0 +1,111 @@
+name: DRNAS SAT V17.8 live feedback STOP CONTINUE A-B
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v178-feedback-stop-continue-20261101'
+    paths:
+      - 'experiments/drnas_v16/feedback_patch_v178.py'
+      - 'experiments/drnas_v16/feedback_benchmark_v178.py'
+      - 'experiments/drnas_v16/frozen_rule_v178.txt'
+      - '.github/workflows/drnas-sat-v178-feedback.yml'
+jobs:
+  development:
+    name: A-B diagnostic - 12 previously seen formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen feedback settings and Python syntax
+        run: |
+          python3 -m py_compile \
+            experiments/drnas_v16/feedback_patch_v178.py \
+            experiments/drnas_v16/feedback_benchmark_v178.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import feedback_benchmark_v178 as x
+          assert len(x.SEEDS["development"])==12
+          assert len(x.SEEDS["holdout"])==20
+          assert x.SEEDS["holdout"]==tuple(range(178100,178120))
+          assert set(x.SEEDS["development"]).isdisjoint(x.SEEDS["holdout"])
+          assert x.REPEATS=={"development":1,"holdout":2}
+          assert x.CAP==2.5 and len(x.MODES)==6
+          assert open("experiments/drnas_v16/frozen_rule_v178.txt").read().strip()=="g lt 0.8692513215 1024"
+          print("V178_POLICY_FROZEN_PASS")
+          PY
+      - name: Build instrumented pinned Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v178
+          git -C /tmp/kissat-v178 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/feedback_patch_v178.py --kissat-root /tmp/kissat-v178
+          cd /tmp/kissat-v178
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Benchmark feedback control and original policies on seen formulas
+        run: |
+          python3 -u experiments/drnas_v16/feedback_benchmark_v178.py \
+            --solver /tmp/kissat-v178/build/kissat \
+            --rule experiments/drnas_v16/frozen_rule_v178.txt \
+            --stage development --root drnas-v178-dev
+      - name: Publish detailed per-formula feedback A-B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V178-feedback-development
+          path: |
+            drnas-v178-dev/manifest.json
+            drnas-v178-dev/measurements.partial.csv
+            drnas-v178-dev/measurements.csv
+            drnas-v178-dev/leaderboard.csv
+            drnas-v178-dev/summary.json
+          if-no-files-found: warn
+
+  holdout:
+    name: Frozen feedback - 20 unseen formulas x2 repetitions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify same frozen policy and new seeds only
+        run: |
+          python3 -m py_compile \
+            experiments/drnas_v16/feedback_patch_v178.py \
+            experiments/drnas_v16/feedback_benchmark_v178.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import feedback_benchmark_v178 as x
+          assert len(x.SEEDS["holdout"])==20
+          assert set(x.SEEDS["holdout"]).isdisjoint(x.SEEDS["development"])
+          assert x.PINNED=="8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          print("V178_HOLDOUT_NO_REFIT_PASS")
+          PY
+      - name: Build identical instrumented pinned Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v178
+          git -C /tmp/kissat-v178 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/feedback_patch_v178.py --kissat-root /tmp/kissat-v178
+          cd /tmp/kissat-v178
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Compare frozen STOP CONTINUE policies across 240 matched blind measurements
+        run: |
+          python3 -u experiments/drnas_v16/feedback_benchmark_v178.py \
+            --solver /tmp/kissat-v178/build/kissat \
+            --rule experiments/drnas_v16/frozen_rule_v178.txt \
+            --stage holdout --root drnas-v178-holdout
+      - name: Publish untouched holdout including severe slowdown counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V178-feedback-holdout
+          path: |
+            drnas-v178-holdout/manifest.json
+            drnas-v178-holdout/measurements.partial.csv
+            drnas-v178-holdout/measurements.csv
+            drnas-v178-holdout/leaderboard.csv
+            drnas-v178-holdout/summary.json
+          if-no-files-found: warn
