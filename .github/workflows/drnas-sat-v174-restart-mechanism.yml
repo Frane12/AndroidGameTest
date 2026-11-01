@@ -1,0 +1,52 @@
+name: DRNAS SAT V17.4 short restart causal telemetry
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v174-restart-mechanism-audit-20261101'
+    paths:
+      - 'experiments/drnas_v16/restart_mechanism_v174.py'
+      - '.github/workflows/drnas-sat-v174-restart-mechanism.yml'
+jobs:
+  mechanism:
+    name: Paired same-formula restart instrumentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source and 7 known formula identifiers
+        run: |
+          python3 -m py_compile experiments/drnas_v16/restart_mechanism_v174.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import restart_mechanism_v174 as v
+          assert v.PINNED=="8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert len(v.SEEDS)==7 and len(v.MODES)==4 and v.CAP==3.0
+          print("V174_DEV_ONLY_AUDIT_FROZEN")
+          PY
+      - name: Build exact pinned Kissat with observational markers
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v174
+          git -C /tmp/kissat-v174 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/restart_mechanism_v174.py --kissat-root /tmp/kissat-v174
+          cd /tmp/kissat-v174
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Run 28 paired short observations and record checkpoints
+        run: |
+          python3 -u experiments/drnas_v16/restart_mechanism_v174.py \
+            --solver /tmp/kissat-v174/build/kissat \
+            --root drnas-v174-audit
+      - name: Upload outcomes and internal restart telemetry
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V174-restart-mechanism-audit
+          path: |
+            drnas-v174-audit/manifest.json
+            drnas-v174-audit/outcomes.csv
+            drnas-v174-audit/checkpoints.csv
+            drnas-v174-audit/summary.json
+          if-no-files-found: warn
