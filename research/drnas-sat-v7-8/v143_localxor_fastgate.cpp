@@ -3,9 +3,7 @@
 // Only infer UNSAT from a verified GF(2) contradiction across EXACT four
 // CNF clauses of one parity class; otherwise delegate unchanged V14.2.
 // No filename, labels, runtime history, or oracle used in routing.
-#define main v142_embedded_main
 #include "v142_fastgate.cpp"
-#undef main
 #include <set>
 #include <iterator>
 #include <cstdio>
