@@ -6,6 +6,7 @@ Never infer SAT/UNSAT from merely detecting a relation: verify original CNF.
 """
 import collections,itertools,json,random,subprocess,statistics,hashlib
 from pathlib import Path
+from v153_proof_checker import verify_certificate
 ROOT=Path("v164-binary-relation-property");ROOT.mkdir(exist_ok=True)
 S=Path("bin/v164_binary_bridge").resolve()
 K=Path("bin/kissat_solver").resolve()
@@ -43,6 +44,18 @@ def cfile(n,clauses,path):
 def allmodels(n,clauses):
  return [bits for bits in itertools.product((False,True),repeat=n)
          if all(any(bits[abs(lit)-1]==(lit>0) for lit in cl) for cl in clauses)]
+def answer_and_check(text,expect,n,clauses):
+ tagged=[z.split("\t",1)[1] for z in text.splitlines()
+         if z.startswith("DRNAS_HYBRID_RESULT\t")]
+ if tagged:
+  payload=json.loads(tagged[-1])
+  if payload.get("status")!=expect:return False
+  if expect=="SAT":
+   vals={abs(l):l>0 for l in payload.get("model",[])}
+   return bool(vals) and all(any(vals.get(abs(l))==(l>0) for l in cl) for cl in clauses)
+  return bool(verify_certificate(payload,clauses))
+ expected=("s SATISFIABLE" if expect=="SAT" else "s UNSATISFIABLE")
+ return expected in text and (expect!="SAT" or witness(text,n,clauses))
 def checkrun(bin_,p,extra=()):
  cmd=[str(bin_),str(p.resolve())] if bin_==C else [str(bin_),str(p.resolve()),str(K),"1",*extra]
  return subprocess.run(cmd,capture_output=True,text=True,timeout=6)
@@ -74,15 +87,14 @@ for i in range(144):
   binary_cases+=1
  result=checkrun(S,path,["--bridge-first"])
  expected=("s SATISFIABLE" if status=="SAT" else "s UNSATISFIABLE")
- assert result.returncode==0 and expected in result.stdout,(i,status,result.stdout[-200:],result.stderr[-200:])
+ assert result.returncode==0 and answer_and_check(result.stdout,status,n,clauses),(i,status,result.stdout[-200:],result.stderr[-200:])
  if status=="SAT":
   assert "v164_scc_xor_unit_binary_api" in result.stdout,(i,"no binary bridge API",result.stdout)
   assert witness(result.stdout,n,clauses),(i,"wrong SAT witness")
   forced_cases+=1
  for method in (C,B,S):
   rr=checkrun(method,path)
-  assert rr.returncode==0 and expected in rr.stdout,(i,method,status,rr.stdout[-100:])
-  if status=="SAT":assert witness(rr.stdout,n,clauses),(i,"wrong model",method)
+  assert rr.returncode==0 and answer_and_check(rr.stdout,status,n,clauses),(i,method,status,rr.stdout[-200:])
   valid+=1
  records.append({"id":i,"status":status,"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
                  "derived_units":len(d["units"]),"derived_binary":len(d["binary"]),
