@@ -1,0 +1,122 @@
+name: DRNAS R3 Isolate restart response on four official SAT CNFs
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-r3-isolate-response-20261101]
+    paths:
+      - ".github/workflows/drnas-r3-isolation.yml"
+      - "experiments/drnas_v16/isolate_response_r3.py"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r3-isolate-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  isolate:
+    name: Isolate official formula shard ${{ matrix.shard }} on one runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen controls and source parsers
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{isolate_response_r3,official_parallel_v180,patch_neuroflow_v182,predict_conflict_patch_v177}.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import isolate_response_r3 as s
+          assert [x[0] for x in s.CASES]==[154,212,239,324]
+          assert len(s.POLICIES)==10 and s.REPEATS==3 and s.CAP==60
+          print("R3_FROZEN_PLAN_OK")
+          PY
+      - name: Compile truly original pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r3-original
+          git -C /tmp/kissat-r3-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r3-original && ./configure && make -j2)
+      - name: Compile same pinned source with V17.7 delayed switch
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r3-v177
+          git -C /tmp/kissat-r3-v177 checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-r3-v177
+          (cd /tmp/kissat-r3-v177 && ./configure && make -j2)
+          strings /tmp/kissat-r3-v177/build/kissat | grep -Fq DRNAS_V177_SWITCH
+      - name: Compile same pinned source with V18.2 256-conflict telemetry and delayed interventions
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r3-v182
+          git -C /tmp/kissat-r3-v182 checkout -q --detach 8af8e56f174b8aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_neuroflow_v182.py --kissat-root /tmp/kissat-r3-v182
+          (cd /tmp/kissat-r3-v182 && ./configure && make -j2)
+          strings /tmp/kissat-r3-v182/build/kissat | grep -Fq V182_SAMPLE
+          strings /tmp/kissat-r3-v182/build/kissat | grep -Fq V182_RESULT
+      - name: Verify SAT and UNSAT smoke on all three binaries
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/r3_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r3_unsat.cnf
+          for solver in /tmp/kissat-r3-original/build/kissat /tmp/kissat-r3-v177/build/kissat /tmp/kissat-r3-v182/build/kissat; do
+            set +e
+            "$solver" -s /tmp/r3_sat.cnf >/dev/null 2>&1
+            sat=$?
+            "$solver" -s /tmp/r3_unsat.cnf >/dev/null 2>&1
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          /tmp/kissat-r3-original/build/kissat --help | grep -q restartint
+          echo R3_SMOKE_OK
+      - name: Measure policy response, pre-2048 prefix, CPU and wall time
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/isolate_response_r3.py --shard "${{ matrix.shard }}"
+      - name: Upload partial and final outcomes even if interrupted
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r3_shard_${{ matrix.shard }}
+          path: |
+            drnas-r3-isolated/shard_${{ matrix.shard }}/manifest.json
+            drnas-r3-isolated/shard_${{ matrix.shard }}/measurements.partial.csv
+            drnas-r3-isolated/shard_${{ matrix.shard }}/traces.partial.csv
+            drnas-r3-isolated/shard_${{ matrix.shard }}/measurements.csv
+            drnas-r3-isolated/shard_${{ matrix.shard }}/traces.csv
+            drnas-r3-isolated/shard_${{ matrix.shard }}/summary.json
+          retention-days: 60
+          if-no-files-found: warn
+  aggregate:
+    name: Analyze four directional sensitivity curves and observed common prefixes
+    needs: isolate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r3_shard_*
+          path: /tmp/r3-artifacts
+      - name: Consolidate all formulas without mixing runner hardware
+        run: |
+          set -euo pipefail
+          mkdir -p drnas-r3-isolated
+          for i in 0 1 2 3; do
+            test -s "/tmp/r3-artifacts/r3_shard_${i}/summary.json"
+            cp -a "/tmp/r3-artifacts/r3_shard_${i}" "drnas-r3-isolated/shard_${i}"
+          done
+          python3 -u experiments/drnas_v16/isolate_response_r3.py --aggregate
+      - name: Upload final sensitivity analysis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R3-Isolated-Four-Official-Formula-Responses
+          path: drnas-r3-isolated/combined.json
+          retention-days: 60
