@@ -165,7 +165,11 @@ def audit(a):
     src={c["id"]:c for c in m["cases"]}
     rows=[];bins=set()
     for shard in range(SHARDS):
-        folder=Path(a.combined)/f"v132-shard-{shard}"/"results"
+        folder=Path(a.combined)/f"v132-shard-{shard}"
+        # actions/upload-artifact with path: results/ stores meta.json at archive root.
+        # Accept either unpack layout, but always validate the frozen shard ID and hashes.
+        if not (folder/"meta.json").is_file():
+            folder=folder/"results"
         meta=load(folder/"meta.json")
         expected=m["cases"][shard::SHARDS]
         check(meta["shard"]==shard and meta["ids"]==[c["id"] for c in expected],
