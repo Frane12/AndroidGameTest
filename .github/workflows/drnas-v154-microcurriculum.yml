@@ -1,0 +1,174 @@
+name: DRNAS V15.4 336 small curriculum SAT train validation blind holdout
+on:
+  push:
+    branches: [experiment/drnas-v154-microcurriculum-selector-20261101]
+    paths:
+      - '.github/workflows/drnas-v154-microcurriculum.yml'
+      - 'research/tseitin-replay/v154_microcurriculum.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Freeze all 336 generated small instances before candidate measurements
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v154_microcurriculum.py
+          python3 -u research/tseitin-replay/v154_microcurriculum.py freeze --out dataset
+          (cd dataset && sha256sum manifest.json > manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v154-frozen-336-cnf-three-splits
+          path: dataset/
+          compression-level: 6
+          if-no-files-found: error
+  train:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v154-frozen-336-cnf-three-splits
+          path: dataset
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Verify pinned binaries and compile original V15.1 and V15.3 candidates
+        run: |
+          set -euo pipefail
+          (cd dataset && sha256sum -c manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v151_expanded.cpp -o bin/v151_expanded
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o bin/v153_unified
+          chmod +x bin/{kissat_solver,v151_expanded,v153_unified}
+          sha256sum bin/v151_expanded bin/v153_unified bin/kissat_solver
+      - name: Train split - 168 small CNFs x 3 solvers x 3 repeats with proof checks
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v154_microcurriculum.py measure \
+            --split train --source dataset --out train-rows.json
+          python3 -u research/tseitin-replay/v154_microcurriculum.py train \
+            --source dataset --measurements train-rows.json --out train-policy.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-training-168-runtimes-and-rules
+          path: |
+            train-rows.json
+            train-policy.json
+          if-no-files-found: warn
+  validation:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v154-frozen-336-cnf-three-splits
+          path: dataset
+      - uses: actions/download-artifact@v4
+        with:
+          name: v154-training-168-runtimes-and-rules
+          path: training
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Exact same pinned solvers and hashes on validation runner
+        run: |
+          set -euo pipefail
+          (cd dataset && sha256sum -c manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v151_expanded.cpp -o bin/v151_expanded
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o bin/v153_unified
+          chmod +x bin/{kissat_solver,v151_expanded,v153_unified}
+      - name: Validation split 84 CNFs - freeze conservative selector before holdout
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v154_microcurriculum.py measure \
+            --split validation --source dataset --out validation-rows.json
+          python3 -u research/tseitin-replay/v154_microcurriculum.py validate \
+            --source dataset --train training/train-policy.json \
+            --measurements validation-rows.json --out frozen-policy.json
+          sha256sum frozen-policy.json > frozen-policy.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v154-validation-84-and-frozen-selector
+          path: |
+            validation-rows.json
+            frozen-policy.json
+            frozen-policy.sha256
+          if-no-files-found: warn
+  holdout:
+    needs: validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v154-frozen-336-cnf-three-splits
+          path: dataset
+      - uses: actions/download-artifact@v4
+        with:
+          name: v154-validation-84-and-frozen-selector
+          path: policy
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Final checksum gate and identical candidate compiler modes
+        run: |
+          set -euo pipefail
+          (cd dataset && sha256sum -c manifest.sha256)
+          (cd policy && sha256sum -c frozen-policy.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v151_expanded.cpp -o bin/v151_expanded
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o bin/v153_unified
+          chmod +x bin/{kissat_solver,v151_expanded,v153_unified}
+      - name: BLIND holdout - 84 untouched formulas x 3 solvers x 3 repeats
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v154_microcurriculum.py measure \
+            --split holdout --source dataset --out holdout-rows.json
+          python3 -u research/tseitin-replay/v154_microcurriculum.py audit \
+            --source dataset --policy policy/frozen-policy.json \
+            --measurements holdout-rows.json --out final-audit.json
+          cat final-audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V154-336-MicroCurriculum-TrainValidationBlindHoldout
+          path: |
+            final-audit.json
+            holdout-rows.json
+            policy/frozen-policy.json
+          if-no-files-found: warn
