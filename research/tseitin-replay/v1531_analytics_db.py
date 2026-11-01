@@ -9,6 +9,7 @@ ORIGINS = {
  "DRNAS-V1531-Mixed-96": ("generated_development","xor"),
  "DRNAS-V1531-SATLIB-40-Regression": ("external_previously_seen","SATLIB F"),
  "DRNAS-V1531-NoHang-Stress": ("generated_stress","stress"),
+ "DRNAS-V1531-External-Short40": ("external_holdout_relative_to_v1531","SATLIB short40"),
  "v1531-regression-168": ("generated_development","structural"),
  "v1531-mixed-96": ("generated_development","xor"),
  "v1531-satlib-f": ("external_previously_seen","SATLIB F"),
@@ -46,13 +47,19 @@ def ingest(db, path, run, commit, runner):
  data=json.loads(path.read_text())
  dataset=path.parent.name
  provenance,description=ORIGINS.get(dataset,("unclassified","not verified as official or unseen"))
+ meta=data.get("dataset_meta",{}) if isinstance(data,dict) else {}
+ provenance=meta.get("provenance",provenance)
+ description=meta.get("benchmark",description)
+ source_run=meta.get("source_run") or run
+ source_sha=meta.get("source_sha") or commit
+ runner_name=meta.get("runner") or runner
  cap=next((num(data[k]) for k in ("timeout_seconds","seconds_cap","timeout") if isinstance(data,dict) and k in data),None)
  if dataset.lower().endswith(("nohang-stress","nohang-stress")): cap=5.0
  manifest={r["id"]:r for r in data.get("manifest",[])} if isinstance(data,dict) else {}
  rows=data if isinstance(data,list) else data.get("results",[])
  if not isinstance(rows,list): raise ValueError("Invalid results list: "+str(path))
  db.execute("INSERT INTO datasets VALUES (?,?,?,?,?,?,?,?)",
-            (dataset,provenance,description,run,commit,runner,cap,sha(path)))
+            (dataset,provenance,description,source_run,source_sha,runner_name,cap,sha(path)))
  seen=set()
  for row in rows:
   case=str(row["case"]); solver=str(row["solver"])
