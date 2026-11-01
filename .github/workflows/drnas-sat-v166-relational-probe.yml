@@ -1,0 +1,64 @@
+name: DRNAS SAT v16.6 relational structure feature audit
+on:
+  push:
+    branches:
+      - experiment/drnas-v166-relational-probe-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v166-relational-probe.yml'
+      - 'experiments/drnas_v16/relational_probe_v166.py'
+  workflow_dispatch:
+jobs:
+  relational-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate frozen v16.5 suite and unseen v16.6 seeds
+        run: |
+          python3 experiments/drnas_v16/generate_v165_blind.py /tmp/v166-suite
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          p=Path('experiments/drnas_v16/generate_v165_blind.py')
+          spec=importlib.util.spec_from_file_location('gen',p)
+          gen=importlib.util.module_from_spec(spec);spec.loader.exec_module(gen)
+          for i in range(166000,166012):
+              gen.make_cnf(Path('/tmp/v166-suite/unseen')/f'random3_n640_seed{i}.cnf',640,4.26,i)
+          PY
+      - name: Unit tests for relational and implication features
+        run: |
+          python3 - <<'PY'
+          import importlib.util,tempfile
+          from pathlib import Path
+          p=Path('experiments/drnas_v16/relational_probe_v166.py')
+          spec=importlib.util.spec_from_file_location('probe',p)
+          z=importlib.util.module_from_spec(spec);spec.loader.exec_module(z)
+          with tempfile.TemporaryDirectory() as d:
+              f=Path(d)/'sample.cnf'
+              f.write_text('p cnf 4 4\n1 2 0\n-2 3 0\n1 2 0\n-3 4 0\n')
+              a=z.features(f)
+              assert a['pair_repeat_fraction']>0
+              assert a['implication_reach4']>0
+              assert a['nclauses']==4
+              g=Path(d)/'unit.cnf'
+              g.write_text('p cnf 2 3\n1 0\n-1 2 0\n-2 0\n')
+              b=z.features(g)
+              assert b['unit_conflict']==1,(a,b)
+              print('RELATIONAL_FEATURE_TESTS_PASSED',a,b)
+          PY
+      - name: Export untrained relational features
+        run: |
+          python3 experiments/drnas_v16/relational_probe_v166.py --cnf-dir /tmp/v166-suite --output drnas_v166_relational_features.csv > drnas_v166_relational_features.json
+          python3 - <<'PY'
+          import csv
+          r=list(csv.DictReader(open('drnas_v166_relational_features.csv')))
+          assert len(r)==22,len(r)
+          assert len([x for x in r if x['group']=='unseen'])==12
+          print('FEATURE_AUDIT_PASSED: 22 instances including 12 untouched unseen seeds')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v166-relational-features-untrained
+          path: |
+            drnas_v166_relational_features.csv
+            drnas_v166_relational_features.json
