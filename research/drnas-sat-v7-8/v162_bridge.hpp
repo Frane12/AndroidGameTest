@@ -175,11 +175,33 @@ static V162Relations v162_derive(const Cnf& f) {
   }
  }
  out.learned_units=(unsigned)out.units.size();
+ // Two original exact equations may cancel two shared variables even when
+ // their echelon pivots differ. Such a pair need not appear as an RREF row.
+ // Bounded pairwise XOR discovers these hidden two-variable consequences.
+ std::vector<V162Row> pair_binary;
+ if(normalized.size()<=192){
+   for(size_t i=0;i<normalized.size();i++){
+     if(normalized[i].vars.size()>8)continue;
+     for(size_t j=i+1;j<normalized.size();j++){
+       if(normalized[j].vars.size()>8)continue;
+       V162Row combined=normalized[i];
+       v162_xor(combined,normalized[j]);
+       if(combined.vars.size()==2)pair_binary.push_back(std::move(combined));
+       if(pair_binary.size()>=256)break;
+     }
+     if(pair_binary.size()>=256)break;
+   }
+ }
  // GF(2) two-variable row a XOR b = rhs is exactly equivalent to two
  // *necessary* binary clauses, valid on every model of the original CNF.
  // Keep only a bounded number; do not trust heuristics or partial supports.
  std::set<std::pair<int,int>> seen_binary;
- for(const auto& [pivot,row]:basis)if(row.vars.size()==2){
+ // Process RREF consequences and bounded exact pair-cancellation consequences.
+ std::vector<V162Row> binary_candidates;
+ for(const auto& [pivot,row]:basis)if(row.vars.size()==2)
+   binary_candidates.push_back(row);
+ binary_candidates.insert(binary_candidates.end(),pair_binary.begin(),pair_binary.end());
+ for(const auto& row:binary_candidates)if(row.vars.size()==2){
    auto it=row.vars.begin();const int a=*it++;const int b=*it;
    std::vector<std::vector<int>> inferred;
    if(row.rhs==0)inferred={{-a,b},{a,-b}};
