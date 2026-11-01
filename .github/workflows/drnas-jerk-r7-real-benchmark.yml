@@ -1,0 +1,107 @@
+name: DRNAS Jerk R7 real SAT paired benchmark (timed telemetry)
+on:
+  push:
+    branches: [experiment/drnas-jerk-law-v1-20261101]
+    paths:
+      - '.github/workflows/drnas-jerk-r7-real-benchmark.yml'
+      - 'research/tseitin-replay/jerk_r7_trace_patch.py'
+      - 'research/tseitin-replay/jerk_r7_standard_analysis.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    name: Real paired SAT - ${{ matrix.category }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        category: [random3, graphcolor, xor, external_satlib]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze and verify source revisions
+        run: |
+          set -euo pipefail
+          git init -q r6ref
+          git -C r6ref remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C r6ref fetch -q --depth 1 origin 2caca7ff6fe77137725a9093f71baba98b6904bb
+          git -C r6ref checkout -q --detach FETCH_HEAD
+          test "$(git -C r6ref rev-parse HEAD)" = 2caca7ff6fe77137725a9093f71baba98b6904bb
+          test "$(git -C r6ref hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/tseitin-replay/jerk_r7_trace_patch.py research/tseitin-replay/jerk_r7_standard_analysis.py
+      - name: Build pinned original Kissat baseline
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Build separate R6 Kissat with passive timed Jerk checkpoints
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 r6ref/experiments/drnas_v16/patch_r6_trace.py --kissat-root /tmp/kissat-r6-patched
+          python3 research/tseitin-replay/jerk_r7_trace_patch.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          test -x /tmp/kissat-r6-patched/build/kissat
+      - name: Build unmodified frozen V15.3.1 reference
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra r6ref/research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+          test -x /tmp/drnas-r6-v1531
+      - name: Fetch publicly known SATLIB inputs when applicable
+        if: matrix.category == 'external_satlib'
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/mitchellh/go-sat.git /tmp/satlib-r6
+          git -C /tmp/satlib-r6 checkout -q --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-r6 rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+      - name: Run truly fresh SAT executions, interleaved four strategies
+        run: |
+          set -euo pipefail
+          cd r6ref
+          python3 -u experiments/drnas_v16/r6_four_strategies.py --category "${{ matrix.category }}"
+          test -s "drnas-r6-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r6-results/${{ matrix.category }}/traces.jsonl"
+          test -s "drnas-r6-results/${{ matrix.category }}/manifest.json"
+      - name: Preserve raw measurement logs and SHA lineage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerk-r7-${{ matrix.category }}
+          path: r6ref/drnas-r6-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 30
+  analyze:
+    name: Paired PAR-2, timed jerk, and signal audit
+    needs: [benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jerk-r7-*
+          path: raw-shards
+          merge-multiple: false
+      - name: Verify matched coverage and compute exploratory jerk statistics
+        run: |
+          set -euo pipefail
+          mkdir -p raw-input
+          for category in random3 graphcolor xor external_satlib; do
+            test -s "raw-shards/jerk-r7-${category}/measurements.csv"
+            cp -a "raw-shards/jerk-r7-${category}" "raw-input/${category}"
+          done
+          python3 research/tseitin-replay/jerk_r7_standard_analysis.py --input raw-input --out jerk-r7-analysis
+          cat jerk-r7-analysis/jerk_standard_report.json | head -90
+      - name: Upload verified paired analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Jerk-R7-Real-Standard-Benchmark
+          path: jerk-r7-analysis/
+          if-no-files-found: error
+          retention-days: 30
