@@ -1,0 +1,119 @@
+name: DRNAS learned selector real fresh SC2023 holdout
+on:
+  push:
+    branches: [experiment/drnas-learned-structural-selector-v1]
+    paths:
+      - 'research/learned-selector/real_holdout.py'
+      - '.github/workflows/drnas-selector-real-holdout.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 53f0f360eee89267125e2c7827b7da6f5bd032fb
+          path: analytics
+      - name: Fetch and authenticate official metadata only
+        run: |
+          set -euo pipefail
+          mkdir sources
+          curl -fL --retry 2 --max-time 90 https://raw.githubusercontent.com/satcompetition/2023/e9b22ad1417d58e8c687a75ab897dc067a57d59a/downloads/sc2023-detailed-results.zip -o sources/sc23.zip
+          test "$(git hash-object sources/sc23.zip)" = 2c41334283a56a0c9fbc9d6dcac5774c8276ee2b
+          curl -fL --retry 2 --max-time 90 https://raw.githubusercontent.com/satcompetition/2024/fa06f42b914ec155b2120aef936ce9305a3e4128/downloads/meta.csv -o sources/exclude2024.txt
+          test "$(git hash-object sources/exclude2024.txt)" = 02acd5580d828892423bea1f9e2ffb368cb2ea24
+          curl -fL --retry 2 --max-time 90 https://raw.githubusercontent.com/satcompetition/2025/5f286f4443ab2e1f3c1deded3255d8500ae46e2e/downloads/SC2025.uri -o sources/exclude2025.txt
+          test "$(git hash-object sources/exclude2025.txt)" = 382cdfcc833339badd9fd5ce6334ea5a5bcb46a0
+          curl -fL --retry 2 --max-time 90 https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/track_main_2026.uri -o sources/exclude2026.txt
+          test "$(git hash-object sources/exclude2026.txt)" = 2b86a4d685b492a844646f378ac3f3415fd131d5
+      - name: Freeze 12 project-new original competition formulas before solver measurements
+        run: |
+          python3 -u research/learned-selector/real_holdout.py freeze --sources sources --registry analytics/research/sat-analytics-data/current/formulas.csv --out real-inputs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real-inputs
+          path: real-inputs/
+          if-no-files-found: error
+          retention-days: 30
+  benchmark:
+    needs: freeze
+    name: Real SC2023 shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze and verify solver sources
+        run: |
+          set -euo pipefail
+          git init -q r6ref
+          git -C r6ref remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C r6ref fetch -q --depth 1 origin 2caca7ff6fe77137725a9093f71baba98b6904bb
+          git -C r6ref checkout -q --detach FETCH_HEAD
+          test "$(git -C r6ref rev-parse HEAD)" = 2caca7ff6fe77137725a9093f71baba98b6904bb
+          test "$(git -C r6ref hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/tseitin-replay/jerk_r8_holdout.py research/tseitin-replay/jerk_r9_gate.py research/tseitin-replay/jerk_r9_gate_patch.py research/tseitin-replay/jerk_r9_analysis.py
+      - name: Build pinned original Kissat baseline
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r9-original
+          git -C /tmp/kissat-r9-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r9-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r9-original && ./configure && make -j2)
+      - name: Build opt-in Jerk-gated Kissat and frozen V15.3.1
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r9-patched
+          git -C /tmp/kissat-r9-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r9-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 r6ref/experiments/drnas_v16/patch_r6_trace.py --kissat-root /tmp/kissat-r9-patched
+          python3 research/tseitin-replay/jerk_r7_trace_patch.py --kissat-root /tmp/kissat-r9-patched
+          python3 research/tseitin-replay/jerk_r9_gate_patch.py --kissat-root /tmp/kissat-r9-patched
+          (cd /tmp/kissat-r9-patched && ./configure && make -j2)
+          test -x /tmp/kissat-r9-patched/build/kissat
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra r6ref/research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r9-v1531
+          test -x /tmp/drnas-r9-v1531
+      - uses: actions/download-artifact@v4
+        with:
+          name: real-inputs
+          path: real-inputs
+      - name: Build frozen selector and run paired real-instance test
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/learned-selector/selector.cpp -o /tmp/drnas-selector
+          python3 -u research/learned-selector/real_holdout.py run --runner r6ref/experiments/drnas_v16/r6_four_strategies.py --inputs real-inputs --shard "$SHARD" --out real-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-shard-${{ matrix.shard }}
+          path: real-results/
+          retention-days: 30
+          if-no-files-found: error
+  analyze:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real-shard-*
+          path: real-shards
+      - name: Audit measured answers and aggregate all real formulas
+        run: |
+          python3 research/learned-selector/real_holdout.py analyze --inputs real-shards --out real-analysis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Selector-Real-Fresh-Results
+          path: real-analysis/
+          if-no-files-found: error
+          retention-days: 30
