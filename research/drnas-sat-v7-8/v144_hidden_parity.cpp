@@ -146,7 +146,7 @@ static bool gf2_unsat144(const vector<Parity144>& eq,set<int>& certificate,size_
  }
  return false;
 }
-int main(int argc,char**argv) {
+int v144_embedded_main(int argc,char**argv) {
  if(!(argc==4 || (argc==5&&string(argv[4])=="--classify-only"))) {
    cerr<<"Usage: v144_hidden_parity INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";return 2;
  }
