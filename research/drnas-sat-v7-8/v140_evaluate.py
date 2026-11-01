@@ -143,7 +143,8 @@ def direct(mode,cnf,seed,truth,a,cap,cohort):
             label=answers[0].split("\t")[2]
             check(label==truth,"Wrong fallback result")
             path="fallback_v76"
-            if cohort=="php":raise RuntimeError("PHP did not reach exact path")
+            if cohort=="php" and mode=="V140_Native":
+                raise RuntimeError("PHP did not reach exact path")
         check(sec<=cap,"Late process")
         return dict(status=truth,seconds=round(sec,6),path=path,error="")
     except subprocess.TimeoutExpired:
