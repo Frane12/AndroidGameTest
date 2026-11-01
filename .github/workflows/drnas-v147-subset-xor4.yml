@@ -1,0 +1,82 @@
+name: DRNAS V14.7 certified subset XOR4 - frozen noisy non-grid audit
+on:
+  push:
+    branches: [experiment/drnas-v147-certified-subset-xor4-20261101]
+    paths:
+      - '.github/workflows/drnas-v147-subset-xor4.yml'
+      - 'research/drnas-sat-v7-8/v147_subset_xor4.cpp'
+      - 'research/tseitin-replay/v147_subset_bench.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [0,1,2,3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41272869294
+          github-token: ${{ github.token }}
+          name: DRNAS-XOR4-nongrid-results
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41270937896
+          github-token: ${{ github.token }}
+          name: DRNAS-v142-xor4-native-grid-results
+          path: new
+      - name: Build V14.7 and verify previously frozen reference binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cp new/bin/v142_xor4 bin/v142_xor4
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'fc357c15fdec6f3a7ced8acf84f7d07e625ec88398892cdcea2cfda927e3184b  bin/v142_xor4' | sha256sum -c -
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas-sat-v7-8/v147_subset_xor4.cpp -o bin/v147_subset_xor4
+          chmod +x bin/{v147_subset_xor4,v142_xor4,kissat_solver}
+          sha256sum bin/{v147_subset_xor4,v142_xor4,kissat_solver}
+      - name: Matched three-repeat prospective comparison
+        run: python3 -u research/tseitin-replay/v147_subset_bench.py measure ${{ matrix.slot }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v147-nongrid-case-${{ matrix.slot }}
+          path: out/
+  audit:
+    needs: measure
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v147-nongrid-case-*
+          path: all
+      - name: Aggregate all identical trials and verify coverage
+        run: python3 -u research/tseitin-replay/v147_subset_bench.py audit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V147-certified-subset-XOR4-final
+          path: |
+            v147_final.json
+            all/**/results.json
+            all/**/*certificate.json
