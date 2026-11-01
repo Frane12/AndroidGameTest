@@ -14,7 +14,9 @@ MODES={"original":"kissat","stable_v1531":"v1531",
        "r5_multisignal":"r5_multisignal","forced_restart25":"forced_restart25"}
 
 def optional_int(x):
- try: return int(x) if str(x).strip() else None
+ try:
+  if str(x).strip().lower() in ("true","false"): return int(str(x).strip().lower()=="true")
+  return int(x) if str(x).strip() else None
  except (TypeError,ValueError): return None
 
 def optional_float(x):
