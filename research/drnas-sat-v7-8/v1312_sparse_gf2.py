@@ -237,8 +237,9 @@ def selftest():
                     v, bit=cert["variable"],cert["value"]
                     insist(all(((model>>(v-1))&1)==bit for model in models),
                            "invalid forced literal")
-            insist(out["sparse"]["visited_equations"] == out["xor_equations"],
-                   "small instance not visited")
+            insist(out["sparse"]["visited_equations"] == out["xor_equations"] or
+                   out["sparse"]["certified_contradictions"] > 0,
+                   "small instance stopped without proof")
         # Direct complete contradiction from overlapping 3-XOR equations.
         eq=[((1,2,3),0),((1,2,4),0),((1,3,4),0),((2,3,4),1)]
         path.write_bytes(prior.synthetic(eq))
