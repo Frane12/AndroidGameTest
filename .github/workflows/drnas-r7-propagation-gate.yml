@@ -1,0 +1,135 @@
+name: DRNAS SAT R7 experimental propagation gate
+on:
+  push:
+    branches: [experiment/drnas-r7-propagation-gate-20261101]
+    paths:
+      - 'experiments/drnas_v16/patch_r7_gate.py'
+      - 'experiments/drnas_v16/r7_prior_sha256.txt'
+      - 'experiments/drnas_v16/r7_four_strategies.py'
+      - '.github/workflows/drnas-r7-propagation-gate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r7-four-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: Source audit, patch compile and SAT/UNSAT smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and unchanged V15.3.1 hash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r6_trace,r7_four_strategies,patch_r7_gate,patch_r5_multisignal,patch_r4_restart_gate,predict_conflict_patch_v177}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+      - name: Build pinned R6 in-process Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r7_gate.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R6_TRACE
+      - name: Test SAT and UNSAT under three instrumented modes
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/r6_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/r6_unsat.cnf
+          for mode in r5_monitor switch2048 r5_gate; do
+            set +e
+            DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r6_sat.cnf > /tmp/r6_sat.log 2>&1
+            sat=$?
+            DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r6_unsat.cnf > /tmp/r6_unsat.log 2>&1
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          echo R6_SMOKE_PASS
+
+  benchmark:
+    name: R7 four paired policies in ${{ matrix.category }}
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        category: [random3, graphcolor, xor, external_satlib]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile pinned original Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Compile pinned Kissat with experimental R7 rule and R6 telemetry
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r7_gate.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Compile unchanged V15.3.1 reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Retrieve publicly known pinned SATLIB archive
+        if: matrix.category == 'external_satlib'
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/mitchellh/go-sat.git /tmp/satlib-r6
+          git -C /tmp/satlib-r6 checkout -q --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-r6 rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+      - name: Interleave four strategies on one runner, ten formulas x three repeats
+        run: |
+          set -euo pipefail
+          grep -m1 'model name' /proc/cpuinfo || true
+          python3 -u experiments/drnas_v16/r7_four_strategies.py --category '${{ matrix.category }}'
+          test -s 'drnas-r6-results/${{ matrix.category }}/measurements.csv'
+      - name: Upload full or partial measurements with source hashes and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r6-${{ matrix.category }}
+          path: drnas-r6-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+
+  aggregate:
+    name: Merge 480 R7 measurements, paired PAR-2 and signal-pattern analysis
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r6-*
+          path: drnas-r6-download/
+          merge-multiple: false
+      - name: Audit expected count, correctness and early divergence
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r7_four_strategies.py --aggregate
+          test -s drnas-r6-results/aggregate/results.json
+          test -s drnas-r6-results/aggregate/paired.csv
+      - name: Upload analysis tables and raw data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R7-Propagation-Gate-Analysis
+          path: drnas-r6-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 60
+
