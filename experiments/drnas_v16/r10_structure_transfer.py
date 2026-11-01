@@ -127,10 +127,10 @@ def quantile(xs,p):
  k=(len(xs)-1)*p;j=int(k)
  return xs[j]*(1-(k-j))+xs[min(j+1,len(xs)-1)]*(k-j)
 def bootstrap(rows,base_mode="monitor",treat_mode="structure_gate",seed=311011):
- by={}
+ by=defaultdict(lambda:defaultdict(float))
  for r in rows:
   key=(r["category"],r["formula"])
-  by.setdefault(key,{})[r["mode"]]=float(r["par2_s"])
+  by[key][r["mode"]]+=float(r["par2_s"])
  keys=list(by)
  formula_groups=defaultdict(list)
  for key in keys:formula_groups[key[0].split("_")[0]].append(key)
