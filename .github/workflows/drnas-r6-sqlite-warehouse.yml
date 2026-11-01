@@ -1,0 +1,112 @@
+name: DRNAS R6 cumulative SQLite warehouse and early-pattern analysis
+
+on:
+  push:
+    branches: [experiment/drnas-r6-analytics-warehouse-20261101]
+    paths:
+      - 'experiments/drnas_v16/r6_warehouse_import.py'
+      - 'experiments/drnas_v16/r6_pattern_analysis.py'
+      - '.github/workflows/drnas-r6-sqlite-warehouse.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: drnas-r6-warehouse-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ingest_and_analyze:
+    name: Preserve existing V15.3.1 warehouse, import 480 R6 rows and analyze dynamics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check import and analysis syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r6_warehouse_import.py experiments/drnas_v16/r6_pattern_analysis.py
+      - name: Verify exact source runs and download immutable named artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_run_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41341529210" --jq '.head_sha')"
+          r6_run_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/41343506152" --jq '.head_sha')"
+          test "$source_run_sha" = 8c8d4c132bd021407544d78ea37251a38406b0ab
+          test "$r6_run_sha" = 2caca7ff6fe77137725a9093f71baba98b6904bb
+          mkdir -p /tmp/r6-warehouse-input/reference /tmp/r6-warehouse-input/r6
+          gh run download 41341529210 --repo "$GITHUB_REPOSITORY" --name DRNAS-V1531-External-Medium40-Analysis --dir /tmp/r6-warehouse-input/reference
+          gh run download 41343506152 --repo "$GITHUB_REPOSITORY" --name DRNAS-R6-Four-Strategy-Analysis --dir /tmp/r6-warehouse-input/r6
+          find /tmp/r6-warehouse-input -type f -printf '%P\n' | sort | head -60
+          test "$(find /tmp/r6-warehouse-input/reference -name sat_analytics.sqlite | wc -l)" -eq 1
+          test -s /tmp/r6-warehouse-input/r6/measurements.csv
+          test -s /tmp/r6-warehouse-input/r6/traces.jsonl
+          test -s /tmp/r6-warehouse-input/r6/paired.csv
+          test -s /tmp/r6-warehouse-input/r6/results.json
+      - name: Preserve V15.3.1 database and import R6 measurement and conflict telemetry
+        run: |
+          set -euo pipefail
+          BASE_DB="$(find /tmp/r6-warehouse-input/reference -name sat_analytics.sqlite -type f -print -quit)"
+          python3 -u experiments/drnas_v16/r6_warehouse_import.py --base-db "$BASE_DB" --r6-artifact /tmp/r6-warehouse-input/r6 --out r6-warehouse
+          test -s r6-warehouse/sat_analytics.sqlite
+          test -s r6-warehouse/r6_import_audit.json
+      - name: Calculate per-formula associations, regression patterns, and scatter charts
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/r6-analytics-venv
+          /tmp/r6-analytics-venv/bin/pip install -q matplotlib
+          /tmp/r6-analytics-venv/bin/python -u experiments/drnas_v16/r6_pattern_analysis.py --db r6-warehouse/sat_analytics.sqlite --out r6-warehouse
+          test -s r6-warehouse/r6_findings.json
+          test -s r6-warehouse/r6_formula_medians.csv
+          test -s r6-warehouse/r6_feature_correlations.csv
+          test -s r6-warehouse/r6_dynamics.csv
+          test -s r6-warehouse/r6_glue_vs_speedup.png
+      - name: Independent warehouse count, evidence distinction and integrity audit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,sqlite3
+          d=json.load(open("r6-warehouse/r6_import_audit.json"))
+          assert d["r6_datasets"]==4
+          assert d["r6_formulas"]==40
+          assert d["r6_attempts"]==480
+          assert d["r6_pairs"]==240
+          assert d["r6_checkpoints"]>0
+          assert d["final_total_attempts"]==d["existing_attempts"]+480
+          db=sqlite3.connect("r6-warehouse/sat_analytics.sqlite")
+          assert db.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+          assert db.execute("SELECT COUNT(*) FROM r6_attempt_features").fetchone()[0]==480
+          assert db.execute("SELECT COUNT(*) FROM r6_checkpoint_features").fetchone()[0]==d["r6_checkpoints"]
+          assert db.execute("SELECT COUNT(*) FROM r6_paired_outcomes").fetchone()[0]==240
+          assert db.execute("SELECT COUNT(*) FROM datasets WHERE provenance='external_prior_public' AND dataset='r6_external_satlib'").fetchone()[0]==1
+          assert db.execute("SELECT COUNT(*) FROM datasets WHERE provenance='generated' AND dataset LIKE 'r6_%'").fetchone()[0]==3
+          assert db.execute("SELECT COUNT(*) FROM r6_attempt_features WHERE solver='r5_frozen_gate' AND switch_at IS NOT NULL").fetchone()[0]==0
+          assert db.execute("SELECT COUNT(*) FROM attempts WHERE dataset NOT LIKE 'r6_%'").fetchone()[0]==d["existing_attempts"]
+          assert db.execute("SELECT COUNT(*) FROM telemetry WHERE dataset LIKE 'r6_%' AND avg_lbd IS NOT NULL").fetchone()[0]==0
+          assert db.execute("SELECT COUNT(*) FROM r6_checkpoint_features WHERE glue_ratio IS NOT NULL").fetchone()[0]>0
+          print("R6_DATABASE_FORENSIC_AUDIT_PASS",d)
+          PY
+      - name: Always upload cumulative database, tables and diagrams
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R6-Cumulative-SQLite-Analytical-Warehouse
+          path: r6-warehouse/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Commit versioned cumulative R6 snapshot to research branch
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/r6-cumulative
+          cp -a r6-warehouse/. research/sat-analytics-data/r6-cumulative/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/sat-analytics-data/r6-cumulative
+          if ! git diff --cached --quiet; then
+            git commit -m "data: snapshot cumulative V15.3.1 plus R6 SQLite and conflict analysis [skip ci]"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
