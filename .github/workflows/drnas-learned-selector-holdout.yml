@@ -1,0 +1,108 @@
+name: DRNAS learned selector frozen independent holdout
+on:
+  push:
+    branches: [experiment/drnas-learned-structural-selector-v1]
+    paths:
+      - 'research/learned-selector/**'
+      - '.github/workflows/drnas-learned-selector-holdout.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    name: Learned selector - ${{ matrix.category }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        category: [random3, graphcolor, xor, external_satlib]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze and verify solver sources
+        run: |
+          set -euo pipefail
+          git init -q r6ref
+          git -C r6ref remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C r6ref fetch -q --depth 1 origin 2caca7ff6fe77137725a9093f71baba98b6904bb
+          git -C r6ref checkout -q --detach FETCH_HEAD
+          test "$(git -C r6ref rev-parse HEAD)" = 2caca7ff6fe77137725a9093f71baba98b6904bb
+          test "$(git -C r6ref hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/tseitin-replay/jerk_r8_holdout.py research/tseitin-replay/jerk_r9_gate.py research/tseitin-replay/jerk_r9_gate_patch.py research/tseitin-replay/jerk_r9_analysis.py
+      - name: Build pinned original Kissat baseline
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r9-original
+          git -C /tmp/kissat-r9-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r9-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r9-original && ./configure && make -j2)
+      - name: Build opt-in Jerk-gated Kissat and frozen V15.3.1
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r9-patched
+          git -C /tmp/kissat-r9-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r9-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 r6ref/experiments/drnas_v16/patch_r6_trace.py --kissat-root /tmp/kissat-r9-patched
+          python3 research/tseitin-replay/jerk_r7_trace_patch.py --kissat-root /tmp/kissat-r9-patched
+          python3 research/tseitin-replay/jerk_r9_gate_patch.py --kissat-root /tmp/kissat-r9-patched
+          (cd /tmp/kissat-r9-patched && ./configure && make -j2)
+          test -x /tmp/kissat-r9-patched/build/kissat
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra r6ref/research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r9-v1531
+          test -x /tmp/drnas-r9-v1531
+      - name: Fetch pinned public SATLIB source
+        if: matrix.category == 'external_satlib'
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/mitchellh/go-sat.git /tmp/satlib-r6
+          git -C /tmp/satlib-r6 checkout -q --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-r6 rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 41352136853
+          pattern: jerk-r8-*
+          path: prior/r8
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 41353826120
+          pattern: jerk-r9-*
+          path: prior/r9
+      - name: Build selector and run frozen paired holdout
+        env:
+          CATEGORY: ${{ matrix.category }}
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/learned-selector/selector.cpp -o /tmp/drnas-selector
+          python3 research/learned-selector/holdout.py --runner r6ref/experiments/drnas_v16/r6_four_strategies.py --category "$CATEGORY" --registry research/sat-analytics-data/current/formulas.csv --prior prior --out selector-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selector-${{ matrix.category }}
+          path: selector-results/
+          retention-days: 30
+          if-no-files-found: error
+  analyze:
+    needs: [benchmark]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selector-*
+          path: raw-shards
+      - name: Audit paired results
+        run: |
+          set -euo pipefail
+          mkdir -p raw-input
+          for category in random3 graphcolor xor external_satlib; do
+            cp -a "raw-shards/selector-${category}/${category}" "raw-input/${category}"
+          done
+          python3 research/learned-selector/analyze.py --input raw-input --out selector-analysis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Learned-Selector-Holdout
+          path: selector-analysis/
+          retention-days: 30
+          if-no-files-found: error
