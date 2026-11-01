@@ -19,7 +19,7 @@ REALPROTO="DRNAS-V139-FRESH-EXTERNAL-SC2024-12-20261101"
 SALT="DRNAS-V140-PHP-NEW-PERMUTED-8-20261101-v1"
 HOLES=(6,7,8,9,10,11,12,13)
 PHP_MODES=("V140_Native","V139_Native","V137_Exact","Kissat404")
-REAL_MODES=("V140_Native","V139_Native","Kissat404")
+REAL_MODES=("V140_Native","V76_adaptive_plain","Kissat404")
 SHARDS=8;REAL_SHARDS=6;REPS=2;PHPCAP=30.;REALCAP=20.
 source.RAW_CAP=96*1024**2;source.CNF_CAP=96*1024**2
 source.VARIABLE_CAP=1000000;source.CLAUSE_CAP=4000000
@@ -86,10 +86,36 @@ def direct(mode,cnf,seed,truth,a,cap,cohort):
         z=mini.trial("Kissat404",cnf,seed,a.v76,a.kissat,truth)
         return dict(status=z["status"],seconds=z["seconds"],
                     error=z["error"],path="kissat")
-    if mode=="V137_Exact":
-        z=prior.previous.exact_trial(cnf,seed,a.legacy,a.kissat,truth)
+    if mode=="V76_adaptive_plain":
+        z=prior.v76.trial(mode,cnf,seed,truth,a.v76,a.legacy,a.kissat)
         return dict(status=z["status"],seconds=z["seconds"],
-                    error=z["error"],path=z["path"])
+                    error=z["error"],path="v76_plain")
+    if mode=="V137_Exact":
+        import sys
+        cmd=[sys.executable,str(Path(exact.__file__).resolve()),
+             str(Path(cnf).resolve()),"--drnas",str(Path(a.legacy).resolve()),
+             "--kissat",str(Path(a.kissat).resolve()),"--seed",str(seed)]
+        start=time.monotonic()
+        try:
+            p=subprocess.run(cmd,timeout=cap,capture_output=True,text=True,
+                             errors="replace",preexec_fn=memory)
+            sec=time.monotonic()-start
+            check(p.returncode==0,"V13.7 exact process exit "+p.stderr[-250:])
+            lines=[x for x in p.stdout.splitlines()
+                   if x.startswith("DRNAS_V137_RESULT\t")]
+            check(len(lines)==1,"Missing original V13.7 result")
+            result=json.loads(lines[0].split("\t",1)[1])
+            check(result["status"]==truth and result["path"]=="pigeonhole_exact",
+                  "V13.7 wrong PHP result")
+            n,clauses=exact.read_dimacs(cnf.read_bytes())
+            check(exact.verify(n,clauses,result),"V13.7 PHP proof verification failed")
+            return dict(status=truth,seconds=round(sec,6),
+                        error="",path="pigeonhole_exact")
+        except subprocess.TimeoutExpired:
+            return dict(status="TIMEOUT",seconds=cap,error="",path="timeout")
+        except Exception as e:
+            return dict(status="ERROR",seconds=min(cap,time.monotonic()-start),
+                        error=str(e)[:320],path="ERROR")
     binary=a.v140 if mode=="V140_Native" else a.v139
     cmd=[str(Path(binary).resolve()),str(Path(cnf).resolve()),
          str(Path(a.v76).resolve()),str(seed)]
