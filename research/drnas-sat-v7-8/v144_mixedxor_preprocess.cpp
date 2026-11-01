@@ -53,13 +53,13 @@ static bool reduce_component144(const vector<LocalEq>& eqs,
   // Full per-component elimination is bounded and atomic. If a limit is
   // exceeded, discard every tentative result from this component.
   map<int,LocalRow> pivots;
-  size_t local_ops=0;
   for(int id:ids) {
     LocalRow row;
     row.support.insert(eqs[id].support.begin(),eqs[id].support.end());
     row.provenance.insert(id);row.rhs=eqs[id].rhs;
     while(!row.support.empty()) {
-      if(out.ops+local_ops++>=V144_TOTAL_ELIMINATIONS)return false;
+      if(out.ops>=V144_TOTAL_ELIMINATIONS)return false;
+      ++out.ops;
       const int high=*row.support.rbegin();
       auto it=pivots.find(high);
       if(it==pivots.end()) {
@@ -76,7 +76,6 @@ static bool reduce_component144(const vector<LocalEq>& eqs,
       if(!replay144(eqs,row.provenance,{},1))
         throw runtime_error("Unverified V14.4 GF2 contradiction");
       out.unsat_proof=row.provenance;
-      out.ops+=local_ops;
       return true;
     }
     next_eq:;
@@ -87,7 +86,8 @@ static bool reduce_component144(const vector<LocalEq>& eqs,
     const int bit=low->first;
     for(auto high=next(low);high!=pivots.end();++high) {
       if(high->second.support.find(bit)==high->second.support.end())continue;
-      if(out.ops+local_ops++>=V144_TOTAL_ELIMINATIONS)return false;
+      if(out.ops>=V144_TOTAL_ELIMINATIONS)return false;
+      ++out.ops;
       auto ns=sxor(high->second.support,low->second.support);
       auto np=sxor(high->second.provenance,low->second.provenance);
       if(ns.size()>V144_MAX_ROW_SUPPORT||np.size()>V144_MAX_PROOF_SIZE)return false;
@@ -104,7 +104,6 @@ static bool reduce_component144(const vector<LocalEq>& eqs,
       throw runtime_error("V14.4 implied XOR proof replay mismatch");
     additions.push_back({row.support,row.rhs,row.provenance});
   }
-  out.ops+=local_ops;
   for(auto& x:additions)out.derived.push_back(move(x));
   return true;
 }
@@ -210,6 +209,7 @@ static int kissat_augmented144(const Cnf& f,const Output144& out,const string& k
   throw runtime_error("execv pinned Kissat failed: "+to_string(err));
 }
 
+#ifndef DRNAS_V144_NO_MAIN
 int main(int argc,char**argv) {
   if(!(argc==4||(argc==5&&string(argv[4])=="--classify-only"))) {
     cerr<<"Usage: v144 INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";
@@ -261,3 +261,5 @@ int main(int argc,char**argv) {
     return 3;
   }
 }
+#endif
+
