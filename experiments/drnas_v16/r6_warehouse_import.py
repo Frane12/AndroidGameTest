@@ -62,7 +62,7 @@ def numeric(value,integer=False):
  return int(n) if integer else n
 
 def truth(value):
- if value in (None,"","None","null"):return None
+ if value in (None,"","None","null","missing"):return None
  if value in ("True","true","1",True,1):return 1
  if value in ("False","false","0",False,0):return 0
  raise ValueError("Unexpected boolean "+str(value))
