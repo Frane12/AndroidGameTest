@@ -137,8 +137,14 @@ def main():
     "Status mismatch")
   r8={r[0] for r in db.execute("SELECT formula_sha256 FROM formulas WHERE dataset='DRNAS-R8-external_satlib'")}
   r9={r[0] for r in db.execute("SELECT formula_sha256 FROM formulas WHERE dataset='DRNAS-R9-external_satlib'")}
-  # 'Hash new' means absent from the pre-R8 cumulative registry, not globally unseen.
-  require(not (r8 & before),"R8 SATLIB holdout overlaps pre-existing cumulative registry")
+  # A source branch can carry an older registry. Record overlaps, never assert global novelty.
+  prior_overlap=sorted(r8 & before)
+  if prior_overlap:
+   db.execute("UPDATE datasets SET provenance='external_public_previously_seen_or_mixed' WHERE dataset='DRNAS-R8-external_satlib'")
+   db.execute("""UPDATE source_artifacts SET provenance='external_public_previously_seen_or_mixed',
+     warning='R8 source used its frozen registry; hashes overlap the later cumulative warehouse. Public SATLIB, NOT strictly unseen or official.'
+     WHERE dataset='DRNAS-R8-external_satlib'""")
+   db.commit()
   grouped,paired,telemetry=base.analytics(db,a.out)
   base.plot(a.out,paired,telemetry)
   overlaps,r6pairs,r6summary=old.extra(db,a.out)
@@ -192,6 +198,8 @@ def main():
     "new_datasets":[x["dataset"] for x in imported if x["new"]],
     "sources":imported,"counts":counts,"holdout_paired":len(holdout),
     "formula_sha_overlap_r8_r9_external":len(r8 & r9),
+    "r8_external_overlap_with_preexisting_cumulative":len(prior_overlap),
+    "r8_external_overlapping_sha256":prior_overlap,
     "cross_dataset_formula_hash_overlaps":len(overlaps),
     "r8_signal_supported":reports["R8"]["signal_predictive_rule_supported"],
     "r8_formula_level_complete_signals":reports["R8"]["formulas_with_jerk_in_all_repeats"],
