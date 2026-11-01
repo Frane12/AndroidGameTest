@@ -53,7 +53,7 @@ int main(int argc,char**argv) {
  }
  try {
    const string cnf=argv[1],kissat=argv[2];
-   Cnf f=parse(cnf);vector<Eq> equations,exhausted;
+   Cnf f=parse(cnf);vector<Eq> equations;vector<int> exhausted;
    if(extract_partial_xor(f,equations,exhausted)) {
      if(!exhausted.empty()) {
        cout<<"DRNAS_HYBRID_RESULT\t{\"status\":\"UNSAT\","
