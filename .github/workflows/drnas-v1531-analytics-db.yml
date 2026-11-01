@@ -9,6 +9,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_new.py'
       - 'research/tseitin-replay/v1531_ingest_r7_crossfamily.py'
       - 'research/tseitin-replay/v1531_ingest_r8_r9.py'
+      - 'research/tseitin-replay/v1531_ingest_post_r9.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -34,7 +35,8 @@ jobs:
             research/tseitin-replay/v1531_ingest_r5.py \
             research/tseitin-replay/v1531_ingest_new.py \
             research/tseitin-replay/v1531_ingest_r7_crossfamily.py \
-            research/tseitin-replay/v1531_ingest_r8_r9.py
+            research/tseitin-replay/v1531_ingest_r8_r9.py \
+            research/tseitin-replay/v1531_ingest_post_r9.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -197,6 +199,67 @@ jobs:
           test -s sat-analysis/scatter_holdout_r8.png
           test -s sat-analysis/scatter_holdout_r9.png
 
+      - name: Fetch three new finished verified benchmark families (R10, selector, SC2023)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new-input/r10/{aggregate,shards} new-input/selector/{aggregate,shards} new-input/real/{aggregate,shards,inputs}
+          gh run download 41357285023 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R10-Structural-Transfer-Results --dir new-input/r10/aggregate
+          for n in 200 220 240; do
+            for fold in development test; do
+              for part in 0 1; do
+                shard="n${n}_${fold}${part}"
+                mkdir -p "new-input/r10/shards/$shard"
+                gh run download 41357285023 --repo "$GITHUB_REPOSITORY" \
+                  --name "r10-$shard" --dir "new-input/r10/shards/$shard"
+                test -s "new-input/r10/shards/$shard/measurements.csv"
+                test -s "new-input/r10/shards/$shard/manifest.json"
+                test -s "new-input/r10/shards/$shard/traces.jsonl"
+              done
+            done
+          done
+          gh run download 41357661885 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-Learned-Selector-Holdout --dir new-input/selector/aggregate
+          for cat in random3 graphcolor xor external_satlib; do
+            mkdir -p "new-input/selector/shards/$cat"
+            gh run download 41357661885 --repo "$GITHUB_REPOSITORY" \
+              --name "selector-$cat" --dir "new-input/selector/shards/$cat"
+            test -s "new-input/selector/shards/$cat/$cat/measurements.csv"
+            test -s "new-input/selector/shards/$cat/protocol.json"
+          done
+          gh run download 41357661925 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-Selector-Real-Fresh-Results --dir new-input/real/aggregate
+          gh run download 41357661925 --repo "$GITHUB_REPOSITORY" \
+            --name real-inputs --dir new-input/real/inputs
+          for i in 0 1 2 3 4 5; do
+            mkdir -p "new-input/real/shards/$i"
+            gh run download 41357661925 --repo "$GITHUB_REPOSITORY" \
+              --name "real-shard-$i" --dir "new-input/real/shards/$i"
+            test -s "new-input/real/shards/$i/measurements.csv"
+            test -s "new-input/real/shards/$i/manifest.json"
+          done
+          test -s new-input/r10/aggregate/results.json
+          test -s new-input/selector/aggregate/report.json
+          test -s new-input/real/aggregate/report.json
+          test -s new-input/real/inputs/frozen_manifest.json
+
+      - name: Verify and append 2844 post-R9 attempts, retain immutable V15.3.1
+        run: |
+          set -euo pipefail
+          # Restore previous exported tables before regenerating cumulative exports.
+          cp -n research/sat-analytics-data/current/* sat-analysis/ || true
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_post_r9.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input
+          test -s sat-analysis/post_r9_source_audit.json
+          test -s sat-analysis/post_r9_paired.csv
+          test -s sat-analysis/post_r9_formula_features.csv
+          test -s sat-analysis/scatter_post_r9_r10.png
+          test -s sat-analysis/scatter_post_r9_selector.png
+          test -s sat-analysis/scatter_post_r9_sc2023.png
+          test -s sat-analysis/scatter_post_r9_structure.png
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -218,7 +281,11 @@ jobs:
                    r7_paired.csv r7_paired_summary.csv new_source_audit.json \
                    r7_formula_features.csv r7_target_signal_buckets.csv \
                    holdout_source_audit.json holdout_paired.csv \
-                   holdout_paired_summary.csv holdout_formula_features.csv; do
+                   holdout_paired_summary.csv holdout_formula_features.csv \
+                   post_r9_source_audit.json post_r9_paired.csv \
+                   post_r9_paired_summary.csv post_r9_formula_features.csv \
+                   scatter_post_r9_r10.png scatter_post_r9_selector.png \
+                   scatter_post_r9_sc2023.png scatter_post_r9_structure.png; do
             cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
           done
           git config user.name "github-actions[bot]"
