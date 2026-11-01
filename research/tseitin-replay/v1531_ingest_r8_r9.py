@@ -130,7 +130,7 @@ def main():
     "Duplicate attempt keys")
   require(db.execute("""SELECT COUNT(*) FROM attempts a JOIN formulas f
     ON f.dataset=a.dataset AND f.case_name=a.case_name
-    WHERE a.dataset LIKE 'DRNAS-R8-%' OR a.dataset LIKE 'DRNAS-R9-%'
+    WHERE (a.dataset LIKE 'DRNAS-R8-%' OR a.dataset LIKE 'DRNAS-R9-%')
     AND (a.status IN ('SAT','UNSAT') AND f.expected NOT IN ('UNKNOWN',a.status))""").fetchone()[0]==0,
     "Status mismatch")
   r8={r[0] for r in db.execute("SELECT formula_sha256 FROM formulas WHERE dataset='DRNAS-R8-external_satlib'")}
