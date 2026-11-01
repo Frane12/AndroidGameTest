@@ -109,7 +109,7 @@ def run_one(solver, mode, path, timeout, logfile):
     # Recognize 'c conflicts: 1234' and 'c conflicts 1234 ...' variants.
     counters={}
     for name in ("conflicts","restarts","decisions","propagations","learned"):
-        pattern=r"(?m)^c\\s+"+name+r"\\s*:?\\s+([0-9][0-9,]*)\\b"
+        pattern=r"(?m)^c\s+"+name+r"\s*:?\s+([0-9][0-9,]*)\b"
         found=re.search(pattern,text)
         counters[name]=int(found.group(1).replace(",","")) if found else ""
     return dict(status=status,elapsed=elapsed,rc=rc,**counters)
