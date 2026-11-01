@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V13.2 prospective LBD4 signal validation on SHA-disjoint SAT Competition 2026 CNFs.
+"""V13.2 six-case pilot of prospective LBD4 validation on SHA-disjoint 2026 CNFs.
 
 Rule locked BEFORE new solve timings: predict Kissat-only (two Kissat solves,
 zero DRNAS Legacy solves) if an exact CaDiCaL 256th-conflict snapshot has
@@ -14,7 +14,7 @@ import official_shortlong_select as source
 import official_2026_mini_sim as mini
 P="DRNAS-V132-prospective-LBD4-locked-20261101"
 SALT="DRNAS-V132-FROZEN-new-2026-CNF-001"
-CAP=12.0; PREFIX_CAP=14.0; REPS=2; SHARDS=4; N=24
+CAP=12.0; PREFIX_CAP=14.0; REPS=2; SHARDS=3; N=6
 MODES=("DRNAS_Legacy","Kissat404")
 LABELS=("SAT","UNSAT")
 mini.CAP=CAP; mini.MEMORY_GIB=3
@@ -90,6 +90,7 @@ def freeze(a):
        "rejected":reject,"limits":[
         "All formulas from SAT Competition 2026; official labels and stratification buckets known",
         "SHA-disjoint only from three pinned sources, not guaranteed globally novel",
+        "Six-case engineering pilot only, far too small for statistical validation",
         "Rule frozen before new DRNAS/Kissat measurements; 12s cap, 3 GiB",
         "Prefix is a separate CaDiCaL run, NOT an integrated continuation",
         "Prediction seeks Kissat-only class, NOT faster runtime or a DRNAS-world-record",
@@ -220,7 +221,7 @@ def audit(a):
       "rows":rows}
     save(a.out,report)
     lines=["# DRNAS V13.2 — Prospective pre-registered LBD4 signal validation","",
-       "**Unnofficial diagnostic, not an integrated solver or world-record claim.**",
+       "**Unofficial six-case engineering pilot, NOT statistically powered, NOT a world-record claim.**",
        f"{N} SHA-disjoint 2026 CNFs, {N*REPS*len(MODES)} matched solver trials, {CAP}s cap.",
        "Predicts Kissat-only class if first 256 conflict LBD4 fraction <0.20 and learned >=20.","",
        "| Metric | Value |","|---|---:|",
