@@ -18,6 +18,10 @@ def main():
             if name.endswith("/"):continue
             item=zip.read(name)
             print("SC2024_FILE_DETAIL",name,len(item),item[:4200].decode("utf-8","replace"),flush=True)
+        main=list(csv.DictReader(io.StringIO(zip.read("detailed_main.csv").decode("utf-8"))))
+        print("SC2024_MAIN_ROWS",len(main),flush=True)
+        print("SC2024_MAIN_FIRST",main[:3],flush=True)
+        print("SC2024_MAIN_VRESULT_COUNTS",dict(__import__("collections").Counter(row.get("vresult") for row in main)),flush=True)
     samples=[r.split()[0] for r in rows[:4] if r.strip()]
     for sample in samples[:2]:
         url="https://benchmark-database.de/file/"+sample
