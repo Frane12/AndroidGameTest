@@ -1,0 +1,110 @@
+name: DRNAS V16.5 selective GF2 unit and binary propagation audit
+on:
+  push:
+    branches: [experiment/drnas-v165-selective-propagation-20261101]
+    paths:
+      - '.github/workflows/drnas-v165-selective-propagation.yml'
+      - 'research/drnas-sat-v7-8/v165_selective_bridge.cpp'
+      - 'research/drnas-sat-v7-8/v164_binary_bridge.cpp'
+      - 'research/drnas-sat-v7-8/v162_bridge_solver.cpp'
+      - 'research/drnas-sat-v7-8/v162_bridge.hpp'
+      - 'research/tseitin-replay/v165_selective_property_test.py'
+      - 'research/tseitin-replay/v165_selective_benchmark.py'
+      - 'research/tseitin-replay/v165_selective_external_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: generated
+            timeout: 6
+          - suite: property
+            timeout: 6
+          - suite: dimacs
+            timeout: 12
+          - suite: controls
+            timeout: 6
+    name: v165-${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight Python and original nohang control
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v165_selective_property_test.py \
+            research/tseitin-replay/v165_selective_benchmark.py \
+            research/tseitin-replay/v165_selective_external_benchmark.py \
+            research/tseitin-replay/v155_training.py research/tseitin-replay/v153_proof_checker.py
+          test -s research/drnas-sat-v7-8/v1531_nohang.cpp
+      - name: Pinned Kissat 4.0.4 static and CLI, consistent controls
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          test -s /tmp/kissat-source/build/libkissat.a
+          mkdir -p bin
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          cp /tmp/kissat_solver bin/kissat_solver
+      - name: Compile V15.9 synthesis, V15.4 inprocess, V15.3.1 nohang and Kissat API
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          cp /tmp/v1531_nohang bin/v1531_nohang
+          for pair in 'kissat_api_control.cpp kissat_api_control' 'v159_relational_dispatch.cpp v159_relational_dispatch' 'v162_bridge_solver.cpp v162_bridge_solver' 'v164_binary_bridge.cpp v164_binary_bridge' 'v165_selective_bridge.cpp v165_selective_bridge'; do
+            read -r src out <<< "$pair"
+            g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+              -I/tmp/kissat-source/src "research/drnas-sat-v7-8/$src" \
+              /tmp/kissat-source/build/libkissat.a -lm -o "/tmp/$out"
+            cp "/tmp/$out" "bin/$out"
+          done
+          sha256sum bin/*
+      - name: Native smoke-test correct SAT and UNSAT before expensive benchmarks
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' >/tmp/sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/unsat.cnf
+          bin/v165_selective_bridge /tmp/sat.cnf "$(pwd)/bin/kissat_solver" 1 | grep -Eq 's SATISFIABLE|"status":"SAT"'
+          bin/v165_selective_bridge /tmp/unsat.cnf "$(pwd)/bin/kissat_solver" 1 | grep -Eq 's UNSATISFIABLE|"status":"UNSAT"'
+      - name: Checkout pinned third-party original controls when requested
+        if: matrix.suite == 'controls'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/AlexanderV/LogicalOptimizer.git /tmp/independent-controls
+          git -C /tmp/independent-controls fetch --depth 1 origin 366bd1964be332de6d281d4e4099ae67c156d552
+          git -C /tmp/independent-controls checkout --detach 366bd1964be332de6d281d4e4099ae67c156d552
+          test "$(git -C /tmp/independent-controls rev-parse HEAD)" = 366bd1964be332de6d281d4e4099ae67c156d552
+      - name: Run pinned and frozen original-CNF witness/certificate audit
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.suite }}" == "generated" ]]; then
+            python3 -u research/tseitin-replay/v165_selective_benchmark.py generated
+          elif [[ "${{ matrix.suite }}" == "property" ]]; then
+            python3 -u research/tseitin-replay/v165_selective_property_test.py | tee v165-property.log
+          else
+            python3 -u research/tseitin-replay/v165_selective_external_benchmark.py \
+              --suite "${{ matrix.suite }}" --timeout "${{ matrix.timeout }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V165-SelectiveRelations-${{ matrix.suite }}-RawAudit
+          path: |
+            v165-generated-results.json
+            v165-generated-progress.json
+            v165-generated-160-manifest.json
+            v165-selective-external-benchmark/${{ matrix.suite }}/results.json
+            v165-selective-external-benchmark/${{ matrix.suite }}/results.md
+            v165-selective-external-benchmark/${{ matrix.suite }}/sources.json
+            v165-binary-relation-property/report.json
+            v165-property.log
+          if-no-files-found: warn
