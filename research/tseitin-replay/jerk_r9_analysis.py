@@ -10,7 +10,7 @@ import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from jerk_r8_holdout import timed_jerk
+from jerk_r8_holdout_analysis import timed_jerk
 
 CATEGORIES = ("random3", "graphcolor", "xor", "external_satlib")
 MODES = ("stable_v1531", "monitor", "forced_restart25",
