@@ -32,7 +32,8 @@ def readcsv(p):
 def trace(p):return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
 def export(out,name,rows,cols):base.export_csv(out/name,rows,cols)
 def ingest(db,root):
- imported=[];reports={};before={r[0] for r in db.execute("SELECT DISTINCT formula_sha256 FROM formulas")}
+ imported=[];reports={};before={r[0] for r in db.execute("""SELECT DISTINCT formula_sha256 FROM formulas
+  WHERE dataset NOT LIKE 'DRNAS-R8-%' AND dataset NOT LIKE 'DRNAS-R9-%'""")}
  for kind,spec in RUNS.items():
   r7.R7[kind]=dict(run=spec["run"],commit=spec["commit"],cap=8,
     modes=spec["modes"],percat=25)
