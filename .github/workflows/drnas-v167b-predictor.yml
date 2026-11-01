@@ -1,0 +1,58 @@
+name: DRNAS SAT V16.7b Frozen Early Dynamics 30-Seed Holdout
+on:
+  push:
+    branches: [experiment/drnas-v167b-frozen-predictor-20261101]
+    paths:
+      - '.github/workflows/drnas-v167b-predictor.yml'
+      - 'experiments/drnas_v16/predictor_v167b.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  blind-30:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate code
+        run: python3 -m py_compile experiments/drnas_v16/predictor_v167b.py
+      - name: Build pinned upstream Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat
+          git -C /tmp/kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat && ./configure && make -j2)
+          /tmp/kissat/build/kissat --version
+      - name: Run prospective frozen 30-seed experiment with full probe overhead
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/predictor_v167b.py \
+            --solver /tmp/kissat/build/kissat \
+            --root v167b-results --timeout 6 --repeats 2 | tee v167b.log
+      - name: Validate complete comparison and manifest
+        run: |
+          python3 - <<'PY'
+          import csv,json,hashlib
+          from pathlib import Path
+          p=Path('v167b-results')
+          m=json.loads((p/'manifest.json').read_text())
+          assert len(m['seeds'])==30
+          assert {x['seed'] for x in m['seeds']}==set(range(167800,167830))
+          for x in m['seeds']:
+            assert hashlib.sha256(Path(x['path']).read_bytes()).hexdigest()==x['sha256']
+          rows=list(csv.DictReader((p/'results.csv').open()))
+          assert len(rows)==180
+          assert all(x['status'] in ('SAT','UNSAT','TIMEOUT') for x in rows)
+          print('V167B_FROZEN_HOLDOUT_PASS 30 unseen seeds 180 runs')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V167B-30-Fresh-Seed-Frozen-256-Conflict-Selector
+          path: |
+            v167b.log
+            v167b-results/manifest.json
+            v167b-results/results.csv
+            v167b-results/summary.json
+          if-no-files-found: warn
