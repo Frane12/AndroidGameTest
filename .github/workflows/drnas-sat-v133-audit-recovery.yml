@@ -1,0 +1,53 @@
+name: DRNAS V13.3 - Strict Recovery Audit Only 42 CNFs
+on:
+  push:
+    branches: [experiment/drnas-v133-verified-auditfix-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v133-audit-recovery.yml'
+      - 'research/drnas-sat-v7-8/v133_evaluate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check code and constructive formula generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v133_evaluate.py
+          python3 research/drnas-sat-v7-8/v133_evaluate.py selftest
+      - name: Download prior complete benchmark and frozen 42-case manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V133-fixed-LBD4-diverse-benchmark-audit
+          run-id: 41257229681
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original
+      - name: Strict audit of prior six completed benchmark shards
+        run: |
+          set -euo pipefail
+          (cd original/frozen && sha256sum -c v133_manifest.sha256)
+          for shard in 0 1 2 3 4 5; do
+            test -s "original/combined/v133-shard-${shard}/meta.json"
+            test -s "original/combined/v133-shard-${shard}/rows.json"
+          done
+          python3 -u research/drnas-sat-v7-8/v133_evaluate.py audit \
+            --manifest original/frozen/v133_manifest.json \
+            --combined original/combined --out v133_report.json --md v133_report.md
+          cat v133_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V133-verified-42-case-audit
+          path: |
+            v133_report.json
+            v133_report.md
+            original/frozen/
+          if-no-files-found: warn
