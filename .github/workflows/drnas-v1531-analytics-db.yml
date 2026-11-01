@@ -6,6 +6,7 @@ on:
     paths:
       - 'research/tseitin-replay/v1531_analytics_db.py'
       - 'research/tseitin-replay/v1531_ingest_r5.py'
+      - 'research/tseitin-replay/v1531_ingest_new.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -17,44 +18,96 @@ permissions:
 jobs:
   analytics:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Download four frozen V15.3.1 benchmark artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p raw-artifacts
-          gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
-          find raw-artifacts -type f -name '*.json' -print
-          test -f raw-artifacts/DRNAS-V1531-Regression-168/results.json
-          test -f raw-artifacts/DRNAS-V1531-Mixed-96/results.json
-          test -f raw-artifacts/DRNAS-V1531-SATLIB-40-Regression/results.json
-          test -f raw-artifacts/DRNAS-V1531-NoHang-Stress/stress.json
-          gh run download 41334526696 --repo "$GITHUB_REPOSITORY" --pattern 'r5_shard_*' --dir raw-artifacts
-          for i in 0 1 2 3; do test -s "raw-artifacts/r5_shard_${i}/measurements.csv"; done
-      - name: Python dependencies for plotting
+
+      - name: Install read-only analysis dependencies
         run: |
           set -euo pipefail
           python3 -m venv .analytics-venv
           .analytics-venv/bin/pip install matplotlib
-          .analytics-venv/bin/python -m py_compile research/tseitin-replay/v1531_analytics_db.py
-      - name: Build real SQLite database and scatter graphs
+          .analytics-venv/bin/python -m py_compile \
+            research/tseitin-replay/v1531_analytics_db.py \
+            research/tseitin-replay/v1531_ingest_r5.py \
+            research/tseitin-replay/v1531_ingest_new.py
+
+      - name: Restore cumulative database without discarding historical sources
+        env:
+          GH_TOKEN: \${{ github.token }}
         run: |
           set -euo pipefail
-          .analytics-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
-            --input raw-artifacts \
-            --out sat-analysis \
-            --source-run 41278912894 \
-            --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
-            --runner github-hosted-ubuntu-24.04
+          mkdir -p sat-analysis
+          if test -s research/sat-analytics-data/current/sat_analytics.sqlite; then
+            cp research/sat-analytics-data/current/sat_analytics.sqlite sat-analysis/sat_analytics.sqlite
+            .analytics-venv/bin/python - <<'PY'
+          import sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          assert db.execute('SELECT COUNT(*) FROM datasets').fetchone()[0]>=5
+          db.close()
+          PY
+          else
+            mkdir -p raw-artifacts
+            gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
+            gh run download 41334526696 --repo "$GITHUB_REPOSITORY" --pattern 'r5_shard_*' --dir raw-artifacts
+            .analytics-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
+              --input raw-artifacts --out sat-analysis --source-run 41278912894 \
+              --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
+              --runner github-hosted-ubuntu-24.04
+            .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r5.py \
+              --input raw-artifacts --out sat-analysis
+          fi
+
+      - name: Retrieve only pinned completed benchmark and verification artifacts
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 41340619884 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-V1531-External-Short40-Analysis --dir source-short
+          gh run download 41341529210 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-V1531-External-Medium40-Analysis --dir source-medium
+          gh run download 41343735998 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-UUF250-Structural-Validation-Analysis --dir source-uuf
+          gh run download 41343506152 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R6-Four-Strategy-Analysis --dir source-r6
+          gh run download 41344096160 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-Dubois-Exact-GF2-Certificates --dir source-cert
+          test -s source-short/sat-analysis/sat_analytics.sqlite
+          test -s source-short/DRNAS-V1531-External-Short40/results.json
+          test -s source-medium/sat-analysis/sat_analytics.sqlite
+          test -s source-medium/medium40/results.json
+          test -s source-uuf/validation-warehouse/sat_analytics.sqlite
+          test -s source-uuf/uuf250-structural-validation/results.json
+          test -s source-r6/measurements.csv
+          test -s source-r6/traces.jsonl
+          test -s source-cert/affine_summary.csv
+
+      - name: Append validated new sources and recompute paired analytics
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_new.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis \
+            --short-db source-short/sat-analysis/sat_analytics.sqlite \
+            --short-json source-short/DRNAS-V1531-External-Short40/results.json \
+            --medium-db source-medium/sat-analysis/sat_analytics.sqlite \
+            --medium-json source-medium/medium40/results.json \
+            --uuf-db source-uuf/validation-warehouse/sat_analytics.sqlite \
+            --uuf-json source-uuf/uuf250-structural-validation/results.json \
+            --r6-csv source-r6/measurements.csv \
+            --r6-json source-r6/results.json \
+            --r6-traces source-r6/traces.jsonl \
+            --cert-csv source-cert/affine_summary.csv \
+            --cert-json source-cert/affine_certificates.json
           test -s sat-analysis/sat_analytics.sqlite
-          test -s sat-analysis/grouped.csv
+          test -s sat-analysis/ingest_audit.json
           test -s sat-analysis/paired.csv
-          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r5.py --input raw-artifacts --out sat-analysis
-          test -s sat-analysis/scatter_paired_v1531.png
-      - name: Upload database, CSV and scatter plots
+          test -s sat-analysis/r6_paired.csv
+          test -s sat-analysis/scatter_r6_monitor_vs_forced_restart25.png
+          test -s sat-analysis/verified_certificates.csv
+
+      - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -62,23 +115,24 @@ jobs:
           path: sat-analysis/
           if-no-files-found: warn
           retention-days: 30
-      - name: Archive current database snapshot in research branch
+
+      - name: Archive successful snapshot on analytical branch only
         if: success()
         run: |
           set -euo pipefail
           mkdir -p research/sat-analytics-data/current
-          cp sat-analysis/sat_analytics.sqlite research/sat-analytics-data/current/
-          cp sat-analysis/summary.json research/sat-analytics-data/current/
-          cp sat-analysis/datasets.csv research/sat-analytics-data/current/
-          cp sat-analysis/formulas.csv research/sat-analytics-data/current/
-          cp sat-analysis/grouped.csv research/sat-analytics-data/current/
-          cp sat-analysis/paired.csv research/sat-analytics-data/current/
+          for f in sat_analytics.sqlite summary.json datasets.csv formulas.csv \
+                   grouped.csv paired.csv source_artifacts.csv attempt_context.csv \
+                   r6_signals.csv verified_certificates.csv r6_paired.csv \
+                   r6_paired_summary.csv cross_dataset_hash_overlaps.csv ingest_audit.json; do
+            cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
+          done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add research/sat-analytics-data/current
           if git diff --cached --quiet; then
-            echo "No changes in analytical database"
+            echo "No new source data: snapshot unchanged"
           else
-            git commit -m "data: snapshot DRNAS V15.3.1 analytics [skip ci]"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            git commit -m "data: cumulative verified V15.3.1 SAT analytics [skip ci]"
+            git push origin "HEAD:$GITHUB_REF_NAME"
           fi
