@@ -284,7 +284,25 @@ def run_mode(solver: str, path: Path, mode: str):
     started = time.perf_counter()
     feature_seconds = 0.0
     if mode in FLAGS:
-        return run_cascade(solver, path, (mode,), started, feature_seconds, mode)
+        # Direct controls always receive the full six-second budget.  Probe
+        # budgets apply only when a mode is an early stage inside a cascade.
+        status, seconds, returncode, stats = solve(solver, path, FLAGS[mode], CAP)
+        return {
+            "status": status,
+            "total_seconds": time.perf_counter() - started,
+            "feature_seconds": feature_seconds,
+            "selected": mode,
+            "route": mode,
+            "order": mode,
+            "returncode": returncode,
+            "stats": stats,
+            "trace": [{
+                "stage": mode,
+                "budget": CAP,
+                "status": status,
+                "seconds": round(seconds, 6),
+            }],
+        }
     if mode == "cascade-trb":
         return run_cascade(solver, path, ORDERS["trb"], started, feature_seconds, "trb")
     if mode == "cascade-rtb":
