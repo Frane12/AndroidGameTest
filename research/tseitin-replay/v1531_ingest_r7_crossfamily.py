@@ -90,6 +90,16 @@ def ingest_r7_category(db,kind,cat,manifest,rows,traces,measurements_path,result
  provenance=("external_previously_seen" if cat.startswith("external") else
              "generated_prescreen_selected" if kind=="target" and cat=="random3" else
              "generated_development")
+ # Retain pre-timing structural features and prescreen selection labels separately.
+ manifest_sha=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()
+ for name,f in cases.items():
+  features=(dataset,name,f["formula_sha256"],manifest_sha,f.get("source"),
+            f.get("source_revision"),json.dumps(f.get("metadata",{}),sort_keys=True))
+  previous=db.execute("""SELECT dataset,case_name,formula_sha256,manifest_sha256,
+    source,source_revision,metadata_json FROM r7_formula_features
+    WHERE dataset=? AND case_name=?""",(dataset,name)).fetchone()
+  if previous: require(tuple(previous)==features,dataset+" changed frozen metadata "+name)
+  else: db.execute("INSERT INTO r7_formula_features VALUES (?,?,?,?,?,?,?)",features)
  existing=db.execute("SELECT source_run,source_sha FROM datasets WHERE dataset=?",(dataset,)).fetchone()
  if existing:
   require(tuple(existing)==(spec["run"],spec["commit"]),dataset+" existing dataset provenance changed")
@@ -250,6 +260,10 @@ def main():
  db=sqlite3.connect(a.db)
  try:
   old.schema(db)
+  db.execute("""CREATE TABLE IF NOT EXISTS r7_formula_features(
+   dataset TEXT,case_name TEXT,formula_sha256 TEXT,manifest_sha256 TEXT,
+   source TEXT,source_revision TEXT,metadata_json TEXT,
+   PRIMARY KEY(dataset,case_name))""")
   with db:
    imported=ingest_r7(db,a.input)
    cross=ingest_crossfamily(db,a.input/"crossfamily")
@@ -258,11 +272,39 @@ def main():
   overlap,r6pairs,r6summary=old.extra(db,a.out)
   old.scatter(a.out,r6pairs)
   r7pairs,r7summary=new_pairs(db,a.out)
+  features=old.rows(db,"SELECT * FROM r7_formula_features ORDER BY dataset,case_name")
+  require(len(features)==380,"Expected 380 R7 frozen formula metadata records")
+  base.export_csv(a.out/"r7_formula_features.csv",features,
+    ("dataset","case_name","formula_sha256","manifest_sha256","source","source_revision","metadata_json"))
+  selected=[f for f in features if f["dataset"]=="DRNAS-R7-target-random3"]
+  require(len(selected)==10,"Targeted prescreen manifest not complete")
+  buckets=defaultdict(list)
+  for f in selected:
+   m=json.loads(f["metadata_json"]); pre=m.get("prescreen",{})
+   require(pre.get("bucket") in ("eligible","ineligible") and pre.get("p") is not None,
+           "Missing targeted prescreen metadata")
+   buckets[pre["bucket"]].append(f["case_name"])
+  require(len(buckets["eligible"])==5 and len(buckets["ineligible"])==5,
+          "Targeted prescreen strata changed")
+  bucket_rows=[]
+  for bucket,names in sorted(buckets.items()):
+   for mode in ("forced_restart25","r7_gate"):
+    sub=[r for r in r7pairs if r["dataset"]=="DRNAS-R7-target-random3" and
+         r["case_name"] in names and r["treatment"]==mode]
+    require(len(sub)==15,"Incomplete targeted matched prescreen pairs")
+    b=sum(r["monitor_par2"] for r in sub);v=sum(r["treatment_par2"] for r in sub)
+    bucket_rows.append(dict(bucket=bucket,mode=mode,formulas=5,attempt_pairs=15,
+      monitor_par2_sum=round(b,8),treatment_par2_sum=round(v,8),
+      speedup_sum=round(b/v,8) if v else None))
+  base.export_csv(a.out/"r7_target_signal_buckets.csv",bucket_rows,
+   ("bucket","mode","formulas","attempt_pairs","monitor_par2_sum",
+    "treatment_par2_sum","speedup_sum"))
   counts={t:db.execute("SELECT COUNT(*) FROM "+t).fetchone()[0]
    for t in ("datasets","formulas","attempts","telemetry","source_artifacts",
-             "attempt_context","verified_certificates")}
+             "attempt_context","verified_certificates","r7_formula_features")}
   require(counts["datasets"]==49 and counts["formulas"]==1027 and
-          counts["attempts"]==10706 and counts["source_artifacts"]==44,
+          counts["attempts"]==10706 and counts["source_artifacts"]==44 and
+          counts["r7_formula_features"]==380,
           "Cumulative count changed unexpectedly: "+str(counts))
   require(db.execute("PRAGMA integrity_check").fetchone()[0]=="ok",
           "SQLite integrity_check failed")
@@ -274,6 +316,7 @@ def main():
   audit["new_20261101_counts"]=counts
   audit["r7_paired_attempts"]=len(r7pairs)
   audit["r7_paired_summary"]=r7summary
+  audit["r7_target_signal_buckets"]=bucket_rows
   audit["cross_dataset_formula_hash_overlaps"]=len(overlap)
   audit["cautions"]+=["R7 generated and previously public SATLIB: not official/unseen.",
     "R7 original Kissat and stable V15.3.1 are not architecture-identical.",
@@ -286,7 +329,8 @@ def main():
   (a.out/"summary.json").write_text(json.dumps(summary,indent=2))
   (a.out/"new_source_audit.json").write_text(json.dumps(
    {"sources":imported+cross,"counts":counts,"r7_paired_attempts":len(r7pairs),
-    "hash_overlaps":len(overlap),"r7_summary":r7summary},indent=2))
+    "hash_overlaps":len(overlap),"r7_summary":r7summary,
+    "r7_target_signal_buckets":bucket_rows},indent=2))
   print(json.dumps({"new_sources":[x["dataset"] for x in imported+cross if x["new"]],
    "counts":counts,"r7_pairs":len(r7pairs),"overlaps":len(overlap)},indent=2))
  finally:db.close()
