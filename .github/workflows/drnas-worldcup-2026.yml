@@ -1,0 +1,73 @@
+name: DRNAS World Cup 2026 paired official-instance comparison
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-worldcup-2026-paired-20261101]
+    paths: [.github/workflows/drnas-worldcup-2026.yml]
+permissions:
+  contents: read
+jobs:
+  cup:
+    name: Same-runner official 2026 shard ${{ matrix.batch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        batch: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile stable DRNAS V15.3.1
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/official_parallel_v179.py
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+      - name: Compile pinned Kissat with DRNAS in-process predictive policies
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-v179
+          git -C /tmp/kissat-v179 checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v179
+          (cd /tmp/kissat-v179 && ./configure && make -j2)
+      - name: Compile pinned CaDiCaL 3.0.1
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/cadical-v179
+          git -C /tmp/cadical-v179 checkout -q --detach c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd /tmp/cadical-v179 && ./configure && make -j2)
+      - name: Measure pinned official SAT Competition 2026 instances
+        run: python3 -u experiments/drnas_v16/official_parallel_v179.py --batch "${{ matrix.batch }}"
+      - name: Upload partial and complete results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cup_batch_${{ matrix.batch }}
+          path: drnas-v179-official-results/batch_${{ matrix.batch }}/
+          retention-days: 30
+  aggregate:
+    name: Audit 12 official cases paired across 5 policies
+    needs: cup
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cup_batch_*
+          path: /tmp/cup-artifacts
+      - name: Reconstitute expected shard directories and aggregate
+        run: |
+          set -euo pipefail
+          mkdir -p drnas-v179-official-results
+          for i in 0 1 2 3; do
+            test -s "/tmp/cup-artifacts/cup_batch_${i}/measurements.csv"
+            cp -a "/tmp/cup-artifacts/cup_batch_${i}" "drnas-v179-official-results/batch_${i}"
+          done
+          python3 -u experiments/drnas_v16/official_parallel_v179.py --aggregate
+      - name: Publish summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-WorldCup-2026-Paired-Official-Results
+          path: drnas-v179-official-results/aggregate.json
+          retention-days: 60
