@@ -23,13 +23,13 @@ def make(seed,unsat):
  p.write_text(f"p cnf {n} {len(cl)}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in cl))
  return p
 def run(exe,p,kissat):
- args=[str(exe.resolve()),str(p),str(kissat.resolve()),"1"]
+ args=[str(exe.resolve()),str(p)] if exe.resolve()==kissat.resolve() else [str(exe.resolve()),str(p),str(kissat.resolve()),"1"]
  t=time.perf_counter()
  try:
   x=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=8)
   out=x.stdout
-  if '"status":"UNSAT"' in out or "s UNSATISFIABLE" in out:status="UNSAT"
-  elif '"status":"SAT"' in out or "s SATISFIABLE" in out:status="SAT"
+  if ('"status":"UNSAT"' in out or '"status": "UNSAT"' in out or "s UNSATISFIABLE" in out):status="UNSAT"
+  elif ('"status":"SAT"' in out or '"status": "SAT"' in out or "s SATISFIABLE" in out):status="SAT"
   else:status="UNKNOWN"
   return {"seconds":time.perf_counter()-t,"status":status,"exit":x.returncode,"fallback":"kissat_direct" in out}
  except subprocess.TimeoutExpired:return {"seconds":8.0,"status":"TIMEOUT"}
