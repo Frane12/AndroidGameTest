@@ -1,0 +1,104 @@
+name: DRNAS V15.3.2 prefix fast-skip 168+96+72 external audit
+on:
+  push:
+    branches: [experiment/drnas-v1532-prefix-skip-20261101]
+    paths:
+      - 'research/drnas-sat-v7-8/v1532_prefix.cpp'
+      - 'research/tseitin-replay/v1532_*.py'
+      - '.github/workflows/drnas-v1532-prefix-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  structural_and_stress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v1532_regression.py research/tseitin-replay/v1532_mixed.py research/tseitin-replay/v1532_nohang_stress.py
+      - name: Compile original V15.3, NoHang V15.3.1 and V15.3.2 prefix gate
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o /tmp/v153_unified
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1532_prefix.cpp -o /tmp/v1532_prefix
+          test -x /tmp/v153_unified && test -x /tmp/v1531_nohang && test -x /tmp/v1532_prefix
+      - name: Build pinned Kissat 4.0.4 baseline
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: 8 adversarial no-hang stress cases x3 repeats
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1532_nohang_stress.py
+      - name: 168 structural development CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1532_regression.py
+      - name: 96 mixed XOR and original unit CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1532_mixed.py
+      - name: Save structural correctness and timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1532-Dev-Stress-XOR
+          path: |
+            v1532-nohang-stress/
+            v1532-regression-168/
+            v1532-mixed-96/
+          if-no-files-found: warn
+  new_external_h72:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v1532_satlib_h72.py
+      - name: Compile original V15.3, NoHang V15.3.1 and V15.3.2 prefix gate
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o /tmp/v153_unified
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1532_prefix.cpp -o /tmp/v1532_prefix
+          test -x /tmp/v153_unified && test -x /tmp/v1531_nohang && test -x /tmp/v1532_prefix
+      - name: Build pinned Kissat 4.0.4 baseline
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Checkout frozen independent SATLIB repository
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-repo
+          git -C /tmp/satlib-repo fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-repo checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-repo rev-parse HEAD)" = "fc0e735aff48989326f256121b5ed6fc585858c3"
+      - name: 72 new-input SATLIB H cases, 5 randomized repeats
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1532_satlib_h72.py
+      - name: Save external 72-case audit with original SHA256 hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1532-External-H72
+          path: v1532-satlib-h-72/
+          if-no-files-found: warn
