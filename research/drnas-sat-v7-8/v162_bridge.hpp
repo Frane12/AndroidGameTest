@@ -10,6 +10,7 @@
 #include <vector>
 #include <stack>
 #include <algorithm>
+#include <iterator>
 #include <cstdint>
 
 struct V162Row { std::set<int> vars; int rhs=0; };
@@ -140,13 +141,14 @@ static V162Relations v162_derive(const Cnf& f) {
  if(normalized.size()>1024 || supports.size()>10000)return V162Relations{};
  std::map<int,V162Row> basis;
  for(auto row:normalized){
+  bool stored=false;
   while(!row.vars.empty()){
    int pivot=*row.vars.begin();
    auto b=basis.find(pivot);
-   if(b==basis.end()){basis.emplace(pivot,std::move(row));break;}
+   if(b==basis.end()){basis.emplace(pivot,std::move(row));stored=true;break;}
    v162_xor(row,b->second);
   }
-  if(row.vars.empty()&&row.rhs){
+  if(!stored&&row.vars.empty()&&row.rhs){
    out.contradiction=true;return out;
   }
  }
