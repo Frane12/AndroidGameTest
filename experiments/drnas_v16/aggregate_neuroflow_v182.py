@@ -39,6 +39,15 @@ def main():
     for x in data:
         by_case[int(x["official_index"])][x["mode"]].append(x)
     if not by_case:raise RuntimeError("No cases")
+    if not snapshots:
+        raise RuntimeError(
+            "V182_ZERO_LOGIC_SNAPSHOTS: rejecting an uninstrumented run "
+            "(original run 41310002605 silently compared the same executable).")
+    instrumented_traces=sum(x["monitor_internal_pct"] not in ("",None)
+         for x in data if x["mode"]!="baseline")
+    if instrumented_traces<4:
+        raise RuntimeError(
+            f"V182_TOO_FEW_INSTRUMENTED_TRACES: only {instrumented_traces}")
     for i,modes in by_case.items():
         if set(modes)!=set(POLICIES) or any(len(modes[m])!=2 for m in POLICIES):
             raise RuntimeError(f"Incomplete paired formula: {i}")

@@ -204,6 +204,14 @@ def run_batch(batch):
             write_csv(out/"measurements.partial.csv",rows,FIELDS)
             print("V182_PAIR_COMPLETE",batch,case["official_index"],repeat,flush=True)
     assert len(rows)==len(cases)*REPEATS*len(POLICIES)
+    # A successful exit is not an instrumented experiment. Formula may be
+    # solved before search, but at least SOME long runs must enter search.
+    live_traces=[r for r in rows if r["mode"]!="baseline" and
+                 r["cpu_ns"]!="" and int(r["samples"] or 0)>0]
+    if not live_traces:
+        raise RuntimeError(
+            "V182_NO_REAL_TELEMETRY: no 256-conflict windows found. "
+            "Check C object rebuild and early preprocess exit.")
     by=collections.defaultdict(dict)
     for row in rows:
         key=(row["official_index"],row["repeat"])
