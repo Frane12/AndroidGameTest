@@ -12,7 +12,7 @@ from v153_proof_checker import verify_certificate as check_v153
 SOURCE="mitchellh/go-sat"
 REV="fc0e735aff48989326f256121b5ed6fc585858c3"
 ROOT=Path("/tmp/satlib-repo/testdata/satlib")
-OUT=Path("v152-satlib-external-holdout-f")
+OUT=Path("v153-satlib-external-holdout-f")
 OUT.mkdir(exist_ok=True)
 CASES=[]
 for number in range(13,21):
