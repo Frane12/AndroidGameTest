@@ -7,6 +7,7 @@ on:
       - 'research/tseitin-replay/v1531_analytics_db.py'
       - 'research/tseitin-replay/v1531_ingest_r5.py'
       - 'research/tseitin-replay/v1531_ingest_new.py'
+      - 'research/tseitin-replay/v1531_ingest_r7_crossfamily.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -30,7 +31,8 @@ jobs:
           .analytics-venv/bin/python -m py_compile \
             research/tseitin-replay/v1531_analytics_db.py \
             research/tseitin-replay/v1531_ingest_r5.py \
-            research/tseitin-replay/v1531_ingest_new.py
+            research/tseitin-replay/v1531_ingest_new.py \
+            research/tseitin-replay/v1531_ingest_r7_crossfamily.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -107,6 +109,49 @@ jobs:
           test -s sat-analysis/scatter_r6_monitor_vs_forced_restart25.png
           test -s sat-analysis/verified_certificates.csv
 
+      - name: Retrieve only completed pinned R7 and preregistered cross-family artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new-input/{jerk,wide,large,crossfamily}
+          gh run download 41346987963 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-Jerk-R7-Real-Standard-Benchmark --dir new-input/jerk
+          for cat in random3 graphcolor xor external_satlib; do
+            mkdir -p "new-input/jerk/$cat"
+            gh run download 41346987963 --repo "$GITHUB_REPOSITORY" \
+              --name "jerk-r7-$cat" --dir "new-input/jerk/$cat"
+            test -s "new-input/jerk/$cat/measurements.csv"
+            test -s "new-input/jerk/$cat/traces.jsonl"
+            test -s "new-input/jerk/$cat/manifest.json"
+          done
+          gh run download 41345671202 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R7-Wide-Analysis --dir new-input/wide
+          gh run download 41346915939 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R7-Large-Analysis --dir new-input/large
+          gh run download 41345835957 --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-V1531-Structural-CrossFamily-Validation --dir new-input/crossfamily
+          test -s new-input/jerk/jerk_standard_report.json
+          for kind in wide large; do
+            test -s "new-input/$kind/measurements.csv"
+            test -s "new-input/$kind/traces.jsonl"
+            test -s "new-input/$kind/results.json"
+          done
+          test -s new-input/crossfamily/crossfamily-warehouse/sat_analytics.sqlite
+          test -s new-input/crossfamily/crossfamily-validation/aggregate.json
+
+      - name: Append only source-verified R7 and cross-family rows, preserve historical SQLite
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r7_crossfamily.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input
+          test -s sat-analysis/new_source_audit.json
+          test -s sat-analysis/r7_paired.csv
+          test -s sat-analysis/r7_paired_summary.csv
+          test -s sat-analysis/scatter_r7_large.png
+          test -s sat-analysis/scatter_r7_wide.png
+          test -s sat-analysis/scatter_r7_jerk.png
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -124,7 +169,8 @@ jobs:
           for f in sat_analytics.sqlite summary.json datasets.csv formulas.csv \
                    grouped.csv paired.csv source_artifacts.csv attempt_context.csv \
                    r6_signals.csv verified_certificates.csv r6_paired.csv \
-                   r6_paired_summary.csv cross_dataset_hash_overlaps.csv ingest_audit.json; do
+                   r6_paired_summary.csv cross_dataset_hash_overlaps.csv ingest_audit.json \
+                   r7_paired.csv r7_paired_summary.csv new_source_audit.json; do
             cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
           done
           git config user.name "github-actions[bot]"
