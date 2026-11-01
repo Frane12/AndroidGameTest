@@ -1,0 +1,117 @@
+name: DRNAS SAT V17.7 frozen predictive conflict gate
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v177-predictive-conflict-20261101'
+    paths:
+      - 'experiments/drnas_v16/predict_conflict_patch_v177.py'
+      - 'experiments/drnas_v16/train_conflict_predictor_v177.py'
+      - 'experiments/drnas_v16/benchmark_predictor_v177.py'
+      - 'experiments/drnas_v16/v177_training_labels_176dev.csv'
+      - '.github/workflows/drnas-sat-v177-predictive-gate.yml'
+jobs:
+  train:
+    name: Train and freeze conflict-512 rule on 20 DEVELOPMENT cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit frozen source and validate Python modules
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            experiments/drnas_v16/predict_conflict_patch_v177.py \
+            experiments/drnas_v16/train_conflict_predictor_v177.py \
+            experiments/drnas_v16/benchmark_predictor_v177.py
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          f=Path('experiments/drnas_v16/v177_training_labels_176dev.csv')
+          rows=list(csv.DictReader(f.open()))
+          assert len(rows)==60
+          assert set(map(lambda r:int(r['seed']),rows))==set(range(176000,176020))
+          assert {r['mode'] for r in rows}=={'baseline','switch1024','switch2048'}
+          print("V177_DATA_LEAKAGE_GUARD_PASS: 20 historical development instances only")
+          PY
+      - name: Compile pinned Kissat with observational and policy instrumentation
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v177
+          git -C /tmp/kissat-v177 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v177
+          cd /tmp/kissat-v177
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Fit single-split rule and evaluate leave-one-formula-out
+        run: |
+          python3 -u experiments/drnas_v16/train_conflict_predictor_v177.py \
+            --solver /tmp/kissat-v177/build/kissat \
+            --labels experiments/drnas_v16/v177_training_labels_176dev.csv \
+            --root drnas-v177-train
+      - name: Upload immutable rule and full model audit for untouched holdout
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V177-frozen-rule
+          path: |
+            drnas-v177-train/rule.txt
+            drnas-v177-train/model.json
+            drnas-v177-train/training_features.csv
+            drnas-v177-train/loocv.json
+          if-no-files-found: warn
+
+  holdout:
+    name: 20 unseen SAT formulas x3 repetitions x4 strategies
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download prior frozen rule; never refit on holdout
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V177-frozen-rule
+          path: frozen-rule
+      - name: Verify rule comes from development data only
+        run: |
+          test -s frozen-rule/rule.txt
+          test -s frozen-rule/model.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rule=Path("frozen-rule/rule.txt").read_text().split()
+          model=json.loads(Path("frozen-rule/model.json").read_text())
+          assert len(rule)==4 and rule[0] in ("r","d","p","g","l")
+          assert rule[1] in ("lt","ge") and int(rule[3]) in (0,1024,2048)
+          assert model["policy_frozen_before_177_holdout"]
+          assert "176000" in model["provenance"]
+          print("V177_HOLDOUT_RULE_FROZEN",rule)
+          PY
+      - name: Compile identical pinned Kissat and in-process selector
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v177
+          git -C /tmp/kissat-v177 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v177
+          cd /tmp/kissat-v177
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Run all 240 paired blind measurements and clustered bootstrap audit
+        run: |
+          python3 -u experiments/drnas_v16/benchmark_predictor_v177.py \
+            --solver /tmp/kissat-v177/build/kissat \
+            --rule frozen-rule/rule.txt --model frozen-rule/model.json \
+            --root drnas-v177-holdout
+      - name: Upload complete or partial untuned holdout measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V177-frozen-predictor-holdout
+          path: |
+            drnas-v177-holdout/manifest.json
+            drnas-v177-holdout/measurements.partial.csv
+            drnas-v177-holdout/measurements.csv
+            drnas-v177-holdout/leaderboard.csv
+            drnas-v177-holdout/summary.json
+          if-no-files-found: warn
