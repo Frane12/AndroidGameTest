@@ -1,0 +1,53 @@
+name: DRNAS SAT recover completed structural validation analytical archive
+on:
+  push:
+    branches: [experiment/drnas-v1531-relations-audit-20261101]
+    paths: [.github/workflows/drnas-v1531-relations-archive-recover.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover completed UUF250 validation without rerunning SAT
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p recovered
+          gh run download 41343735998 --repo "$GITHUB_REPOSITORY" --name DRNAS-UUF250-Structural-Validation-Analysis --dir recovered
+          test -s recovered/uuf250-structural-validation/validation.json
+          test -s recovered/uuf250-structural-validation/results.json
+          test -s recovered/validation-warehouse/sat_analytics.sqlite
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('recovered/uuf250-structural-validation')
+          d=json.loads((p/'validation.json').read_text())
+          r=json.loads((p/'results.json').read_text())
+          assert d['n']==40 and d['attempts']==80
+          assert len(r['manifest'])==len(r['results'])==40
+          assert all(len(x['runs'])==2 for x in r['results'])
+          assert len(d['hypothesis_tests'])==3
+          print('RECOVERY_VERIFIED',d['preregistered_success_rule_met'])
+          PY
+      - name: Persist recovered audit and refreshed cumulative SQLite database
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/relations-validation
+          cp recovered/uuf250-structural-validation/{validation.json,report.md,features_outcomes.csv,frozen_before_timing.json,results.json} research/sat-analytics-data/relations-validation/
+          cp recovered/uuf250-structural-validation/validate_*.png research/sat-analytics-data/relations-validation/
+          cp recovered/validation-warehouse/{sat_analytics.sqlite,summary.json,grouped.csv,paired.csv} research/sat-analytics-data/relations-validation/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/sat-analytics-data/relations-validation
+          if ! git diff --cached --quiet; then
+            git commit -m "data: recover verified untouched UUF250 validation and cumulative analytics [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo "Recovered dataset already identical to persisted archive."
+          fi
