@@ -61,7 +61,8 @@ def freeze(a):
         buckets[group].sort(key=lambda r:hashlib.sha256(
             (SALT+"/"+r["instanceid"]).encode()).hexdigest())
     chosen=[];reject=[];keyed=sorted(buckets)
-    check(len(keyed)>=2 and len({x.split("_")[0] for x in keyed})>=1,\n          "Insufficient nonempty source strata")\n    print("V132_SOURCE_STRATA",[(k,len(buckets[k])) for k in keyed],flush=True)
+    check(len(keyed)>=2,"Insufficient nonempty source strata")
+    print("V132_SOURCE_STRATA",[(k,len(buckets[k])) for k in keyed],flush=True)
     while len(chosen)<N and any(buckets.values()):
         for group in keyed:
             if len(chosen)>=N:break
