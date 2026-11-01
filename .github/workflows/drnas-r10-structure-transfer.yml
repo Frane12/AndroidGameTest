@@ -1,0 +1,134 @@
+name: DRNAS R10 structural experience prospective 3-SAT
+on:
+  push:
+    branches: [experiment/drnas-r10-breakthrough-transfer-20261101]
+    paths:
+      - '.github/workflows/drnas-r10-structure-transfer.yml'
+      - 'experiments/drnas_v16/r10_structure_transfer.py'
+      - 'experiments/drnas_v16/r10_prior_registry_sha256.txt'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-r10-structural-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: Frozen sources, syntax, structure gate smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin baseline, rule and frozen historical registry
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{r10_structure_transfer,r7_large,patch_r7_gate,patch_r6_trace,patch_r5_multisignal,patch_r4_restart_gate,predict_conflict_patch_v177}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          test "$(git hash-object experiments/drnas_v16/r7_large.py)" = 0444a8938827d49c4b065af5acc512449f9db9ab
+          test "$(git hash-object experiments/drnas_v16/patch_r7_gate.py)" = df6c59c4aec2d9c9008ee59bd4d044c4dc9e6379
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r10_structure_transfer as x
+          assert len(x.SHARDS)==12
+          assert x.eligible({"degree_cv":.30,"degree_gini":.17})
+          assert not x.eligible({"degree_cv":.27,"degree_gini":.17})
+          assert not x.eligible({"degree_cv":.30,"degree_gini":.15})
+          print("R10_FROZEN_STRUCTURAL_RULE_OK")
+          PY
+  benchmark:
+    name: R10 structural paired ${{ matrix.category }}
+    needs: [audit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1, n220_development0, n220_development1, n220_test0, n220_test1, n240_development0, n240_development1, n240_test0, n240_test1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build original pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Build same pinned Kissat with R7 switch path unchanged
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r7_gate.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Build unmodified V15.3.1 reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Run five shuffled identical-input policy pairs and preserve traces
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r10_structure_transfer.py --category "${{ matrix.category }}"
+          test -s "drnas-r10-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r10-results/${{ matrix.category }}/manifest.json"
+          test -s "drnas-r10-results/${{ matrix.category }}/traces.jsonl"
+      - name: Upload full or partial data and SHA provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r10-${{ matrix.category }}
+          path: drnas-r10-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+  aggregate:
+    name: R10 independent formula audit, PAR-2 and structure scatterplots
+    needs: [benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r10-*
+          path: r10-download
+          merge-multiple: false
+      - name: Summarize only complete paired evidence
+        run: |
+          set -euo pipefail
+          python3 -m venv .r10venv
+          .r10venv/bin/pip -q install matplotlib
+          .r10venv/bin/python experiments/drnas_v16/r10_structure_transfer.py --aggregate
+          test -s drnas-r10-results/aggregate/results.json
+          test -s drnas-r10-results/aggregate/formula_features.csv
+          test -s drnas-r10-results/aggregate/paired.csv
+          test -s drnas-r10-results/aggregate/structure_scatter_development.png
+          test -s drnas-r10-results/aggregate/structure_scatter_test.png
+      - name: Publish full reproducible experiment artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R10-Structural-Transfer-Results
+          path: drnas-r10-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Archive verified summaries, preserving R7 and V15.3.1
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p experiments/drnas_v16/r10-results/current
+          for f in results.json formula_features.csv paired.csv structure_scatter_development.png structure_scatter_test.png; do
+            test -s "drnas-r10-results/aggregate/$f"
+            cp "drnas-r10-results/aggregate/$f" "experiments/drnas_v16/r10-results/current/$f"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/drnas_v16/r10-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: frozen R10 prospective structure and paired PAR-2 results [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
