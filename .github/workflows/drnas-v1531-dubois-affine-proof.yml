@@ -1,0 +1,50 @@
+name: DRNAS SAT exact Dubois GF2 UNSAT certificates (independent)
+on:
+  push:
+    branches: [experiment/drnas-v1531-relations-audit-20261101]
+    paths:
+      - research/tseitin-replay/v1531_dubois_gf2_certificate_audit.py
+      - .github/workflows/drnas-v1531-dubois-affine-proof.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned original public SATLIB corpus
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-go
+          git -C /tmp/satlib-go fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-go checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-go rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+      - name: Independently verify 10 CNF-XOR equivalences and 0 equals 1 certificates
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v1531_dubois_gf2_certificate_audit.py
+          python3 -u research/tseitin-replay/v1531_dubois_gf2_certificate_audit.py
+          test -s affine-logic-audit/affine_certificates.json
+      - name: Publish exact algebraic certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Dubois-Exact-GF2-Certificates
+          path: affine-logic-audit/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Preserve versioned source-backed exact proof
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/sat-analytics-data/affine-logic-proof
+          cp affine-logic-audit/. research/sat-analytics-data/affine-logic-proof/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/sat-analytics-data/affine-logic-proof
+          if ! git diff --cached --quiet; then
+            git commit -m "data: independently verified source-backed Dubois GF2 UNSAT certificates [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
