@@ -1,0 +1,113 @@
+name: DRNAS Jerk R8 hash-new paired holdout (100 formulas)
+on:
+  push:
+    branches: [experiment/drnas-jerk-holdout-v1-20261101]
+    paths:
+      - '.github/workflows/drnas-jerk-r8-holdout-v1.yml'
+      - 'research/tseitin-replay/jerk_r8_holdout.py'
+      - 'research/tseitin-replay/jerk_r8_holdout_analysis.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    name: R8 paired holdout - ${{ matrix.category }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        category: [random3, graphcolor, xor, external_satlib]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze and verify solver sources
+        run: |
+          set -euo pipefail
+          git init -q r6ref
+          git -C r6ref remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C r6ref fetch -q --depth 1 origin 2caca7ff6fe77137725a9093f71baba98b6904bb
+          git -C r6ref checkout -q --detach FETCH_HEAD
+          test "$(git -C r6ref rev-parse HEAD)" = 2caca7ff6fe77137725a9093f71baba98b6904bb
+          test "$(git -C r6ref hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/tseitin-replay/jerk_r8_holdout.py research/tseitin-replay/jerk_r8_holdout_analysis.py
+      - name: Build pinned original Kissat baseline
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r8-original
+          git -C /tmp/kissat-r8-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r8-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r8-original && ./configure && make -j2)
+      - name: Build pinned instrumented Kissat and frozen V15.3.1
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r8-patched
+          git -C /tmp/kissat-r8-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r8-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 r6ref/experiments/drnas_v16/patch_r6_trace.py --kissat-root /tmp/kissat-r8-patched
+          python3 research/tseitin-replay/jerk_r7_trace_patch.py --kissat-root /tmp/kissat-r8-patched
+          (cd /tmp/kissat-r8-patched && ./configure && make -j2)
+          test -x /tmp/kissat-r8-patched/build/kissat
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra r6ref/research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r8-v1531
+          test -x /tmp/drnas-r8-v1531
+      - name: Fetch pinned public SATLIB source
+        if: matrix.category == 'external_satlib'
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/mitchellh/go-sat.git /tmp/satlib-r6
+          git -C /tmp/satlib-r6 checkout -q --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-r6 rev-parse HEAD)" = fc0e735aff48989326f256121b5ed6fc585858c3
+      - name: Run frozen 25-formula shard with three interleaved repeats
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/jerk_r8_holdout.py \
+            --runner r6ref/experiments/drnas_v16/r6_four_strategies.py \
+            --category "${{ matrix.category }}" \
+            --seen-hashes research/sat-analytics-data/current/formulas.csv \
+            --out drnas-jerk-r8-results
+          test -s "drnas-jerk-r8-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-jerk-r8-results/${{ matrix.category }}/traces.jsonl"
+          test -s "drnas-jerk-r8-results/${{ matrix.category }}/manifest.json"
+          test -s drnas-jerk-r8-results/protocol.json
+      - name: Preserve raw measurements, timed traces, protocol, and hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jerk-r8-${{ matrix.category }}
+          path: drnas-jerk-r8-results/
+          if-no-files-found: warn
+          retention-days: 30
+  analyze:
+    name: Formula-clustered jerk and intervention audit
+    needs: [benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jerk-r8-*
+          path: raw-shards
+          merge-multiple: false
+      - name: Verify matched holdout and compute frozen statistics
+        run: |
+          set -euo pipefail
+          mkdir -p raw-input
+          for category in random3 graphcolor xor external_satlib; do
+            test -s "raw-shards/jerk-r8-${category}/${category}/measurements.csv"
+            test -s "raw-shards/jerk-r8-${category}/${category}/traces.jsonl"
+            cp -a "raw-shards/jerk-r8-${category}/${category}" "raw-input/${category}"
+          done
+          python3 -m venv .jerk-venv
+          .jerk-venv/bin/pip -q install matplotlib
+          .jerk-venv/bin/python research/tseitin-replay/jerk_r8_holdout_analysis.py --input raw-input --out jerk-r8-analysis
+          test -s jerk-r8-analysis/jerk_holdout_report.json
+          test -s jerk-r8-analysis/jerk_pairs.csv
+          cat jerk-r8-analysis/jerk_holdout_report.json
+      - name: Upload formula-level results and scatterplots
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Jerk-R8-Hash-New-Holdout
+          path: jerk-r8-analysis/
+          if-no-files-found: error
+          retention-days: 30
