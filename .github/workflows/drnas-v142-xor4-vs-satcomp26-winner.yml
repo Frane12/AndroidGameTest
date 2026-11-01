@@ -47,8 +47,18 @@ jobs:
           test "$actual" = 5ec9be607fbf762329176beb7068d574cd528b5b
           mkdir official-winner/unpacked
           tar -xJf official-winner/anders.tar.xz -C official-winner/unpacked
-          run_script="$(find official-winner/unpacked -type f -name run.sh -print -quit)"
-          test -n "$run_script"
+          find official-winner/unpacked -type f -name run.sh -print | sort > official-winner/run_scripts.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          choices = Path("official-winner/run_scripts.txt").read_text().splitlines()
+          matches = [p for p in choices if "satsuma-iter" in p.lower() and "kissat" in p.lower()
+                     and "mab" not in p.lower() and "ae-" not in p.lower() and "ae_" not in p.lower()]
+          if len(matches) != 1:
+              raise SystemExit("Expected exactly one plain satsuma-iter+kissat entry; found: " + repr(matches) + "; all entries: " + repr(choices))
+          Path("official-winner/champion_run_script.txt").write_text(matches[0] + "\\n")
+          print("Selected official overall winner package:", matches[0])
+          PY
+          run_script="$(cat official-winner/champion_run_script.txt)"
           solver_dir="$(dirname "$run_script")"
           test -f "$solver_dir/build.sh"
           chmod +x "$solver_dir/build.sh" "$solver_dir/run.sh"
@@ -57,8 +67,11 @@ jobs:
           echo "SATCOMP26_ARCHIVE_GIT_BLOB_SHA=$actual" >> "$GITHUB_ENV"
           {
             echo "Official archive Git blob SHA: $actual"
-            echo "Submission entry points:"
-            find "$solver_dir" -maxdepth 2 -type f -printf '%P\n' | sort | head -80
+            echo "Selected run script: $run_script"
+            echo "All run scripts:"
+            cat official-winner/run_scripts.txt
+            echo "Selected package files:"
+            find "$solver_dir" -maxdepth 2 -type f -printf '%P\\n' | sort | head -80
           } > official-winner/provenance.txt
       - name: Download original grids and independently replay UNSAT certificates
         run: python3 research/tseitin-replay/grid_certificates.py
@@ -73,5 +86,5 @@ jobs:
             xor4-results/satcomp26_winner_results.md
             xor4-results/champion-proof/
             grid-proofs/
-            official-winner/provenance.txt
+            official-winner/provenance.txt\n            official-winner/run_scripts.txt\n            official-winner/champion_run_script.txt
           if-no-files-found: warn
