@@ -33,23 +33,30 @@ TIMEOUT=3
 REPETITIONS=3
 
 def parse_cnf(path):
-    clauses=[];pending=[];n=0;m=0
+    clauses=[];pending=[];n=0;m=0;headers=0
     for line in path.read_text(errors="replace").splitlines():
         line=line.strip()
         if not line or line.startswith(("c","%")):continue
-        if line.startswith("p"):
+        if line.startswith("p "):
+            headers+=1
             words=line.split()
-            if len(words)>=4 and words[1]=="cnf":
-                n,m=int(words[2]),int(words[3])
+            if headers!=1 or len(words)!=4 or words[1]!="cnf":
+                raise RuntimeError(f"Multiple/invalid DIMACS headers: {path.name}")
+            n,m=int(words[2]),int(words[3])
+            if n<1 or m<0:raise RuntimeError(f"Invalid DIMACS counts: {path.name}")
             continue
+        if headers!=1:raise RuntimeError(f"Clause before header: {path.name}")
         for raw in line.split():
             if raw=="%":break
             x=int(raw)
+            if abs(x)>n:raise RuntimeError(f"Out-of-range literal: {path.name}")
             if x==0:
                 clauses.append(pending)
                 pending=[]
-            else: pending.append(x)
-    if n<1 or len(clauses)!=m or pending:raise RuntimeError(f"Invalid DIMACS: {path.name}")
+                if len(clauses)>m:raise RuntimeError(f"Too many clauses: {path.name}")
+            else:pending.append(x)
+    if headers!=1 or len(clauses)!=m or pending:
+        raise RuntimeError(f"Invalid DIMACS count/footer: {path.name}")
     return n,clauses
 
 def extract_status(stdout):
@@ -104,11 +111,15 @@ def run_solver(name,exe,case,kissat):
 def main():
     for name,path in SOLVERS.items():
         if not path.exists():raise RuntimeError(f"Missing binary: {name}")
-    cases=[]
+    cases=[];rejected=[]
     for idx,name in enumerate(CASES):
         p=INPUT/name
         data=p.read_bytes()
-        n,clauses=parse_cnf(p)
+        try:
+            n,clauses=parse_cnf(p)
+        except (RuntimeError,ValueError) as err:
+            rejected.append({"source":name,"reason":str(err),"sha256":hashlib.sha256(data).hexdigest()})
+            continue
         anon=OUT/f"instance_{idx:02d}.cnf"
         anon.write_bytes(data)
         cases.append({"anonymous":anon,"source_name":name,"vars":n,
@@ -129,7 +140,8 @@ def main():
                 "tier":case["tier"],"solver":name,"reps":reps,
                 "median_seconds":statistics.median(v["seconds"] for v in reps),
                 "all_correct":all(v["status"]==case["expected"] and
-                                  v["sat_witness_checked"] is not False for v in reps)})
+                                  v["sat_witness_checked"] is not False and
+                                  v.get("independent_proof_checked") is not False for v in reps)})
     summary={}
     for name in SOLVERS:
         sub=[x for x in results if x["solver"]==name]
@@ -146,7 +158,7 @@ def main():
          "timeout_seconds":TIMEOUT,"repetitions":REPETITIONS,
          "cases":meta,"summary":summary,"results":results},indent=2))
     lines=["# V15.0 BROAD external public holdout C",
-       "Independent *third* 12-instance public library split, NOT SAT Competition official.",
+       f"Frozen 12 candidates, {len(cases)} valid DIMACS; {len(rejected)} rejected BEFORE benchmarking, NOT SAT Competition official.",
        "Three repetitions, random solver order, 3-s per-run timeout.",
        "SAT witnesses checked against CNF; native V15 UNSAT certificates independently audited; Kissat UNSAT relies on source labels, not DRAT.",
        "","| Solver | Solved | Median (s) | Sum medians (s) | PAR-2 (s) |",
@@ -155,6 +167,7 @@ def main():
         lines.append(f"| {name} | {s['solved']}/{s['cases']} | {s['median_seconds']:.6f} | {s['sum_case_medians_seconds']:.6f} | {s['par2_seconds']:.6f} |")
     (OUT/"results.md").write_text("\n".join(lines)+"\n")
     print("\n".join(lines))
+    for invalid in rejected:print("REJECTED_INPUT",invalid["source"],invalid["reason"])
     if any(v["wrong"] for x in results for v in x["reps"]):
         raise RuntimeError("Wrong SAT/UNSAT or invalid SAT witness: see results.json")
 
