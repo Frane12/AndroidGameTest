@@ -1,0 +1,115 @@
+name: DRNAS V18.4 Jacobian directional-response pilot
+on:
+  push:
+    branches: [experiment/drnas-v184-jacobian-pilot-20261101]
+    paths: [.github/workflows/drnas-v184-jacobian-pilot.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  jacobian-pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile pinned original and instrumented Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-original
+          git -C /tmp/kissat-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-original && ./configure && make -j2)
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-patched
+          git -C /tmp/kissat-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-patched && ./configure)
+          python3 experiments/drnas_v16/patch_neuroflow_v182.py --kissat-root /tmp/kissat-patched
+          python3 experiments/drnas_v16/patch_hardware_v183.py --kissat-root /tmp/kissat-patched
+          (cd /tmp/kissat-patched && make -j2)
+          strings /tmp/kissat-patched/build/kissat | grep -q V182_RESULT
+      - name: Generate frozen synthetic 72-case directional-response experiment
+        run: |
+          mkdir -p v184-output
+          cat > /tmp/v184.py <<'PY'
+          import csv,hashlib,json,os,random,subprocess,time,statistics
+          from pathlib import Path
+          root=Path("v184-output"); root.mkdir(exist_ok=True)
+          modes=["baseline","monitor","fixed25","adaptive_gate"]
+          bins={"baseline":"/tmp/kissat-original/build/kissat"}
+          rows=[]
+          def clause_file(kind,index):
+              rng=random.Random(184000+index+1000*["random3sat","planted3sat","xor"].index(kind))
+              clauses=[]
+              if kind=="random3sat":
+                  n=180
+                  for _ in range(760):
+                      vs=rng.sample(range(1,n+1),3)
+                      clauses.append([v if rng.randrange(2) else -v for v in vs])
+              elif kind=="planted3sat":
+                  n=180; assignment=[False]+[bool(rng.randrange(2)) for _ in range(n)]
+                  for _ in range(760):
+                      vs=rng.sample(range(1,n+1),3)
+                      lits=[v if rng.randrange(2) else -v for v in vs]
+                      if not any((v>0)==assignment[abs(v)] for v in lits):
+                          lits[0]=-lits[0]
+                      clauses.append(lits)
+              else:
+                  n=180
+                  for _ in range(180):
+                      a,b,c=rng.sample(range(1,n+1),3)
+                      parity=rng.randrange(2)
+                      for x in range(8):
+                          if (x.bit_count()%2)!=parity:
+                              clauses.append([(-v if (x>>j)&1 else v) for j,v in enumerate((a,b,c))])
+              raw="p cnf %d %d\n"%(n,len(clauses))+"".join(" ".join(map(str,c))+" 0\n" for c in clauses)
+              p=root/f"{kind}_{index:02}.cnf";p.write_text(raw)
+              return p,hashlib.sha256(raw.encode()).hexdigest()
+          for kind in ["random3sat","planted3sat","xor"]:
+              for index in range(24):
+                  p,digest=clause_file(kind,index)
+                  for mode in modes:
+                      env=os.environ.copy()
+                      env.pop("DRNAS_V182_MODE",None);env.pop("DRNAS_V183_HW",None)
+                      if mode!="baseline":
+                          env["DRNAS_V182_MODE"]=mode
+                          env["DRNAS_V183_HW"]="1"
+                      binary=bins.get(mode,"/tmp/kissat-patched/build/kissat")
+                      start=time.perf_counter()
+                      try:
+                          out=subprocess.run([binary,"-s",str(p)],env=env,capture_output=True,text=True,timeout=3)
+                          wall=time.perf_counter()-start
+                          status={10:"SAT",20:"UNSAT"}.get(out.returncode,"ERROR")
+                          output=out.stdout+"\n"+out.stderr
+                      except subprocess.TimeoutExpired:
+                          wall=time.perf_counter()-start;status="TIMEOUT";output=""
+                      row=dict(category=kind,index=index,sha256=digest,mode=mode,status=status,wall_s=round(wall,6),par2_s=round(wall if status in ("SAT","UNSAT") else 6,6),telemetry_samples=output.count("V182_SAMPLE"))
+                      rows.append(row)
+                      print("V184",kind,index,mode,status,row["wall_s"],flush=True)
+                  local=rows[-4:]
+                  solved={r["status"] for r in local if r["status"] in ("SAT","UNSAT")}
+                  if len(solved)>1: raise RuntimeError(f"CONTRADICTORY SAT ANSWERS {kind} {index}")
+          with (root/"measurements.csv").open("w",newline="") as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+          summary={"kind":"synthetic pilot, NOT blind, NOT official, NOT causal Jacobian validation","formula_count":72,"attempts":len(rows),"cap_s":3,"modes":{},"categories":{},"directional_response":{}}
+          for mode in modes:
+              a=[r for r in rows if r["mode"]==mode]
+              summary["modes"][mode]={"solved":sum(r["status"] in ("SAT","UNSAT") for r in a),"par2_sum_s":round(sum(r["par2_s"] for r in a),6),"errors":sum(r["status"]=="ERROR" for r in a)}
+          for kind in ["random3sat","planted3sat","xor"]:
+              a=[r for r in rows if r["category"]==kind]
+              summary["categories"][kind]={mode:round(sum(r["par2_s"] for r in a if r["mode"]==mode),6) for mode in modes}
+              paired=[]
+              for i in range(24):
+                  base=next(r for r in a if r["index"]==i and r["mode"]=="monitor")
+                  perturb=next(r for r in a if r["index"]==i and r["mode"]=="fixed25")
+                  paired.append(perturb["par2_s"]-base["par2_s"])
+              summary["directional_response"][kind]={"median_delta_par2_s":round(statistics.median(paired),6),"positive":sum(x>0 for x in paired),"negative":sum(x<0 for x in paired),"note":"finite difference between discrete policies; not differentiable Jacobian"}
+          (root/"summary.json").write_text(json.dumps(summary,indent=2))
+          print("V184_FINAL",json.dumps(summary),flush=True)
+          assert all(r["status"]!="ERROR" for r in rows)
+          PY
+          python3 -u /tmp/v184.py
+      - name: Upload reproducible results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V184-Jacobian-Directional-Pilot
+          path: v184-output/
+          retention-days: 30
