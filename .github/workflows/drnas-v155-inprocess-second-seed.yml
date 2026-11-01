@@ -1,0 +1,68 @@
+name: DRNAS V15.5 in-process native gate second-seed 480 audit
+on:
+  push:
+    branches: [experiment/drnas-v155-inprocess-gate-second-seed-20261101]
+    paths:
+      - '.github/workflows/drnas-v155-inprocess-second-seed.yml'
+      - 'research/drnas-sat-v7-8/v155_inprocess_gate.cpp'
+      - 'research/tseitin-replay/v155_inprocess_posttest.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41278101654
+          github-token: ${{ github.token }}
+          name: v155-frozen-480-cnf-three-splits
+          path: prior-dataset
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41278101654
+          github-token: ${{ github.token }}
+          name: v155-validation-120-and-frozen-selector
+          path: policy
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Check original frozen policy and pinned baselines; build native C++
+        run: |
+          set -euo pipefail
+          (cd prior-dataset && sha256sum -c manifest.sha256)
+          (cd policy && sha256sum -c frozen-policy.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          python3 -m py_compile research/tseitin-replay/v155_training.py research/tseitin-replay/v155_inprocess_posttest.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/drnas-sat-v7-8/v155_inprocess_gate.cpp -o bin/v155_inprocess
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v153_unified.cpp -o bin/v153_unified
+          chmod +x bin/v155_inprocess bin/v153_unified bin/kissat_solver
+          sha256sum bin/v155_inprocess bin/v153_unified bin/kissat_solver
+      - name: NEW generator seed 480 original CNFs; exact native signature equivalence
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v155_inprocess_posttest.py
+          cat v155-native-final.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V155-InProcess-480-SecondSeed-RealOverhead-Final
+          path: |
+            v155-native-final.json
+            v155-native-raw.json
+            native-progress.json
+            native-new-480/manifest.json
+          if-no-files-found: warn
