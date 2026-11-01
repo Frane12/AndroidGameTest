@@ -89,7 +89,7 @@ for i in range(144):
  expected=("s SATISFIABLE" if status=="SAT" else "s UNSATISFIABLE")
  assert result.returncode==0 and answer_and_check(result.stdout,status,n,clauses),(i,status,result.stdout[-200:],result.stderr[-200:])
  if status=="SAT":
-  assert "v165_scc_xor_unit_binary_api" in result.stdout,(i,"no binary bridge API",result.stdout)
+  assert "v165_selective_scc_xor_binary_api" in result.stdout,(i,"no binary bridge API",result.stdout)
   assert witness(result.stdout,n,clauses),(i,"wrong SAT witness")
   forced_cases+=1
  for method in (C,B,S):
@@ -98,7 +98,7 @@ for i in range(144):
   valid+=1
  records.append({"id":i,"status":status,"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
                  "derived_units":len(d["units"]),"derived_binary":len(d["binary"]),
-                 "bridge_route":("v165_scc_xor_unit_binary_api" in result.stdout)})
+                 "bridge_route":("v165_selective_scc_xor_binary_api" in result.stdout)})
 # Guard against useless GF2 work on formulas without full XOR supports.
 # The selector must keep safe Kissat fallback on unrelated normal 3SAT.
 for i in range(24):
