@@ -21,9 +21,15 @@ anchors=[
      '    }\n'
      '    if(a.stage1==0) {\n        if(v96) {')
 ]
+# The original prefix collector samples cumulative counters at solve return.
+# V13.1 must read the exact 256th-conflict snapshot from instrumented CaDiCaL.
+anchors.append((
+    '    const auto d256=solver.drnas_telemetry();',
+    '    const auto d256=solver.drnas_prefix_256();'
+))
 for old,new in anchors:
     if s.count(old)!=1:
         raise RuntimeError('V13 source drift: expected one anchor '+repr(old[:100]))
     s=s.replace(old,new,1)
 Path(a.dest).write_text('#include <cstdlib> // std::exit in isolated probe\n'+s)
-print('V13_PREFIX_PATCH_OK 2',flush=True)
+print('V131_PREFIX_PATCH_OK 3 exact256_snapshot',flush=True)
