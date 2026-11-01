@@ -1,0 +1,138 @@
+name: DRNAS V14.8 prospective SC2026 Main Track mini vs official winner
+on:
+  push:
+    branches: [experiment/drnas-v148-satcomp2026-prospective-20261101]
+    paths:
+      - '.github/workflows/drnas-v148-satcomp26-prospective.yml'
+      - 'research/tseitin-replay/satcomp26_v148_prospective.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41239481557
+          github-token: ${{ github.token }}
+          name: v96-frozen-causal-input-manifest
+          path: prior
+      - name: Freeze 6 official 2026 CNFs before any solver measurements
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/satcomp26_v148_prospective.py
+          (cd prior && sha256sum -c v96_manifest.sha256)
+          python3 -u research/tseitin-replay/satcomp26_v148_prospective.py freeze --prior prior/v96_manifest.json --out v148-frozen-manifest.json
+          sha256sum v148-frozen-manifest.json > v148-frozen-manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v148-sc2026-preregistered-6-inputs
+          path: |
+            v148-frozen-manifest.json
+            v148-frozen-manifest.sha256
+          if-no-files-found: error
+  measure:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [0, 1, 2]
+    name: v148-official-shard-${{ matrix.slot }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: v148-sc2026-preregistered-6-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Verify baseline and compile V14.7
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v148-frozen-manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas-sat-v7-8/v147_subset_xor4.cpp -o bin/v147_subset_xor4
+          chmod +x bin/v147_subset_xor4 bin/kissat_solver
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          sha256sum bin/v147_subset_xor4 bin/kissat_solver
+      - name: Build exact official 2026 winner from pinned archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official-winner/unpacked
+          curl --fail --location --retry 3 --silent --show-error https://raw.githubusercontent.com/satcompetition/2026/main/downloads/solvers/anders.tar.xz --output official-winner/anders.tar.xz
+          actual="$(git hash-object official-winner/anders.tar.xz)"
+          test "$actual" = 5ec9be607fbf762329176beb7068d574cd528b5b
+          tar -xJf official-winner/anders.tar.xz -C official-winner/unpacked
+          find official-winner/unpacked -type f -name run.sh -print | sort > official-winner/run_scripts.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          choices=Path("official-winner/run_scripts.txt").read_text().splitlines()
+          matches=[p for p in choices if "satsuma-iter" in p.lower() and "kissat" in p.lower()
+                   and "mab" not in p.lower() and "ae-" not in p.lower() and "ae_" not in p.lower()]
+          assert len(matches)==1,(matches,choices)
+          Path("official-winner/champion_run_script.txt").write_text(matches[0]+"\n")
+          print("OFFICIAL_WINNER",matches[0],flush=True)
+          PY
+          solver_dir="$(dirname "$(cat official-winner/champion_run_script.txt)")"
+          chmod +x "$solver_dir/build.sh" "$solver_dir/run.sh"
+          (cd "$solver_dir" && ./build.sh)
+          echo "SATCOMP26_SOLVER_DIR=$GITHUB_WORKSPACE/$solver_dir" >> "$GITHUB_ENV"
+          echo "SATCOMP26_ARCHIVE_GIT_BLOB_SHA=$actual" >> "$GITHUB_ENV"
+          printf 'archive=%s\nscript=%s\n' "$actual" "$solver_dir" > official-winner/provenance.txt
+      - name: Matched 12-second two-repeat benchmark
+        run: python3 -u research/tseitin-replay/satcomp26_v148_prospective.py measure --manifest frozen/v148-frozen-manifest.json --slot ${{ matrix.slot }} --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v148-shard-${{ matrix.slot }}
+          path: |
+            results/meta.json
+            results/rows.json
+            official-winner/provenance.txt
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: v148-sc2026-preregistered-6-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v148-shard-*
+          path: all
+      - name: Strict coverage, labels, PAR2 and SHA audit
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v148-frozen-manifest.sha256)
+          python3 -u research/tseitin-replay/satcomp26_v148_prospective.py audit --manifest frozen/v148-frozen-manifest.json --combined all --out v148-final-results.json
+          cat v148-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V148-Prospective-Official-SATCompetition2026-Mini-Final
+          path: |
+            v148-final-results.json
+            v148-results.md
+            frozen/
+            all/
+          if-no-files-found: warn
