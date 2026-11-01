@@ -165,7 +165,7 @@ def audit(a):
     src={c["id"]:c for c in m["cases"]}
     rows=[];bins=set()
     for shard in range(SHARDS):
-        folder=Path(a.combined)/f"v132-shard-{shard}"/"results"
+        folder=Path(a.combined)/f"v132-shard-{shard}"
         meta=load(folder/"meta.json")
         expected=m["cases"][shard::SHARDS]
         check(meta["shard"]==shard and meta["ids"]==[c["id"] for c in expected],
