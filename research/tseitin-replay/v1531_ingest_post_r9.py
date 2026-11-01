@@ -308,21 +308,45 @@ def export(db,out,info,reports,prior_summary):
  check(db.execute("PRAGMA integrity_check").fetchone()[0]=="ok","SQLite corruption")
  check(db.execute("""SELECT COUNT(*) FROM (SELECT dataset,case_name,solver,repeat,COUNT(*) AS n
   FROM attempts GROUP BY 1,2,3,4 HAVING n>1)""").fetchone()[0]==0,"Duplicate attempts")
- existing={r[0] for r in db.execute("""SELECT DISTINCT formula_sha256 FROM formulas
+ prior_by_sha=defaultdict(list)
+ for h,ds,case in db.execute("""SELECT formula_sha256,dataset,case_name FROM formulas
   WHERE dataset NOT LIKE 'DRNAS-R10-%' AND dataset NOT LIKE 'DRNAS-Selector-%'
-    AND dataset NOT LIKE 'DRNAS-SC2023-%'""")}
- overlap=[f for f in feats if f["formula_sha256"] in existing]
- # Overlap is recorded, not silently counted as an independent new formula.
- for f in overlap:
-  db.execute("UPDATE datasets SET provenance='previously_seen_hash_overlap' WHERE dataset=?",
-             (f["dataset"],))
+    AND dataset NOT LIKE 'DRNAS-SC2023-%'"""):
+  if h:prior_by_sha[h].append((ds,case))
+ overlap=[f for f in feats if f["formula_sha256"] in prior_by_sha]
+ # Retain repeated measurements but never treat a repeated CNF as a fresh independent formula.
+ check(len({f["formula_sha256"] for f in feats})==len(feats),
+       "Post-R9 source duplicates its own CNF identities")
+ novelty=[]
+ for f in feats:
+  ds=f["dataset"];matches=prior_by_sha.get(f["formula_sha256"],[])
+  scope=("official_source_project_new_not_competition" if ds.startswith("DRNAS-SC2023-")
+    else "generated_prospective_test" if ds.startswith("DRNAS-R10-") and "_test" in ds
+    else "generated_prospective_development" if ds.startswith("DRNAS-R10-")
+    else "external_public_source" if ds=="DRNAS-Selector-external_satlib"
+    else "generated_selector_holdout")
+  novelty.append(dict(dataset=ds,case_name=f["case_name"],formula_sha256=f["formula_sha256"],
+    source_class=scope,hash_seen_in_prior=int(bool(matches)),
+    prior_dataset_count=len({x[0] for x in matches}),
+    prior_datasets=";".join(sorted({x[0] for x in matches}))))
+ base.export_csv(out/"post_r9_formula_novelty.csv",novelty,
+  ["dataset","case_name","formula_sha256","source_class","hash_seen_in_prior",
+   "prior_dataset_count","prior_datasets"])
+ overlap_by_dataset=dict(sorted((ds,sum(x["dataset"]==ds for x in novelty if x["hash_seen_in_prior"]))
+   for ds in {x["dataset"] for x in novelty if x["hash_seen_in_prior"]}))
+ # Dataset-level provenance is conservative; formula-level novelty is separately audited.
+ for ds in overlap_by_dataset:
+  db.execute("UPDATE datasets SET provenance='mixed_prior_hash_overlap' WHERE dataset=?",(ds,))
  db.commit()
  audit={"source_runs":{"R10":R10_RUN,"selector":SEL_RUN,"SC2023":REAL_RUN},
    "source_commits":{"R10":R10_SHA,"selector":SEL_SHA,"SC2023":SEL_SHA},
    "sources":info,"new_datasets":[x["dataset"] for x in info if x["new"]],
    "counts":counts,"post_r9_paired_rows":len(pairs),"new_formula_sha_overlap_old":len(overlap),
+   "new_unique_sha_not_in_prior":len(feats)-len(overlap),
+   "hash_overlap_by_dataset":overlap_by_dataset,
    "reports":reports,
    "cautions":["Generated holdouts not official; project-new SC2023 source is not official benchmark.",
+     "44 repeated selector CNF identities in prior historical datasets are not independent holdout formulas.",
      "All comparisons within runner and formula; repeated attempts not independent formulas.",
      "UNSAT labels without native certificates are not independent proofs.",
      "R10 structural gate 95% bootstrap interval spans zero; not a confirmed predictive law.",
