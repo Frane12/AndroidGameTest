@@ -138,7 +138,7 @@ def make_2sat(case):
         clauses+=[[1],[-1]]
         label="UNSAT"
     else:label="SAT"
-    if case==2:clauses.append([1,2,3])  # mixed: must retain fallback
+    if case==2:clauses.append([1,-1,2])  # tautological mixed clause; forces safe fallback
     return n,clauses,label,dict(kind="2sat",mixed=case==2)
 def measure(slot):
     out=Path("out");out.mkdir(exist_ok=True)
