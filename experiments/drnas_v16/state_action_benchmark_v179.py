@@ -97,9 +97,9 @@ def execute(solver,case,mode,rep,rule,root,environment):
         assert feedback[-1]["signal"]=="ROLLBACK" and feedback[-1]["restart_after"]==1
     if status!="TIMEOUT":assert len(finals)==1
     if mode in ("feedback","switch2048-feedback"):assert len(feedback)<=2
-    observation={"checkpoint_conflict512":early[0] if early else None,
-       "choice":choices,"interventions":switches,
-       "final":finals[0] if finals else None}
+    # Only pre-intervention/early evidence is fingerprinted as observed state.
+    # Later actions/results stay in trace extensions to avoid false "early divergence".
+    observation={"checkpoint_conflict512":early[0] if early else None}
     action={"mode":mode,
        "initial_restartint":25 if mode=="fixed25" else 1,
        "optional_target":2048 if mode.startswith("switch2048") else None,
@@ -121,7 +121,9 @@ def execute(solver,case,mode,rep,rule,root,environment):
       feedback=feedback,outcome=result,
       extensions={"telemetry.v178":{"checkpoints":len(early),
         "changes":len(switches),"feedback_events":len(feedback),
-        "rollbacks":sum(f["signal"]=="ROLLBACK" for f in feedback)}},
+        "rollbacks":sum(f["signal"]=="ROLLBACK" for f in feedback)},
+        "decision.trace":{"choice":choices,"interventions":switches,
+                          "final":finals[0] if finals else None}},
       hypothesis={"prediction":"Equivalent complete solver state and deterministic action imply the same logical result",
         "falsified_when":"Identical CNF yields validated SAT and independently certified UNSAT; compare complete states before asserting logical inconsistency"})
     return rec,{"seed":case["seed"],"repeat":rep,"mode":mode,
