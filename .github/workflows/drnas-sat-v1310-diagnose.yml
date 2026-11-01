@@ -1,0 +1,108 @@
+name: DRNAS V13.10 - Diagnose Frozen Real 2024 CNFs
+on:
+  push:
+    branches:
+      - experiment/drnas-v1310-real-structure-diagnosis-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v1310-diagnose.yml'
+      - 'research/drnas-sat-v7-8/v1310_diagnose.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify code and mixed / pure XOR diagnostic selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v1310_diagnose.py
+          python3 -u research/drnas-sat-v7-8/v1310_diagnose.py selftest
+          echo "V13.10 is diagnostic only. No solver selection/optimizations are modified." >> "$GITHUB_STEP_SUMMARY"
+
+  diagnose:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    name: v1310-diagnostic-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-new-SC2024-12-frozen-verified-CNFs
+          run-id: 41261415700
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Verify original V13.9 SHA-locked identity
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v139_selector.sha256 && sha256sum -c v139_manifest.sha256)
+      - name: Analyze 2 exact original real 2024 formulas, without solving
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v1310_diagnose.py run             --manifest frozen/v139_manifest.json --shard "$SHARD" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v1310-diagnostic-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  audit:
+    needs: [preflight, diagnose]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-new-SC2024-12-frozen-verified-CNFs
+          run-id: 41261415700
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-2024-NEW-real-CNF-final-audit
+          run-id: 41261415700
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v139
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v1310-diagnostic-shard-*
+          path: combined
+          merge-multiple: false
+      - name: Audit frozen identities and produce diagnostic comparison
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v139_selector.sha256 && sha256sum -c v139_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v1310_diagnose.py audit             --manifest frozen/v139_manifest.json             --prior prior-v139/v139_real2024_audit.json             --combined combined             --json v1310_diagnostic_audit.json --md v1310_diagnostic_audit.md
+          cat v1310_diagnostic_audit.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V1310-readonly-frozen2024-diagnostic-audit
+          path: |
+            v1310_diagnostic_audit.json
+            v1310_diagnostic_audit.md
+          if-no-files-found: warn
