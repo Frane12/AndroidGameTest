@@ -4,6 +4,8 @@
 // Non-affine supported routes: certified unit propagation, binary implication
 // SCC, exact pigeonhole; affine: 2..10-variable parity with redundant clauses.
 #include "v142_fastgate.cpp"
+#include <set>
+#include <cstdio>
 #include <bitset>
 #include <queue>
 #include <numeric>
