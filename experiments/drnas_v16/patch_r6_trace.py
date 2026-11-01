@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R6 read-only five-checkpoint dynamics instrumentation layered on frozen R5.
+"""R6 read-only seven-checkpoint dynamics instrumentation layered on frozen R5.
 Instrumentation changes no solver state or decisions. Existing R4/R5 policies
 remain unchanged; 512-conflict gate and 2048-conflict restart switch are frozen.
 """
@@ -32,8 +32,8 @@ def patch(src):
     r4_initial_restarts=""")
     src = replace_exact(src,
         "        if (drnas_active && !res && !drnas_sampled && drnas_seen>=512) {",
-        """        if (drnas_active && r6_checkpoint_index<5) {
-          static const uint64_t r6_marks[5]={100,250,500,1000,2000};
+        """        if (drnas_active && r6_checkpoint_index<7) {
+          static const uint64_t r6_marks[7]={100,250,500,1000,2000,4096,8192};
           if (drnas_seen>=r6_marks[r6_checkpoint_index]) {
             printf("c R6_TRACE conflict=%" PRIu64
                 " restarts=%" PRIu64 " decisions=%" PRIu64
