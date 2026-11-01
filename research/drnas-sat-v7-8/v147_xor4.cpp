@@ -1,8 +1,5 @@
 // V14.7: sound native partial-XOR UNSAT gate; SAT/nonrecognized => original Kissat.
-#define main v142_embedded_main
 #include "v142_fastgate.cpp"
-#undef main
-#include <set>
 
 static bool extract_partial_xor(const Cnf& f, vector<Eq>& out) {
  if(f.n>4096 || f.clauses.size()>100000) return false;
