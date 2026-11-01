@@ -5,9 +5,7 @@
 // Every returned certificate identifies ORIGINAL input clause indices and
 // is independently checked by truth-table equivalence and GF2 replay.
 // Fallback is the byte-for-byte original V14.3 native pipeline, then Kissat.
-#define main v143_embedded_main
 #include "v143_localxor_fastgate.cpp"
-#undef main
 #include <set>
 #include <map>
 #include <array>
