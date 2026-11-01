@@ -1,0 +1,95 @@
+name: DRNAS SAT v16.8 short SAT probe then fallback
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v168-satprobe-fallback-20261101'
+    paths:
+      - 'experiments/drnas_v16/satprobe_fallback_v168.py'
+      - '.github/workflows/drnas-sat-v168-probe-fallback.yml'
+
+jobs:
+  sat-probe-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate syntax and frozen portfolio contract
+        run: |
+          python3 -m py_compile experiments/drnas_v16/satprobe_fallback_v168.py
+          python3 - <<'PY'
+          import importlib.util
+          spec=importlib.util.spec_from_file_location(
+              "mod","experiments/drnas_v16/satprobe_fallback_v168.py")
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          assert mod.CAP==20000
+          assert len(mod.CASES)==8
+          assert len([x for x in mod.CASES if x[0]=="holdout"])==6
+          assert {x[2] for x in mod.CASES if x[0]=="holdout"}==set(range(168000,168006))
+          assert mod.MODES==("baseline","restart-only","sat-fixed","satprobe-baseline","satprobe-restart")
+          print("FROZEN_PORTFOLIO_CONTRACT_OK")
+          PY
+      - name: Build identical pinned upstream Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Preflight 20k conflict cap and restart option on SAT/UNSAT
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          p=Path("/tmp/drnas-v168-preflight.cnf")
+          p.write_text("p cnf 1 2\n1 0\n-1 0\n",encoding="ascii")
+          binary="/tmp/kissat-upstream/build/kissat"
+          for flags in ((),("--sat",),("--restartint=50",)):
+              args=[binary,"-s","--conflicts=20000",*flags,str(p)]
+              result=subprocess.run(args,capture_output=True,text=True,timeout=10)
+              print("PREFLIGHT",flags,result.returncode,flush=True)
+              assert result.returncode==20,(args,result.stdout[-700:],result.stderr[-700:])
+          PY
+      - name: Measure sequential SAT-first portfolios versus Kissat controls
+        run: |
+          python3 -u experiments/drnas_v16/satprobe_fallback_v168.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --root drnas_v168 \
+            --timeout 25 --probe-timeout 3 --repeats 2
+      - name: Verify all 80 matched measurements and no leaked holdout seeds
+        run: |
+          python3 - <<'PY'
+          import csv
+          from collections import defaultdict
+          from pathlib import Path
+          root=Path("drnas_v168")
+          with (root/"measurements.csv").open(newline="") as f: rows=list(csv.DictReader(f))
+          with (root/"identity.csv").open(newline="") as f: ids=list(csv.DictReader(f))
+          assert len(rows)==80
+          assert len(ids)==8
+          assert {int(x["seed"]) for x in ids if x["group"]=="holdout"}==set(range(168000,168006))
+          pairs=defaultdict(set)
+          for x in rows:
+              assert x["result"] in ("SAT","UNSAT","TIMEOUT"),x
+              assert x["mode"] in ("baseline","restart-only","sat-fixed","satprobe-baseline","satprobe-restart"),x
+              pairs[(x["seed"],x["repeat"])].add(x["mode"])
+              if x["mode"].startswith("satprobe-"):
+                  assert float(x["probe_seconds"])>0
+                  assert float(x["total_seconds"]) <= 25.25
+          assert len(pairs)==16
+          assert all(len(x)==5 for x in pairs.values())
+          assert (root/"summary.txt").exists()
+          print("V168_AUDIT_PASSED",len(rows),"measurements")
+          PY
+      - name: Upload transparent raw CSV and complete report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v168-sat-probe-blind-holdout
+          path: |
+            drnas_v168/identity.csv
+            drnas_v168/measurements.csv
+            drnas_v168/summary.txt
+          if-no-files-found: warn
