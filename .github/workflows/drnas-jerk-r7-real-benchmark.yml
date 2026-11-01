@@ -8,7 +8,7 @@ on:
       - 'research/tseitin-replay/jerk_r7_standard_analysis.py'
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
   benchmark:
@@ -96,7 +96,11 @@ jobs:
             test -s "raw-shards/jerk-r7-${category}/measurements.csv"
             cp -a "raw-shards/jerk-r7-${category}" "raw-input/${category}"
           done
-          python3 research/tseitin-replay/jerk_r7_standard_analysis.py --input raw-input --out jerk-r7-analysis
+          python3 -m venv .jerk-venv
+          .jerk-venv/bin/pip -q install matplotlib
+          .jerk-venv/bin/python research/tseitin-replay/jerk_r7_standard_analysis.py --input raw-input --out jerk-r7-analysis
+          test -s jerk-r7-analysis/scatter_jerk_forced_restart25.png
+          test -s jerk-r7-analysis/scatter_jerk_r5_frozen_gate.png
           cat jerk-r7-analysis/jerk_standard_report.json | head -90
       - name: Upload verified paired analysis
         uses: actions/upload-artifact@v4
@@ -105,3 +109,22 @@ jobs:
           path: jerk-r7-analysis/
           if-no-files-found: error
           retention-days: 30
+      - name: Archive verified results to experimental branch for independent review
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/drnas-jerk-law-v1-20261101"
+          mkdir -p research/jerk-r7-results/current
+          for f in jerk_pairs.csv jerk_features.csv jerk_standard_report.json \
+                   scatter_jerk_forced_restart25.png scatter_jerk_r5_frozen_gate.png; do
+            test -s "jerk-r7-analysis/$f"
+            cp "jerk-r7-analysis/$f" "research/jerk-r7-results/current/$f"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/jerk-r7-results/current
+          if ! git diff --cached --quiet; then
+            git commit -m "data: measured R7 paired jerk benchmark audit [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
