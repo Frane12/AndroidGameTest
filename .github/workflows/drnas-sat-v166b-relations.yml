@@ -1,0 +1,113 @@
+name: DRNAS SAT V16.6b signed 4-cycle relational portfolio fresh holdout
+on:
+  push:
+    branches: [experiment/drnas-v166b-relational-portfolio-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v166b-relations.yml'
+      - 'experiments/drnas_v16/relations_v166b.py'
+      - 'experiments/drnas_v16/portfolio_v166b.py'
+      - 'experiments/drnas_v16/generate_v166b.py'
+      - 'experiments/drnas_v16/v166b_property_test.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  math-feature-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Python and verify frozen development relations
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/relations_v166b.py \
+            experiments/drnas_v16/portfolio_v166b.py \
+            experiments/drnas_v16/generate_v166b.py \
+            experiments/drnas_v16/v166b_property_test.py
+          python3 -u experiments/drnas_v16/v166b_property_test.py | tee v166b-property.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V166B-Math-Relations-Property
+          path: v166b-property.log
+  unseen-holdout:
+    needs: math-feature-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile strictly pinned upstream Kissat
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          git -C /tmp/kissat-upstream checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-upstream rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-upstream && ./configure && make -j2)
+          /tmp/kissat-upstream/build/kissat --version
+      - name: Check upstream SAT and UNSAT flags
+        run: |
+          python3 experiments/drnas_v16/v164_preflight.py \
+            --solver /tmp/kissat-upstream/build/kissat
+      - name: Freeze eight unknown seed formulas before measuring
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/generate_v166b.py drnas_v166b_suite \
+            | tee v166b-freeze.log
+          python3 - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          m=json.loads(Path('drnas_v166b_suite/manifest.json').read_text())
+          assert len(m['cases'])==14
+          assert sum('/test/' in x['file'] for x in m['cases'])==8
+          for x in m['cases']:
+            assert hashlib.sha256(Path(x['file']).read_bytes()).hexdigest()==x['sha256']
+          print('V166B_HASH_FREEZE_PASS 14 originals; 8 untouched tests')
+          PY
+      - name: Measure new untouched holdout and two controls
+        run: |
+          set -euo pipefail
+          mkdir -p v166b_testonly
+          cp drnas_v166b_suite/test/*.cnf v166b_testonly/
+          mkdir -p v166b_scored/test v166b_scored/control
+          cp drnas_v166b_suite/test/*.cnf v166b_scored/test/
+          cp drnas_v166b_suite/control/*.cnf v166b_scored/control/
+          python3 -u experiments/drnas_v16/portfolio_v166b.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --cnf-dir v166b_scored \
+            --timeout 10 --repeats 2 \
+            --output v166b-scored-results | tee v166b-benchmark.log
+      - name: Ensure every preregistered fresh formula is scored and answers agree
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,json
+          from collections import defaultdict
+          from pathlib import Path
+          rows=list(csv.DictReader(open('v166b-scored-results/runs.csv',newline='')))
+          assert len(rows)==10*4*2,len(rows)
+          groups=defaultdict(dict)
+          for r in rows:
+            assert r['result'] in ('SAT','UNSAT','TIMEOUT'),r
+            key=(r['group'],r['file'],int(r['rep']))
+            groups[key][r['mode']]=r
+          assert len(groups)==20
+          for key,g in groups.items():
+            assert set(g)=={'baseline','sat-fixed','v165-policy','v166b-policy'},key
+            assert len({x['result'] for x in g.values() if x['result']!='TIMEOUT'})<=1
+          actual={key[1] for key in groups if key[0]=='test'}
+          expected={x.name for x in Path('drnas_v166b_suite/test').glob('*.cnf')}
+          assert actual==expected and len(actual)==8,(actual,expected)
+          print('V166B_UNSEEN_HOLDOUT_AUDIT_PASS',len(rows),
+                'total solver executions, 8 new seeds, 2 repetitions, 4 strategies')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V166B-Relational-Frozen-Holdout-Original-CNF
+          path: |
+            drnas_v166b_suite/manifest.json
+            v166b-freeze.log
+            v166b-benchmark.log
+            v166b-scored-results/runs.csv
+            v166b-scored-results/summary.json
+          if-no-files-found: warn
