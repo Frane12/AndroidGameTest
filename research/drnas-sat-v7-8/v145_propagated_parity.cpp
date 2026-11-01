@@ -76,7 +76,7 @@ static bool replay_unit145(const Cnf& f,const vector<UpStep145>& steps) {
  }
  return true;
 }
-int main(int argc,char**argv) {
+int v145_embedded_main(int argc,char**argv) {
  if(!(argc==4 || (argc==5 && string(argv[4])=="--classify-only"))) {
    cerr<<"Usage: v145_propagated_parity CNF KISSAT SEED [--classify-only]\n";
    return 2;
