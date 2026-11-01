@@ -1,0 +1,81 @@
+name: DRNAS V15.3.2 prefix skip long external DIMACS vs original and nohang
+on:
+  push:
+    branches:
+      - experiment/drnas-v1532-prefix-skip-20261101
+    paths:
+      - 'research/tseitin-replay/v1532_external_long.py'
+      - '.github/workflows/drnas-v1532-external-long.yml'
+      - 'research/drnas-sat-v7-8/v1531_nohang.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  head_to_head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: dimacs
+            timeout: 18
+            label: DIMACS-hole6-to-hole10
+          - suite: controls
+            timeout: 6
+            label: ThirdParty-PlantedAndProvenUnsat
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax and source preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/tseitin-replay/v1532_external_long.py \
+            research/tseitin-replay/v153_proof_checker.py
+          test -s research/drnas-sat-v7-8/v153_unified.cpp
+          test -s research/drnas-sat-v7-8/v1531_nohang.cpp
+      - name: Compile original V15.3, V15.3.1 and V15.3.2
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            research/drnas-sat-v7-8/v153_unified.cpp -o /tmp/v153_unified
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+          test -x /tmp/v153_unified
+          test -x /tmp/v1531_nohang
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            research/drnas-sat-v7-8/v1532_prefix.cpp -o /tmp/v1532_prefix
+          test -x /tmp/v1532_prefix
+      - name: Build pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Checkout pinned third-party controls
+        if: matrix.suite == 'controls'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/AlexanderV/LogicalOptimizer.git /tmp/independent-controls
+          git -C /tmp/independent-controls fetch --depth 1 origin 366bd1964be332de6d281d4e4099ae67c156d552
+          git -C /tmp/independent-controls checkout --detach 366bd1964be332de6d281d4e4099ae67c156d552
+          test "$(git -C /tmp/independent-controls rev-parse HEAD)" = "366bd1964be332de6d281d4e4099ae67c156d552"
+      - name: Frozen head-to-head wall-clock and certificates
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v1532_external_long.py \
+            --suite "${{ matrix.suite }}" --timeout "${{ matrix.timeout }}"
+      - name: Upload original CNF hashes and timing audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1532-Long-${{ matrix.label }}
+          path: |
+            v1532-external-long-benchmark/${{ matrix.suite }}/results.json
+            v1532-external-long-benchmark/${{ matrix.suite }}/results.md
+            v1532-external-long-benchmark/${{ matrix.suite }}/sources.json
+          if-no-files-found: warn
