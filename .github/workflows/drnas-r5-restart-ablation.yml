@@ -1,0 +1,72 @@
+name: DRNAS R5 - paired restartint 25 50 100 diagnostic
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-r5-restart-ablation-20261101]
+    paths:
+      - ".github/workflows/drnas-r5-restart-ablation.yml"
+      - "experiments/drnas_v16/patch_r5_restart_ablation.py"
+      - "experiments/drnas_v16/official_r5_restart_ablation.py"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r5-restart-ablation-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  pilot:
+    name: R5 pinned Kissat paired three-repeat intervention ablation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r5_restart_ablation,official_r5_restart_ablation,predict_conflict_patch_v177,official_parallel_v180}.py
+      - name: Compile unmodified pinned upstream Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r5-original
+          git -C /tmp/kissat-r5-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r5-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r5-original && ./configure && make -j2)
+      - name: Compile in-process patched Kissat with exactly one controlled intervention
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r5-patched
+          git -C /tmp/kissat-r5-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r5_restart_ablation.py --kissat-root /tmp/kissat-r5-patched
+          (cd /tmp/kissat-r5-patched && ./configure && make -j2)
+          strings /tmp/kissat-r5-patched/build/kissat | grep -Fq "DRNAS_V177_SWITCH"
+      - name: SAT UNSAT and all-mode smoke
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/r5_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/r5_unsat.cnf
+          for mode in r5_monitor r5_25 r5_50 r5_100; do
+            set +e
+            DRNAS_V177_MODE="$mode" /tmp/kissat-r5-patched/build/kissat -s /tmp/r5_sat.cnf > /tmp/r5_sat.log 2>&1
+            sat_code=$?
+            DRNAS_V177_MODE="$mode" /tmp/kissat-r5-patched/build/kissat -s /tmp/r5_unsat.cnf > /tmp/r5_unsat.log 2>&1
+            unsat_code=$?
+            set -e
+            test "$sat_code" -eq 10
+            test "$unsat_code" -eq 20
+          done
+          echo R5_ALL_MODES_SAT_UNSAT_SMOKE_PASS
+      - name: Run matched development-only pilot on known R4 regression case 361
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_r5_restart_ablation.py
+      - name: Preserve full and partial paired benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R5-Restart-Ablation-Known-Case361
+          path: |
+            drnas-r5-restart-ablation-results/manifest.json
+            drnas-r5-restart-ablation-results/measurements.partial.csv
+            drnas-r5-restart-ablation-results/measurements.csv
+            drnas-r5-restart-ablation-results/summary.json
+          retention-days: 60
+          if-no-files-found: warn
