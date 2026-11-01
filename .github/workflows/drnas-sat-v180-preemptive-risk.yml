@@ -1,0 +1,130 @@
+name: DRNAS SAT V18.0 preemptive regression predictor blind A-B
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v180-preemptive-regression-gate-20261101'
+    paths:
+      - 'experiments/drnas_v16/preemptive_risk_patch_v180.py'
+      - 'experiments/drnas_v16/preemptive_common_v180.py'
+      - 'experiments/drnas_v16/train_preemptive_v180.py'
+      - 'experiments/drnas_v16/holdout_preemptive_v180.py'
+      - '.github/workflows/drnas-sat-v180-preemptive-risk.yml'
+concurrency:
+  group: drnas-v180-frozen-risk
+  cancel-in-progress: false
+jobs:
+  train:
+    name: Freeze pre-regression risk gate on 42 previously explored formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pre-register population and compile new Python analysis
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            experiments/drnas_v16/preemptive_risk_patch_v180.py \
+            experiments/drnas_v16/preemptive_common_v180.py \
+            experiments/drnas_v16/train_preemptive_v180.py \
+            experiments/drnas_v16/holdout_preemptive_v180.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import train_preemptive_v180 as tr
+          import holdout_preemptive_v180 as ho
+          assert len(tr.SEEDS)==42 and len(set(tr.SEEDS))==42
+          assert len(ho.SEEDS)==24 and set(tr.SEEDS).isdisjoint(ho.SEEDS)
+          assert tuple(ho.SEEDS)==tuple(range(180100,180124))
+          assert tr.CAP==2.5
+          print("V180_NO_TRAIN_TEST_LEAKAGE_PASS")
+          PY
+      - name: Pin exact Kissat and build pre-intervention gate
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v180
+          git -C /tmp/kissat-v180 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/preemptive_risk_patch_v180.py --kissat-root /tmp/kissat-v180
+          cd /tmp/kissat-v180
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Complete 126 paired development measurements and freeze risk model
+        shell: bash
+        run: |
+          python3 -u experiments/drnas_v16/train_preemptive_v180.py \
+            --solver /tmp/kissat-v180/build/kissat \
+            --root drnas-v180-train
+      - name: Export frozen model before new holdout
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V180-training-frozen-rule
+          if-no-files-found: warn
+          path: |
+            drnas-v180-train/manifest.json
+            drnas-v180-train/model.json
+            drnas-v180-train/rule.txt
+            drnas-v180-train/training.csv
+            drnas-v180-train/attempts.csv
+            drnas-v180-train/attempts.partial.csv
+            drnas-v180-train/raw/*.log
+
+  holdout:
+    name: Test preemptive SKIP vs SWITCH on 24 new problems x2
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download FROZEN model; never update it on new problems
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V180-training-frozen-rule
+          path: frozen-risk
+      - name: Verify immutable training provenance and rule
+        shell: bash
+        run: |
+          test -s frozen-risk/rule.txt
+          test -s frozen-risk/model.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path("frozen-risk/model.json").read_text())
+          assert m["frozen_before_holdout"]
+          assert m["n_development_formulas"]==42
+          assert m["pin"]=="8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert len(Path("frozen-risk/rule.txt").read_text().split())==5
+          print("V180_BLIND_RULE_FIXED",m["rule"],"deployable",m["deployable_in_holdout"])
+          PY
+      - name: Compile identical exact Kissat for fresh prospective holdout
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v180
+          git -C /tmp/kissat-v180 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/preemptive_risk_patch_v180.py --kissat-root /tmp/kissat-v180
+          cd /tmp/kissat-v180
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Test 192 blind matched trials and per-formula risk decisions
+        shell: bash
+        run: |
+          python3 -u experiments/drnas_v16/holdout_preemptive_v180.py \
+            --solver /tmp/kissat-v180/build/kissat \
+            --rule frozen-risk/rule.txt --model frozen-risk/model.json \
+            --root drnas-v180-holdout
+      - name: Preserve raw and summary evidence even when tests fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V180-blind-preemptive-regression
+          if-no-files-found: warn
+          path: |
+            drnas-v180-holdout/manifest.json
+            drnas-v180-holdout/measurements.partial.csv
+            drnas-v180-holdout/measurements.csv
+            drnas-v180-holdout/ranking.csv
+            drnas-v180-holdout/risk_decisions.json
+            drnas-v180-holdout/summary.json
+            drnas-v180-holdout/raw/*.log
