@@ -16,6 +16,8 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
+import sys
+sys.path.insert(0, "research/drnas-sat-v7-8")
 from official_shortlong_select import download_and_features
 from proofcheck import dimacs, verify_model
 from xor4_benchmark import BIN, CAP, NEW, BASE, KISSAT, invoke, validate, controls
