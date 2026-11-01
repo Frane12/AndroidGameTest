@@ -93,10 +93,24 @@ for i in range(120):
   status=(expect=="SAT" and ('s SATISFIABLE' in p.stdout or expected_tag in p.stdout)) or (expect=="UNSAT" and ('s UNSATISFIABLE' in p.stdout or expected_tag in p.stdout))
   assert status,(i,name,expect,p.returncode,p.stdout[-400:],p.stderr[-400:])
   # Dedicated output SAT witness replay on original CNF is also run by bench.
+ # Exercise the FULL native route: original CNF -> implied unit additions ->
+ # embedded Kissat. Merely finding units in --derive-only is insufficient.
+ forced=run(SOLVER,path,["--bridge-first"])
+ assert forced.returncode==0,(i,forced.stderr[-300:],forced.stdout[-300:])
+ got=('"status":"'+expect+'") in forced.stdout or (
+     ('s SATISFIABLE' if expect=="SAT" else 's UNSATISFIABLE') in forced.stdout)
+ assert got,(i,expect,forced.stdout[-300:])
+ if models:
+  assert "v162_scc_xor_unit_api" in forced.stdout,(i,forced.stdout[-300:])
+  model=[int(w) for line in forced.stdout.splitlines() if line.startswith("v ")
+         for w in line.split()[1:] if w!="0"]
+  assert model,(i,"no native Kissat SAT witness")
+  assignment={abs(lit):lit>0 for lit in model}
+  assert all(any(assignment.get(abs(lit))==(lit>0) for lit in c) for c in cls),(i,"invalid witness")
  rows.append({"case":i,"sat":expect=="SAT","xor_equations":data["xor"],
               "aliases":data["scc_aliases"],
               "units":len(data["units"]),"contradiction":data["contradiction"]})
-print("V162_PROPERTY_PASS",len(rows),"exhaustive original-CNF implication tests",flush=True)
+print("V162_PROPERTY_PASS",len(rows),"exhaustive original-CNF implication and native Kissat augmentation tests",flush=True)
 print("V162_PROPERTY_STATS",json.dumps({"cases":len(rows),
   "derived_unit_cases":sum(bool(x["units"]) for x in rows),
   "unsat_cases":sum(not x["sat"] for x in rows),
