@@ -48,9 +48,21 @@ def main():
                     if x["mode"]=="monitor" and x["cpu_pct_delta"] is not None]
     preprocess_only=[x for x in rows
                      if x["stage"]=="preprocessing_only"]
+    preprocess_covered=[x for x in rows if int(x["preprocess_rounds"])>0]
     search_present=[x for x in rows if int(x["search_samples"])>0]
-    if not preprocess_only:
-        raise RuntimeError("Missing preprocessing-round telemetry in replay: check C patch")
+    # A formula can enter ordinary search after preprocessing: expecting the
+    # stage to equal exactly "preprocessing_only" would falsely reject it.
+    # V18.3 should have both preprocessing and search telemetry on this replay.
+    if not preprocess_covered:
+        raise RuntimeError("V183_NO_PREPROCESS_PHASE_EVENTS: binary or instrumentation failure")
+    if not search_present:
+        raise RuntimeError("V183_NO_SEARCH_PHASE_EVENTS: binary or instrumentation failure")
+    invalid=[x for x in rows if x["mode"]!="baseline"
+             and x["stage"]=="unobserved_phase"
+             and x["status"] in ("SAT","UNSAT")
+             and float(x["wall_s"])>0.1]
+    if invalid:
+        raise RuntimeError(f"V183_MISSING_INNER_TRACE_ON_{len(invalid)}_LONG_RUNS")
     stages=collections.Counter(x["stage"] for x in rows)
     summary={
       "phase":"DRNAS V18.3 hardware-logic telemetry calibration REPLAY",

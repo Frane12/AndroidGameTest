@@ -119,6 +119,15 @@ def run_case(shard,case,rep,mode):
         raise RuntimeError("Original Kissat emitted patched tags")
     preprocess=[r for r in events if r["event"]=="V183_PREPROCESS_ROUND"]
     ticks=[r for r in events if r["event"]=="V182_SAMPLE"]
+    # For real SAT instances taking > 0.1s the patched binary must emit
+    # at least one phase marker; all-zero traces mean instrumentation failed.
+    # A trivial SAT shortcut can finish before preprocessing/search starts.
+    if mode != "baseline" and state in ("SAT", "UNSAT") and wall > 0.1:
+        if not telemetry and not any(r["stream"]=="preprocess" for r in events):
+            raise RuntimeError(
+                f"V183_INSTRUMENTATION_MISSING mode={mode} "
+                f"index={case['official_index']} wall={wall:.3f}s "
+                "No V182_RESULT or V183_PREPROCESS tags; reject stale binary")
     starts=[r for r in events if r["event"]=="V183_PREPROCESS_BEGIN"]
     ends=[r for r in events if r["event"]=="V183_PREPROCESS_END"]
     stage=("baseline_uninstrumented" if mode=="baseline"
@@ -176,8 +185,18 @@ def analyze(events):
               max_abs_third_diff_ns=max(map(abs,jerks)) if jerks else None,
               note="preprocessing-round spacing is NOT uniform in conflicts"))
         else:
-            vals=[float(x.get("cost_ns",0)) for x in samples]
-            jerks=third_difference(vals)
+            # Saved V18.2 checkpoints are deliberately sparse after 2048.
+            # A third discrete difference is valid only across consecutive
+            # 256-conflict ticks. Do not confuse sparse data with uniform data.
+            ordered=sorted(samples,key=lambda x:int(x["conflict"]))
+            jerks=[]
+            for end_idx in range(3,len(ordered)):
+                window=ordered[end_idx-3:end_idx+1]
+                conflicts=[int(x["conflict"]) for x in window]
+                if all(conflicts[k]-conflicts[k-1]==256 for k in range(1,4)):
+                    jerks.append(third_difference([
+                        float(x["cost_ns"]) for x in window
+                    ])[0])
             out.append(dict(index=key[0],repetition=key[1],mode=key[2],
                stage="search",rounds=None,samples=len(vals),
                cpu_elapsed_ns=None,third_diff_available=bool(jerks),
