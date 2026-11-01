@@ -264,28 +264,35 @@ def aggregate():
    tests.append({"family":f,"predictor":feature,"n":len(grouped[f]),
      "spearman_rho":rho,"permutation_p_two_sided":permutation(xs,ys,rho,
        seed=3191201+i*300+j*13),"bh_q_all_family_predictor_tests":None})
- ids=sorted(range(len(tests)),key=lambda i:tests[i]["permutation_p_two_sided"] or 1)
+ valid=[i for i,x in enumerate(tests) if x["permutation_p_two_sided"] is not None]
+ ids=sorted(valid,key=lambda i:tests[i]["permutation_p_two_sided"])
  q=1.
  for rank,i in reversed(list(enumerate(ids,1))):
   q=min(q,tests[i]["permutation_p_two_sided"]*len(ids)/rank)
   tests[i]["bh_q_all_family_predictor_tests"]=min(1.,q)
+ # An undefined rho/p is missing evidence, NOT a zero correlation or a pass.
  pooled=[]
  for j,feature in enumerate(FEATURES):
   r=stratified_rho(grouped,feature)
   p=stratified_p(grouped,feature,r,624190+j*31)
   pooled.append({"feature":feature,"n_formulas":159,"families":4,
     "stratified_fisher_z_rho":r,"permutation_p_two_sided":p,"bh_q_three_pooled":None})
- ids=sorted(range(len(pooled)),key=lambda i:pooled[i]["permutation_p_two_sided"] or 1)
+ valid=[i for i,x in enumerate(pooled) if x["permutation_p_two_sided"] is not None]
+ ids=sorted(valid,key=lambda i:pooled[i]["permutation_p_two_sided"])
  q=1.
  for rank,i in reversed(list(enumerate(ids,1))):
   q=min(q,pooled[i]["permutation_p_two_sided"]*len(ids)/rank)
   pooled[i]["bh_q_three_pooled"]=min(1.,q)
  def signed(feature):
-  return sum(next(x for x in tests if x["family"]==f and x["predictor"]==feature)
-           ["spearman_rho"]<0 for f in families)
+  vals=[next(x for x in tests if x["family"]==f and x["predictor"]==feature)
+           ["spearman_rho"] for f in families]
+  return sum(x is not None and x<0 for x in vals)
  success=(signed("degree_gini")>=3 and signed("degree_cv")>=3
-      and all(next(x for x in pooled if x["feature"]==feature)["stratified_fisher_z_rho"]<0
+      and all(next(x for x in pooled if x["feature"]==feature)["stratified_fisher_z_rho"] is not None
+         and next(x for x in pooled if x["feature"]==feature)["stratified_fisher_z_rho"]<0
+         and next(x for x in pooled if x["feature"]==feature)["permutation_p_two_sided"] is not None
          and next(x for x in pooled if x["feature"]==feature)["permutation_p_two_sided"]<.05
+         and next(x for x in pooled if x["feature"]==feature)["bh_q_three_pooled"] is not None
          and next(x for x in pooled if x["feature"]==feature)["bh_q_three_pooled"]<.05
           for feature in ("degree_gini","degree_cv")))
  summary={
@@ -296,6 +303,7 @@ def aggregate():
   "correct_attempt_count":sum(1 for x in measurements if x["correct"]),
   "total_timeouts":sum(x["timeout_attempts"] for x in rows),
   "features":list(FEATURES),"individual_family_tests":tests,
+  "undefined_family_features":[{"family":t["family"],"predictor":t["predictor"],"reason":"constant or insufficient input/time variation"} for t in tests if t["spearman_rho"] is None],
   "family_stratified_pool":pooled,
   "negative_signs_by_feature":{feat:signed(feat) for feat in FEATURES},
   "preregistered_cross_family_transfer_success":success,
@@ -307,6 +315,7 @@ def aggregate():
     "12 within-family tests BH adjusted; 3 pooled tests separately BH adjusted.",
     "Known labels do not independently verify original Kissat UNSAT proofs.",
     "No changes to V15.3.1 source, no training/threshold adjustment from these test outcomes.",
+    "Unidentifiable family-feature correlations remain explicitly N/A and DO NOT count as successful transfer.",
     "UUF200 original archive actually has 99 not 100 CNFs; source inventory amendment fixed n=39 before UUF200 measurement.",
     "No claim of general mathematical law or causality."]}
  ROOT.mkdir(exist_ok=True)
@@ -324,12 +333,15 @@ def aggregate():
   "|---|---:|---:|---:|---:|"]
  for f in families:
   get=lambda feat:next(x for x in tests if x["family"]==f and x["predictor"]==feat)["spearman_rho"]
-  report.append(f"| {f} | {get('degree_gini'):+.4f} | {get('degree_cv'):+.4f} | {get('reused_varpair_fraction'):+.4f} | {summary['timeouts_by_family'][f]} |")
+  fmt=lambda x: "N/A (no variance)" if x is None else f"{x:+.4f}"
+  report.append(f"| {f} | {fmt(get('degree_gini'))} | {fmt(get('degree_cv'))} | {fmt(get('reused_varpair_fraction'))} | {summary['timeouts_by_family'][f]} |")
  report+=["","## Within-family pooled rank-effect (Fisher z, strata preserved)",
   "| Feature | Pooled rho | Permutation p | BH q |",
   "|---|---:|---:|---:|"]
  for p in pooled:
-  report.append(f"| {p['feature']} | {p['stratified_fisher_z_rho']:+.4f} | {p['permutation_p_two_sided']:.4f} | {p['bh_q_three_pooled']:.4f} |")
+  fmt=lambda x: "N/A (not estimable across all four families)" if x is None else f"{x:.4f}"
+  rho="N/A" if p["stratified_fisher_z_rho"] is None else f"{p['stratified_fisher_z_rho']:+.4f}"
+  report.append(f"| {p['feature']} | {rho} | {fmt(p['permutation_p_two_sided'])} | {fmt(p['bh_q_three_pooled'])} |")
  report+=["","**Interpretation:** A feature that predicts harder original Kissat instances in one random SATLIB family may fail on SAT, graph-coloring, or other structural classes. A failed transfer does not invalidate the original within-family finding.",
   "No interventions; original Kissat only; no independently verified UNSAT proof for original Kissat."]
  (ROOT/"report.md").write_text("\n".join(report)+"\n")
