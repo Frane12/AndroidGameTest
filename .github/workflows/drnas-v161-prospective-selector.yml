@@ -1,0 +1,50 @@
+name: DRNAS V16.1 prospective signature-selector 84 train 84 blind holdout
+on:
+  push:
+    branches: [experiment/drnas-v160-hidden-relations-20261101]
+    paths:
+      - '.github/workflows/drnas-v161-prospective-selector.yml'
+      - 'research/tseitin-replay/v161_prospective_selector.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight Python
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v160_hidden_keys.py research/tseitin-replay/v161_prospective_selector.py
+      - name: Compile pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          mkdir -p bin
+          cp /tmp/kissat-source/build/kissat bin/kissat_solver
+      - name: Compile comparator solvers same flags
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG research/drnas-sat-v7-8/v1531_nohang.cpp -o bin/v1531_nohang
+          for pair in 'kissat_api_control.cpp kissat_api_control' 'v159_relational_dispatch.cpp v159_relational_dispatch'; do
+            read -r src out <<< "$pair"
+            g++ -std=c++17 -O3 -DNDEBUG -I/tmp/kissat-source/src               "research/drnas-sat-v7-8/$src" /tmp/kissat-source/build/libkissat.a               -lm -o "bin/$out"
+          done
+      - name: Freeze 168 CNFs then learn only on train 84 and run untouched holdout 84
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v161_prospective_selector.py | tee v161-benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V161-Prospective-84-Train-84-Blind-Selector
+          path: |
+            v161-prospective/
+            v161-benchmark.log
+          if-no-files-found: warn
