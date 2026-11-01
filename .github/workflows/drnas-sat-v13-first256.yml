@@ -56,16 +56,10 @@ jobs:
           path: frozen/
           if-no-files-found: warn
 
-  prefix:
+  build:
     needs: freeze
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
-    strategy:
-      fail-fast: false
-      max-parallel: 8
-      matrix:
-        shard: [0,1,2,3,4,5,6,7]
-    name: v13-shard-${{ matrix.shard }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -105,6 +99,49 @@ jobs:
             sha256sum v13_prefix_probe
             sha256sum research/drnas-sat-v7-8/v13_probe_generated.cpp
           } > build_provenance.txt
+      - name: Pin exact executable SHA
+        run: |
+          set -euo pipefail
+          sha256sum v13_prefix_probe > v13_prefix_probe.sha256
+          sha256sum -c v13_prefix_probe.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V13-one-pinned-probe-binary
+          path: |
+            v13_prefix_probe
+            v13_prefix_probe.sha256
+            build_provenance.txt
+          if-no-files-found: error
+
+  prefix:
+    needs: [freeze,build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: v13-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V13-256-frozen-132-cases
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V13-one-pinned-probe-binary
+          path: probe
+      - name: Verify and use byte-identical pinned probe
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v13_manifest.sha256)
+          (cd probe && sha256sum -c v13_prefix_probe.sha256)
+          chmod +x probe/v13_prefix_probe
+          cp probe/build_provenance.txt build_provenance.txt
       - name: One unphased checkpoint per CNF with memory and wall-time guards
         env:
           SHARD: ${{ matrix.shard }}
@@ -112,7 +149,7 @@ jobs:
           set -euo pipefail
           python3 -u research/drnas-sat-v7-8/v13_prefix_dynamics.py run \
             --manifest frozen/v13_manifest.json --shard "$SHARD" \
-            --binary ./v13_prefix_probe --out results
+            --binary ./probe/v13_prefix_probe --out results
       - uses: actions/upload-artifact@v4
         if: always()
         with:
