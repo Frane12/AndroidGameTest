@@ -64,7 +64,7 @@ def pairs_from_rows(rows):
   if any(x is None for x in a2+b2):continue
   ma=median(a2);mb=median(b2)
   routes=collections.Counter(x["route"] for x in a)
-  route=routes.most_common(1)[0][0]
+  route=routes.most_common(1)[0][0] or "unrecorded_route"
   pairs.append({"dataset":dataset,"case":case,"category":a[0]["category"],
    "provenance":a[0]["provenance"],"expected":a[0]["expected"],
    "variables":a[0]["variables"],"clauses":a[0]["clauses"],
