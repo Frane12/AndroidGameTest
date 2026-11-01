@@ -97,7 +97,7 @@ static bool v1532_prefix_maybe_structured(const char* path) {
      char* end=nullptr;
      errno=0;
      long lit=strtol(token.c_str(),&end,10);
-     if(errno || end==token.c_str() || *end || lit>INT_MAX || lit<INT_MIN)
+     if(errno || end==token.c_str() || *end || lit>INT_MAX || lit<=INT_MIN)
        return true;
      if(lit!=0) {
        clause.push_back(int(lit));
@@ -949,8 +949,10 @@ int main(int argc,char**argv) {
      return argc==5?(cout<<"DRNAS_V153_ROUTE\tkissat_direct\n",0):kissat_fallback(argv);
    // A miss sends the exact unmodified CNF to Kissat without full DRNAS
    // parsing/structural scans, avoiding the largest overhead on general SAT.
-   if(argc==4 && !v1532_prefix_maybe_structured(argv[1]))
+   if(argc==4 && !v1532_prefix_maybe_structured(argv[1])) {
+     cout<<"DRNAS_V1532_ROUTE\tprefix_kissat_direct\n"<<flush;
      return kissat_fallback(argv);
+   }
    Cnf f=parse(argv[1]);
    if(f.n>4096)
      return argc==5?(cout<<"DRNAS_V153_ROUTE\tkissat_direct\n",0):kissat_fallback(argv);
