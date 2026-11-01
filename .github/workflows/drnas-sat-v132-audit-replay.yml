@@ -1,0 +1,58 @@
+name: DRNAS V13.2 - Replay Frozen Six-CNF Audit
+on:
+  push:
+    branches: [experiment/drnas-v132-auditfix-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v132-audit-replay.yml'
+      - 'research/drnas-sat-v7-8/v132_lbd4_prospective.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify script syntax and frozen rule
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v132_lbd4_prospective.py
+          python3 research/drnas-sat-v7-8/v132_lbd4_prospective.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V132-frozen-24-new-inputs
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v132-shard-*
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined
+          merge-multiple: false
+      - name: Audit pinned measurements without re-running solvers
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v132_manifest.sha256)
+          for shard in 0 1 2; do
+            test -f "combined/v132-shard-$shard/meta.json" || test -f "combined/v132-shard-$shard/results/meta.json"
+          done
+          python3 -u research/drnas-sat-v7-8/v132_lbd4_prospective.py audit \
+            --manifest frozen/v132_manifest.json --combined combined \
+            --out v132_report.json --md v132_report.md
+          cat v132_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V132-six-CNF-audit-replay
+          path: |
+            v132_report.json
+            v132_report.md
+          if-no-files-found: warn
