@@ -1,0 +1,40 @@
+name: DRNAS V15.8 Mathematical Relations Preflight Audit
+on:
+  push:
+    branches: [experiment/drnas-v158-math-relations-gate-20261101]
+    paths:
+      - '.github/workflows/drnas-v158-math-relations.yml'
+      - 'research/tseitin-replay/v158_math_relations.py'
+      - 'research/tseitin-replay/v158_math_relations_test.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  math-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python preflight and 160 exhaustive random-property tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/v158_math_relations.py research/tseitin-replay/v158_math_relations_test.py
+          python3 -u research/tseitin-replay/v158_math_relations_test.py
+      - name: Verify CLI output on an independently constructed XOR3 DIMACS
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          cls=[]
+          for mask in range(8):
+            if mask.bit_count()%2 != 1:
+              cls.append([-(j+1) if mask>>j&1 else j+1 for j in range(3)])
+          Path('/tmp/xor3.cnf').write_text('p cnf 3 4\n'+''.join(' '.join(map(str,c))+' 0\n' for c in cls))
+          PY
+          python3 research/tseitin-replay/v158_math_relations.py /tmp/xor3.cnf | tee v158-audit.log
+          grep -q '"exact_xor_equations": 1' v158-audit.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V158-Mathematical-Relations-Verified-Audit
+          path: v158-audit.log
+          if-no-files-found: error
