@@ -65,7 +65,22 @@ jobs:
               --input raw-artifacts --out sat-analysis
           fi
 
+      - name: Detect already ingested immutable post-R9 sources
+        id: detect
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          old=db.execute("SELECT COUNT(*) FROM datasets").fetchone()[0]
+          post=db.execute("SELECT COUNT(*) FROM datasets WHERE dataset LIKE 'DRNAS-R10-%' OR dataset LIKE 'DRNAS-Selector-%' OR dataset LIKE 'DRNAS-SC2023-%'").fetchone()[0]
+          assert (old==57 and post==0) or (old==79 and post==22),(old,post)
+          print('post_r9_present='+('true' if post==22 else 'false'))
+          db.close()
+          PY
+
       - name: Retrieve only pinned completed benchmark and verification artifacts
+        if: steps.detect.outputs.post_r9_present != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -91,6 +106,7 @@ jobs:
           test -s source-cert/affine_summary.csv
 
       - name: Append validated new sources and recompute paired analytics
+        if: steps.detect.outputs.post_r9_present != 'true'
         run: |
           set -euo pipefail
           .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_new.py \
@@ -114,6 +130,7 @@ jobs:
           test -s sat-analysis/verified_certificates.csv
 
       - name: Retrieve only completed pinned R7 and preregistered cross-family artifacts
+        if: steps.detect.outputs.post_r9_present != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -149,6 +166,7 @@ jobs:
           test -s new-input/crossfamily/crossfamily-validation/aggregate.json
 
       - name: Append only source-verified R7 and cross-family rows, preserve historical SQLite
+        if: steps.detect.outputs.post_r9_present != 'true'
         run: |
           set -euo pipefail
           .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r7_crossfamily.py \
@@ -165,6 +183,7 @@ jobs:
           test -s sat-analysis/r7_target_signal_buckets.csv
 
       - name: Download only new verified R8 and R9 holdout artifacts
+        if: steps.detect.outputs.post_r9_present != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -188,6 +207,7 @@ jobs:
           test -s new-input/r9/jerk_gate_report.json
 
       - name: Append only hash-verified R8/R9 measurements and regenerate cumulative analytics
+        if: steps.detect.outputs.post_r9_present != 'true'
         run: |
           set -euo pipefail
           .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r8_r9.py \
@@ -255,6 +275,7 @@ jobs:
           test -s sat-analysis/post_r9_source_audit.json
           test -s sat-analysis/post_r9_paired.csv
           test -s sat-analysis/post_r9_formula_features.csv
+          test -s sat-analysis/post_r9_formula_novelty.csv
           test -s sat-analysis/scatter_post_r9_r10.png
           test -s sat-analysis/scatter_post_r9_selector.png
           test -s sat-analysis/scatter_post_r9_sc2023.png
@@ -284,6 +305,7 @@ jobs:
                    holdout_paired_summary.csv holdout_formula_features.csv \
                    post_r9_source_audit.json post_r9_paired.csv \
                    post_r9_paired_summary.csv post_r9_formula_features.csv \
+                   post_r9_formula_novelty.csv \
                    scatter_post_r9_r10.png scatter_post_r9_selector.png \
                    scatter_post_r9_sc2023.png scatter_post_r9_structure.png; do
             cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
