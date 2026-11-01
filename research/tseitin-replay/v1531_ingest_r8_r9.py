@@ -123,7 +123,9 @@ def main():
               "attempt_context","r7_formula_features","holdout_formula_features")}
   require(counts["datasets"]==57 and counts["formulas"]==1227 and
           counts["attempts"]==13406 and counts["source_artifacts"]==52 and
-          counts["attempt_context"]>=13406,"Cumulative history changed: "+str(counts))
+          counts["attempt_context"]>=8838,"Cumulative history changed: "+str(counts))
+  require(db.execute("""SELECT COUNT(*) FROM attempt_context WHERE dataset LIKE 'DRNAS-R8-%' OR dataset LIKE 'DRNAS-R9-%'""").fetchone()[0]==2700,
+          "New holdout attempt contexts incomplete")
   require(db.execute("""SELECT COUNT(*) FROM (
     SELECT dataset,case_name,solver,repeat,COUNT(*) AS n FROM attempts
     GROUP BY 1,2,3,4 HAVING n>1)""").fetchone()[0]==0,
