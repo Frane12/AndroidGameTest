@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Frozen independent SATLIB holdout G from a DIFFERENT source repository.
-52 real SATLIB cases, 6 families (4 SAT and 2 UNSAT), 8 per family.
+52 real SATLIB cases across 7 subfamilies (4 SAT, 2 UNSAT, with AIM variants).
 Selected before any V15.4 results. Not an official competition ranking.
 Only non-semantic SATLIB trailing % / 0 markers are stripped.
 """
 import hashlib,json,random,statistics,subprocess,time
 from pathlib import Path
 from collections import defaultdict,Counter
-from v151_proof_checker import verify_certificate as check_v151
 from v153_proof_checker import verify_certificate as check_v153
 SOURCE="mitchellh/go-sat"
 REV="fc0e735aff48989326f256121b5ed6fc585858c3"
 ROOT=Path("/tmp/satlib-repo/testdata/satlib")
-OUT=Path("v153-satlib-external-holdout-g")
+OUT=Path("v154-satlib-external-holdout-g")
 OUT.mkdir(exist_ok=True)
 CASES=[]
 for number in range(21,33):
@@ -107,7 +106,6 @@ def run(name,exe,case):
         proof_ok=None
         if status=="UNSAT":
             if name in ("v153","v154"):proof_ok=check_v153(payload,case["clauses"])
-            if name=="v151":proof_ok=check_v151(payload,case["clauses"])
         if name=="v153" and "DRNAS_V153_ROUTE\tkissat_augmented" in p.stdout:
             route="kissat_augmented"
         elif name in ("v154","kissat_api") and "DRNAS_V154_ROUTE\t" in p.stdout:
