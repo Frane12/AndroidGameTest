@@ -1,0 +1,86 @@
+name: DRNAS SAT V16.8 Guarded 256-1024 Early Divergence Holdout
+on:
+  push:
+    branches: [experiment/drnas-v168-early-divergence-safety-20261101]
+    paths:
+      - '.github/workflows/drnas-v168-divergence-guard.yml'
+      - 'experiments/drnas_v16/divergence_guard_v168.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  blind-36:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight code and frozen development-only guard
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/divergence_guard_v168.py
+          python3 - <<'PY'
+          import importlib.util,sys
+          from pathlib import Path
+          d=Path('experiments/drnas_v16').resolve()
+          sys.path.insert(0,str(d))
+          import divergence_guard_v168 as p
+          static={"nvars":420,"density":4.26,"three_fraction":1.0}
+          def st(d,r,prop):
+            return {"decisions":d,"restarts":r,"propagations":prop}
+          # Historical V16.7b DEVELOPMENT: harmful 167817 rejected
+          a=st(646,6,17746);b=st(520,4,18442)
+          assert p.old_policy(static,a,b) and not p.guard256(static,a,b)
+          # Historical V16.7b DEVELOPMENT: beneficial 167827 allowed
+          a=st(452,6,12966);b=st(360,1,12855)
+          assert p.guard256(static,a,b)
+          # Historical V16.7b DEVELOPMENT: beneficial 167801 allowed
+          a=st(593,10,15104);b=st(428,2,14356)
+          assert p.guard256(static,a,b)
+          assert not p.valid_static({"nvars":340,"density":3.8,"three_fraction":1.0})
+          print("V168_DEVELOPMENT_GATE_PREFLIGHT_PASS")
+          PY
+      - name: Compile same pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v168
+          git -C /tmp/kissat-v168 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v168 rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-v168 && ./configure && make -j2)
+          /tmp/kissat-v168/build/kissat --version
+      - name: Frozen prospective 30 fresh seeds and 6 density controls
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/divergence_guard_v168.py \
+            --solver /tmp/kissat-v168/build/kissat \
+            --root v168-results --timeout 6 --repeats 2 | tee v168.log
+      - name: Confirm SHA256 frozen originals and all results
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,hashlib,json
+          from pathlib import Path
+          root=Path("v168-results")
+          cases=json.loads((root/"manifest.json").read_text())["cases"]
+          assert len(cases)==36
+          assert {x["seed"] for x in cases if x["group"]=="holdout"}==set(range(168000,168030))
+          assert {x["seed"] for x in cases if x["group"]=="control"}==set(range(168030,168036))
+          for c in cases:
+              assert hashlib.sha256(Path(c["path"]).read_bytes()).hexdigest()==c["sha256"],c
+          rows=list(csv.DictReader((root/"measurements.csv").open()))
+          assert len(rows)==288,len(rows)
+          assert len([r for r in rows if r["group"]=="holdout"])==240
+          assert all(r["status"] in ("SAT","UNSAT","TIMEOUT","UNKNOWN") for r in rows)
+          summary=json.loads((root/"summary.json").read_text())
+          assert set(summary["totals"]["holdout"])=={"baseline","sat-fixed","v167b","v168"}
+          print("V168_BLIND_HOLDOUT_AUDIT_PASS 288 runs, 36 untouched originals")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V168-Guarded-Early-Divergence-36-Fresh-CNF
+          path: |
+            v168.log
+            v168-results/manifest.json
+            v168-results/measurements.csv
+            v168-results/summary.json
+          if-no-files-found: warn
