@@ -1,5 +1,5 @@
 """Sound XOR substructure extraction for DIMACS; never infer SAT from XOR alone.
-A complete XOR block is detected even with additional unrelated/redundant clauses.
+Parity implications survive additional clauses on the same variable support.
 UNSAT only when extracted entailed equations contradict over GF(2).
 """
 from collections import defaultdict
@@ -20,7 +20,7 @@ def extract(clauses, max_width=4):
                 allowed.append(bits)
         for rhs in (0,1):
             target=[b for b in product((False,True),repeat=len(support)) if sum(b)%2==rhs]
-            if set(allowed)==set(target):
+            if allowed and set(allowed).issubset(set(target)):
                 equations.append((support,rhs,[i for i,_ in items]))
                 break
     return equations
