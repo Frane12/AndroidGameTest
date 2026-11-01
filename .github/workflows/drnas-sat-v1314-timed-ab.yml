@@ -1,0 +1,115 @@
+name: DRNAS V13.14 - Real 30 CNF Timed DRNAS Kissat XOR Hybrid
+on:
+  push:
+    branches:
+      - experiment/drnas-v1314-30-real-timed-ab-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v1314-timed-ab.yml'
+      - 'research/drnas-sat-v7-8/v1314_timed_ab.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and confirm certified XOR early UNSAT + fallback safety
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v1314_timed_ab.py
+          python3 research/drnas-sat-v7-8/v1314_timed_ab.py selftest
+
+  benchmark:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    name: v1314-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1313-30-fresh-SC2024-SHA-frozen
+          run-id: 41263304031
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V132-three-pinned-binaries
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify fixed CNF manifest and pinned old binaries
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v1313_30_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/v132_drnas bin/v132_kissat
+      - name: 3 solvers x 3 real CNFs x 2 repeats, 8s cutoff
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v1314_timed_ab.py run \
+            --manifest frozen/v1313_30_manifest.json \
+            --drnas bin/v132_drnas --kissat bin/v132_kissat \
+            --shard "$SHARD" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v1314-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  audit:
+    needs: [preflight, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1313-30-fresh-SC2024-SHA-frozen
+          run-id: 41263304031
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v1314-shard-*
+          path: combined
+          merge-multiple: false
+      - name: Validate 180 timed, paired trial records and compute PAR-2
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v1313_30_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v1314_timed_ab.py audit \
+            --manifest frozen/v1313_30_manifest.json \
+            --combined combined \
+            --json v1314_timed_audit.json --md v1314_timed_audit.md
+          cat v1314_timed_audit.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V1314-real30-timed-AB-final-audit
+          path: |
+            v1314_timed_audit.json
+            v1314_timed_audit.md
+          if-no-files-found: warn
