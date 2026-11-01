@@ -1,0 +1,122 @@
+name: DRNAS V14.9 budgeted XOR6 2SAT vs V14.7 and SC2026 official regression
+on:
+  push:
+    branches: [experiment/drnas-v149-budgeted-2sat-xor6-20261101]
+    paths:
+      - '.github/workflows/drnas-v149-budgeted-expanded.yml'
+      - 'research/drnas-sat-v7-8/v149_budgeted_xor6_2sat.cpp'
+      - 'research/tseitin-replay/v149_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  synthetic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [0,1,2,3,4]
+    name: v149-synthetic-${{ matrix.slot }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Verify original binaries and compile exact C++ candidates
+        run: |
+          set -euo pipefail
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas-sat-v7-8/v147_subset_xor4.cpp -o bin/v147_subset_xor4
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas-sat-v7-8/v149_budgeted_xor6_2sat.cpp -o bin/v149_budgeted
+          chmod +x bin/{v149_budgeted,v147_subset_xor4,kissat_solver}
+          python3 -m py_compile research/tseitin-replay/v149_benchmark.py
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          sha256sum bin/{v149_budgeted,v147_subset_xor4,kissat_solver}
+      - name: Independent witness replay on sparse XOR and 2SAT negative controls
+        run: python3 -u research/tseitin-replay/v149_benchmark.py measure ${{ matrix.slot }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v149-synthetic-${{ matrix.slot }}
+          path: out/
+          if-no-files-found: warn
+  official:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [0,1,2]
+    name: v149-official-${{ matrix.slot }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41274374244
+          github-token: ${{ github.token }}
+          name: v148-sc2026-preregistered-6-inputs
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41267740944
+          github-token: ${{ github.token }}
+          name: DRNAS-V145-Native-Propagated-Parity-and-pinned-solvers
+          path: bin
+      - name: Verify SHA provenance and compile identical baselines
+        run: |
+          set -euo pipefail
+          (cd prior && sha256sum -c v148-frozen-manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          echo 'a93d6577d9a8d8f41bde71bd94200ab0cdacd7ac9cd22ab3eb4fd55713c32d7a  bin/kissat_solver' | sha256sum -c -
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas-sat-v7-8/v147_subset_xor4.cpp -o bin/v147_subset_xor4
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas-sat-v7-8/v149_budgeted_xor6_2sat.cpp -o bin/v149_budgeted
+          chmod +x bin/{v149_budgeted,v147_subset_xor4,kissat_solver}
+          sha256sum bin/{v149_budgeted,v147_subset_xor4,kissat_solver}
+      - name: Retest same six original SC2026 official inputs with equal 12 sec budget
+        run: python3 -u research/tseitin-replay/v149_benchmark.py official ${{ matrix.slot }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v149-official-${{ matrix.slot }}
+          path: out/
+          if-no-files-found: warn
+  audit:
+    needs: [synthetic,official]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v149-*
+          path: all
+      - name: Verify 188 matched observations and calculate PAR2 without hiding losses
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/v149_benchmark.py audit
+          cat v149-final.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V149-Budgeted-XOR6-2SAT-Official-Regression-Final
+          path: |
+            v149-final.json
+            all/
+          if-no-files-found: warn
