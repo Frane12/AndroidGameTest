@@ -5,9 +5,7 @@
 // is found, invoke unchanged V14.3 FastGate. Comparisons always use pinned
 // original Kissat 4.0.4, and include preprocessing/wall-time overhead.
 // This is standard polynomial-time algebraic preprocessing, not P=NP.
-#define main v143_embedded_main
-#include "v143_localxor_fastgate.cpp"
-#undef main
+#include "v144_v143_embedded.inc"
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -148,7 +146,7 @@ static Output144 analyze144(const Cnf& f) {
         else out.certified_binary++;
       }
     }
-    if(out.certified_units+2*out.certified_binary>=V144_MAX_NEW_CLAUSES)
+    if(size_t(out.certified_units+2*out.certified_binary)>=V144_MAX_NEW_CLAUSES)
       break;
   }
   // Atomic deduplication. Never add a clause without verified provenance.
