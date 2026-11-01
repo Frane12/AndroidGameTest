@@ -239,7 +239,7 @@ def audit(a):
     for cohort in ("synthetic","real"):
         cases=m[cohort];rows=[]
         for shard in range(6):
-            d=Path(a.combined)/f"v141-{cohort}-{shard}"
+            d=Path(a.combined)/f"v142-{cohort}-{shard}"
             meta=load(d/"meta.json");part=load(d/"rows.json")
             expected=cases[shard::6]
             check(meta["protocol"]==P and meta["cohort"]==cohort and
