@@ -1,0 +1,94 @@
+name: DRNAS SAT v16.5 frozen structural selector blind holdout
+on:
+  push:
+    branches:
+      - 'experiment/drnas-v165-structural-holdout-20261101'
+    paths:
+      - 'experiments/drnas_v16/portfolio_v165.py'
+      - 'experiments/drnas_v16/generate_v165_blind.py'
+      - '.github/workflows/drnas-sat-v165-blind-holdout.yml'
+  workflow_dispatch:
+jobs:
+  blind-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned upstream Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Verify Kissat SAT and UNSAT profiles return valid exit codes
+        run: python3 experiments/drnas_v16/v164_preflight.py --solver /tmp/kissat-upstream/build/kissat
+      - name: Generate frozen 10-problem suite including six unseen seeds
+        run: |
+          python3 experiments/drnas_v16/generate_v165_blind.py drnas_v165_suite
+          find drnas_v165_suite -name '*.cnf' | sort
+      - name: Unit test pre-registered structural selector (before benchmark)
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location(
+              "selector",Path("experiments/drnas_v16/portfolio_v165.py"))
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          root=Path("drnas_v165_suite")
+          counts={g:len(list((root/g).glob("*.cnf")))
+                  for g in ("replay","holdout","control")}
+          assert counts=={"replay":2,"holdout":6,"control":2},counts
+          for group in ("replay","holdout"):
+              for cnf in (root/group).glob("*.cnf"):
+                  f=mod.describe(cnf)
+                  assert mod.select_profile(f)==("--sat",),(cnf,f)
+          for cnf in (root/"control").glob("*.cnf"):
+              f=mod.describe(cnf)
+              assert mod.select_profile(f)==(),(cnf,f)
+          print("STRUCTURAL_POLICY_OK: eligible=8, abstained=2")
+          PY
+      - name: Measure real Kissat baseline versus sat-fixed and adaptive
+        run: |
+          python3 -u experiments/drnas_v16/portfolio_v165.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --cnf-dir drnas_v165_suite \
+            --timeout 25 --repeats 2 \
+            --output drnas_v165_results.csv
+      - name: Validate 60 results, mode parity and fresh-seed separation
+        run: |
+          python3 - <<'PY'
+          import csv
+          from collections import defaultdict
+          with open("drnas_v165_results.csv",newline="") as f:
+              rows=list(csv.DictReader(f))
+          assert len(rows)==10*3*2,len(rows)
+          pairs=defaultdict(dict)
+          for row in rows:
+              assert row["result"] in ("SAT","UNSAT","TIMEOUT"),row
+              assert float(row["total_sec"])>=0
+              pairs[(row["group"],row["file"],row["repeat"])][row["mode"]]=row
+          for key, modes in pairs.items():
+              assert set(modes)=={"baseline","sat-fixed","adaptive"},key
+              solved={r["result"] for r in modes.values()
+                      if r["result"] in ("SAT","UNSAT")}
+              assert len(solved)<=1,(key,solved)
+          selected=[r for r in rows if r["mode"]=="adaptive" and r["group"]=="holdout"]
+          assert len(selected)==6*2
+          assert all(r["profile"]=="--sat" for r in selected)
+          controls=[r for r in rows if r["mode"]=="adaptive" and r["group"]=="control"]
+          assert all(r["profile"]=="default" for r in controls)
+          assert len({r["file"] for r in selected})==6
+          print("HOLDOUT_AUDIT_PASSED: 60 attempts; 6 untouched seed instances; matched modes")
+          PY
+      - name: Upload full CSV plus summary even on failed late checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v165-frozen-blind-holdout
+          path: |
+            drnas_v165_results.csv
+            drnas_v165_results.summary.txt
+          if-no-files-found: warn
