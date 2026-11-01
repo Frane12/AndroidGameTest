@@ -15,7 +15,7 @@ REV="3e2dee7cf5aa643c77bf946280a3c1c520756ef9"
 SCORES_BLOB="9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef"
 PROTOCOL="DRNAS-V152-PROSPECTIVE-SC2026-HALL-20261101"
 SALT="drnas-v152-SC2026-no-tuning-20261101"
-STRATA={"SAT_fast":4,"UNSAT_fast":4,"SAT_mid":4,"UNSAT_mid":4}
+STRATA={"SAT":8,"UNSAT":8}
 MAX_SIZE=16*1024*1024
 SCORES_URL="https://raw.githubusercontent.com/satcompetition/2026/"+REV+"/downloads/scores.csv"
 SOLVERS=("v151","v152","kissat")
@@ -47,37 +47,40 @@ def freeze(prior96,prior148,out):
     rows=[r for r in get_official_scores() if r.get("solverid")=="biere_cadical3[main]"]
     assert len(rows)==400
     selected=[];attempts=[]
-    for stratum,count in STRATA.items():
-        label,band=stratum.split("_")
+    for label,count in STRATA.items():
         pool=[]
         for row in rows:
             if row["instanceid"] in seen:continue
             if row["status"]!=("sat-verified" if label=="SAT" else "unsat-verified"):continue
             s=float(row["runtime"])
-            if not ((0<=s<5) if band=="fast" else (5<=s<30)):continue
-            pool.append(dict(id=row["instanceid"],label=label,stratum=stratum,official_cadical_seconds=s))
-        pool.sort(key=lambda c:hashlib.sha256((SALT+"/"+stratum+"/"+c["id"]).encode()).hexdigest())
+            if not 0<=s<=180:continue
+            band="fast" if s<5 else "mid" if s<30 else "slow"
+            pool.append(dict(id=row["instanceid"],label=label,stratum=label+"_"+band,
+                             official_cadical_seconds=s))
+        # Prespecified SHA lottery across all difficulty bands. Do not prefer
+        # fast cases after the prior pools have been exhausted.
+        pool.sort(key=lambda c:hashlib.sha256((SALT+"/"+label+"/"+c["id"]).encode()).hexdigest())
         for case in pool:
             try:
                 detail=download_and_features(case["id"])
                 if detail["cnf_bytes"]>MAX_SIZE:raise ValueError("over 16 MiB fixed cap")
                 accepted={**case,**detail}
                 selected.append(accepted)
-                attempts.append(dict(id=case["id"],stratum=stratum,accepted=True))
-                print("V152_FROZEN",stratum,case["id"],detail["sha256"],detail["cnf_bytes"],flush=True)
+                attempts.append(dict(id=case["id"],stratum=case["stratum"],accepted=True))
+                print("V152_FROZEN",case["stratum"],case["id"],detail["sha256"],detail["cnf_bytes"],flush=True)
             except Exception as err:
-                attempts.append(dict(id=case["id"],stratum=stratum,accepted=False,reason=str(err)[:160]))
-            if sum(c["stratum"]==stratum for c in selected)==count:break
-        assert sum(c["stratum"]==stratum for c in selected)==count,("insufficient pool",stratum)
+                attempts.append(dict(id=case["id"],stratum=case["stratum"],accepted=False,reason=str(err)[:160]))
+            if sum(c["label"]==label for c in selected)==count:break
+        assert sum(c["label"]==label for c in selected)==count,("insufficient new cases",label)
     assert len(selected)==16 and len({c["id"] for c in selected})==16
     assert not seen.intersection(c["id"] for c in selected)
     selected.sort(key=lambda c:hashlib.sha256((SALT+"/schedule/"+c["id"]).encode()).hexdigest())
-    dump(out,dict(protocol=PROTOCOL,selection="16 prospective original 2026 CNFs, fixed SHA lottery within official label+CaDiCaL runtime strata; no DRNAS evaluation",
+    dump(out,dict(protocol=PROTOCOL,selection="16 prospective original 2026 CNFs, 8 SAT/8 UNSAT chosen by fixed SHA lottery among official CaDiCaL <=180s, no DRNAS evaluation",
                   official_rev=REV,score_blob=SCORES_BLOB,excluded_prior_cases=len(seen),source_inputs=selected,
                   attempts=attempts,solvers=SOLVERS,repeats=REPEATS,official_cap=OFFICIAL_CAP,
                   hall_cap=HALL_CAP,one_cpu=True,memory_gib=3,
                   limitations=["Not official SC2026 ranking, uses 8s not competition 5000s and GitHub shared hardware",
-                   "Size cap 16MiB, official-baseline-stratified not representative of whole track",
+                   "Size cap 16MiB and <=180s official CaDiCaL baseline; balanced SAT/UNSAT, not representative of full track",
                    "Original official labels publicly known; new holdout only relative to frozen prior DRNAS subsets",
                    "For native UNSAT checks run independent certificate verifier; Kissat UNSAT trusted against published label",
                    "Hall generator is newly seeded but mathematical class is known from prior development"]))
