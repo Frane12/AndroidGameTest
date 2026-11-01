@@ -177,7 +177,12 @@ def analyze(path):
     comps = prior.components(equations)
     previous = baseline_v1311_coverage(equations, comps)
     budget = MAX_INPUT_EQUATIONS
-    agg = collections.Counter()
+    agg = collections.Counter({k: 0 for k in (
+        "visited_equations", "accepted_equations", "rejected_equations",
+        "unvisited_equations", "basis_rank_lower_bound", "zero_rows",
+        "xor_steps", "certified_contradictions", "certified_units",
+        "components_attempted", "components_fully_eliminated",
+        "components_not_attempted")})
     proofs = []
     incomplete = 0
     cases = []
