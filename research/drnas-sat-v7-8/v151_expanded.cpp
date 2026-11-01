@@ -373,6 +373,9 @@ static int kissat_fallback(char **argv) {
  cerr<<"DRNAS_V151_ERROR Kissat exec failure\n";
  return 3;
 }
+#ifdef DRNAS_V152_EMBED_V151
+#define main drnas_v151_embedded_main
+#endif
 int main(int argc,char**argv) {
  if(!(argc==4||(argc==5&&string(argv[4])=="--classify-only"))) {
    cerr<<"Usage: v151_broad INPUT_CNF KISSAT_BINARY SEED [--classify-only]\n";
