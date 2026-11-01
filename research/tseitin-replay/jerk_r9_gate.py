@@ -116,11 +116,11 @@ def main() -> None:
         "registry_sha256": runner.sha(args.seen_hashes.read_bytes()),
         "jerk_gate": {
             "enabled_only_for_mode": "jerk_gate",
-            "input": "wall-time trajectory at pinned conflicts 32 through 2048",
+            "input": "wall-time trajectory at pinned conflicts 32 through 2048; runtime checkpoints above 2048 are excluded even when the loop reports the 2048 mark at 2049",
             "metric": "mean absolute third finite difference of 11 equal-time interpolates, normalized by conflict growth",
             "threshold": THRESHOLD,
             "threshold_source": "median of formula medians among 13 complete R7 calibration formulas",
-            "decision": "if metric >= frozen threshold, set restart interval 25 at conflict 2048",
+            "decision": "if metric >= frozen threshold, request restart interval 25 at the 2048 checkpoint; due to loop ordering the first applicable check may report conflict 2049",
             "decision_direction_from": "R7 development pilot only; R8 holdout not used in threshold fitting",
             "default_behavior": "unchanged unless DRNAS_JERK_GATE=1 is explicitly set for the jerk_gate strategy",
         },

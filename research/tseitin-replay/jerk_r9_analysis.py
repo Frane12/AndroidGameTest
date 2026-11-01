@@ -163,7 +163,7 @@ def main():
             if diff > 1e-6:
                 raise SystemExit(f"C/Python Jerk metric mismatch: {diff}")
             gate_metric_audits += 1
-            eligible = int(gate["jerk_abs"] >= THRESHOLD)
+            eligible = int(float(gate["jerk_abs"]) >= THRESHOLD)
             if eligible != int(gate.get("eligible", "-1")):
                 raise SystemExit("Frozen Jerk threshold decision mismatch")
         elif gate.get("valid") == "0" and gate.get("eligible") != "0":

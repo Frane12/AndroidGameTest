@@ -49,8 +49,10 @@ def patch(source: str) -> str:
             if (r6_checkpoint_index==20 && !r9_jerk_gate_evaluated &&
                 r9_jerk_env && !strcmp(r9_jerk_env,"1")) {{
               r9_jerk_gate_evaluated=true;
-              bool r9_valid=true;
-              for (unsigned r9_i=1;r9_i<20;r9_i++)
+              unsigned r9_n=20;
+              while (r9_n && r9_jerk_conflicts[r9_n-1]>2048) r9_n--;
+              bool r9_valid=r9_n>=7;
+              for (unsigned r9_i=1;r9_i<r9_n;r9_i++)
                 if (r9_jerk_wall_ns[r9_i]<=r9_jerk_wall_ns[r9_i-1] ||
                     r9_jerk_conflicts[r9_i]<=r9_jerk_conflicts[r9_i-1])
                   r9_valid=false;
@@ -58,13 +60,13 @@ def patch(source: str) -> str:
               if (r9_valid) {{
                 for (unsigned r9_q=0;r9_q<=10;r9_q++) {{
                   const double r9_target=(double)r9_jerk_wall_ns[0] +
-                    (double)(r9_jerk_wall_ns[19]-r9_jerk_wall_ns[0]) *
+                    (double)(r9_jerk_wall_ns[r9_n-1]-r9_jerk_wall_ns[0]) *
                     (double)r9_q / 10.0;
                   unsigned r9_hi=1;
-                  while (r9_hi<20 &&
+                  while (r9_hi<r9_n &&
                          (double)r9_jerk_wall_ns[r9_hi]<r9_target)
                     r9_hi++;
-                  if (r9_hi>=20) r9_hi=19;
+                  if (r9_hi>=r9_n) r9_hi=r9_n-1;
                   const double r9_span=(double)(
                     r9_jerk_wall_ns[r9_hi]-r9_jerk_wall_ns[r9_hi-1]);
                   if (r9_span<=0.0) {{
