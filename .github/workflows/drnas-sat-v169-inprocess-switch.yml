@@ -1,0 +1,166 @@
+name: DRNAS SAT v16.9 persistent Kissat state preservation
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v169-inprocess-state-preserving-switch-20261101'
+    paths:
+      - 'experiments/drnas_v16/patch_kissat_v169.py'
+      - 'experiments/drnas_v16/inprocess_switch_v169.py'
+      - '.github/workflows/drnas-sat-v169-inprocess-switch.yml'
+
+jobs:
+  replay-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify patcher, runner and fixed research protocol
+        run: |
+          python3 -m py_compile experiments/drnas_v16/patch_kissat_v169.py
+          python3 -m py_compile experiments/drnas_v16/inprocess_switch_v169.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import inprocess_switch_v169 as m
+          assert m.CAP==20000
+          assert m.PINNED=="8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert {x[2] for x in m.CASES if x[0]=="holdout"}==set(range(169000,169006))
+          assert {x[2] for x in m.CASES if x[0]=="replay"}=={165000,165001}
+          print("V169_PROTOCOL_FROZEN_BEFORE_HOLDOUT")
+          PY
+      - name: Patch and compile pinned Kissat 4.0.4 in-process switch
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v169
+          cd /tmp/kissat-v169
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cd "$GITHUB_WORKSPACE"
+          python3 experiments/drnas_v16/patch_kissat_v169.py --kissat-root /tmp/kissat-v169
+          cd /tmp/kissat-v169
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Preflight unchanged SAT and UNSAT without switching
+        run: |
+          python3 - <<'PY'
+          import os,subprocess,tempfile
+          from pathlib import Path
+          solver="/tmp/kissat-v169/build/kissat"
+          with tempfile.TemporaryDirectory() as d:
+              yes=Path(d)/"sat.cnf";yes.write_text("p cnf 1 1\n1 0\n")
+              no=Path(d)/"unsat.cnf";no.write_text("p cnf 1 2\n1 0\n-1 0\n")
+              for path,rc in ((yes,10),(no,20)):
+                  for flags in ((),("--sat",),("--restartint=50",)):
+                      env=os.environ.copy();env.pop("DRNAS_SWITCH_MODE",None)
+                      result=subprocess.run([solver,"-s",*flags,str(path)],capture_output=True,
+                                            text=True,timeout=10,env=env)
+                      assert result.returncode==rc,(path,flags,result.returncode,result.stderr)
+                      assert "DRNAS_SWITCH" not in result.stdout
+              print("BASELINE_PARITY_PRESERVED")
+          PY
+      - name: Benchmark two known opposing SAT seeds with continuous solver state
+        run: |
+          python3 -u experiments/drnas_v16/inprocess_switch_v169.py \
+            --solver /tmp/kissat-v169/build/kissat \
+            --root drnas_v169_replay --timeout 25 --probe-timeout 3 \
+            --repeats 2 --group replay
+      - name: Assert in-process transition happened with learned clauses retained
+        run: |
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          with Path("drnas_v169_replay/measurements.csv").open(newline="") as f:
+              rows=list(csv.DictReader(f))
+          assert len(rows)==24,len(rows)
+          for mode in ("inproc-baseline","inproc-restart-only"):
+              changed=[r for r in rows if r["seed"]=="165001" and r["mode"]==mode]
+              assert len(changed)==2
+              for r in changed:
+                  assert r["switched"]=="True",(mode,r)
+                  assert int(r["switch_conflicts"])>=20000
+                  assert int(r["learned_at_switch"])>0
+          print("REPLAY_STATE_PRESERVED",len(rows),"measurements")
+          PY
+      - name: Upload replay baseline vs preserved-state proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v169-state-preserving-replay
+          path: |
+            drnas_v169_replay/measurements.csv
+            drnas_v169_replay/identities.csv
+            drnas_v169_replay/summary.txt
+          if-no-files-found: error
+
+  unseen-holdout:
+    needs: replay-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify immutable 20k-switch and six blind seeds again
+        run: |
+          python3 -m py_compile experiments/drnas_v16/patch_kissat_v169.py
+          python3 -m py_compile experiments/drnas_v16/inprocess_switch_v169.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import inprocess_switch_v169 as m
+          assert m.CAP==20000
+          assert len([x for x in m.CASES if x[0]=="holdout"])==6
+          assert not __import__("pathlib").Path("drnas_v169_blind/cnf").exists()
+          print("UNSEEN_INPUTS_NOT_GENERATED_BEFORE_POLICY_FREEZE")
+          PY
+      - name: Compile identical pinned and patched Kissat
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v169
+          cd /tmp/kissat-v169
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cd "$GITHUB_WORKSPACE"
+          python3 experiments/drnas_v16/patch_kissat_v169.py --kissat-root /tmp/kissat-v169
+          cd /tmp/kissat-v169
+          ./configure
+          make -j2
+      - name: Blind six new formulas x six modes x two repeats
+        run: |
+          python3 -u experiments/drnas_v16/inprocess_switch_v169.py \
+            --solver /tmp/kissat-v169/build/kissat \
+            --root drnas_v169_blind --timeout 25 --probe-timeout 3 \
+            --repeats 2 --group holdout
+      - name: Audit all 72 paired results, parity, state preservation and 25s budget
+        run: |
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          from collections import defaultdict
+          root=Path("drnas_v169_blind")
+          with (root/"measurements.csv").open(newline="") as f: rows=list(csv.DictReader(f))
+          with (root/"identities.csv").open(newline="") as f: ids=list(csv.DictReader(f))
+          assert len(rows)==72
+          assert len(ids)==6
+          assert {int(r["seed"]) for r in ids}==set(range(169000,169006))
+          bypair=defaultdict(dict)
+          for r in rows:
+              assert r["result"] in ("SAT","UNSAT","TIMEOUT"),r
+              assert float(r["seconds"])<=25.35,r
+              bypair[(r["seed"],r["repeat"])][r["mode"]]=r
+              if r["switched"]=="True":
+                  assert r["mode"] in ("inproc-baseline","inproc-restart-only"),r
+                  assert int(r["learned_at_switch"])>0,r
+                  assert int(r["switch_conflicts"])>=20000,r
+          assert len(bypair)==12
+          for pair,modes in bypair.items():
+              assert len(modes)==6,pair
+              outcomes={r["result"] for r in modes.values() if r["result"] in ("SAT","UNSAT")}
+              assert len(outcomes)<=1,(pair,outcomes)
+          print("V169_BLIND_STATE_AND_PARITY_AUDIT_PASSED",len(rows))
+          PY
+      - name: Upload final blind benchmark and statistics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v169-inprocess-switch-blind
+          path: |
+            drnas_v169_blind/measurements.csv
+            drnas_v169_blind/identities.csv
+            drnas_v169_blind/summary.txt
+          if-no-files-found: warn
