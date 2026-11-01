@@ -20,7 +20,7 @@ SOLVERS={"kissat":Path("/tmp/kissat_solver"),
          "kissat_api":Path("/tmp/kissat_api_control"),
          "v1531":Path("/tmp/v1531_nohang"),
          "v154":Path("/tmp/v154_inprocess"),
-         "v158":Path("/tmp/v158_synthesis")}
+         "v158":Path("/tmp/v158_mathgate")}
 DIMACS=["hole6","hole7","hole8","hole9","hole10"]
 CONTROL_ROOT=Path("/tmp/independent-controls/LogicalOptimizer.Benchmarks/SatCorpus")
 CONTROL=["uf075-01","uf080-01","uf090-01","uf095-01","uf100-01",
