@@ -2,7 +2,7 @@
 #include "v142_fastgate.cpp"
 
 // Pure structural preflight. Never returns a SAT/UNSAT classification.
-// Read no more than 96 clauses and 8192 input bytes. Repeated *distinct*
+// Inspect bounded windows across the file. Repeated *distinct*
 // sign patterns on the same support indicate a potentially affine block.
 // Missing a block is safe: the untouched Kissat solves that instance.
 static bool selective_xor_gate(const string& path) {
