@@ -270,7 +270,8 @@ def aggregate():
  for rank,i in reversed(list(enumerate(ids,1))):
   q=min(q,tests[i]["permutation_p_two_sided"]*len(tests)/rank)
   tests[i]["bh_q_all_family_predictor_tests"]=min(1.,q)
- # Undefined p remains N/A but counts as p=1 in the locked 12-hypothesis BH family.\n # Do not silently reduce the multiple-comparison denominator.
+ # Undefined p remains N/A but counts as p=1 in the locked 12-hypothesis BH family.
+ # Do not silently reduce the multiple-comparison denominator.
  pooled=[]
  for j,feature in enumerate(FEATURES):
   r=stratified_rho(grouped,feature)
@@ -282,7 +283,8 @@ def aggregate():
  q=1.
  for rank,i in reversed(list(enumerate(ids,1))):
   q=min(q,pooled[i]["permutation_p_two_sided"]*len(pooled)/rank)
-  pooled[i]["bh_q_three_pooled"]=min(1.,q)\n # The third predefined predictor counts in BH denominator even when its rho is N/A.
+  pooled[i]["bh_q_three_pooled"]=min(1.,q)
+ # The third predefined predictor counts in BH denominator even when its rho is N/A.
  def signed(feature):
   vals=[next(x for x in tests if x["family"]==f and x["predictor"]==feature)
            ["spearman_rho"] for f in families]
