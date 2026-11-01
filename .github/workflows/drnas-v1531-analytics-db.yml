@@ -1,0 +1,60 @@
+name: DRNAS V15.3.1 SQLite analytics and scatter plots
+on:
+  push:
+    branches:
+      - experiment/drnas-v1531-analytics-sqlite-20261101
+    paths:
+      - 'research/tseitin-replay/v1531_analytics_db.py'
+      - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
+      - '.github/workflows/drnas-v1531-analytics-db.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  analytics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download four frozen V15.3.1 benchmark artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p raw-artifacts
+          gh run download 41278912894 --repo "$GITHUB_REPOSITORY" --dir raw-artifacts
+          find raw-artifacts -type f -name '*.json' -print
+          test -f raw-artifacts/DRNAS-V1531-Regression-168/results.json
+          test -f raw-artifacts/DRNAS-V1531-Mixed-96/results.json
+          test -f raw-artifacts/DRNAS-V1531-SATLIB-40-Regression/results.json
+          test -f raw-artifacts/DRNAS-V1531-NoHang-Stress/stress.json
+      - name: Python dependencies for plotting
+        run: |
+          set -euo pipefail
+          python3 -m venv .analytics-venv
+          .analytics-venv/bin/pip install matplotlib
+          .analytics-venv/bin/python -m py_compile research/tseitin-replay/v1531_analytics_db.py
+      - name: Build real SQLite database and scatter graphs
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_analytics_db.py \
+            --input raw-artifacts \
+            --out sat-analysis \
+            --source-run 41278912894 \
+            --source-sha 188600aba8c530a4c20005ee0737fa92735403d3 \
+            --runner github-hosted-ubuntu-24.04
+          test -s sat-analysis/sat_analytics.sqlite
+          test -s sat-analysis/grouped.csv
+          test -s sat-analysis/paired.csv
+          test -s sat-analysis/scatter_paired_v1531.png
+      - name: Upload database, CSV and scatter plots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1531-SQLite-Analytics
+          path: sat-analysis/
+          if-no-files-found: warn
+          retention-days: 30
