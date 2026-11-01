@@ -16,8 +16,9 @@
 struct V162Row { std::set<int> vars; int rhs=0; };
 struct V162Relations {
  bool contradiction=false;
- unsigned full_xor=0, scc_aliases=0, source_units=0, learned_units=0;
+ unsigned full_xor=0, scc_aliases=0, source_units=0, learned_units=0, learned_binary=0;
  std::vector<int> units;
+ std::vector<std::vector<int>> binary_clauses;
 };
 static inline void v162_xor(V162Row& a,const V162Row& b) {
  std::set<int> result;
@@ -174,6 +175,23 @@ static V162Relations v162_derive(const Cnf& f) {
   }
  }
  out.learned_units=(unsigned)out.units.size();
+ // GF(2) two-variable row a XOR b = rhs is exactly equivalent to two
+ // *necessary* binary clauses, valid on every model of the original CNF.
+ // Keep only a bounded number; do not trust heuristics or partial supports.
+ std::set<std::pair<int,int>> seen_binary;
+ for(const auto& [pivot,row]:basis)if(row.vars.size()==2){
+   auto it=row.vars.begin();const int a=*it++;const int b=*it;
+   std::vector<std::vector<int>> inferred;
+   if(row.rhs==0)inferred={{-a,b},{a,-b}};
+   else inferred={{a,b},{-a,-b}};
+   for(auto& c:inferred){
+     std::sort(c.begin(),c.end());
+     std::pair<int,int> id{c[0],c[1]};
+     if(seen_binary.insert(id).second)out.binary_clauses.push_back(c);
+   }
+   if(out.binary_clauses.size()>=128)break;
+ }
+ out.learned_binary=(unsigned)out.binary_clauses.size();
  return out;
 }
 #endif
