@@ -54,6 +54,12 @@ jobs:
           mkdir -p sat-analysis
           if test -s research/sat-analytics-data/current/sat_analytics.sqlite; then
             cp research/sat-analytics-data/current/* sat-analysis/
+            # Prefer the latest complete compressed SQLite; retain the historical raw snapshot unchanged.
+            if test -s research/sat-analytics-data/current/sat_analytics.sqlite.gz; then
+              gzip -t research/sat-analytics-data/current/sat_analytics.sqlite.gz
+              gzip -dc research/sat-analytics-data/current/sat_analytics.sqlite.gz > sat-analysis/sat_analytics.sqlite
+              sha256sum sat-analysis/sat_analytics.sqlite | awk '{print $1}' | diff - research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+            fi
             .analytics-venv/bin/python - <<'PY'
           import sqlite3
           db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
@@ -660,7 +666,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p research/sat-analytics-data/current
-          for f in sat_analytics.sqlite summary.json datasets.csv formulas.csv \
+          # Never replace the historical uncompressed SQLite blob: the new cumulative DB is >100 MB.
+          for f in summary.json datasets.csv formulas.csv \
                    grouped.csv paired.csv source_artifacts.csv attempt_context.csv \
                    r6_signals.csv verified_certificates.csv r6_paired.csv \
                    r6_paired_summary.csv cross_dataset_hash_overlaps.csv ingest_audit.json \
@@ -692,6 +699,10 @@ jobs:
                    scatter_post_r9_sc2023.png scatter_post_r9_structure.png; do
             cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
           done
+          gzip -n -9 -c sat-analysis/sat_analytics.sqlite > research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          sha256sum sat-analysis/sat_analytics.sqlite | awk '{print $1}' > research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+          gzip -t research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          test "$(stat -c %s research/sat-analytics-data/current/sat_analytics.sqlite.gz)" -lt 100000000
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add research/sat-analytics-data/current
