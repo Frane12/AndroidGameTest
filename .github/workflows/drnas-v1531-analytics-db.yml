@@ -12,6 +12,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_post_r9.py'
       - 'research/tseitin-replay/v1531_ingest_r12_r15.py'
       - 'research/tseitin-replay/v1531_ingest_r16.py'
+      - 'research/tseitin-replay/v1531_ingest_r17.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -40,7 +41,8 @@ jobs:
             research/tseitin-replay/v1531_ingest_r8_r9.py \
             research/tseitin-replay/v1531_ingest_post_r9.py \
             research/tseitin-replay/v1531_ingest_r12_r15.py \
-            research/tseitin-replay/v1531_ingest_r16.py
+            research/tseitin-replay/v1531_ingest_r16.py \
+            research/tseitin-replay/v1531_ingest_r17.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -78,7 +80,7 @@ jobs:
           db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
           old=db.execute("SELECT COUNT(*) FROM datasets").fetchone()[0]
           post=db.execute("SELECT COUNT(*) FROM datasets WHERE dataset LIKE 'DRNAS-R10-%' OR dataset LIKE 'DRNAS-Selector-%' OR dataset LIKE 'DRNAS-SC2023-%'").fetchone()[0]
-          assert (old==57 and post==0) or (old in (79,135,151) and post==22),(old,post)
+          assert (old==57 and post==0) or (old in (79,135,151,167) and post==22),(old,post)
           print('post_r9_present='+('true' if post==22 else 'false'))
           db.close()
           PY
@@ -298,7 +300,7 @@ jobs:
           a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
           if (n,a)==(79,16250):
            print('new_data=true')
-          elif (n,a) in ((135,31730),(151,36530)):
+          elif (n,a) in ((135,31730),(151,36530),(167,39890)):
            assert db.execute('SELECT COUNT(*) FROM r12_r15_formula_features').fetchone()[0]==560
            assert db.execute('SELECT COUNT(*) FROM r12_r15_attempt_details').fetchone()[0]==15480
            assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
@@ -400,7 +402,7 @@ jobs:
           a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
           if (n,a)==(135,31730):
            print('new_data=true')
-          elif (n,a)==(151,36530):
+          elif (n,a) in ((151,36530),(167,39890)):
            assert db.execute('SELECT COUNT(*) FROM r16_formula_features').fetchone()[0]==160
            assert db.execute('SELECT COUNT(*) FROM r16_native_details').fetchone()[0]==4800
            assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
@@ -474,14 +476,105 @@ jobs:
           mkdir -p previous-r16
           gh run download 41434703564 --repo "$GITHUB_REPOSITORY" \
             --name DRNAS-V1531-SQLite-Analytics --dir previous-r16
-          cmp sat-analysis/sat_analytics.sqlite previous-r16/sat_analytics.sqlite
+          if [ "$(python3 - <<'PY'
+import sqlite3
+c=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+print(c.execute('SELECT COUNT(*) FROM attempts').fetchone()[0])
+PY
+)" = 36530 ]; then
+            cmp sat-analysis/sat_analytics.sqlite previous-r16/sat_analytics.sqlite
+          else
+            echo 'R17 cumulative snapshot already present: skip binary equality against R16 baseline'
+          fi
           for f in r16_ingest_audit.json r16_source_audit.csv r16_paired.csv \
                    r16_native_decisions.csv r16_formula_features.csv \
+                   r17_ingest_audit.json r17_source_audit.csv r17_paired.csv \
+                   r17_native_risk_decisions.csv r17_formula_features.csv \
+                   scatter_r17_random3_development.png scatter_r17_random3_test.png \
+                   scatter_r17_community3_development.png scatter_r17_community3_test.png \
                    scatter_r16_random3_development.png scatter_r16_random3_test.png \
                    scatter_r16_community3_development.png scatter_r16_community3_test.png; do
             test -s "previous-r16/$f"
             cp "previous-r16/$f" "sat-analysis/$f"
           done
+
+      - name: Detect strictly new immutable R17 native source
+        id: detect_r17
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          n=db.execute('SELECT COUNT(*) FROM datasets').fetchone()[0]
+          f=db.execute('SELECT COUNT(*) FROM formulas').fetchone()[0]
+          a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
+          if (n,f,a)==(151,2179,36530):
+           print('new_data=true')
+          elif (n,f,a)==(167,2339,39890):
+           assert db.execute('SELECT COUNT(*) FROM r17_formula_features').fetchone()[0]==160
+           assert db.execute('SELECT COUNT(*) FROM r17_native_details').fetchone()[0]==3360
+           assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+           print('new_data=false')
+          else:
+           raise RuntimeError('Unrecognized cumulative baseline before R17 '+str((n,f,a)))
+          db.close()
+          PY
+
+      - name: Retrieve only completed pinned R17 16-shard native benchmark
+        if: steps.detect_r17.outputs.new_data == 'true'
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          run=41446637396
+          mkdir -p new-input/r17/{aggregate,shards,raw}
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '.status+" "+.conclusion' | grep -Fx 'completed success'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --paginate \
+            --jq '.artifacts[] | [.name, (.id|tostring), (.expired|tostring)] | @tsv' \
+            > new-input/r17/artifact_index.tsv
+          test "$(wc -l < new-input/r17/artifact_index.tsv)" -eq 17
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R17-Frozen-Risk-True-Native-Prospective-Analysis --dir new-input/r17/aggregate
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'r17-*' --dir new-input/r17/raw
+          for path in new-input/r17/raw/r17-*; do
+            test -d "$path"
+            shard="\${path##*/}"
+            shard="\${shard#r17-}"
+            mv "$path" "new-input/r17/shards/$shard"
+            test -s "new-input/r17/shards/$shard/measurements.csv"
+            test -s "new-input/r17/shards/$shard/manifest.json"
+            test -s "new-input/r17/shards/$shard/traces.jsonl"
+          done
+          test "$(find new-input/r17/shards -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 16
+          for f in results.json paired.csv formula_features.csv native_risk_decisions.csv risk_model.json; do
+            test -s "new-input/r17/aggregate/$f"
+          done
+
+      - name: Append R17 real native SHA-audited attempts without modifying historical solver
+        if: steps.detect_r17.outputs.new_data == 'true'
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r17.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input/r17
+          for f in r17_ingest_audit.json r17_source_audit.csv r17_paired.csv \
+                   r17_native_risk_decisions.csv r17_formula_features.csv; do
+            test -s "sat-analysis/$f"
+          done
+          for fold in random3_development random3_test community3_development community3_test; do
+            test -s "sat-analysis/scatter_r17_$fold.png"
+          done
+          .analytics-venv/bin/python - <<'PY'
+          import sqlite3,json
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          assert tuple(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))==(167,2339,39890)
+          assert db.execute('SELECT COUNT(*) FROM r17_native_details').fetchone()[0]==3360
+          db.close()
+          a=json.load(open('sat-analysis/r17_ingest_audit.json'))
+          assert a['new_native_attempts']==3360 and a['unique_new_formula_sha256']==160
+          print('R17_VERIFIED_CUMULATIVE_SQLITE_SUCCESS')
+          PY
 
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
