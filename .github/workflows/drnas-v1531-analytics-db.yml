@@ -11,6 +11,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_r8_r9.py'
       - 'research/tseitin-replay/v1531_ingest_post_r9.py'
       - 'research/tseitin-replay/v1531_ingest_r12_r15.py'
+      - 'research/tseitin-replay/v1531_ingest_r16.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -38,7 +39,8 @@ jobs:
             research/tseitin-replay/v1531_ingest_r7_crossfamily.py \
             research/tseitin-replay/v1531_ingest_r8_r9.py \
             research/tseitin-replay/v1531_ingest_post_r9.py \
-            research/tseitin-replay/v1531_ingest_r12_r15.py
+            research/tseitin-replay/v1531_ingest_r12_r15.py \
+            research/tseitin-replay/v1531_ingest_r16.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -385,6 +387,82 @@ jobs:
           a=json.load(open('sat-analysis/r12_r15_ingest_audit.json'))
           assert a['new_native_attempts']==15480 and a['new_unique_sha']==560
           print('R12_R15_SUCCESSFULLY_VERIFIED_CUMULATIVE_SNAPSHOT')
+          PY
+
+      - name: Detect immutable R16 native additions
+        id: detect_r16
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          n=db.execute('SELECT COUNT(*) FROM datasets').fetchone()[0]
+          a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
+          if (n,a)==(135,31730):
+           print('new_data=true')
+          elif (n,a)==(151,36530):
+           assert db.execute('SELECT COUNT(*) FROM r16_formula_features').fetchone()[0]==160
+           assert db.execute('SELECT COUNT(*) FROM r16_native_details').fetchone()[0]==4800
+           assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+           print('new_data=false')
+          else:
+           raise RuntimeError('Unknown immutable R16 baseline '+str((n,a)))
+          db.close()
+          PY
+
+      - name: Download verified R16 16-shard raw evidence and pinned aggregate
+        if: steps.detect_r16.outputs.new_data == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run=41426664482
+          mkdir -p new-input/r16/{aggregate,shards,raw}
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '.status+" "+.conclusion' | grep -Fx 'completed success'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --paginate \
+            --jq '.artifacts[] | [.name, (.id|tostring), (.expired|tostring)] | @tsv' \
+            > new-input/r16/artifact_index.tsv
+          test "$(wc -l < new-input/r16/artifact_index.tsv)" -eq 17
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R16-Verified-Native-Live-Model-Analysis --dir new-input/r16/aggregate
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'r16-*' --dir new-input/r16/raw
+          for path in new-input/r16/raw/r16-*; do
+            test -d "$path"
+            shard="${path##*/}"
+            shard="${shard#r16-}"
+            mv "$path" "new-input/r16/shards/$shard"
+            test -s "new-input/r16/shards/$shard/measurements.csv"
+            test -s "new-input/r16/shards/$shard/manifest.json"
+            test -s "new-input/r16/shards/$shard/traces.jsonl"
+          done
+          test "$(find new-input/r16/shards -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 16
+          for f in results.json paired.csv formula_features.csv native_decisions.csv; do
+            test -s "new-input/r16/aggregate/$f"
+          done
+
+      - name: SHA-audited additive R16 real native SQLite ingest
+        if: steps.detect_r16.outputs.new_data == 'true'
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r16.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input/r16
+          for f in r16_ingest_audit.json r16_source_audit.csv r16_paired.csv r16_native_decisions.csv r16_formula_features.csv; do
+            test -s "sat-analysis/$f"
+          done
+          for fold in random3_development random3_test community3_development community3_test; do
+            test -s "sat-analysis/scatter_r16_$fold.png"
+          done
+          .analytics-venv/bin/python - <<'PY'
+          import sqlite3,json
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          assert tuple(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))==(151,2179,36530)
+          assert db.execute('SELECT COUNT(*) FROM r16_native_details').fetchone()[0]==4800
+          db.close()
+          a=json.load(open('sat-analysis/r16_ingest_audit.json'))
+          assert a['new_native_attempts']==4800 and a['unique_new_formula_sha256']==160
+          print('R16_VERIFIED_CUMULATIVE_SQLITE_SUCCESS')
           PY
 
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
