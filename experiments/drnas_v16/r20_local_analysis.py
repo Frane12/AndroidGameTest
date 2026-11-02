@@ -135,8 +135,8 @@ def load():
     fail("R20 recorded event and raw trace do not match")
    if event:
     times=[int(z["conflict"]) for z in cp]
-   if len(cp)!=3 or not (256<=times[0]<512 and
-       512<=times[1]<1024 and 1024<=times[2]<2048):
+    if len(cp)!=3 or not (256<=times[0]<512 and
+        512<=times[1]<1024 and 1024<=times[2]<2048):
      fail("R20 missing or misordered local-use landmark timestamps")
     if event.get("selected")!=row["r20_python_selected"]:
      fail("R20 native vs independent Python gate mismatch")
