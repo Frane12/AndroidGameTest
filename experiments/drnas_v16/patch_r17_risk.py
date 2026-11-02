@@ -75,7 +75,7 @@ def patch(source):
                     fprintf(stdout,
                       "c R17_RISK conflict=%" PRIu64
                       " benefit=%.12f risk=%.12f risk_limit=%.12f"
-                      " selected=%d target=%d\\\\n",
+                      " selected=%d target=%d\\n",
                       drnas_seen,score,harm_risk,r17_maxrisk,
                       (int)selected,selected?2048:0);
                     fflush(stdout);
