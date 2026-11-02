@@ -21,7 +21,7 @@ def replace_one(s,old,new,what):
 def config():
  c=json.loads(CFG.read_text())
  gate=c["frozen_gate"]
- if (c["protocol"]!="DRNAS-R21-true-clause-birth-lbd-implication-role-frozen-20261102-v1"
+ if (c["protocol"]!="DRNAS-R21-clause-signature-age-lbd-implication-role-frozen-20261102-v2"
     or c["history"]["pinned_kissat_commit"]!=EXPECTED_KISSAT
     or gate["low_lbd_max"]!=4 or gate["mature_age_conflicts"]!=256
     or gate["min_prior_lowLBD_mature_reason_share"]!=.08
@@ -30,15 +30,16 @@ def config():
     or c["dataset"]["expected_native_executions"]!=3840):
   raise RuntimeError("R21_FROZEN_PROTOCOL_OR_PIN_CHANGED")
  return c
-def patch_clause_h(src):
- src=replace_one(src,'#include <stdbool.h>','#include <stdbool.h>\n#include <stdint.h>',"clause_h_include")
- return replace_one(src,"  unsigned searched;","  uint64_t r21_birth_conflicts;\n  unsigned searched;","clause_birth_field")
 def patch_clause_c(src):
+ src=replace_one(src,
+  '#include <string.h>',
+  '#include <string.h>\n\nextern void drnas_r21_register_birth (kissat *, clause *);',
+  "birth_hook_decl")
  return replace_one(src,
-  '  init_clause (c, redundant, glue, size);\n  memcpy (c->lits, lits, size * sizeof (unsigned));',
-  '''  init_clause (c, redundant, glue, size);
-  c->r21_birth_conflicts = solver->statistics.conflicts;
-  memcpy (c->lits, lits, size * sizeof (unsigned));''',"birth_write")
+  '  memcpy (c->lits, lits, size * sizeof (unsigned));',
+  '''  memcpy (c->lits, lits, size * sizeof (unsigned));
+  if (redundant) drnas_r21_register_birth (solver, c);''',
+  "birth_register_after_content_copy")
 def patch_deduce(src):
  anchor="static inline void mark_clause_as_used (kissat *solver, clause *c) {"
  metrics='''// DRNAS R21 research-only counters, one Kissat process = one SAT attempt.
@@ -47,15 +48,70 @@ def patch_deduce(src):
 // 4=LBD>4 implication reasons,5=all redundant uses in conflict analysis,
 // 6=antecedent reason uses,7=conflict clause uses,
 // 8=LBD<=4 conflict-analysis uses,9=mature LBD<=4 conflict-analysis uses.
-static uint64_t drnas_r21_counts[10] = {0};
+static uint64_t drnas_r21_counts[11] = {0};
 
 void drnas_r21_copy_counters (uint64_t *destination) {
-  for (unsigned i=0;i<10;i++) destination[i]=drnas_r21_counts[i];
+  for (unsigned i=0;i<11;i++) destination[i]=drnas_r21_counts[i];
 }
 
+// Non-invasive sidecar registry for clause birth (no clause ABI change).
+// The 128-bit signature ignores literal order; if clause structure changes,
+// its age is unknown and conservatively reported as 0.
+#define R21_BIRTH_CAPACITY (1u<<18)
+typedef struct {
+  uint64_t fingerprint_a, fingerprint_b, born_plus_one;
+} drnas_r21_birth_entry;
+static drnas_r21_birth_entry drnas_r21_births[R21_BIRTH_CAPACITY];
+
+static inline uint64_t drnas_r21_mix(uint64_t z) {
+  z=(z^(z>>30))*0xbf58476d1ce4e5b9ULL;
+  z=(z^(z>>27))*0x94d049bb133111ebULL;
+  return z^(z>>31);
+}
+static inline void drnas_r21_clause_fingerprint (
+    const clause *c, uint64_t *a, uint64_t *b) {
+  uint64_t s=0x9e3779b97f4a7c15ULL +
+             (uint64_t)c->size*0x94d049bb133111ebULL;
+  uint64_t t=0x243f6a8885a308d3ULL ^
+             (uint64_t)c->size*0xbf58476d1ce4e5b9ULL;
+  for (unsigned j=0;j<c->size;j++) {
+    const uint64_t x=drnas_r21_mix((uint64_t)c->lits[j]+1ULL);
+    s+=x;t^=drnas_r21_mix(x+0xd6e8feb86659fd93ULL);
+  }
+  *a=drnas_r21_mix(s);*b=drnas_r21_mix(t);
+}
+void drnas_r21_register_birth (kissat *solver, clause *c) {
+  if (!c->redundant || c->size<=2)return;
+  uint64_t a,b;drnas_r21_clause_fingerprint(c,&a,&b);
+  unsigned i=(unsigned)a&(R21_BIRTH_CAPACITY-1u);
+  for (unsigned step=0;step<R21_BIRTH_CAPACITY;step++) {
+    drnas_r21_birth_entry *slot=&drnas_r21_births[i];
+    if (!slot->born_plus_one ||
+        (slot->fingerprint_a==a && slot->fingerprint_b==b)) {
+      slot->fingerprint_a=a;slot->fingerprint_b=b;
+      // Most recently born identical content: conservative age.
+      slot->born_plus_one=solver->statistics.conflicts+1ULL;
+      return;
+    }
+    i=(i+1u)&(R21_BIRTH_CAPACITY-1u);
+  }
+  fprintf(stderr,"R21_BIRTH_TABLE_FULL\\n");exit(79);
+}
 static inline uint64_t drnas_r21_age (kissat *solver, clause *c) {
-  const uint64_t now=solver->statistics.conflicts;
-  return now>=c->r21_birth_conflicts ? now-c->r21_birth_conflicts : 0;
+  uint64_t a,b;drnas_r21_clause_fingerprint(c,&a,&b);
+  unsigned i=(unsigned)a&(R21_BIRTH_CAPACITY-1u);
+  for (unsigned step=0;step<R21_BIRTH_CAPACITY;step++) {
+    drnas_r21_birth_entry *slot=&drnas_r21_births[i];
+    if (!slot->born_plus_one)break;
+    if (slot->fingerprint_a==a && slot->fingerprint_b==b) {
+      const uint64_t birth=slot->born_plus_one-1ULL;
+      const uint64_t now=solver->statistics.conflicts;
+      return now>=birth?now-birth:0;
+    }
+    i=(i+1u)&(R21_BIRTH_CAPACITY-1u);
+  }
+  drnas_r21_counts[10]++;
+  return 0;
 }
 
 // Called on assigning a literal via an explicit large learned clause.
@@ -110,7 +166,7 @@ def patch_search(src):
  s=replace_one(s,
   '  uint64_t r20_clause_use[4]={0};',
   '''  uint64_t r20_clause_use[4]={0};
-  uint64_t r21_bins[4][10]={{0}};
+  uint64_t r21_bins[4][11]={{0}};
   extern void drnas_r21_copy_counters (uint64_t *);''',"native_bins")
  s=replace_one(s,
   '                if (r20_active) {\n                  r20_clause_use[i]=solver->statistics.clauses_used;',
@@ -123,11 +179,12 @@ def patch_search(src):
                       " oldlow=%" PRIu64 " old=%" PRIu64
                       " high=%" PRIu64 " analysis=%" PRIu64
                       " antecedent=%" PRIu64 " conflictreason=%" PRIu64
-                      " analysislow=%" PRIu64 " analysisoldlow=%" PRIu64 "\\n",
+                      " analysislow=%" PRIu64 " analysisoldlow=%" PRIu64
+                      " birth_unknown=%" PRIu64 "\\n",
                       drnas_seen,r21_bins[i][0],r21_bins[i][1],
                       r21_bins[i][2],r21_bins[i][3],r21_bins[i][4],
                       r21_bins[i][5],r21_bins[i][6],r21_bins[i][7],
-                      r21_bins[i][8],r21_bins[i][9]);
+                      r21_bins[i][8],r21_bins[i][9],r21_bins[i][10]);
                     fflush(stdout);
                   }
                 }
@@ -177,7 +234,6 @@ def main():
  config()
  root=a.kissat_root/"src"
  edits={
- "clause.h":patch_clause_h,
  "clause.c":patch_clause_c,
  "deduce.c":patch_deduce,
  "assign.c":patch_assign,
@@ -189,7 +245,7 @@ def main():
   content=fun(target.read_text())
   targets[target]=content
  for dest,txt in targets.items():dest.write_text(txt)
- print("R21_TRUE_CLAUSE_BIRTH_LBD_ROLE_PINNED_PATCHED",
+ print("R21_NONINVASIVE_CLAUSE_BIRTH_SIGNATURE_LBD_ROLE_PATCHED",
   "protocol_sha256="+hashlib.sha256(CFG.read_bytes()).hexdigest(),
   "kissat_pin="+EXPECTED_KISSAT,
   "source_sha256="+hashlib.sha256(
