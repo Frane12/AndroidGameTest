@@ -165,6 +165,21 @@ def main():
  export(out/"r21_paired.csv",paired_out)
  export(out/"r21_formula_features.csv",features)
  export(out/"r21_native_decisions.csv",decisions)
+ db=sqlite3.connect(args.db)
+ try:
+  for table in ("datasets","formulas","source_artifacts","attempt_context"):
+   q=db.execute("SELECT * FROM "+table+" ORDER BY 1,2");columns=[x[0] for x in q.description]
+   export(out/(table+".csv"),[dict(zip(columns,row)) for row in q])
+  summary_path=out/"summary.json"
+  summary=json.loads(summary_path.read_text()) if summary_path.is_file() else {}
+  q=db.execute("SELECT * FROM datasets ORDER BY dataset");columns=[x[0] for x in q.description]
+  summary["datasets"]=[dict(zip(columns,row)) for row in q]
+  summary["r21_verified_ingest"]={"run":run,"commit":COMMIT,"before":before,"after":after,
+   "raw_shards":16,"new_native_attempts":3840,"unique_new_formula_sha256":160,
+   "paired_formula_comparisons":1120,"aggregate_sha256":aggregate_sha,
+   "classification":"synthetic random3/community3 development/test; not official"}
+  summary_path.write_text(json.dumps(summary,indent=2)+"\n")
+ finally:db.close()
  try:
   import matplotlib
   matplotlib.use("Agg")
