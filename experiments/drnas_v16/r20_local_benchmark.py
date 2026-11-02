@@ -140,11 +140,12 @@ def run_one(case,rep,mode,runner):
     r16_model=native.get("model",""),r16_decision_error="")
   extra={}
   if event:
-   entries={int(x["conflict"]):x for x in cp}
-   if set(entries)!={256,512,1024}:
-    row["error"]="R20 MISSING LOCAL CLAUSE UTILITY CHECKPOINT 256/512/1024"
+   observed=[int(x["conflict"]) for x in cp]
+   if (len(cp)!=3 or not (256<=observed[0]<512 and
+       512<=observed[1]<1024 and 1024<=observed[2]<2048)):
+    row["error"]="R20 MISSING OR MISORDERED LOCAL CLAUSE UTILITY LANDMARKS"
    else:
-    a,b,d=[entries[k] for k in (256,512,1024)]
+    a,b,d=cp
     u0=int(b["used"])-int(a["used"])
     u1=int(d["used"])-int(b["used"])
     l0=int(b["learned"])-int(a["learned"])
