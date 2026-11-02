@@ -13,6 +13,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_r12_r15.py'
       - 'research/tseitin-replay/v1531_ingest_r16.py'
       - 'research/tseitin-replay/v1531_ingest_r17.py'
+      - 'research/tseitin-replay/v1531_ingest_r18.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -42,7 +43,8 @@ jobs:
             research/tseitin-replay/v1531_ingest_post_r9.py \
             research/tseitin-replay/v1531_ingest_r12_r15.py \
             research/tseitin-replay/v1531_ingest_r16.py \
-            research/tseitin-replay/v1531_ingest_r17.py
+            research/tseitin-replay/v1531_ingest_r17.py \
+            research/tseitin-replay/v1531_ingest_r18.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -80,7 +82,7 @@ jobs:
           db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
           old=db.execute("SELECT COUNT(*) FROM datasets").fetchone()[0]
           post=db.execute("SELECT COUNT(*) FROM datasets WHERE dataset LIKE 'DRNAS-R10-%' OR dataset LIKE 'DRNAS-Selector-%' OR dataset LIKE 'DRNAS-SC2023-%'").fetchone()[0]
-          assert (old==57 and post==0) or (old in (79,135,151,167) and post==22),(old,post)
+          assert (old==57 and post==0) or (old in (79,135,151,167,183) and post==22),(old,post)
           print('post_r9_present='+('true' if post==22 else 'false'))
           db.close()
           PY
@@ -300,7 +302,7 @@ jobs:
           a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
           if (n,a)==(79,16250):
            print('new_data=true')
-          elif (n,a) in ((135,31730),(151,36530),(167,39890)):
+          elif (n,a) in ((135,31730),(151,36530),(167,39890),(183,44210)):
            assert db.execute('SELECT COUNT(*) FROM r12_r15_formula_features').fetchone()[0]==560
            assert db.execute('SELECT COUNT(*) FROM r12_r15_attempt_details').fetchone()[0]==15480
            assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
@@ -402,7 +404,7 @@ jobs:
           a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
           if (n,a)==(135,31730):
            print('new_data=true')
-          elif (n,a) in ((151,36530),(167,39890)):
+          elif (n,a) in ((151,36530),(167,39890),(183,44210)):
            assert db.execute('SELECT COUNT(*) FROM r16_formula_features').fetchone()[0]==160
            assert db.execute('SELECT COUNT(*) FROM r16_native_details').fetchone()[0]==4800
            assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
@@ -501,7 +503,7 @@ jobs:
           a=db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]
           if (n,f,a)==(151,2179,36530):
            print('new_data=true')
-          elif (n,f,a)==(167,2339,39890):
+          elif (n,f,a) in ((167,2339,39890),(183,2499,44210)):
            assert db.execute('SELECT COUNT(*) FROM r17_formula_features').fetchone()[0]==160
            assert db.execute('SELECT COUNT(*) FROM r17_native_details').fetchone()[0]==3360
            assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
@@ -567,6 +569,83 @@ jobs:
           print('R17_VERIFIED_CUMULATIVE_SQLITE_SUCCESS')
           PY
 
+
+      - name: Detect strictly new immutable R18 native source
+        id: detect_r18
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          n,f,a=(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))
+          if (n,f,a)==(167,2339,39890):
+           print('new_data=true')
+          elif (n,f,a)==(183,2499,44210):
+           assert db.execute('SELECT COUNT(*) FROM r18_formula_features').fetchone()[0]==160
+           assert db.execute('SELECT COUNT(*) FROM r18_native_details').fetchone()[0]==4320
+           assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+           print('new_data=false')
+          else:
+           raise RuntimeError('Unknown immutable cumulative R18 baseline '+str((n,f,a)))
+          db.close()
+          PY
+
+      - name: Retrieve pinned R18 16-shard raw native artifacts and completed aggregate
+        if: steps.detect_r18.outputs.new_data == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run=41454823999
+          mkdir -p new-input/r18/{aggregate,shards,raw}
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '.status+" "+.conclusion' | grep -Fx 'completed success'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --paginate \
+            --jq '.artifacts[] | [.name, (.id|tostring), (.expired|tostring)] | @tsv' \
+            > new-input/r18/artifact_index.tsv
+          test "$(wc -l < new-input/r18/artifact_index.tsv)" -eq 17
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+            --name DRNAS-R18-Frozen-Direct-Effect-Prospective-Native-Analysis --dir new-input/r18/aggregate
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'r18-*' --dir new-input/r18/raw
+          for path in new-input/r18/raw/r18-*; do
+            test -d "$path"
+            shard="${path##*/}"
+            shard="${shard#r18-}"
+            mv "$path" "new-input/r18/shards/$shard"
+            for f in measurements.csv manifest.json traces.jsonl; do
+              test -s "new-input/r18/shards/$shard/$f"
+            done
+          done
+          test "$(find new-input/r18/shards -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 16
+          for f in results.json paired.csv formula_features.csv native_decisions.csv netbenefit_model.json model_audit.json; do
+            test -s "new-input/r18/aggregate/$f"
+          done
+
+      - name: Append SHA-verified R18 true native measurements, preserve historical SQLite
+        if: steps.detect_r18.outputs.new_data == 'true'
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r18.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input/r18
+          for f in r18_ingest_audit.json r18_source_audit.csv r18_paired.csv \
+                   r18_native_decisions.csv r18_formula_features.csv; do
+            test -s "sat-analysis/$f"
+          done
+          for fold in random3_development random3_test community3_development community3_test; do
+            test -s "sat-analysis/scatter_r18_$fold.png"
+          done
+          .analytics-venv/bin/python - <<'PY'
+          import sqlite3,json
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          assert tuple(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))==(183,2499,44210)
+          assert db.execute('SELECT COUNT(*) FROM r18_native_details').fetchone()[0]==4320
+          db.close()
+          a=json.load(open('sat-analysis/r18_ingest_audit.json'))
+          assert a['new_native_attempts']==4320 and a['unique_new_formula_sha256']==160
+          print('R18_VERIFIED_CUMULATIVE_SQLITE_SUCCESS')
+          PY
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -599,8 +678,12 @@ jobs:
                    r16_native_decisions.csv r16_formula_features.csv \
                    r17_ingest_audit.json r17_source_audit.csv r17_paired.csv \
                    r17_native_risk_decisions.csv r17_formula_features.csv \
+                   r18_ingest_audit.json r18_source_audit.csv r18_paired.csv \
+                   r18_native_decisions.csv r18_formula_features.csv \
                    scatter_r17_random3_development.png scatter_r17_random3_test.png \
                    scatter_r17_community3_development.png scatter_r17_community3_test.png \
+                   scatter_r18_random3_development.png scatter_r18_random3_test.png \
+                   scatter_r18_community3_development.png scatter_r18_community3_test.png \
                    scatter_r16_random3_development.png scatter_r16_random3_test.png \
                    scatter_r16_community3_development.png scatter_r16_community3_test.png \
                    scatter_r12_paired_test.png scatter_r13_paired_test.png \
