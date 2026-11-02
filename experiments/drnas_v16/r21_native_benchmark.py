@@ -31,7 +31,7 @@ PREV_PARSE=r20.parse_r20
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def cfg():
  c=json.loads(PROTOCOL.read_text())
- if (c["protocol"]!="DRNAS-R21-true-clause-birth-lbd-implication-role-frozen-20261102-v1"
+ if (c["protocol"]!="DRNAS-R21-clause-signature-age-lbd-implication-role-frozen-20261102-v2"
      or c["dataset"]["modes"]!=list(MODES)
      or c["dataset"]["expected_native_executions"]!=3840
      or c["dataset"]["seed_base"]!=2121210000
