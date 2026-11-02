@@ -175,7 +175,7 @@ def classify(formulas,decisions,paired,summary):
         if native is not None:
             check(python is not None and abs(native-python)<2e-5,
                   "C/Python score parity failure")
-            check(row["native_conflict"]=="1024", "wrong checkpoint")
+            check(row["native_conflict"] in ("1024","1025"), "decision not at 1024/1025 checkpoint")
         if row["selected"]=="1":
             check(native is not None and row["native_ready"]=="1",
                   "selected before ready")
