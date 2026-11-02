@@ -337,6 +337,8 @@ def main():
     "historical formula rows changed")
   check(db.execute("SELECT COUNT(*) FROM attempts WHERE dataset NOT LIKE 'DRNAS-R12-%' AND dataset NOT LIKE 'DRNAS-R13-%' AND dataset NOT LIKE 'DRNAS-R14-%' AND dataset NOT LIKE 'DRNAS-R15-%'").fetchone()[0]==baseline["attempts"],
     "historical attempt rows changed")
+  # Preserve old R8/R9 and post-R9 reports before base.analytics regenerates summary.json.
+  prior_summary=json.loads((a.out/'summary.json').read_text()) if (a.out/'summary.json').is_file() else {}
   # Export all existing analytics with additive records, preserving old historical
   # source and fold metadata and old post-R9 specialized tables.
   grouped,paired,telemetry=base.analytics(db,a.out)
@@ -418,6 +420,8 @@ def main():
   (a.out/"r12_r15_ingest_audit.json").write_text(json.dumps(audit,indent=2)+"\n")
   path=a.out/"summary.json"
   full=json.loads(path.read_text())
+  for key,value in prior_summary.items():
+   if key not in full:full[key]=value
   full["r12_r15_verified_ingest"]={k:v for k,v in audit.items() if k!="all_new_sources"}
   path.write_text(json.dumps(full,indent=2)+"\n")
   db.commit()
