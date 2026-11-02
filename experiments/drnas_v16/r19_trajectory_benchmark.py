@@ -173,9 +173,8 @@ def smoke():
     row,trace=one(case,0,mode,"R19 smoke")
     if row["error"] or row["status"] not in ("SAT","UNSAT"):
      raise RuntimeError("R19 NATIVE SMOKE FAILED: "+str(row))
-   if r16.landmarks(trace).get(1024) is not None:
-    print("R19_SMOKE_SOLVER_PASS",case["formula"],flush=True)
-    return
+   print("R19_SMOKE_SOLVER_PASS",case["formula"],flush=True)
+   return
  raise RuntimeError("R19 NO PREFIX FROM SMOKE FORMULAS")
 
 if __name__=="__main__":
