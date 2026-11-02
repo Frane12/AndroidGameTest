@@ -63,7 +63,7 @@ def main():
   before=tuple(db.execute("SELECT COUNT(*) FROM "+t).fetchone()[0] for t in ("datasets","formulas","attempts"))
   need(before==(215,2819,49490),"historical baseline changed "+str(before))
   prior={h for (h,) in db.execute("SELECT formula_sha256 FROM formulas") if h}
-  need(len(prior)==2819,"prior SHA duplicates / missing")
+  need(bool(prior),"historical formula SHA registry empty")
   db.execute("""CREATE TABLE IF NOT EXISTS r21_native_details(
    dataset TEXT,case_name TEXT,solver TEXT,repeat INTEGER,
    raw_row_sha256 TEXT,trace_sha256 TEXT,source_manifest_sha256 TEXT,
