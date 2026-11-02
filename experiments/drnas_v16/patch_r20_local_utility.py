@@ -42,20 +42,19 @@ def patch(src):
  s=once(s,
   '  uint64_t r16_cp_decisions[4]={0};',
   '''  uint64_t r16_cp_decisions[4]={0};
-  uint64_t r20_clause_use[4]={0},r20_clause_improved[4]={0};''')
+  uint64_t r20_clause_use[4]={0};''')
  s=once(s,
   '                r16_cp_stable[i]=(int)solver->stable;',
   '''                r16_cp_stable[i]=(int)solver->stable;
                 if (r20_active) {
                   r20_clause_use[i]=solver->statistics.clauses_used;
-                  r20_clause_improved[i]=solver->statistics.clauses_improved;
                   if (r16_mark==256 || r16_mark==512 || r16_mark==1024) {
                     fprintf(stdout,
                       "c R20_TRACE conflict=%" PRIu64
-                      " used=%" PRIu64 " improved=%" PRIu64
+                      " used=%" PRIu64
                       " learned=%" PRIu64 " props=%" PRIu64
                       " glue=%.12f\\n",
-                      drnas_seen,r20_clause_use[i],r20_clause_improved[i],
+                      drnas_seen,r20_clause_use[i],
                       r16_cp_learned[i],r16_cp_props[i],r16_cp_glue[i]);
                     fflush(stdout);
                   }
