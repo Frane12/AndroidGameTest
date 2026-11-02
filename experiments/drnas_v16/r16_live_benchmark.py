@@ -92,7 +92,9 @@ def parse_r16(output):
     d[key]=val
   markers.append(d)
  if len(markers)>1:raise RuntimeError("R16 NATIVE DECISION LOGGED MORE THAN ONCE")
- if markers:labels["R16_DECISION"]=markers[0]
+ if markers:
+  labels["R16_DECISION"]=markers[0]
+  labels.setdefault("DRNAS_V177_EARLY",{})["r16_event"]=markers[0]
  return points,labels
 previous.r14.r11.base.extract_tags=parse_r16
 
