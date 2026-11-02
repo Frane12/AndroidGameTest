@@ -36,7 +36,7 @@ def patch(source):
     }
     r13_n=(unsigned)n_value;
   }''')
-    s=once(s,'  if (r12_active) {','  if (r12_active || r13_active) {')
+    s=once(s,'  double r12_degree_cv=0.0;\n  if (r12_active) {','  double r12_degree_cv=0.0;\n  if (r12_active || r13_active) {')
     s=once(s,
        '          fprintf(stdout,\n           "c DRNAS_V177_EARLY r=%.9f d=%.9f p=%.9f g=%.9f l=%.9f"',
        '''          if (r13_active) {
