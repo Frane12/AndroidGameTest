@@ -757,6 +757,41 @@ jobs:
           test -s sat-analysis/r20_ingest_audit.json
           for fold in random3_development random3_test community3_development community3_test; do test -s "sat-analysis/scatter_r20_$fold.png"; done
 
+      - name: Preserve verified R19/R20 audit and charts from prior successful artifact
+        if: steps.detect_r19_r20.outputs.r20_new != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous-r19-r20
+          gh run download 41499446432 --repo "$GITHUB_REPOSITORY" --name DRNAS-V1531-SQLite-Analytics --dir previous-r19-r20
+          for v in 19 20; do
+            for f in r${v}_ingest_audit.json r${v}_source_audit.csv r${v}_paired.csv; do
+              test -s "previous-r19-r20/$f"
+              cp "previous-r19-r20/$f" "sat-analysis/$f"
+            done
+            for fold in random3_development random3_test community3_development community3_test; do
+              test -s "previous-r19-r20/scatter_r${v}_$fold.png"
+              cp "previous-r19-r20/scatter_r${v}_$fold.png" "sat-analysis/scatter_r${v}_$fold.png"
+            done
+          done
+          for f in r19_offpolicy_predictions.csv r20_formula_features.csv r20_native_local_decisions.csv; do
+            test -s "previous-r19-r20/$f"
+            cp "previous-r19-r20/$f" "sat-analysis/$f"
+          done
+          python3 - <<'PY'
+          import json,sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert tuple(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))==(215,2819,49490)
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          for v,n in ((19,1920),(20,3360)):
+           assert db.execute('SELECT COUNT(*) FROM attempts WHERE dataset LIKE ?',(f'DRNAS-R{v}-%',)).fetchone()[0]==n
+           assert db.execute('SELECT COUNT(DISTINCT formula_sha256) FROM formulas WHERE dataset LIKE ?',(f'DRNAS-R{v}-%',)).fetchone()[0]==160
+           a=json.load(open(f'sat-analysis/r{v}_ingest_audit.json'))
+           assert a['after']['attempts']==(46130 if v==19 else 49490)
+          print('R19_R20_RESTORED_IDEMPOTENT_AUDIT_NO_DUPLICATES')
+          PY
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -792,6 +827,14 @@ jobs:
                    r17_native_risk_decisions.csv r17_formula_features.csv \
                    r18_ingest_audit.json r18_source_audit.csv r18_paired.csv \
                    r18_native_decisions.csv r18_formula_features.csv \
+                   r19_ingest_audit.json r19_source_audit.csv r19_paired.csv \
+                   r19_offpolicy_predictions.csv r20_ingest_audit.json \
+                   r20_source_audit.csv r20_paired.csv r20_formula_features.csv \
+                   r20_native_local_decisions.csv \
+                   scatter_r19_random3_development.png scatter_r19_random3_test.png \
+                   scatter_r19_community3_development.png scatter_r19_community3_test.png \
+                   scatter_r20_random3_development.png scatter_r20_random3_test.png \
+                   scatter_r20_community3_development.png scatter_r20_community3_test.png \
                    scatter_r17_random3_development.png scatter_r17_random3_test.png \
                    scatter_r17_community3_development.png scatter_r17_community3_test.png \
                    scatter_r18_random3_development.png scatter_r18_random3_test.png \
