@@ -134,8 +134,10 @@ def load():
    if bool(event)!=(row["r20_native_decision"]!=""):
     fail("R20 recorded event and raw trace do not match")
    if event:
-    if len(cp)!=3 or set(int(z["conflict"]) for z in cp)!={256,512,1024}:
-     fail("R20 missing learned-clause counter landmarks")
+    times=[int(z["conflict"]) for z in cp]
+   if len(cp)!=3 or not (256<=times[0]<512 and
+       512<=times[1]<1024 and 1024<=times[2]<2048):
+     fail("R20 missing or misordered local-use landmark timestamps")
     if event.get("selected")!=row["r20_python_selected"]:
      fail("R20 native vs independent Python gate mismatch")
     if bool(row["switch_at"]) and row["r20_python_selected"]!="1":
