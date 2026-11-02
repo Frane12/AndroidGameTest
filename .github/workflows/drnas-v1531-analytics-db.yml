@@ -10,6 +10,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_r7_crossfamily.py'
       - 'research/tseitin-replay/v1531_ingest_r8_r9.py'
       - 'research/tseitin-replay/v1531_ingest_post_r9.py'
+      - 'research/tseitin-replay/v1531_ingest_r12_r15.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -21,7 +22,7 @@ permissions:
 jobs:
   analytics:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +37,8 @@ jobs:
             research/tseitin-replay/v1531_ingest_new.py \
             research/tseitin-replay/v1531_ingest_r7_crossfamily.py \
             research/tseitin-replay/v1531_ingest_r8_r9.py \
-            research/tseitin-replay/v1531_ingest_post_r9.py
+            research/tseitin-replay/v1531_ingest_post_r9.py \
+            research/tseitin-replay/v1531_ingest_r12_r15.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -281,6 +283,85 @@ jobs:
           test -s sat-analysis/scatter_post_r9_sc2023.png
           test -s sat-analysis/scatter_post_r9_structure.png
 
+      - name: Download only completed immutable R12–R15 raw shards and aggregate audits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for v in 12 13 14 15; do
+            case "$v" in
+              12) run=41412313004; aggregate=DRNAS-R12-Frozen-Hybrid-Analysis; expected=12 ;;
+              13) run=41415250855; aggregate=DRNAS-R13-Frozen-Rescue-Analysis; expected=12 ;;
+              14) run=41417754698; aggregate=DRNAS-R14-Dual-Transfer-Analysis; expected=16 ;;
+              15) run=41421780846; aggregate=DRNAS-R15-Trajectory-Learned-Model-Analysis; expected=16 ;;
+            esac
+            mkdir -p "new-input/r$v/aggregate" "new-input/r$v/shards"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '.status+" "+.conclusion' | grep -Fx 'completed success'
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --paginate \
+              --jq '.artifacts[] | [.name, (.id|tostring), (.expired|tostring)] | @tsv' \
+              > "new-input/r$v/artifact_index.tsv"
+            test "$(wc -l < "new-input/r$v/artifact_index.tsv")" -eq "$((expected+1))"
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+              --name "$aggregate" --dir "new-input/r$v/aggregate"
+            test -s "new-input/r$v/aggregate/results.json"
+            test -s "new-input/r$v/aggregate/paired.csv"
+            test -s "new-input/r$v/aggregate/formula_features.csv"
+            for n in 200 220 240; do
+              for fold in development test; do
+                for part in 0 1; do
+                  shard="n${n}_${fold}${part}"
+                  mkdir -p "new-input/r$v/shards/$shard"
+                  gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+                    --name "r$v-$shard" --dir "new-input/r$v/shards/$shard"
+                  test -s "new-input/r$v/shards/$shard/measurements.csv"
+                  test -s "new-input/r$v/shards/$shard/manifest.json"
+                  test -s "new-input/r$v/shards/$shard/traces.jsonl"
+                done
+              done
+            done
+            if [ "$v" -ge 14 ]; then
+              for n in 220 240; do
+                for fold in development test; do
+                  shard="community_n${n}_${fold}0"
+                  mkdir -p "new-input/r$v/shards/$shard"
+                  gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+                    --name "r$v-$shard" --dir "new-input/r$v/shards/$shard"
+                  test -s "new-input/r$v/shards/$shard/measurements.csv"
+                  test -s "new-input/r$v/shards/$shard/manifest.json"
+                  test -s "new-input/r$v/shards/$shard/traces.jsonl"
+                done
+              done
+            fi
+            echo "R$v source files complete: $expected raw shards + aggregate"
+          done
+
+      - name: Strict additive ingest of 15480 verified R12–R15 native attempts
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r12_r15.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input
+          test -s sat-analysis/r12_r15_ingest_audit.json
+          test -s sat-analysis/r12_r15_paired_attempts.csv
+          test -s sat-analysis/r12_r15_formula_features.csv
+          test -s sat-analysis/r12_r15_frozen_report_summary.csv
+          test -s sat-analysis/scatter_r12_paired_test.png
+          test -s sat-analysis/scatter_r13_paired_test.png
+          test -s sat-analysis/scatter_r14_paired_test.png
+          test -s sat-analysis/scatter_r15_paired_test.png
+          .analytics-venv/bin/python - <<'PY'
+          import sqlite3,json
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          assert db.execute('SELECT COUNT(*) FROM datasets').fetchone()[0]==135
+          assert db.execute('SELECT COUNT(*) FROM formulas').fetchone()[0]==2019
+          assert db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]==31730
+          assert db.execute('SELECT COUNT(*) FROM r12_r15_attempt_details').fetchone()[0]==15480
+          db.close()
+          a=json.load(open('sat-analysis/r12_r15_ingest_audit.json'))
+          assert a['new_native_attempts']==15480 and a['new_unique_sha']==560
+          print('R12_R15_SUCCESSFULLY_VERIFIED_CUMULATIVE_SNAPSHOT')
+          PY
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -306,6 +387,11 @@ jobs:
                    post_r9_source_audit.json post_r9_paired.csv \
                    post_r9_paired_summary.csv post_r9_formula_features.csv \
                    post_r9_formula_novelty.csv \
+                   r12_r15_ingest_audit.json r12_r15_formula_features.csv \
+                   r12_r15_attempt_details.csv r12_r15_paired_attempts.csv \
+                   r12_r15_frozen_report_summary.csv r12_r15_raw_treatments.csv \
+                   scatter_r12_paired_test.png scatter_r13_paired_test.png \
+                   scatter_r14_paired_test.png scatter_r15_paired_test.png \
                    scatter_post_r9_r10.png scatter_post_r9_selector.png \
                    scatter_post_r9_sc2023.png scatter_post_r9_structure.png; do
             cp "sat-analysis/$f" "research/sat-analytics-data/current/$f"
