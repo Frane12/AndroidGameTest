@@ -1,0 +1,89 @@
+name: DRNAS R16 frozen model postmortem — read-only error decomposition
+
+on:
+  push:
+    branches: [experiment/drnas-r16-frozen-postmortem-20261102]
+    paths:
+      - 'experiments/drnas_v16/r16_frozen_postmortem.py'
+      - '.github/workflows/drnas-r16-frozen-postmortem.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: r16-readonly-postmortem-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  analyse:
+    name: Audit immutable R16 holdout sources and diagnose missed/harmful restarts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check frozen history and Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r16_frozen_postmortem.py
+          test "$(git hash-object experiments/drnas_v16/r16-results/current/results.json)" = 2b6f10b778b566debf83f2c07f86bc8639b1d251
+          test "$(git hash-object experiments/drnas_v16/r16-results/current/formula_features.csv)" = 0a51dead07645bf6e84bb16a44dfba84f9e4526c
+          test "$(git hash-object experiments/drnas_v16/r16-results/current/paired.csv)" = da3df4fe43cf0215b273f6a96cbe804fa9107ec8
+          test "$(git hash-object experiments/drnas_v16/r16-results/current/native_decisions.csv)" = c2b265789bc0ea15bb0d88b2ae5b1cf932b1cd18
+          test "$(git hash-object experiments/drnas_v16/r16_frozen_live_protocol.json)" = d0ba1f19c73e082026e0f385dc8ce39bff99a7c5
+          test "$(git hash-object experiments/drnas_v16/r15-results/current/frozen_trained_models.json)" = d005747f177008172b49cef5f0b8a6f29c3ffc46
+      - name: Frozen retrospective analysis (NO model training, NO SAT executions)
+        run: |
+          set -euo pipefail
+          python3 experiments/drnas_v16/r16_frozen_postmortem.py
+          test -s research/drnas-r16-postmortem/diagnostics.json
+          test -s research/drnas-r16-postmortem/r16_postmortem_per_formula.csv
+          test -s research/drnas-r16-postmortem/r16_missed.csv
+          test -s research/drnas-r16-postmortem/r16_regressions.csv
+          test -s research/drnas-r16-postmortem/README.md
+      - name: Check provenance and count before publication
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,json, pathlib
+          root=pathlib.Path('research/drnas-r16-postmortem')
+          data=json.loads((root/'diagnostics.json').read_text())
+          assert data['kind']=='FROZEN_R16_POSTHOC_READONLY_DIAGNOSTICS'
+          assert data['run']==41426664482
+          assert data['input_snapshot_commit']=='c31a02578ff0f98a9dabe8325e9b01392e13be10'
+          test=data['outcomes']['random3_test']
+          assert test['formulas']==60 and test['actual_interventions']==33
+          assert test['observed_live_regress_gt2x']==2
+          assert data['outcomes']['random3_test_n200']['formulas']==20
+          assert data['outcomes']['random3_test_eligible_n220_240']['eligible_benefit_missed']==14
+          rows=list(csv.DictReader((root/'r16_postmortem_per_formula.csv').open()))
+          assert len(rows)==160
+          assert len({r['formula_sha256'] for r in rows})==160
+          print('R16_READONLY_POSTMORTEM_AUDIT_PASS',json.dumps({
+            'random3_test_n':test['formulas'],
+            'eligible_missed':data['outcomes']['random3_test_eligible_n220_240']['eligible_benefit_missed'],
+            'n200_excluded':data['outcomes']['random3_test_n200']['formulas'],
+            'severe_regressions':test['observed_live_regress_gt2x'],
+            'spearman':data['score_diagnostics']['random3_test_eligible']['spearman_predicted_log_gain_vs_observed_log_gain']
+          }))
+          PY
+      - name: Always upload immutable audit data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R16-Frozen-Postmortem
+          path: research/drnas-r16-postmortem/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Archive audited diagnostics as versioned research output
+        if: success()
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/drnas-r16-postmortem/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: frozen R16 postmortem, no retuning or benchmark rerun [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
