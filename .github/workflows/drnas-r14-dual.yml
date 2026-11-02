@@ -1,0 +1,201 @@
+name: DRNAS SAT R14 dual-gate prospective 4800 runs plus community transfer
+on:
+  push:
+    branches: [experiment/drnas-r14-dual-signal-prospective-20261102]
+    paths:
+      - '.github/workflows/drnas-r14-dual.yml'
+      - 'experiments/drnas_v16/patch_r14_dual.py'
+      - 'experiments/drnas_v16/r14_dual_benchmark.py'
+      - 'experiments/drnas_v16/r14_frozen_dual_rule.json'
+      - 'experiments/drnas_v16/r14_historical_sha256.txt'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-r14-dual-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Frozen R14 protocol and native Kissat SAT/UNSAT smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source hashes, frozen historical rule, deterministic generator and Python checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{r14_dual_benchmark,patch_r14_dual,r13_rescue_benchmark,patch_r13_rescue,r12_structure_dynamic_benchmark,patch_r12_hybrid,r11_restart_timing,patch_r11_restart_sweep,r7_large,patch_r6_trace,patch_r5_multisignal,patch_r4_restart_gate,predict_conflict_patch_v177}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          test "$(git hash-object experiments/drnas_v16/r13_rescue_benchmark.py)" = 79b051640d6a050c89c36166fd77995601783900
+          test "$(git hash-object experiments/drnas_v16/patch_r13_rescue.py)" = c7d29bae4804cfbac72d4a855a5c0aa1ab6b4b4b
+          test "$(git hash-object experiments/drnas_v16/r13-results/current/formula_features.csv)" = c77c025f8f23a9e26a49952b96be694d59da2eae
+          python3 - <<'PY'
+          import sys
+          from tempfile import TemporaryDirectory
+          from pathlib import Path
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r14_dual_benchmark as r
+          rule=r.load_rule()
+          assert len(r.SHARDS)==16 and len(r.MODES)==10 and r.REPEATS==3
+          assert r.size_from_category("community_n240_test0")==240
+          assert r.fold_from_category("community_n220_development0")=="community3_development"
+          assert r.select_mode("r14_dual50",220,.29,45.29,1.024)
+          assert r.select_mode("r14_dual50",240,.289,45.1,.90)
+          assert not r.select_mode("r14_dual50",240,.27,45.1,.90)
+          assert r.select_mode("r14_complement50",240,.29,45.1,.90)
+          assert not r.select_mode("r14_complement50",220,.29,45.1,.90)
+          assert not r.select_mode("r14_guarded50",240,.29,44.9,.90)
+          assert r.select_mode("r14_guarded50",240,.29,45.1,.90)
+          assert r.target_interval("r14_dual25")==25
+          assert r.target_interval("r14_dual50")==50
+          history=set(x for x in r.REGISTRY.read_text().split() if len(x)==64)
+          assert len(history)==1774
+          with TemporaryDirectory() as tmp:
+            cases=r.make_cases("community_n220_test0",Path(tmp),history)
+            assert len(cases)==10
+            assert all(x["metadata"]["family"]=="community3" for x in cases)
+          print("R14_FROZEN_RULE_AND_GENERATOR_AUDIT_OK",rule["protocol"])
+          PY
+      - name: Compile pinned Kissat with passive telemetry and R14 frozen live gate
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r14_dual.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R14_CHOICE
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq DRNAS_V177_SWITCH
+      - name: Verify all experimental policy modes on known SAT and UNSAT
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/r14-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r14-unsat.cnf
+          for mode in r5_monitor r11_2048_50 r13_rescue50 r14_complement50 r14_dual50 r14_dual25 r14_guarded50 r13_inverse50; do
+            set +e
+            DRNAS_R12_DEGREE_CV=.29 DRNAS_R13_N=240 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r14-sat.cnf >/tmp/r14-sat.log 2>&1
+            sat=$?
+            DRNAS_R12_DEGREE_CV=.29 DRNAS_R13_N=240 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r14-unsat.cnf >/tmp/r14-unsat.log 2>&1
+            unsat=$?
+            set -e
+            if [ "$sat" -ne 10 ] || [ "$unsat" -ne 20 ]; then
+              echo "R14_POLICY_SMOKE_FAIL $mode sat=$sat unsat=$unsat"
+              cat /tmp/r14-sat.log /tmp/r14-unsat.log
+              exit 1
+            fi
+          done
+          echo R14_SAT_AND_UNSAT_SMOKE_PASS
+
+  benchmark:
+    name: R14 paired ${{ matrix.category }}
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1,
+                   community_n220_development0, community_n220_test0,
+                   community_n240_development0, community_n240_test0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build original frozen upstream Kissat reference
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Build one same-binary Kissat for monitor, forced, R13 and all R14 gates
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r14_dual.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Build untouched V15.3.1 reference from exact historical blob
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Execute 300 same-runner CPU-pinned attempts and keep exact per-formula traces
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r14_dual_benchmark.py --category "${{ matrix.category }}"
+          test -s "drnas-r14-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r14-results/${{ matrix.category }}/traces.jsonl"
+          test -s "drnas-r14-results/${{ matrix.category }}/manifest.json"
+      - name: Preserve raw or partial evidence and all provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r14-${{ matrix.category }}
+          path: drnas-r14-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+
+  aggregate:
+    name: R14 4800 paired outcomes, independent holdout and transfer scatterplots
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r14-*
+          path: r14-download
+          merge-multiple: false
+      - name: Require 16 complete matched shards and analyze by CNF family and fold
+        run: |
+          set -euo pipefail
+          python3 -m venv .r14venv
+          .r14venv/bin/pip -q install matplotlib
+          .r14venv/bin/python experiments/drnas_v16/r14_dual_benchmark.py --aggregate
+          test -s drnas-r14-results/aggregate/results.json
+          test -s drnas-r14-results/aggregate/formula_features.csv
+          test -s drnas-r14-results/aggregate/paired.csv
+          for fold in random3_development random3_test community3_development community3_test; do
+            test -s "drnas-r14-results/aggregate/scatter_r14_early_$fold.png"
+            test -s "drnas-r14-results/aggregate/scatter_r14_structure_$fold.png"
+          done
+      - name: Publish verified or partial analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R14-Dual-Transfer-Analysis
+          path: drnas-r14-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Archive only completed and verified R14 data in isolated R14 branch
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/drnas-r14-dual-signal-prospective-20261102"
+          mkdir -p experiments/drnas_v16/r14-results/current
+          for file in results.json paired.csv formula_features.csv; do
+            test -s "drnas-r14-results/aggregate/$file"
+            cp "drnas-r14-results/aggregate/$file" "experiments/drnas_v16/r14-results/current/$file"
+          done
+          for fold in random3_development random3_test community3_development community3_test; do
+            for aspect in early structure; do
+              file="scatter_r14_${aspect}_${fold}.png"
+              test -s "drnas-r14-results/aggregate/$file"
+              cp "drnas-r14-results/aggregate/$file" "experiments/drnas_v16/r14-results/current/$file"
+            done
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/drnas_v16/r14-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: audited R14 prospective 4800-pair and community transfer results [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
