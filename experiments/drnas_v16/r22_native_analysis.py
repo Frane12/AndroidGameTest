@@ -11,8 +11,8 @@ from collections import defaultdict
 from pathlib import Path
 import r22_native_benchmark as b
 
-DOWNLOAD=Path("r21-download")
-OUT=Path("drnas-r21-results/aggregate")
+DOWNLOAD=Path("r22-download")
+OUT=Path("drnas-r22-results/aggregate")
 MODES=b.MODES
 PRIMARY="r22_chain50"
 FOLDS=("random3_development","random3_test","community3_development","community3_test")
@@ -58,7 +58,7 @@ def load():
  protocol=b.cfg();oldhashes=b.history()
  raw=[];traces={};manifests=[];sources=[]
  for category in b.SHARDS:
-  folder=DOWNLOAD/("r21-"+category)
+  folder=DOWNLOAD/("r22-"+category)
   files=[folder/z for z in ("measurements.csv","traces.jsonl","manifest.json")]
   if not all(p.is_file() for p in files):fail("missing shard "+category)
   rows=csvread(files[0])
