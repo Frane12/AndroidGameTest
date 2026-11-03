@@ -1,0 +1,112 @@
+name: DRNAS R55 prospective 96-trial audit-only recovery (reuse run 41694455905)
+on:
+  push:
+    branches: [experiment/drnas-r55-prospective-audit-repair-20261103]
+    paths: ['.github/workflows/drnas-r55-prospective-audit-only-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r55-prospective-audit-recovery-41694455905
+  cancel-in-progress: false
+
+jobs:
+  audit_only:
+    name: Repair R55 shard paths and audit 96 archived paired attempts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repaired validator syntax and original proofs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r55_702010.py experiments/drnas_v16/r53_fifty_fresh_triple.py
+          python3 -u experiments/drnas_v16/r55_702010.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-8-originals
+          run-id: 41694455905
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r55-shard-*
+          run-id: 41694455905
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Fail closed if old originals or pinned baseline binaries changed
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          def sha(path):
+              h=hashlib.sha256()
+              with open(path,"rb") as f:
+                  for part in iter(lambda:f.read(1<<20),b""):h.update(part)
+              return h.hexdigest()
+          manifest=json.loads(Path("originals/manifest.json").read_text())
+          assert len(manifest["cases"])==8
+          assert len({c["sha256"] for c in manifest["cases"]})==8
+          assert manifest["reps"]==2 and manifest["shards"]==4
+          expected={"kissat_pinned","drnas_r49_gate","r55_struct","r55_xor","r55_guarded","cadical_3_0_1"}
+          assert set(manifest["modes"])==expected
+          records=0
+          reference={}
+          for i in range(4):
+              root=Path(f"combined/r55-shard-{i}/results")
+              meta=json.loads((root/"meta.json").read_text())
+              rows=json.loads((root/"rows.json").read_text())
+              assert meta["shard"]==i and len(rows)==24, (i,len(rows))
+              assert meta["manifest_sha256"]==sha("originals/manifest.json")
+              records+=len(rows)
+              for mode,p in [("kissat_pinned","bins/kissat_pinned"),
+                             ("cadical_3_0_1","bins/cadical_3_0_1"),
+                             ("drnas_r49_gate","bins/kissat_pinned")]:
+                  assert meta["binary_sha256"][mode]==sha(p), (i,mode)
+                  reference.setdefault(mode,meta["binary_sha256"][mode])
+                  assert reference[mode]==meta["binary_sha256"][mode]
+          assert records==96,records
+          print("R55_ARCHIVE_96_ROWS_PINNED_SHA_PREFLIGHT_PASS",records)
+          PY
+      - name: Run only repaired R55 audit, no SAT problem reruns
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55_702010.py audit \
+            --sources originals --combined combined \
+            --out r55-final.json --markdown r55-final.md | tee r55-audit-recovery.log
+          test -s r55-final.json
+          test -s r55-final.md
+          python3 - <<'PY'
+          import json
+          r=json.load(open("r55-final.json"))
+          assert len(r["rows"])==96
+          assert len(r["per_instance"])==8
+          assert len(r["summary"])==6
+          assert len(r["r55_ci95_pct_vs_kissat"])==4
+          print("R55_AUDIT_ONLY_FINAL_96_PASS",r["summary"])
+          PY
+          cat r55-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R55-702010-PROSPECTIVE-PILOT-FINAL-RECOVERED
+          path: |
+            r55-final.json
+            r55-final.md
+            r55-audit-recovery.log
+            originals/manifest.json
+          if-no-files-found: error
