@@ -1,0 +1,120 @@
+name: DRNAS R78 same-CNF SAT vs genuine pinned Kissat
+on:
+  push:
+    branches: [experiment/drnas-r78-sat-vs-kissat-20261104]
+    paths:
+      - '.github/workflows/drnas-r78-sat-vs-kissat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r78-sat-vs-kissat-20261104
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze eight newly seeded exact TSP SAT and UNSAT CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax, Held-Karp and brute-force correctness tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/drnas_r78_sat_vs_kissat.py
+          python3 -u experiments/drnas_v16/drnas_r78_sat_vs_kissat.py selftest
+      - name: Exact SAT CNFs and frozen SHA256
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r78_sat_vs_kissat.py freeze \
+            --out frozen | tee r78-freeze.log
+          (cd frozen && sha256sum -c sources.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r78-frozen-new-exact-SAT-CNFs
+          path: |
+            frozen/
+            r78-freeze.log
+          if-no-files-found: warn
+
+  measure:
+    name: r78-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r78-frozen-new-exact-SAT-CNFs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Check frozen source and EXACT pinned Kissat binary hashes
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+      - name: 15s same-CNF single-core randomized head-to-head, including preprocessing
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r78_sat_vs_kissat.py measure \
+            --sources frozen --kissat bins/kissat_pinned \
+            --shard "$SHARD" --out results | tee r78-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r78-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r78-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: R78 final audit of all 48 frozen one-core SAT trials
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r78-frozen-new-exact-SAT-CNFs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r78-shard-*
+          path: combined
+      - name: Audit same CNF, SAT/UNSAT correctness, 1 core, 48 results, original source SHA
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256)
+          python3 -u experiments/drnas_v16/drnas_r78_sat_vs_kissat.py audit \
+            --sources frozen --combined combined \
+            --json r78-final.json --md r78-final.md
+          cat r78-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R78-SAT-VS-KISSAT-NEW-CNF-AUDITED-FINAL
+          path: |
+            r78-final.json
+            r78-final.md
+            frozen/manifest.json
+          if-no-files-found: error
