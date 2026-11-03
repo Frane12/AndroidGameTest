@@ -1,0 +1,124 @@
+name: DRNAS R32u native active XOR reason propagation validation
+on:
+  push:
+    branches: [experiment/drnas-r32u-active-xor-cdcl-20261103]
+    paths:
+      - '.github/workflows/drnas-r32u-active-xor-prototype.yml'
+      - 'experiments/drnas_v16/patch_r32u_live_xor_reasons.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32u-native-reasons-build-20261103-v1
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Build pinned Kissat native live XOR with CNF reasons, probe XOR-heavy original
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate R32u patch syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r32u_live_xor_reasons.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-exact-17-2026-frozen-originals
+          run-id: 41667090339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Confirm exact original DIMACS source identity
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+      - name: Build native Kissat + R32b + R32n + R32s + R32u with no policy flags
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r32u-kissat
+          git -C /tmp/r32u-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r32u-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r32u-kissat
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r32u-kissat
+          python3 -u experiments/drnas_v16/patch_r32s_native_cdcl_progress.py --kissat-root /tmp/r32u-kissat
+          python3 -u experiments/drnas_v16/patch_r32u_live_xor_reasons.py --kissat-root /tmp/r32u-kissat
+          (cd /tmp/r32u-kissat && ./configure && make -j2 > /tmp/r32u-build.log)
+          mkdir -p compiled
+          cp /tmp/r32u-kissat/build/kissat compiled/native
+          chmod +x compiled/native
+          sha256sum compiled/native > compiled/native.sha256
+          echo R32U_COMPILATION_PASS
+      - name: Smoke original-CNF SAT/UNSAT and native reason sanity
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > smoke-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > smoke-unsat.cnf
+          for mode in 0 1; do
+            set +e
+            R32B_MODE=r32u R32U_ACTIVE="$mode" R32S_PASSIVE_TRACE=1 compiled/native smoke-sat.cnf > "smoke-sat-${mode}.log"
+            sat_exit=$?
+            R32B_MODE=r32u R32U_ACTIVE="$mode" R32S_PASSIVE_TRACE=1 compiled/native smoke-unsat.cnf > "smoke-unsat-${mode}.log"
+            unsat_exit=$?
+            set -e
+            test "$sat_exit" -eq 10
+            test "$unsat_exit" -eq 20
+            grep -q "^c R32U_MODE active=${mode} " "smoke-sat-${mode}.log"
+            grep -q '^c R32U_STATS ' "smoke-sat-${mode}.log"
+            grep -q '^c R32B_FINAL status=10 ' "smoke-sat-${mode}.log"
+          done
+          echo R32U_SOLVER_SAT_UNSAT_PASS
+      - name: R32u real 2026 XOR source row proof match and short CDCL sample
+        run: |
+          set -euo pipefail
+          src=frozen/7db30d12cb06f0dc2f30abff80d96d6a.cnf
+          test -s "$src"
+          for mode in 0 1; do
+            set +e
+            timeout -s TERM -k 2s 12s env R32B_MODE=r32u R32U_ACTIVE="$mode" R32S_PASSIVE_TRACE=1 compiled/native "$src" > "real-${mode}.log"
+            rc=$?
+            set -e
+            if test "$rc" -eq 124; then
+              echo "R32U_REAL_TIMEOUT_EXPECTED mode=$mode"
+            elif test "$rc" -ne 10 && test "$rc" -ne 20; then
+              echo "Native solver failed unexpectedly: $rc"; exit 1
+            fi
+            grep -q "^c R32U_BASIS " "real-${mode}.log"
+            grep -q "^c R32U_MODE active=${mode} " "real-${mode}.log"
+            grep -q "^c R32U_SOURCE_ROW " "real-${mode}.log"
+          done
+          python3 - <<'PY'
+          import pathlib,sys,re
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r32t_certified_short_xor as c
+          source=pathlib.Path("frozen/7db30d12cb06f0dc2f30abff80d96d6a.cnf")
+          info,guard=c.load_original(source)
+          assert guard is None
+          axioms=c.complete_parity_axioms(info)
+          result=c.certificates(info["n"],axioms)
+          c.reconstruct_and_verify(axioms,result["chosen"])
+          validated={(tuple(row),rhs) for row,rhs,_ in result["chosen"]}
+          for mode in (0,1):
+              output=pathlib.Path(f"real-{mode}.log").read_text()
+              found=[]
+              for rhs,vs in re.findall(r"^c R32U_SOURCE_ROW rhs=(\d+) vars=([\d,]+)$",output,re.M):
+                  found.append((tuple(map(int,vs.split(","))),int(rhs)))
+              assert len(found)>0,(mode,"missing independent native GF2 equations")
+              assert all(row in validated for row in found),(mode, set(found)-validated)
+              assert len(found)<=64
+              print("R32U_INDEPENDENT_GF2_SOURCE_CERTIFICATE_PASS",mode,
+                    "matched",len(found),"out_of",len(result["chosen"]))
+          PY
+          echo R32U_SHORT_REAL_CDCL_PROBE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R32U-ACTIVE-NATIVE-BUILD-AND-REAL-PROOF-SMOKE
+          path: |
+            compiled/native
+            compiled/native.sha256
+            smoke-*.log
+            real-*.log
+            /tmp/r32u-build.log
+          if-no-files-found: warn
