@@ -16,8 +16,9 @@ def main():
  for case in cases:
   dest=out/(case["id"]+".cnf")
   try:
-   check=download_and_features(case,dest)
+   check=download_and_features(case["id"],dest)
    assert check["sha256"]==case["sha256"],"CNF SHA drift"
+   assert check["features"]==case["features"],"CNF feature drift"
    row=scan(dest)
    row["case_id"]=case["id"];row["sha256"]=case["sha256"];row["official_label"]=case["official_label"]
    rows.append(row)
