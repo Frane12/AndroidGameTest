@@ -1,0 +1,122 @@
+name: DRNAS R72 exact weighted TSP SAT decision transfer
+on:
+  push:
+    branches: [experiment/drnas-r72-tsp-20261103]
+    paths:
+      - '.github/workflows/drnas-r72-tsp.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r72-tsp-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 8 exact TSP thresholds and check independent Held-Karp DP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax, DP selftest and R49 resolution proof selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/drnas_r72_tsp_sat.py
+          python3 -u experiments/drnas_v16/drnas_r72_tsp_sat.py selftest
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - name: Freeze SHA-hashed SAT and UNSAT near-optimal TSP CNFs
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r72_tsp_sat.py generate --out frozen | tee freeze.log
+          (cd frozen && sha256sum -c sources.sha256)
+          test -s frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r72-tsp-exact-frozen-sources
+          path: |
+            frozen/
+            freeze.log
+          if-no-files-found: warn
+
+  measurements:
+    name: r72-tsp-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r72-tsp-exact-frozen-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Strict source and pinned solver SHA checks
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned bins/cadical_3_0_1
+      - name: Randomized 15s paired clean, R55 fixed18, R61 pair18 one-core comparison
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r72_tsp_sat.py measure \
+            --sources frozen --shard "$SHARD" \
+            --kissat bins/kissat_pinned --cadical bins/cadical_3_0_1 \
+            --out results | tee r72-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r72-tsp-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r72-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: Audit all 48 exact TSP-to-SAT trials and generated result table
+    needs: [freeze, measurements]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r72-tsp-exact-frozen-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r72-tsp-shard-*
+          path: combined
+      - name: Fail closed if hashes, solver pins, outcomes or trials are incomplete
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256)
+          python3 -u experiments/drnas_v16/drnas_r72_tsp_sat.py audit \
+            --sources frozen --combined combined \
+            --json r72-tsp-final.json --md r72-tsp-final.md
+          cat r72-tsp-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R72-EXACT-TSP-TRANSFER-FINAL
+          path: |
+            r72-tsp-final.json
+            r72-tsp-final.md
+            frozen/manifest.json
+          if-no-files-found: warn
