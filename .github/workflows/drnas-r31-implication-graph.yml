@@ -1,0 +1,137 @@
+name: DRNAS R31 binary implication proofs and nine-family blind benchmark
+on:
+  push:
+    branches: [experiment/drnas-r31-certified-implication-graph-20261103]
+    paths:
+      - '.github/workflows/drnas-r31-implication-graph.yml'
+      - 'experiments/drnas_v16/r31_implication_graph.cpp'
+      - 'experiments/drnas_v16/r31_implication_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r31-implication
+  cancel-in-progress: true
+jobs:
+  build_freeze:
+    name: Freeze 72 formulas, build native R29 baseline and R31 certified implication graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and freeze input hashes before benchmarking
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r31_implication_benchmark.py
+          python3 -m py_compile experiments/drnas_v16/r29_hidden_partial_benchmark.py
+          python3 -u experiments/drnas_v16/r31_implication_benchmark.py prepare --outdir frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Build immutable original Kissat and separately compiled R29/R31 binaries
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r31-kissat
+          git -C /tmp/r31-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r31-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/r31-kissat && ./configure && make -j2 >/tmp/r31-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/r31-kissat/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r29_hidden_partial.cpp -o compiled/r29
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r31_implication_graph.cpp -o compiled/r31
+          chmod +x compiled/kissat compiled/r29 compiled/r31
+          (cd compiled && sha256sum kissat r29 r31 > binaries.sha256 && sha256sum -c binaries.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r31-72-frozen-inputs
+          path: frozen/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r31-native-binaries
+          path: compiled/
+          retention-days: 90
+  measure:
+    needs: build_freeze
+    name: R31 SHA-locked paired trial shard \${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install reference solvers and preserve versions
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat cadical
+          dpkg-query -W cryptominisat cadical | tee apt-solvers.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-72-frozen-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-native-binaries
+          path: compiled
+      - name: Check immutable inputs and compiled executables
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat compiled/r29 compiled/r31
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Compare six modes with binary certificate replay and full model checks
+        env:
+          SHARD: \${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          CMS="$(command -v cryptominisat5 || command -v cryptominisat)"
+          python3 -u experiments/drnas_v16/r31_implication_benchmark.py measure \
+            --inputs frozen --kissat compiled/kissat --r29 compiled/r29 \
+            --r31 compiled/r31 --cms "$CMS" --cadical "$(command -v cadical)" \
+            --shard "$SHARD" --outdir results | tee r31-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r31-shard-\${{ matrix.shard }}
+          path: |
+            results/
+            r31-live.log
+            apt-solvers.txt
+          retention-days: 90
+  audit:
+    needs: [build_freeze, measure]
+    if: always()
+    name: Independently audit all 864 R31 paired trials and source-clause proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-72-frozen-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r31-shard-*
+          path: combined
+      - name: Aggregate and reject missing cases, proof failures, or SHA drift
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r31_implication_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r31-results.json \
+            --report r31-report.md --csv r31-results.csv | tee r31-audit.log
+          cat r31-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R31-FINAL-IMPLICATION-PROOF-AND-BENCHMARK
+          path: |
+            frozen/manifest.json
+            r31-results.json
+            r31-report.md
+            r31-results.csv
+            r31-audit.log
+          retention-days: 90
