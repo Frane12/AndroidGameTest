@@ -38,6 +38,10 @@ INJECTION = r'''  // R32c: computed from the original DIMACS capture ONLY. No le
           }
           printf("c R32C_ACTIVE signal=APPLIED injected=%u certified=%u\n",
                  gap.nsample, gap.extra);
+          printf("c R32C_INJECTED_LITS count=%u lits=", gap.nsample);
+          for (unsigned i=0; i<gap.nsample; i++)
+            printf("%s%d",i?",":"",gap.sample[i]);
+          putchar('\n');
         } else {
           printf("c R32C_ACTIVE signal=%s injected=0 certified=%u\n",
                  gap.contradiction ? "CONTRADICTION_ABSTAIN" :
