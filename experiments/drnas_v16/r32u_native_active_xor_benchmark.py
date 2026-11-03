@@ -279,8 +279,8 @@ def aggregate(a):
         def formatted(mode):
             x=v[mode]
             return f'{x["wall_s"]:.3f}s' if x["answer"]!="TIMEOUT" else "TIMEOUT ≥75s"
-        a=v["active"]["native"]
-        md.append(f'| {c["gbd"][:12]}… | {c["n"]} | {c["m"]} | {formatted("clean")} | {formatted("passive")} | {formatted("active")} | {a["attached_at_least"]} | {a["rows_certified"]} |')
+        active_data=v["active"]["native"]
+        md.append(f'| {c["gbd"][:12]}… | {c["n"]} | {c["m"]} | {formatted("clean")} | {formatted("passive")} | {formatted("active")} | {active_data["attached_at_least"]} | {active_data["rows_certified"]} |')
     md+=["","## Interpretation",
        "An active assignment is not a new unconditional SAT root unit: it is",
        "conditioned on current native CDCL branch values, with a sound native",
