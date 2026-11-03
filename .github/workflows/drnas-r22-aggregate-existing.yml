@@ -1,0 +1,94 @@
+name: DRNAS R22 strict archived native artifact re-aggregation (no new SAT solves)
+on:
+  push:
+    branches: [experiment/drnas-r22-conflict-chain-20261103]
+    paths: ['.github/workflows/drnas-r22-aggregate-existing.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-r22-verified-aggregator-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  strict_existing_data:
+    name: Aggregate 16 existing R22 native SAT artifacts with full source and formula audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze source and parser; never execute new SAT trials here
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r22_native_analysis.py experiments/drnas_v16/r22_native_benchmark.py
+          test "$(git hash-object experiments/drnas_v16/r21-results/current/formula_features.csv)" = a8fa4b316b0ea8863f623f0e41a9d654c2da4e62
+          python3 - <<'PY'
+          import json
+          p=json.load(open('experiments/drnas_v16/r22_frozen_protocol.json'))
+          assert p['protocol']=='DRNAS-R22-mature-lowLBD-conflict-chain-frozen-20261103-v1'
+          assert p['dataset']['native_solves']==3840
+          assert p['preregistered_frozen_rule']['threshold_recent_scarcity']==.105
+          print('R22_NO_NATIVE_REMEASUREMENT_STRICT_REAGGREGATION')
+          PY
+      - name: Download all existing native shard outputs from source run 41598317487
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 41598317487
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: r22-*
+          path: r22-download
+          merge-multiple: false
+      - name: Verify 16 exact category directories, 3840 rows and immutable source commits
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,csv
+          from pathlib import Path
+          d=Path('r22-download')
+          assert len([x for x in d.glob('r22-*') if x.is_dir()])==16, 'missing shard directory'
+          commits=set()
+          binary_sha=set()
+          sha=set()
+          for folder in sorted(d.glob('r22-*')):
+            with (folder/'manifest.json').open() as f:m=json.load(f)
+            with (folder/'measurements.csv').open() as f:rows=list(csv.DictReader(f))
+            assert len(rows)==240 and len(m['cases'])==10, folder
+            commits.add(m['source_commit'])
+            binary_sha.add(m['binaries']['same_binary_monitor_forced_R16_R20_R21'])
+            for x in m['cases']:
+              assert x['formula_sha256'] not in sha, (folder,x['formula'])
+              sha.add(x['formula_sha256'])
+          assert len(commits)==1 and len(binary_sha)==1, 'mixed source commits/binaries'
+          assert len(sha)==160, 'not 160 fresh distinct CNFs'
+          print('R22_COMPLETE_RAW_CHECK',len(sha),'unique CNFs 3840 real executions from',next(iter(commits)))
+          PY
+      - name: Independently recompute same-runner SAT witnesses, C/Python gates, PAR2 and formula-level bootstrap
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r22_native_analysis.py
+          test -s drnas-r22-results/aggregate/results.json
+          test -s drnas-r22-results/aggregate/paired.csv
+          test -s drnas-r22-results/aggregate/native_decisions.csv
+          test -s drnas-r22-results/aggregate/formula_features.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R22-Verified-Full-3840-Native-Aggregation
+          path: drnas-r22-results/aggregate/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Archive verified results to R22 branch only
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'experiment/drnas-r22-conflict-chain-20261103'
+          mkdir -p experiments/drnas_v16/r22-results/current
+          cp -a drnas-r22-results/aggregate/. experiments/drnas_v16/r22-results/current/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/drnas_v16/r22-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m 'data: R22 independently audited 3840 native SAT results and bootstrap [skip ci]'
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
