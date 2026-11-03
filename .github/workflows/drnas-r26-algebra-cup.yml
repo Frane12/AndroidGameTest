@@ -1,0 +1,156 @@
+name: DRNAS R26 Native XOR + Full Algebra Short Cup
+on:
+  push:
+    branches: [experiment/drnas-r26-native-algebra-cup-20261103]
+    paths:
+      - '.github/workflows/drnas-r26-algebra-cup.yml'
+      - 'experiments/drnas_v16/r26_native_selector.cpp'
+      - 'experiments/drnas_v16/r26_algebra_cup.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r26-native-algebra-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax check and compile frozen C++ structural gate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r26_algebra_cup.py experiments/drnas_v16/r25_xor_algebra_cup.py experiments/drnas_v16/r25_xor_algebra_selector.py
+          mkdir -p bin input pinned
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic experiments/drnas_v16/r26_native_selector.cpp -o bin/r26_native
+          test -x bin/r26_native
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41604969926
+          github-token: ${{ github.token }}
+          name: r25-build-verified-binaries
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 41604969926
+          github-token: ${{ github.token }}
+          name: r25-frozen-32-cnf-inputs
+          path: input
+      - name: SHA verify unchanged baseline binaries and all R25 inputs
+        run: |
+          set -euo pipefail
+          (cd bin && sha256sum -c binaries.sha256)
+          (cd input && sha256sum -c original_cnf_sha256.txt)
+          chmod +x bin/r26_native bin/v1531_nohang bin/v78_single bin/kissat_solver bin/cadical_solver
+      - name: Download pinned source manifest (source-only, no benchmark changes)
+        run: |
+          set -euo pipefail
+          PIN=3cd6525817f5019516b0addb94b4db5f57c7e9b1
+          ORIGIN=https://raw.githubusercontent.com/Frane12/AndroidGameTest/${PIN}
+          for file in frozen_verified_gbd_family.json preflight.py; do
+            curl --fail --location --retry 3 --silent --show-error "${ORIGIN}/research/drnas-sat-family-test/${file}" -o "pinned/${file}"
+          done
+          curl --fail --location --retry 3 --silent --show-error "${ORIGIN}/research/drnas-sat-v7-8/frozen_competition_v78.json" -o pinned/frozen_competition_v78.json
+          sha256sum pinned/* > pinned/pinned_source_digests.txt
+      - name: Append 16 fresh XOR4/XOR6 plus 4 original algebra plus official control and freeze
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r26_algebra_cup.py extend --inputs input --pinned pinned
+          test "$(python3 -c 'import json;print(len(json.load(open("input/manifest.json"))["cases"]))')" = 53
+          (cd input && sha256sum *.cnf > r26_all_53.sha256 && sha256sum -c r26_all_53.sha256)
+      - name: Validate native routing and fallback before timing
+        run: |
+          set -euo pipefail
+          bin/r26_native input/r26_xor_00.cnf "$(realpath bin/kissat_solver)" "$(realpath bin/v1531_nohang)" 2603 --classify-only | tee xor4_gate.txt
+          bin/r26_native input/r26_xor_08.cnf "$(realpath bin/kissat_solver)" "$(realpath bin/v1531_nohang)" 2603 --classify-only | tee xor6_gate.txt
+          bin/r26_native input/poly_01.cnf "$(realpath bin/kissat_solver)" "$(realpath bin/v1531_nohang)" 2603 --classify-only | tee algebra_gate.txt
+          grep -q 'v1531_certified_xor' xor4_gate.txt
+          grep -q 'v1531_certified_xor' xor6_gate.txt
+          test "$(sha256sum input/r26_xor_00.cnf | cut -d ' ' -f1)" = "$(python3 -c 'import json;d=json.load(open("input/manifest.json"));print(next(x["sha256"] for x in d["cases"] if x["id"]=="r26_xor_00.cnf"))')"
+          (cd bin && sha256sum * > r26_binaries.sha256 && sha256sum -c r26_binaries.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          path: input/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R26-pinned-native-and-baselines
+          path: bin/
+          if-no-files-found: error
+  measure:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    name: r26-shard-${{ matrix.shard }}
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-pinned-native-and-baselines
+          path: bin
+      - name: Validate immutable fingerprints
+        run: |
+          set -euo pipefail
+          (cd input && sha256sum -c r26_all_53.sha256)
+          (cd bin && sha256sum -c r26_binaries.sha256)
+          chmod +x bin/r26_native bin/v1531_nohang bin/v78_single bin/kissat_solver bin/cadical_solver
+      - name: Same input, six solvers, two paired attempts, 10s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r26_algebra_cup.py run --inputs input --bin bin --outdir results --shard "$SHARD" --timeout 10 --repeats 2
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r26-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+  audit:
+    needs: measure
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r26-shard-*
+          path: combined
+      - name: Verify exactly 53 formulas, 636 paired attempts and all SHA fingerprints
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r26_algebra_cup.py aggregate --inputs input --combined combined --out r26-final.json --md r26-final.md
+          cat r26-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R26-NATIVE-XOR-FULL-ALGEBRA-FINAL
+          path: |
+            input/manifest.json
+            r26-final.json
+            r26-final.md
+          if-no-files-found: warn
