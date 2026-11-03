@@ -13,7 +13,7 @@ def main():
  assert len(expected)==12
  cases=[];pins=set();kissats=set()
  for i,id in enumerate(CASES):
-  path=Path(a.root)/("case-"+str(i))/"results"/"report.json"
+  path=Path(a.root)/("r38-case-"+str(i))/"results"/"report.json"
   row=json.loads(path.read_text())
   assert row["case_id"]==id and id in expected
   src=expected[id]
