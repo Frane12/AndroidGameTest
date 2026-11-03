@@ -128,11 +128,14 @@ def freeze(a):
     print('R55_FROZEN_NEW_REGISTERED_SOURCES_PASS',len(m['cases']))
 
 def audit(a):
+    # R55 paired artifacts are named r55-shard-N, not r53-shard-N.
+    # Reuse the frozen R53 fail-closed SHA/PAR2 validator with its explicit prefix.
+    a.shard_prefix='r55'
     core.audit(a)
     p=Path(a.out);data=json.loads(p.read_text())
     ids=list(data['per_instance']);rng=random.Random(20261103)
     ci={}
-    for mode in ('r55_struct','r55_xor','r55_guarded'):
+    for mode in ('drnas_r49_gate','r55_struct','r55_xor','r55_guarded'):
         samples=[]
         for _ in range(2000):
             draw=[ids[rng.randrange(len(ids))] for _ in ids]
@@ -143,9 +146,17 @@ def audit(a):
     data['r55_ci95_pct_vs_kissat']=ci
     data['caveat']='R55 official-score-stratified pilot, not competition ranking; early CDCL conflicts NOT measured'
     p.write_text(json.dumps(data,indent=2)+'\n')
+    # The shared R53 validator generates a legacy R53 header; label this R55 report accurately.
+    report=Path(a.markdown)
+    lines=report.read_text().splitlines()
+    check(len(lines)>3,'missing core audit markdown')
+    lines[0]='# DRNAS R55 70/20/10 prospective pilot — 8 registered-new SATComp2026 formulas'
+    lines[1]='8 original 2026 CNFs, 2 randomized paired repeats, 6 solvers/methods, 30s inclusive cap (60s PAR-2 timeout).'
+    lines[2]='Official CaDiCaL-score-stratified selection; not an official competition or global unseen guarantee.'
+    report.write_text('\n'.join(lines)+'\n')
     with open(a.markdown,'a') as f:
         f.write('\nR55 70/20/10 allocation is RESEARCH PRIORITY, not runtime weights.\n')
-        f.write('R55 structural/XOR/guarded 95% paired instance-bootstrap CIs: '+json.dumps(ci)+'\n')
+        f.write('R55 R49/structural/XOR/guarded 95% paired instance-bootstrap CIs: '+json.dumps(ci)+'\n')
         f.write('Early CDCL conflicts not instrumented (10% passive work only).\n')
     print('R55_FINAL_AUDIT_PASS',json.dumps(data['summary'],sort_keys=True))
 
