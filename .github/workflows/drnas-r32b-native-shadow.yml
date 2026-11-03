@@ -1,0 +1,176 @@
+name: DRNAS R32b native certified GF2 passive shadow
+on:
+  push:
+    branches: [experiment/drnas-r32b-native-shadow-20261103]
+    paths:
+      - '.github/workflows/drnas-r32b-native-shadow.yml'
+      - 'experiments/drnas_v16/r32b_shadow_core.h'
+      - 'experiments/drnas_v16/patch_r32b_native_shadow.py'
+      - 'experiments/drnas_v16/r32b_native_shadow_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: r32b-native-shadow-v1
+  cancel-in-progress: true
+jobs:
+  frozen_build:
+    name: Freeze 51 original CNFs, compile pinned native shadow, prove algebraic states
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Python scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r32b_native_shadow.py experiments/drnas_v16/r32b_native_shadow_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-30-frozen-proven-inputs
+          run-id: 41628224957
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Verify R31 source SHA and freeze SHA-distinct R32b experiments
+        run: |
+          set -euo pipefail
+          (cd prior && sha256sum -c cnf.sha256)
+          python3 -u experiments/drnas_v16/r32b_native_shadow_benchmark.py freeze --previous prior --dest frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+          python3 - <<'PY'
+          import json
+          data=json.load(open("frozen/manifest.json"))
+          assert len(data["cases"])==51
+          assert sum(x["cohort"]=="new_SHA_distinct" for x in data["cases"])==21
+          print("R32B_INPUT_SHA_LOCKED",len(data["cases"]))
+          PY
+      - name: Compile original and native shadow pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r32b-clean
+          git -C /tmp/r32b-clean checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r32b-clean rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cp -r /tmp/r32b-clean /tmp/r32b-native
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r32b-native
+          (cd /tmp/r32b-clean && ./configure && make -j2 > /tmp/r32b-clean.log)
+          (cd /tmp/r32b-native && ./configure && make -j2 > /tmp/r32b-native.log)
+          mkdir -p compiled
+          cp /tmp/r32b-clean/build/kissat compiled/clean
+          cp /tmp/r32b-native/build/kissat compiled/native
+          chmod +x compiled/*
+          (cd compiled && sha256sum clean native > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Native GF2 root preflight on consistent, contradictory, decoy source
+        run: |
+          set -euo pipefail
+          for family in consistent_visible consistent_hidden root_unsat xor_decoy; do
+            set +e
+            R32B_MODE=shadow compiled/native "frozen/$family"_00.cnf > "$family.log"
+            status=$?
+            set -e
+            test "$status" -eq 10 -o "$status" -eq 20
+            grep -q '^c R32B_PROBE mark=9999 ' "$family.log"
+            grep -q '^c R32B_FINAL status=' "$family.log"
+            grep '^c R32B_PROBE mark=9999 ' "$family.log"
+          done
+          grep -Eq '^c R32B_PROBE mark=9999 signal=CONSISTENT_GAP .*extra=[1-9]' consistent_visible.log
+          grep -Eq '^c R32B_PROBE mark=9999 signal=CONSISTENT_GAP .*extra=[1-9]' consistent_hidden.log
+          grep -q '^c R32B_PROBE mark=9999 signal=GF2_UNSAT ' root_unsat.log
+          grep -q '^c R32B_PROBE mark=9999 signal=CONSISTENT_NO_GAP ' xor_decoy.log
+          echo R32B_NATIVE_ALGEBRA_PREFLIGHT_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32b-51-sha-original-cnfs
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32b-clean-native-identical-policy
+          path: compiled/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32b-preflight-evidence
+          path: |
+            consistent_visible.log
+            consistent_hidden.log
+            root_unsat.log
+            xor_decoy.log
+          if-no-files-found: warn
+  paired:
+    needs: frozen_build
+    name: r32b-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32b-51-sha-original-cnfs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32b-clean-native-identical-policy
+          path: compiled
+      - name: Verify SHA-locked sources and native binaries
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Matched clean/native OFF/native GF2 SHADOW at same solver policy
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32b_native_shadow_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --outdir results | tee r32b-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32b-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32b-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [frozen_build, paired]
+    if: always()
+    name: Validate 306 SHA-fixed native attempts, proof and policy invariance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32b-51-sha-original-cnfs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32b-shard-*
+          path: combined
+      - name: Generate certified final benchmark and per-formula telemetry
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32b_native_shadow_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r32b-results.json \
+            --report r32b-results.md --csv r32b-results.csv
+          cat r32b-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32B-NATIVE-GF2-SHADOW-FINAL-306
+          path: |
+            r32b-results.json
+            r32b-results.md
+            r32b-results.csv
+            frozen/manifest.json
+          if-no-files-found: warn
