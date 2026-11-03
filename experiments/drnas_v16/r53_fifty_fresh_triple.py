@@ -114,8 +114,12 @@ def audit(a):
     check(not(set(x["gbd"] for x in m["cases"])&
                 set(m["excluded_known_gbd"])),"prior overlap")
     rows=[];seen=set();binhash=collections.defaultdict(set)
+    # R53 defaults to its own shard prefix. R55 may explicitly request
+    # its separately named, already measured R55 artifacts during audit-only recovery.
+    shard_prefix=getattr(a,"shard_prefix","r53")
+    check(shard_prefix in ("r53","r55"),"invalid audit shard prefix")
     for shard in range(SHARDS):
-        f=Path(a.combined)/("r53-shard-"+str(shard))/"results"
+        f=Path(a.combined)/(shard_prefix+"-shard-"+str(shard))/"results"
         meta=load(f/"meta.json")
         check(meta["shard"]==shard and meta["manifest_sha256"]==digest(
               root/"manifest.json"),"source manifest mismatch")
