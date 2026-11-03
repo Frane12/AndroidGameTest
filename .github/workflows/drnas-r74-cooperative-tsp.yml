@@ -1,0 +1,111 @@
+name: DRNAS R74 cooperative TSP real-time four-searcher benchmark
+on:
+  push:
+    branches: [experiment/drnas-r74-cooperative-tsp-20261103]
+    paths:
+      - '.github/workflows/drnas-r74-cooperative-tsp.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r74-cooperative-tsp-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze four fresh exact TSP datasets and verify bounded-search correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax and four-worker exact small-case selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/drnas_r74_cooperative_tsp.py
+          python3 -u experiments/drnas_v16/drnas_r74_cooperative_tsp.py selftest
+      - name: Freeze synthetic unseen TSP instances with SHA
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r74_cooperative_tsp.py freeze --out frozen | tee freeze.log
+          (cd frozen && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r74-frozen-cooperative-tsp-datasets
+          path: |
+            frozen/
+            freeze.log
+          if-no-files-found: warn
+
+  measure:
+    name: r74-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r74-frozen-cooperative-tsp-datasets
+          path: .
+      - name: Confirm four physical runner CPUs and frozen SHA
+        run: |
+          set -euo pipefail
+          nproc
+          test "$(nproc)" -ge 4
+          (cd frozen && sha256sum -c source.sha256)
+      - name: Three-arm randomized paired trial, four CPU-pinned worker processes
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r74_cooperative_tsp.py measure \
+            --sources frozen --shard "$SHARD" --out results | tee r74-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r74-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r74-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: R74 final benchmark audit and all 24 paired trial results
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r74-frozen-cooperative-tsp-datasets
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r74-shard-*
+          path: combined
+      - name: Reject missing runs, wrong SHA, invalid tours or conflicting optimality proofs
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/drnas_r74_cooperative_tsp.py audit \
+            --sources frozen --combined combined \
+            --json r74-final.json --md r74-final.md
+          cat r74-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R74-FOUR-SEARCHER-TSP-BENCHMARK-FINAL
+          path: |
+            r74-final.json
+            r74-final.md
+            frozen/manifest.json
+          if-no-files-found: error
