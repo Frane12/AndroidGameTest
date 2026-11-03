@@ -144,7 +144,6 @@ def measure(args):
     check(sha(source)==case["sha256"],"source drift")
     if hasattr(os,"sched_setaffinity"):
         os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
-    r64.r65.MAX_PREP_S=2.0 if hasattr(r64,"r65") else 2.0
     import r65_xor_cnf_feedback as r65
     r65.MAX_PREP_S=2.0
     src,cnf,added,filtered,stats=r71.prepare(root,case)
