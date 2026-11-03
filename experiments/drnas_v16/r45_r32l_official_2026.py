@@ -161,7 +161,7 @@ def one(case,path,mode,clean,native):
    check(proof["status"] in ("independent_proof_match","old_python_guard"),
          "GF2 root does not match original source")
    raw=re.findall(
-    r"^c R32K_ABLATION variant=([a-z0-9]+) available=(\\d+) injected=(\\d+) equations=(\\d+) resolved=(\\d+)$",
+    r"^c R32K_ABLATION variant=([a-z0-9]+) available=(\d+) injected=(\d+) equations=(\d+) resolved=(\d+)$",
     stdout,re.MULTILINE)
    check(len(raw)<=1,"duplicate R32k ablation records")
    if raw:
@@ -174,7 +174,7 @@ def one(case,path,mode,clean,native):
           "wrong source certified extra units")
     check(int(inj)==intended,"unexpected injected GF2 units")
     if intended:
-     claim=re.findall(r"^c R32C_INJECTED_LITS count=(\\d+) lits=([0-9,-]+)$",stdout,re.MULTILINE)
+     claim=re.findall(r"^c R32C_INJECTED_LITS count=(\d+) lits=([0-9,-]+)$",stdout,re.MULTILINE)
      check(len(claim)==1 and int(claim[0][0])==intended,"Missing injected literals")
      signed=[int(x) for x in claim[0][1].split(",")]
      check(signed==root["sample"][:intended],"Causal hint order mismatch")
