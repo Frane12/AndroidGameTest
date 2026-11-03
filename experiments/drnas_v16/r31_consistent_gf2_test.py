@@ -56,7 +56,7 @@ def make_case(family,idx):
         x,y,z,w=4*g+1,4*g+2,4*g+3,4*g+4
         choice=rng.getrandbits(1)
         zval=rng.getrandbits(1) if family=="consistent_conditional" else 0
-        truth.update({x:choice,y:choice,z:zval,w:1^zval})
+        truth.update({x:choice,y:choice^zval,z:zval,w:1^zval})
         clauses+=r30.xor_clauses([x,y,z],0)
         clauses+=r30.xor_clauses([x,y,w],1)
         if family!="consistent_conditional":clauses.append([-z])
