@@ -1,0 +1,158 @@
+name: DRNAS R29 on original official SAT Competition 2026 GBD cases
+on:
+  push:
+    branches: [experiment/drnas-r29-official-2026-gbd-audit-20261103]
+    paths:
+      - '.github/workflows/drnas-r29-official-2026.yml'
+      - 'experiments/drnas_v16/r29_official_2026_gbd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r29-official-2026-gbd
+  cancel-in-progress: true
+jobs:
+  build_inputs:
+    name: Verify original competition sources and compile unchanged R29
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r29_official_2026_gbd.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          run-id: 41614909924
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: originals
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-verified-native-and-baselines
+          run-id: 41614909924
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: baselines
+      - name: Check upstream CNF and binary SHA256 identities
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c original_files.sha256)
+          (cd baselines && sha256sum -c r28_binaries.sha256)
+          chmod +x baselines/kissat_solver baselines/cadical_solver
+      - name: Normalize the 14 original GBD CNF files without rewriting any clauses
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r29_official_2026_gbd.py normalize \
+             --original originals --dest official
+          (cd official && sha256sum -c originals.sha256)
+          python3 - <<'PY'
+          import json
+          p=json.load(open('official/manifest.json'))
+          assert len(p['cases'])==14
+          assert all(c['source_role']!='xor_structure_control' for c in p['cases'])
+          print('OFFICIAL_2026_14_SOURCE_SHA_OK')
+          PY
+      - name: Compile native R29 certified hidden-XOR engine
+        run: |
+          set -euo pipefail
+          mkdir -p compiled
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic \
+             experiments/drnas_v16/r29_hidden_partial.cpp -o compiled/r29
+          cp baselines/kissat_solver compiled/kissat
+          cp baselines/cadical_solver compiled/cadical
+          chmod +x compiled/*
+          (cd compiled && sha256sum kissat cadical r29 > bin.sha256 && sha256sum -c bin.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r29-official14-sha-verified-inputs
+          path: official/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r29-official14-identical-binaries
+          path: compiled/
+          if-no-files-found: error
+  paired:
+    needs: build_inputs
+    name: r29-official-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r29-official14-sha-verified-inputs
+          path: official
+      - uses: actions/download-artifact@v4
+        with:
+          name: r29-official14-identical-binaries
+          path: compiled
+      - name: Verify SHA-256 parity
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat compiled/cadical compiled/r29
+          (cd compiled && sha256sum -c bin.sha256)
+          (cd official && sha256sum -c originals.sha256)
+      - name: Benchmark pinned Kissat, CaDiCaL, R29 safe and R29 research on original official CNFs
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r29_official_2026_gbd.py run \
+            --inputs official --kissat compiled/kissat --cadical compiled/cadical \
+            --r29 compiled/r29 --outdir results --shard "$SHARD" | tee r29-official-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r29-official-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r29-official-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [build_inputs,paired]
+    if: always()
+    name: Verify 112 measured attempts and report performance on real 2026 CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r29-official14-sha-verified-inputs
+          path: official
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r29-official-shard-*
+          path: combined
+      - name: Audit four paired arms and correctness
+        run: |
+          set -euo pipefail
+          (cd official && sha256sum -c originals.sha256)
+          python3 -u experiments/drnas_v16/r29_official_2026_gbd.py aggregate \
+            --inputs official --combined combined \
+            --out-json official-r29-results.json --out-md official-r29-results.md \
+            --out-csv official-r29-results.csv
+          cat official-r29-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R29-2026-OFFICIAL-GBD-112-PAIRED-FINAL
+          path: |
+            official-r29-results.json
+            official-r29-results.md
+            official-r29-results.csv
+            official/manifest.json
+          if-no-files-found: warn
