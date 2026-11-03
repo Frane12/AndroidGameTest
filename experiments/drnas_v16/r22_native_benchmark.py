@@ -21,6 +21,8 @@ FIELDS=prior.FIELDS+("r22_native_decision","r22_python_selected","r22_python_wea
  "r22_trace_checkpoint_count","r22_protocol_sha256","r22_error")
 PREV_PARSE=prior.parse
 PREV_HISTORY=prior.history
+PRIOR_CFG=prior.cfg
+PRIOR_PROTOCOL=prior.PROTOCOL
 PREV_ACTUAL=prior.actual_run
 PRIOR_LOCAL=prior.LOCAL
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -38,7 +40,10 @@ def cfg():
   raise RuntimeError("R22_FROZEN_PROTOCOL_OR_PIN_CHANGED")
  return c
 def history():
- used=PREV_HISTORY()
+ old_config,old_protocol=prior.cfg,prior.PROTOCOL
+ prior.cfg,prior.PROTOCOL=PRIOR_CFG,PRIOR_PROTOCOL
+ try:used=PREV_HISTORY()
+ finally:prior.cfg,prior.PROTOCOL=old_config,old_protocol
  if len(used)!=2894:raise RuntimeError("R22_2894_HISTORIC_CNFS_MISSING")
  if prior.r20.r19.git_blob(PRIOR_CSV)!=cfg()["history"]["r21_formula_features_blob"]:
   raise RuntimeError("R22_R21_FORMULA_CATALOG_GIT_BLOB_DRIFT")
@@ -111,10 +116,10 @@ prior.make_cases=make_cases
 def actual_run(case,repeat,mode,runner):
  if mode not in LOCAL:
   # The previous R21 inverse strategy must retain its own native audit.
-  previous_local=prior.LOCAL
-  prior.LOCAL=PRIOR_LOCAL
+  old_local,old_protocol=prior.LOCAL,prior.PROTOCOL
+  prior.LOCAL,prior.PROTOCOL=PRIOR_LOCAL,PRIOR_PROTOCOL
   try:row,trace=PREV_ACTUAL(case,repeat,mode,runner)
-  finally:prior.LOCAL=previous_local
+  finally:prior.LOCAL,prior.PROTOCOL=old_local,old_protocol
   event={};values={}
  else:
   features=case["metadata"]["features"]
