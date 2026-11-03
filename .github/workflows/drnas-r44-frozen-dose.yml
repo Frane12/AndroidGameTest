@@ -1,0 +1,202 @@
+name: DRNAS R44 frozen 0-16-32 adaptive dose official 2026 holdout
+on:
+  push:
+    branches: [experiment/drnas-r44-frozen-safe-dose-20261103]
+    paths:
+      - '.github/workflows/drnas-r44-frozen-dose.yml'
+      - 'experiments/drnas_v16/r44_patch_frozen_dose.py'
+      - 'experiments/drnas_v16/r44_freeze_official.py'
+      - 'experiments/drnas_v16/r44_benchmark.py'
+      - 'experiments/drnas_v16/r44_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r44-frozen-dose-prospective
+  cancel-in-progress: false
+jobs:
+  freeze_build:
+    name: Freeze 8 independent official CNFs and build original policy+native gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned sources and experiment scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r40_patch_early_rescue.py experiments/drnas_v16/r41_trace_patch.py experiments/drnas_v16/r42_cap_patch.py experiments/drnas_v16/r43_patch_doses.py experiments/drnas_v16/r44_patch_frozen_dose.py experiments/drnas_v16/r44_freeze_official.py experiments/drnas_v16/r44_benchmark.py experiments/drnas_v16/r44_audit.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          run-id: 41231153158
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior18
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior12
+      - uses: actions/download-artifact@v4
+        with:
+          name: r40-frozen-official8-and-protocol
+          run-id: 41641051211
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior8
+      - name: Freeze exactly 8 new SHA-distinct genuine SAT Competition 2026 CNFs
+        run: |
+          set -euo pipefail
+          test -s prior18/official_shortlong_manifest.json
+          (cd prior12 && sha256sum -c manifest.sha256)
+          (cd prior8/frozen && sha256sum -c manifest.sha256)
+          curl -fLsS --retry 3 --max-time 90 https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          mkdir -p frozen
+          python3 -u experiments/drnas_v16/r44_freeze_official.py --scores official_scores.csv --prior18 prior18/official_shortlong_manifest.json --prior12 prior12/official_v94_manifest.json --prior8 prior8/frozen/manifest.json --out frozen/manifest.json | tee r44-freeze.log
+          (cd frozen && sha256sum manifest.json > manifest.sha256 && sha256sum -c manifest.sha256)
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32-official-pinned-binaries
+          run-id: 41623227197
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: pinned
+      - name: Compile one native binary for baseline, cap32 and adaptive gate
+        run: |
+          set -euo pipefail
+          chmod +x pinned/kissat pinned/cadical pinned/r29
+          (cd pinned && sha256sum -c bin.sha256)
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          python3 -u experiments/drnas_v16/r40_patch_early_rescue.py --source research/drnas-sat-v7-8/v94_cautious_probe.cpp --dest research/drnas-sat-v7-8/r44_r40.cpp
+          python3 -u experiments/drnas_v16/r41_trace_patch.py --source research/drnas-sat-v7-8/r44_r40.cpp --dest research/drnas-sat-v7-8/r44_r41.cpp
+          python3 -u experiments/drnas_v16/r42_cap_patch.py --source research/drnas-sat-v7-8/r44_r41.cpp --out research/drnas-sat-v7-8/r44_r42.cpp
+          python3 -u experiments/drnas_v16/r43_patch_doses.py --source research/drnas-sat-v7-8/r44_r42.cpp --out research/drnas-sat-v7-8/r44_r43.cpp
+          python3 -u experiments/drnas_v16/r44_patch_frozen_dose.py --source research/drnas-sat-v7-8/r44_r43.cpp --out research/drnas-sat-v7-8/r44_native.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert source.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(source.split(marker,1)[0]+'\n')
+          PY
+          (cd cadical-src && ./configure && make -j2 >/tmp/r44-cadical-build.log 2>&1) || { tail -110 /tmp/r44-cadical-build.log; exit 1; }
+          mkdir -p compiled
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src research/drnas-sat-v7-8/r44_native.cpp cadical-src/build/libcadical.a -o compiled/r44_native -pthread -ldl -lz
+          cp pinned/kissat compiled/kissat
+          chmod +x compiled/r44_native compiled/kissat
+          (cd compiled && sha256sum r44_native kissat > binaries.sha256 && sha256sum -c binaries.sha256)
+          sha256sum research/drnas-sat-v7-8/r44_native.cpp > compiled/source.sha256
+          git rev-parse HEAD > compiled/commit.txt
+      - name: Native smoke: all gate and baseline modes return SAT on simple original CNF
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' >/tmp/r44-smoke.cnf
+          for mode in v91_quality_gate v91_cap32 v91_adaptive; do
+            compiled/r44_native "$mode" /tmp/r44-smoke.cnf 401 >"/tmp/r44-$mode.txt" 2>"/tmp/r44-$mode.err"
+            grep -q "DRNAS_CAUSAL.*mode=$mode.*answer=SAT" "/tmp/r44-$mode.txt"
+            echo "R44_SMOKE_PASS $mode"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r44-frozen-official-eight-cnf-manifest
+          path: |
+            frozen/manifest.json
+            frozen/manifest.sha256
+            r44-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r44-pinned-native-and-kissat
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+  measure:
+    needs: freeze_build
+    if: needs.freeze_build.result == 'success'
+    name: r44-official-shard-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r44-frozen-official-eight-cnf-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r44-pinned-native-and-kissat
+          path: compiled
+      - name: Two verified official cases, two seeds, four modes per shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/r44_native compiled/kissat
+          (cd compiled && sha256sum -c binaries.sha256)
+          test -s frozen/frozen/manifest.json
+          (cd frozen/frozen && sha256sum -c manifest.sha256)
+          lscpu > cpu.txt
+          python3 -u experiments/drnas_v16/r44_benchmark.py --manifest frozen/frozen/manifest.json --shard "$SHARD" --native compiled/r44_native --kissat compiled/kissat --out results | tee r44-live.log
+          test -s results/trials.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r44-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+            r44-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [freeze_build,measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r44-frozen-official-eight-cnf-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r44-shard-*
+          path: combined
+      - name: Fail closed on missing native runs or SHA mismatch, report true activations
+        run: |
+          set -euo pipefail
+          test "${{ needs.freeze_build.result }}" = success
+          test "${{ needs.measure.result }}" = success
+          (cd frozen/frozen && sha256sum -c manifest.sha256)
+          python3 -u experiments/drnas_v16/r44_audit.py --manifest frozen/frozen/manifest.json --combined combined --out r44-final.json | tee r44-audit.log
+          test -s r44-final.json
+          cat r44-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R44-FROZEN-OFFICIAL8-ADAPTIVE-DOSE-FINAL
+          path: |
+            r44-final.json
+            r44-audit.log
+          if-no-files-found: warn
+          retention-days: 90
