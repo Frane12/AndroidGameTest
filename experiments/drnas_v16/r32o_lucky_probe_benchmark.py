@@ -24,7 +24,7 @@ def trace(output,mode,phases):
     for line in output.splitlines():
         if not line.startswith("c R32O_DIR "): continue
         m=re.fullmatch(
-          r"c R32O_DIR call=(\\d+) direction=([a-z_]+) result=(\\d+) probes=(\\d+) failures=(\\d+) first_probe=(-?\\d+) first_conflict=(-?\\d+)",
+          r"c R32O_DIR call=(\d+) direction=([a-z_]+) result=(\d+) probes=(\d+) failures=(\d+) first_probe=(-?\d+) first_conflict=(-?\d+)",
           line)
         check(m is not None,"Malformed lucky direction trace: "+line[:140])
         call,way,result,probes,failures,first,firstfail=m.groups()
@@ -40,7 +40,7 @@ def trace(output,mode,phases):
     calls=[]
     for line in output.splitlines():
         if not line.startswith("c R32O_LUCKY "):continue
-        m=re.fullmatch(r"c R32O_LUCKY call=(\\d+) result=(\\d+) shortcut=(none|all_true|all_false)",line)
+        m=re.fullmatch(r"c R32O_LUCKY call=(\d+) result=(\d+) shortcut=(none|all_true|all_false)",line)
         check(m is not None,"Malformed lucky call trace "+line[:140])
         call,res,shortcut=m.groups()
         calls.append(dict(call=int(call),result=int(res),shortcut=shortcut))
