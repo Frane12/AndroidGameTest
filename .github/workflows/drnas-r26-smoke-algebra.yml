@@ -1,0 +1,85 @@
+name: DRNAS R26 Fixed Native Short Algebra Probe
+on:
+  push:
+    branches: [experiment/drnas-r26-native-algebra-cup-20261103]
+    paths: ['.github/workflows/drnas-r26-smoke-algebra.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  eight_case_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-pinned-native-and-baselines
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Rebuild fixed C++ R26 and verify original inputs
+        run: |
+          set -euo pipefail
+          (cd input && sha256sum -c r26_all_53.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic experiments/drnas_v16/r26_native_selector.cpp -o bin/r26_native
+          chmod +x bin/*
+          for file in xor_16.cnf r26_xor_00.cnf r26_xor_08.cnf poly_01.cnf; do
+            bin/r26_native "input/$file" "$(realpath bin/kissat_solver)" "$(realpath bin/v1531_nohang)" 1 --classify-only
+          done
+      - name: Frozen eight-case paired 4-second probe
+        run: |
+          python3 -u - <<'PY' | tee r26-short-probe.log
+          import json,sys,statistics,random,hashlib
+          from pathlib import Path
+          from types import SimpleNamespace
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r26_algebra_cup as m
+          a=SimpleNamespace(inputs="input",bin="bin")
+          cases=json.load(open("input/manifest.json"))["cases"]
+          picks=["xor_16.cnf","xor_01.cnf","r26_xor_00.cnf","r26_xor_01.cnf",
+                 "r26_xor_08.cnf","r26_xor_09.cnf","poly_01.cnf","poly_13.cnf"]
+          modes=["R26_native","R25_previous","DRNAS_V1531","Kissat404"]
+          rows=[]
+          for file in picks:
+              case=next(x for x in cases if x["path"]==file)
+              assert hashlib.sha256(Path("input",file).read_bytes()).hexdigest()==case["sha256"]
+              trials={}
+              for rep in range(2):
+                  order=modes[:]
+                  random.Random(int(case["sha256"][:8],16)+rep).shuffle(order)
+                  for mode in order:
+                      x=m.attempt(mode,case,a,261103+rep,4)
+                      assert x["status"]=="TIMEOUT" or x["correct"],(file,mode,x)
+                      trials.setdefault(mode,[]).append(x)
+                      print("R26_SMOKE",file,mode,rep,x["status"],x["seconds"],x["route"],flush=True)
+              med={mode:statistics.median(8 if r["status"]=="TIMEOUT" else r["seconds"] for r in trials[mode]) for mode in modes}
+              rows.append(dict(case=file,family=case["family"],medians=med,trials=trials))
+              print("R26_SMOKE_MEDIAN",file,json.dumps(med,sort_keys=True),flush=True)
+          Path("r26-smoke.json").write_text(json.dumps(rows,indent=2))
+          print("## Eight fixed formulas, 2 repetitions, 4s cutoff, PAR2 timeout=8s")
+          for family in sorted({r["family"] for r in rows}):
+              subset=[r for r in rows if r["family"]==family]
+              sums={mode:round(sum(x["medians"][mode] for x in subset),6) for mode in modes}
+              print("R26_FAMILY",family,len(subset),json.dumps(sums,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R26-FIXED-SHORT-ALGEBRA-RESULTS
+          path: |
+            r26-smoke.json
+            r26-short-probe.log
+          if-no-files-found: warn
