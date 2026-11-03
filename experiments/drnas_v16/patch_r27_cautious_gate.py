@@ -41,6 +41,26 @@ void drnas_r27_get_reason_statistics (uint64_t *out) {
   out[6] = drnas_r21_counts[6];  // all antecedent reasons
 }
 static inline void r24_reason (const clause *c) {""", "deduce_getter")
+    # R27b: the R21 sidecar registry is telemetry, not solver correctness
+    # state. An exhausted research table must never kill a valid SAT solve.
+    d = replace_once(d,
+        '#define R21_BIRTH_CAPACITY (1u<<18)',
+        '#define R21_BIRTH_CAPACITY (1u<<20)',
+        "registry_capacity")
+    d = replace_once(d,
+        'static drnas_r21_birth_entry drnas_r21_births[R21_BIRTH_CAPACITY];',
+        'static drnas_r21_birth_entry drnas_r21_births[R21_BIRTH_CAPACITY];\n'
+        'static bool r27_birth_registry_saturated = false;',
+        "registry_sentinel")
+    d = replace_once(d,
+        '  if (!c->redundant || c->size<=2)return;',
+        '  if (!c->redundant || c->size<=2)return;\n'
+        '  if (r27_birth_registry_saturated) { drnas_r21_counts[10]++; return; }',
+        "registry_fast_fallback")
+    full_line=next(line for line in d.splitlines() if 'R21_BIRTH_TABLE_FULL' in line)
+    d = replace_once(d, full_line,
+        '  r27_birth_registry_saturated = true; drnas_r21_counts[10]++; return;',
+        "registry_bounded_overflow")
     s = replace_once(s, "int kissat_search (kissat *solver) {",
         "extern void drnas_r27_get_reason_statistics (uint64_t *out);\nint kissat_search (kissat *solver) {",
         "external_getter")

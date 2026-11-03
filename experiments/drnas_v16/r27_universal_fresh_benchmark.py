@@ -219,7 +219,7 @@ def aggregate(a):
     orig_sha=sha((inputroot/"manifest.json").read_bytes())
     bin_sha=None
     for shard in range(SHARDS):
-        part=combined/f"r27-shard-{shard}"
+        part=combined/f"r27-shard-{shard}"/"results"
         metadata=json.loads((part/"metadata.json").read_text())
         if metadata["manifest_sha256"]!=orig_sha or metadata["shard"]!=shard:
             raise RuntimeError("Shard identity mismatch")
