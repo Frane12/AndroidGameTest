@@ -1,0 +1,150 @@
+name: DRNAS R54 four parallel causal SAT 2026 directions
+on:
+  push:
+    branches: [experiment/drnas-r54-parallel-mechanisms-20261103]
+    paths:
+      - '.github/workflows/drnas-r54-parallel-causal-mechanisms.yml'
+      - 'experiments/drnas_v16/r54_parallel_causal_mechanisms.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r54-causal-four-arms-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: R54 SHA freeze eight official 2026 sources and proof-verified 4x5 hypotheses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight code and no-change R47/R49 mathematical proofs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r54_parallel_causal_mechanisms.py
+          python3 -m py_compile experiments/drnas_v16/r49_pivot_coherence_gate.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Audit all R52 official CNF SHA and freeze derived mathematical implications
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r54_parallel_causal_mechanisms.py freeze \
+            --sources originals --out r54-design.json | tee r54-freeze.log
+          test -s r54-design.json
+          sha256sum r54-design.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r54-frozen-official-and-proofs
+          path: |
+            originals/
+            r54-design.json
+            r54-freeze.log
+          if-no-files-found: error
+
+  causal_arms:
+    name: r54-${{ matrix.arm }}-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        arm: [dose, pivot, order, motif]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r54-frozen-official-and-proofs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Verify original SHA and exact same pinned Kissat binary before benchmark
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+      - name: Randomized serial 40s causal controls, same CPU core and pinned original Kissat
+        env:
+          ARM: ${{ matrix.arm }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r54_parallel_causal_mechanisms.py measure \
+            --sources originals --design r54-design.json \
+            --kissat bins/kissat_pinned \
+            --arm "$ARM" --shard "$SHARD" \
+            --out results | tee r54-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r54-${{ matrix.arm }}-${{ matrix.shard }}
+          path: |
+            results/
+            r54-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: R54 final 200-trial paired audit and cross-direction seconds tables
+    needs: [freeze, causal_arms]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r54-frozen-official-and-proofs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r54-dose-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r54-pivot-*
+          path: combined
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r54-order-*
+          path: combined
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r54-motif-*
+          path: combined
+          merge-multiple: false
+      - name: Reject incomplete/hypothesis-drift results and report formula-level PAR2
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r54_parallel_causal_mechanisms.py audit \
+            --design r54-design.json --combined combined \
+            --json r54-final.json --md r54-final.md
+          cat r54-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R54-200-REAL2026-FOUR-PARALLEL-CAUSAL-FINAL
+          path: |
+            r54-final.json
+            r54-final.md
+            r54-design.json
+          if-no-files-found: error
