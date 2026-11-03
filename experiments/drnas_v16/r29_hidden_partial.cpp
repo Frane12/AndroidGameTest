@@ -209,14 +209,14 @@ int main(int argc,char** argv){
       if(literals[j].second)mask|=1<<j;
     }
     string key=var_key(vars);
-    Pattern &p=groups[key];p.vars=vars;p.k=k;
+    Pattern &p=groups[key];p.vars=vars;
     p.masks|=uint64_t(1)<<mask;
     lookup[id]={key,mask};
   }
   vector<Equation> eqs;
   for(auto &kv:groups) {
     Pattern &p=kv.second;
-    int k=p.k;
+    int k=int(p.vars.size());
     uint64_t even=parity_mask(k,0),odd=parity_mask(k,1);
     if((p.masks&even)==even){
       eqs.push_back({p.vars,1});
