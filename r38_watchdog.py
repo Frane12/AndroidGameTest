@@ -230,7 +230,15 @@ def audit(args):
           V92_s=round(cost["v92_sparse"],4),
           V94_s=round(cost["v94_cautious"],4),
           hindsight_best_mode=best,hindsight_best_s=round(cost[best],4),
-          missed_vs_best_s=round(cost["v94_cautious"]-cost[best],4)))
+          missed_vs_best_s=round(cost["v94_cautious"]-cost[best],4),
+          theoretical_net_upper_bound_s=round(
+            cost["v94_cautious"]-cost[best]-
+            (new.get("elapsed_s") if isinstance(new.get("elapsed_s"),(float,int)) else 8.),4),
+          probe_decision=(
+            "INSUFFICIENT_EVIDENCE" if new["status"]!="complete" else
+            "CERTIFIED_SIGNAL" if new.get("certified_units",0)>0 else
+            "XOR_ONLY" if new.get("xor_variables",0)>0 else
+            "NO_SIGNAL_IN_BOUNDED_SCAN"))))
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
     with (out/"r38_cases.csv").open("w",newline="") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]))
@@ -247,11 +255,15 @@ def audit(args):
        scanned_xor_positive=sum(isinstance(r["xor_vars"],int) and r["xor_vars"]>0 for r in rows),
        scanned_binary_units=sum(r["certified_units"] for r in rows if isinstance(r["certified_units"],int)),
        missed_hindsight_cases=sum(r["missed_vs_best_s"]>0.05 for r in rows),
+       hindsight_scan_covered_by_max_savings=sum(r["theoretical_net_upper_bound_s"]>0 for r in rows),
+       scan_would_cost_more_than_oracle_savings=sum(r["theoretical_net_upper_bound_s"]<=0 for r in rows),
+       probe_decisions=dict(collections.Counter(r["probe_decision"] for r in rows)),
        original_mean_PAR2_s=old["mean_PAR2_s"],
        caveats=["Passive retrospective audit, NOT a new blind benchmark",
          "Best mode per formula is a hindsight oracle, not a deployable predictor",
          "Incomplete or killed scans cannot be classified as XOR-negative",
-         "Watchdog limits bound structural scanning, NOT CDCL solver runtime",
+         "Oracle-minus-scan overhead is a hindsight upper bound, not an executable predictor",
+       "Watchdog limits bound structural scanning, NOT CDCL solver runtime",
          "Any candidate policy must be frozen and separately validated on unseen inputs"])
     (out/"r38_summary.json").write_text(json.dumps(summary,indent=2)+"\n")
     lines=["# DRNAS R38 bounded search / watchdog audit","",
@@ -259,16 +271,18 @@ def audit(args):
       "**No new solver benchmark:** passive scan with hard kill + stagnation/visit budgets.","",
       "| Metric | Value |","|---|---:|"]
     for k in ("watchdog_complete","watchdog_partial","watchdog_killed","input_errors",
-              "scanned_xor_positive","scanned_binary_units","missed_hindsight_cases"):
+              "scanned_xor_positive","scanned_binary_units","missed_hindsight_cases",
+              "hindsight_scan_covered_by_max_savings","scan_would_cost_more_than_oracle_savings"):
         lines.append("| "+k+" | "+str(summary[k])+" |")
     lines.extend(["","## Per case",
-      "| ID | XOR vars | units | scan | reason | CaDiCaL s | V9.2 s | V9.4 s | missed vs oracle s |",
-      "|---|---:|---:|---|---|---:|---:|---:|---:|"])
+      "| ID | XOR vars | units | scan | reason | decision | CaDiCaL s | V9.2 s | V9.4 s | missed vs oracle s | max hypothetical net s |",
+      "|---|---:|---:|---|---|---|---:|---:|---:|---:|---:|"])
     for r in rows:
-        lines.append("| "+ " | ".join(str(r[k]) for k in ("id","xor_vars","certified_units","scan_status","stop_reason","CaDiCaL_s","V92_s","V94_s","missed_vs_best_s")) +" |")
+        lines.append("| "+ " | ".join(str(r[k]) for k in ("id","xor_vars","certified_units","scan_status","stop_reason","probe_decision","CaDiCaL_s","V92_s","V94_s","missed_vs_best_s","theoretical_net_upper_bound_s")) +" |")
     lines.extend(["","## Interpretation",
       "A stopped scan means **insufficient evidence**, not absence of an XOR structure.",
       "The oracle columns diagnose possible missed opportunities, NOT achieved acceleration.",
+      "The hypothetical net bound is oracle saving minus measured scan time, assuming one scan on the critical path. It is an upper bound, NOT speedup.",
       "Separate fresh official benchmark required before making general speed claims."])
     report="\n".join(lines)+"\n"
     (out/"r38_report.md").write_text(report)
@@ -284,6 +298,16 @@ def selftest():
         result=bounded_scan(p)
         assert result["xor_variables"]==2,result
         assert result["stop_reason"]=="complete",result
+        p.write_text("p cnf 2 3\n1 2 0\n-1 -2 0\n1 -2 0\n")
+        result=bounded_scan(p)
+        assert result["certified_units"]>=1,result
+        # Eight independent XOR pairs yield no binary units; terminate on no progress.
+        clauses=[]
+        for i in range(1,21,2):
+            clauses.extend([f"{i} {i+1} 0",f"-{i} -{i+1} 0"])
+        p.write_text("p cnf 20 20\n"+"\n".join(clauses)+"\n")
+        result=bounded_scan(p)
+        assert result["stop_reason"]=="stagnation" and result["status"]=="partial",result
     print("R38_SELFTEST_PASS")
 
 def main():
