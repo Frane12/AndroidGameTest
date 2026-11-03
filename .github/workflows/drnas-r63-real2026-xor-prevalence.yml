@@ -1,0 +1,179 @@
+name: DRNAS R63 official SAT2026 XOR prevalence and proven GF2 fallback
+on:
+  push:
+    branches: [experiment/drnas-r63-real2026-xor-prevalence-20261103]
+    paths:
+      - '.github/workflows/drnas-r63-real2026-xor-prevalence.yml'
+      - 'experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r63-real2026-xor-source-prevalence-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze and inspect SHA-disjoint official Main2026 originals for complete/partial XOR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prove parity scanner does not confuse partial with complete XOR
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py
+          python3 -u experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r52
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          run-id: 41691243486
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r55b
+      - uses: actions/download-artifact@v4
+        with:
+          name: r57-new-source-and-precommitted-structural-gate
+          run-id: 41694594541
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r57
+      - uses: actions/download-artifact@v4
+        with:
+          name: r60-frozen-new-2026-originals-and-clause-visits
+          run-id: 41698075753
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r60
+      - uses: actions/download-artifact@v4
+        with:
+          name: r61-real2026-frozen-originals
+          run-id: 41703922987
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r61
+      - name: Verify all previous originals and their SHA before freezing independent new corpus
+        run: |
+          set -euo pipefail
+          (cd prior-r52/originals && sha256sum -c source.sha256)
+          (cd prior-r55b/fresh && sha256sum -c source.sha256)
+          (cd prior-r57/new && sha256sum -c source.sha256)
+          (cd prior-r60/new && sha256sum -c source.sha256)
+          (cd prior-r61/fresh && sha256sum -c source.sha256)
+      - name: Pick at most 32 official sources by fixed salted hash, classify verified XOR blocks without solver timings
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py freeze \
+            --r52 prior-r52/originals \
+            --r55b prior-r55b/fresh \
+            --r57 prior-r57/new \
+            --r60 prior-r60/new \
+            --r61 prior-r61/fresh \
+            --out fresh | tee r63-source-scan.log
+          (cd fresh && sha256sum -c source.sha256)
+          test -s fresh/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          path: |
+            fresh/
+            r63-source-scan.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: r63-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify SHA-frozen originals and both original executables
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Randomized matched Kissat versus certified pure XOR or fallback, 2 attempts per source
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py measure \
+            --sources fresh --shard "$SHARD" \
+            --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r63-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r63-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r63-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R63 official CNF XOR frequency and end-to-end Kissat fallback final audit
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r63-shard-*
+          path: combined
+      - name: Fail closed on missing rows, mixed binaries and unsupported XOR prevalence claims
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py audit \
+            --sources fresh --combined combined \
+            --json r63-final.json --md r63-final.md
+          cat r63-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R63-REAL2026-XOR-PREVALENCE-FALLBACK-FINAL
+          path: |
+            r63-final.json
+            r63-final.md
+            fresh/manifest.json
+          if-no-files-found: error
+          retention-days: 90
