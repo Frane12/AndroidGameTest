@@ -41,7 +41,7 @@ MAX_SIMILARITY_DISTANCE = 3.5
 
 def git_blob(path: Path) -> str:
     data = path.read_bytes()
-    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\\0" + data).hexdigest()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + bytes([0]) + data).hexdigest()
 
 
 def read_dimacs(path: Path):
@@ -344,14 +344,14 @@ def main():
     test_summary, test_rows = evaluate(model, holdout)
     pairs = matched_pairs(dev)
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "model.json").write_text(json.dumps(model, indent=2, sort_keys=True) + "\\n")
+    (OUT / "model.json").write_text(json.dumps(model, indent=2, sort_keys=True) + chr(10))
     (OUT / "report.json").write_text(json.dumps({
         "scope": "offline historical counterfactual replay: NOT a live solver speedup",
         "caveat": "Pre-solve graph extraction overhead and prospective action decisions not measured",
         "development_loo": dev_summary, "holdout": test_summary,
         "matched_development_pairs": pairs,
         "model_sha256": hashlib.sha256((OUT / "model.json").read_bytes()).hexdigest(),
-    }, indent=2, sort_keys=True) + "\\n")
+    }, indent=2, sort_keys=True) + chr(10))
     with (OUT / "holdout_decisions.csv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(test_rows[0]))
         w.writeheader()
