@@ -174,7 +174,7 @@ static void r32u_scan(kissat *solver) {
   r32u_probed++;
   for(unsigned index=0;index<r32u_nrows;index++){
     const r32u_source_equation *row=&r32u_rows[index];
-    unsigned false_lits[5],missing=INVALID_LIT;
+    unsigned false_lits[5],missing=INVALID_LIT,missing_ext=0;
     unsigned observed=0;
     unsigned parity=row->rhs;
     int safe=1;
@@ -191,6 +191,7 @@ static void r32u_scan(kissat *solver) {
       if(!v) {
         if(missing!=INVALID_LIT){safe=0;break;}
         missing=lit;
+        missing_ext=ext;
       } else {
         // Every falsified reason literal is an exact opposite of its
         // current assignment, and gives one parity contribution.
@@ -228,10 +229,10 @@ static void r32u_scan(kissat *solver) {
     CLEAR_STACK(solver->clause);
     r32u_added++;
     r32u_last_assigned=1;
-    if(r32u_added<=16){
+    if(r32u_added<=16 || r32u_added%32==0){
       printf("c R32U_ASSIGN equation=%u target_ext=%u sign=%d level=%u"
              " decisions=%" PRIu64 " conflicts=%" PRIu64 "\n",
-             index,row->vars[0],parity?1:-1,solver->level,
+             index,missing_ext,parity?1:-1,solver->level,
              solver->statistics.decisions,solver->statistics.conflicts);
       fflush(stdout);
     }
