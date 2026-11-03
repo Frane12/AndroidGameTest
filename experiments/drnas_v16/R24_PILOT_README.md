@@ -54,7 +54,32 @@ proof has been measured.
 
 Apply `patch_r24_dynamics.py` or `patch_r24b_graph.py` to clean upstream Kissat
 commit `8af8e56f174b778aef3aa45af9f739b2a5f492c2`. The work is a shadow-only
-diagnostic: no new risk selector has been fitted, and no claims about P=NP or
+diagnostic: no new risk selector has been enabled in the solver, and no claims about P=NP or
 universal improvement are justified. Any new predictor must be frozen on a
 development set, account for censoring and measurement overhead, and then
 validated with fresh formulas and independently checked UNSAT proofs.
+
+## Frozen shadow-selector follow-up
+
+Before the fresh run, a k=3 same-family nearest-neighbor selector was frozen
+on development data only (8 eligible random3 and 5 eligible community3
+formulas). It uses ratios of 1024-conflict telemetry, requires two nearby
+beneficial cases, positive mean benefit and no >2x regression among neighbors.
+The model SHA-256 is
+`4b5e9d6f17e705cb729431f1c62fffc0629fff5034659750b551f259d60588b4`;
+the frozen model was committed as 81fcd032eb82157663234d6a041b5c4c58c8adaa.
+
+A new local paired batch used 32 generated formulas with a separate seed
+namespace, all SHA-distinct from the preceding local pilot, two repeats per
+mode, 128 attempts; five attempts timed out at 2s. There was no dynamic policy
+in the solver: it is an offline counterfactual replay of separately measured
+monitor and forced runs, with same-binary telemetry overhead in both arms.
+
+On the 16 new random3 formulas, monitor sum of medians was 12.0139s PAR-2 and
+shadow was 11.5675s, a 3.72% difference. The selector chose forced on four:
+two were faster, two slower, one of the latter >2x slower (0.0653 to 0.2064s).
+A fixed-seed formula bootstrap 95% interval was approximately -2.92% to
++12.56%. On 16 community3 formulas it chose zero, so there was no gain. All
+186 paired pre-intervention checkpoints matched; two formulas lacked a usable
+1024 snapshot and defaulted to monitor. The selector does not pass the safety
+or improvement bar; these observations are not proof of a live speedup.
