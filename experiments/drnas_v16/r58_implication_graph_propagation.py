@@ -347,7 +347,7 @@ def measure(args):
         f=feature(source)
         ck(f["source_sha"]==expected_sha,"calculated SHA mismatch")
         r=dict(gbd=case["gbd"],cohort=cohort,
-            source_sha=expected_sha,**f,
+            **f,
             actual=effect(reports[cohort]["rows"],cohort,case["gbd"]))
         rows.append(r)
         print("R58_GRAPH_RESULT",case["gbd"],cohort,
