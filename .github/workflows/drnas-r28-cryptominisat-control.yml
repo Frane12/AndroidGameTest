@@ -1,0 +1,62 @@
+name: DRNAS R28 posthoc verified CryptoMiniSat 72-case control
+on:
+  push:
+    branches: [experiment/drnas-r28-cryptominisat-control-20261103]
+    paths:
+      - '.github/workflows/drnas-r28-cryptominisat-control.yml'
+      - 'experiments/drnas_v16/r28_cryptominisat_comparator.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  comparator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install known Ubuntu CryptoMiniSat version
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5 || command -v cryptominisat
+          dpkg-query -W cryptominisat > cryptominisat-package-version.txt
+      - name: Build original pinned Kissat and R28 native parity certifier
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r28_cryptominisat_comparator.py
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r28-cms-upstream
+          git -C /tmp/r28-cms-upstream checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r28-cms-upstream rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/r28-cms-upstream && ./configure && make -j2 >/tmp/r28cms-build.log)
+          mkdir -p compiled
+          cp /tmp/r28-cms-upstream/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o compiled/r28_gf2
+          chmod +x compiled/kissat compiled/r28_gf2
+          (cd compiled && sha256sum kissat r28_gf2 > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Regenerate exact SHA-locked R28 inputs
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_exact_gf2_benchmark.py prepare --outdir frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Run three solver arms on 72 selected known cases with two paired repeats
+        run: |
+          set -euo pipefail
+          CMS="$(command -v cryptominisat5 || command -v cryptominisat)"
+          python3 -u experiments/drnas_v16/r28_cryptominisat_comparator.py \
+            --inputs frozen --output comparison --binary compiled/r28_gf2 \
+            --kissat compiled/kissat --cms "$CMS" | tee r28-cms-live.log
+          test -s comparison/comparison.json
+          cat comparison/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R28-CMS-72-CASE-COMPARISON
+          path: |
+            comparison/
+            cryptominisat-package-version.txt
+            compiled/binaries.sha256
+            frozen/manifest.json
+            r28-cms-live.log
+          retention-days: 90
+          if-no-files-found: warn
