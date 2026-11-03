@@ -1,0 +1,48 @@
+name: DRNAS R77 Concorde compatibility probe
+on:
+  push:
+    branches: [experiment/drnas-r77-concorde-tsplib-20261104]
+    paths:
+      - '.github/workflows/drnas-r77-concorde-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  concorde_probe:
+    name: Probe official Concorde binary on Ubuntu 24.04 runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - name: Obtain and identify official 2003 Waterloo Linux Concorde solver
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 3 --connect-timeout 10 --max-time 50 \
+            https://math.uwaterloo.ca/tsp/concorde/downloads/codes/linux24/concorde.gz \
+            -o concorde.gz
+          sha256sum concorde.gz
+          gzip -dc concorde.gz > concorde
+          chmod +x concorde
+          file concorde
+          ldd concorde || true
+      - name: Try official binary; install 32-bit compatibility only if required
+        run: |
+          set -euo pipefail
+          if ! timeout 15s ./concorde -s 99 -k 8 > smoke.log 2>&1; then
+            cat smoke.log
+            echo 'First run failed. Install 32-bit libc runtime.'
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libc6-i386
+            timeout 15s ./concorde -s 99 -k 8 > smoke.log 2>&1
+          fi
+          cat smoke.log
+          grep -Ei '(optimal|solution|tour)' smoke.log | tail -15
+          test -s smoke.log
+          echo 'R77_OFFICIAL_CONCORDE_BINARY_SMOKE_PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R77-OFFICIAL-CONCORDE-BOOTSTRAP-DIAGNOSTIC
+          path: |
+            smoke.log
+            concorde.gz
+          if-no-files-found: warn
