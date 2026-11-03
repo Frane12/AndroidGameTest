@@ -1,0 +1,161 @@
+name: DRNAS R32t real 2026 certified XOR short-cuts versus same Kissat 120s
+on:
+  push:
+    branches: [experiment/drnas-r32t-certified-shortcuts-20261103]
+    paths:
+      - '.github/workflows/drnas-r32t-short-certified-xor-120s.yml'
+      - 'experiments/drnas_v16/r32t_certified_short_xor.py'
+      - 'experiments/drnas_v16/r32t_short_xor_holdout_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32t-17-official-proven-xor-cuts-20261103-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Independently certify entailed XOR cuts for exact 17 official SHA originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate source and protocol syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32t_certified_short_xor.py
+          python3 -m py_compile experiments/drnas_v16/r32t_short_xor_holdout_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-exact-17-2026-frozen-originals
+          run-id: 41667090339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r32s
+      - name: Audit original 17 CNFs, derive original-entailed short XOR clauses and independently audit proofs
+        run: |
+          set -euo pipefail
+          (cd prior-r32s && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r32t_short_xor_holdout_benchmark.py freeze \
+            --prior prior-r32s --out frozen | tee r32t-freeze.log
+          (cd frozen && sha256sum -c original.sha256 && sha256sum -c augmented.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          assert m["protocol"].startswith("DRNAS-R32T-REAL2026")
+          assert len(m["sources"])==17 and m["timeout_seconds"]==120
+          flagship=next(c for c in m["sources"] if c["gbd"].startswith("7db30d12"))
+          assert flagship["parity_axioms"]==857
+          assert flagship["rank"]==857 and flagship["free"]==166
+          assert flagship["chosen"]>0 and flagship["added"]>0
+          assert sum(c["added"]>0 for c in m["sources"])>=2
+          print("R32T_FULL_GF2_ORIGINAL_CNF_PROOF_PASS",sum(c["added"] for c in m["sources"]))
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-pinned-clean-native-traced-r28
+          run-id: 41667090339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify unmodified baseline and identical read-only native Kissat
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native compiled/r28
+          (cd compiled && sha256sum -c binaries.sha256)
+          compiled/clean --version
+          compiled/native --version
+          echo R32T_PINNED_IDENTICAL_SOLVER_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32t-17-official-certified-equivalent-source-pairs
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32t-clean-and-traced-native-binaries
+          path: compiled/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32t-derivation-proof-live-audit
+          path: |
+            r32t-freeze.log
+            frozen/manifest.json
+          if-no-files-found: warn
+  paired:
+    needs: freeze
+    name: r32t-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32t-17-official-certified-equivalent-source-pairs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32t-clean-and-traced-native-binaries
+          path: compiled
+      - name: Verify source original SHA and derived CNF SHA / existing solver hashes
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c original.sha256 && sha256sum -c augmented.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: 120s one-Kissat matched original/entailed-CNF with read-only CDCL phase milestones
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32t_short_xor_holdout_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --out results | tee r32t-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32t-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32t-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    name: Audit 51 source-paired original SAT witness and certified XOR effects
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32t-17-official-certified-equivalent-source-pairs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32t-shard-*
+          path: combined
+      - name: Original source equivalence and benchmark audit
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32t_short_xor_holdout_benchmark.py aggregate \
+            --inputs frozen --combined combined \
+            --output r32t-results.json --report r32t-results.md
+          cat r32t-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32T-CERTIFIED-MIXED-XOR-CUTS-FINAL-51
+          path: |
+            r32t-results.json
+            r32t-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
