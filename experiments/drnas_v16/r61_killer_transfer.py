@@ -365,7 +365,7 @@ def audit(a):
  check(m["protocol"]==PROTO,"wrong frozen experiment")
  rows=[];pins=set();seen=set()
  for i in range(SHARDS):
-  d=Path(a.combined)/f"r61-shard-{i}"/"results"
+  d=Path(a.combined)/f"r61-killer-shard-{i}"/"results"
   meta=json.loads((d/"meta.json").read_text())
   check(meta["protocol"]==PROTO and meta["shard"]==i
         and meta["manifest_sha"]==sha(root/"manifest.json"),
