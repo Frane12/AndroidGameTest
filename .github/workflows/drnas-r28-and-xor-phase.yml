@@ -1,0 +1,177 @@
+name: DRNAS R28 AND-XOR phase causal ablation vs CaDiCaL and Kissat
+on:
+  push:
+    branches: [experiment/drnas-r28-and-xor-phase-ablation-20261103]
+    paths:
+      - '.github/workflows/drnas-r28-and-xor-phase.yml'
+      - 'experiments/drnas_v16/r28_and_xor_phase.cpp'
+      - 'experiments/drnas_v16/r28_freeze.py'
+      - 'experiments/drnas_v16/r28_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r28-and-xor-phase-20261103
+  cancel-in-progress: false
+jobs:
+  build_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check R28 source syntax and predeclared 18-case protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r28_freeze.py experiments/drnas_v16/r28_benchmark.py
+          mkdir -p bin inputs pinned history
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: history
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-pinned-native-and-baselines
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Confirm original 53 formula and baseline binaries SHA256
+        run: |
+          set -euo pipefail
+          (cd history && sha256sum -c r26_all_53.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/kissat_solver bin/cadical_solver
+      - name: Download exact previously verified GBD source manifest, fixed SHA commit
+        run: |
+          set -euo pipefail
+          PIN=3cd6525817f5019516b0addb94b4db5f57c7e9b1
+          ORIGIN=https://raw.githubusercontent.com/Frane12/AndroidGameTest/${PIN}
+          for file in frozen_verified_gbd_family.json preflight.py; do
+            curl --fail --location --retry 3 --silent --show-error "${ORIGIN}/research/drnas-sat-family-test/${file}" -o "pinned/${file}"
+          done
+          sha256sum pinned/* > pinned/pinned-remote-sha256.txt
+      - name: Freeze 10 prior GBD, 4 extra original SHA pinned GBD and 4 XOR controls
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_freeze.py --r26 history --pinned pinned --out inputs
+          (cd inputs && sha256sum -c original_files.sha256)
+          test "$(python3 -c 'import json;print(len(json.load(open("inputs/manifest.json"))["cases"]))')" = 18
+      - name: Build unchanged CaDiCaL 3.0.1 source static library and R28 phase solver
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git /tmp/r28-cadical
+          git -C /tmp/r28-cadical rev-parse HEAD | tee pinned/cadical-source-commit.txt
+          (cd /tmp/r28-cadical && ./configure && make -j2 >/tmp/r28-cadical-build.log)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I /tmp/r28-cadical/src experiments/drnas_v16/r28_and_xor_phase.cpp /tmp/r28-cadical/build/libcadical.a -o bin/r28_and_xor -pthread -ldl -lz
+          chmod +x bin/r28_and_xor
+          (cd bin && sha256sum cadical_solver kissat_solver r28_and_xor > r28_binaries.sha256 && sha256sum -c r28_binaries.sha256)
+      - name: Smoke check R28 exact topology and 256-conflict solver continuation
+        run: |
+          set -euo pipefail
+          python3 -u - <<'PY'
+          import subprocess,json
+          spec=json.load(open("inputs/manifest.json"))
+          samples=[next(x for x in spec["cases"] if x["id"]==name) for name in
+                   ("mp1-Nb7T43.cnf.xz","r26_xor_09.cnf")]
+          for x in samples:
+              p=subprocess.run(["bin/r28_and_xor","gate_shadow","inputs/"+x["path"],"28031103"],
+                               text=True,capture_output=True,timeout=8)
+              if p.returncode:raise RuntimeError(p.stderr[-400:])
+              line=next(l for l in p.stdout.splitlines() if l.startswith("DRNAS_R28_RESULT"))
+              fields=line.split("\t")
+              assert len(fields)==17
+              print("R28_SMOKE",x["id"],line,flush=True)
+              if x["family"]=="polynomial_gbd_original":
+                  assert int(fields[4])>1000 and int(fields[5])>1000
+              else:assert int(fields[4])==0 and int(fields[5])==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          path: inputs/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R28-verified-native-and-baselines
+          path: bin/
+          if-no-files-found: error
+  paired:
+    needs: build_and_freeze
+    runs-on: ubuntu-24.04
+    name: r28-shard-${{ matrix.shard }}
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          path: inputs
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-verified-native-and-baselines
+          path: bin
+      - name: Verify original SAT inputs and 3 unmodified/pinned native executables
+        run: |
+          set -euo pipefail
+          (cd inputs && sha256sum -c original_files.sha256)
+          (cd bin && sha256sum -c r28_binaries.sha256)
+          chmod +x bin/cadical_solver bin/kissat_solver bin/r28_and_xor
+      - name: Six modes x two attempts, fixed cutoff, matched 256-conflict probes
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_benchmark.py run --inputs inputs --bin bin --out results --shard "$SHARD" --timeout 6 --repeats 2
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          path: inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r28-shard-*
+          path: combined
+      - name: Audit 216 original-CNF paired attempts and separate four holdouts
+        run: |
+          set -euo pipefail
+          (cd inputs && sha256sum -c original_files.sha256)
+          python3 -u experiments/drnas_v16/r28_benchmark.py aggregate --inputs inputs --combined combined --out-json r28-final.json --out-md r28-final.md
+          cat r28-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R28-AND-XOR-PHASE-PAIRED-FINAL-AUDIT
+          path: |
+            inputs/manifest.json
+            r28-final.json
+            r28-final.md
+            combined/
+          if-no-files-found: warn
