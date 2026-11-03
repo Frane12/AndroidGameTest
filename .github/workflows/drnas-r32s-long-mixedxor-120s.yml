@@ -1,0 +1,183 @@
+name: DRNAS R32s real SATComp26 120s mixed XOR and in-process CDCL telemetry
+on:
+  push:
+    branches: [experiment/drnas-r32s-long-mixedxor-20261103]
+    paths:
+      - '.github/workflows/drnas-r32s-long-mixedxor-120s.yml'
+      - 'experiments/drnas_v16/patch_r32s_native_cdcl_progress.py'
+      - 'experiments/drnas_v16/r32s_long_mixedxor_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32s-exact-17-source-120s-v1
+  cancel-in-progress: true
+jobs:
+  freeze_build:
+    name: Freeze 17 exact original 2026 CNFs and compile read-only native CDCL trace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate source and benchmark scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r32s_native_cdcl_progress.py
+          python3 -m py_compile experiments/drnas_v16/r32s_long_mixedxor_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-prospective-satcomp26-frozen-originals
+          run-id: 41662134252
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-r32r
+      - name: Retain the exact 17 previous 2026 SHA originals without source re-download
+        run: |
+          set -euo pipefail
+          (cd prior-r32r && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r32s_long_mixedxor_benchmark.py freeze \
+            --prior prior-r32r --out frozen
+          cp prior-r32r/*.cnf frozen/
+          (cd frozen && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          assert len(m["external_originals"])==17
+          assert m["timeout_seconds"]==120
+          assert len(m["modes"])==3
+          assert m["repeats"]==1
+          assert len(m["rejected_precommitted_candidates"])==6
+          print("R32S_EXACT_17_PREVIOUS_ORIGINAL_SHA_PASS")
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-kissat-r28-pinned-binaries
+          run-id: 41662134252
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify previous pinned Kissat and R28 source binary SHA
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native compiled/r28
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Build same pinned Kissat commit with read-only progress checkpoints
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r32s-native
+          git -C /tmp/r32s-native checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r32s-native rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r32s-native
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r32s-native
+          python3 -u experiments/drnas_v16/patch_r32s_native_cdcl_progress.py --kissat-root /tmp/r32s-native
+          (cd /tmp/r32s-native && ./configure && make -j2 > /tmp/r32s-build.log)
+          cp /tmp/r32s-native/build/kissat compiled/native
+          chmod +x compiled/native
+          (cd compiled && sha256sum clean native r28 > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Smoke test early/preprocess/CDCL trace and no runtime solver policy change
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > smoke.cnf
+          set +e
+          R32B_MODE=off R32S_PASSIVE_TRACE=1 compiled/native smoke.cnf > smoke-off.log
+          exitcode=$?
+          set -e
+          test "$exitcode" -eq 10
+          grep -q '^c R32S_TRACE event=entry ' smoke-off.log
+          grep -q '^c R32S_TRACE event=finished ' smoke-off.log
+          grep -q '^c R32B_FINAL status=10 ' smoke-off.log
+          set +e
+          R32B_MODE=r32k R32K_VARIANT=full R32S_PASSIVE_TRACE=1 compiled/native smoke.cnf > smoke-full.log
+          exitcode=$?
+          set -e
+          test "$exitcode" -eq 10
+          grep -q '^c R32S_TRACE event=finished ' smoke-full.log
+          grep -q '^c R32C_ACTIVE signal=' smoke-full.log
+          echo R32S_ONE_NATIVE_KISSAT_PASSIVE_CDCL_PREFLIGHT_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32s-exact-17-2026-frozen-originals
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32s-pinned-clean-native-traced-r28
+          path: compiled/
+          if-no-files-found: error
+  paired:
+    needs: freeze_build
+    name: r32s-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-exact-17-2026-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-pinned-clean-native-traced-r28
+          path: compiled
+      - name: Verify frozen SHA-original CNFs and native binary identity
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native compiled/r28
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: One solver per trial, 120s cap and CDCL phase/progress read-only trace
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32s_long_mixedxor_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --r28 compiled/r28 --out results --shard "$SHARD" | tee r32s-live.log
+          test -s results/rows.json
+          test -s results/profiles.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32s-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32s-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze_build, paired]
+    if: always()
+    name: 120-second original-CNF audit of all 51 attempts and 17 exact XOR coverage profiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-exact-17-2026-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32s-shard-*
+          path: combined
+      - name: Verify exact official original SAT witnesses, CDCL checkpoints and XOR proof control
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32s_long_mixedxor_benchmark.py aggregate \
+            --inputs frozen --combined combined \
+            --output r32s-results.json --report r32s-results.md
+          cat r32s-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32S-SAME17-REAL2026-120S-XOR-CDCL-FINAL
+          path: |
+            r32s-results.json
+            r32s-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
