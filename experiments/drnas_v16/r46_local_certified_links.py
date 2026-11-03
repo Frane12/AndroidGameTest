@@ -108,11 +108,11 @@ def complete_xor_seeds(clauses):
     for vars_, masks in groups.items():
         k = len(vars_)
         for rhs in (0, 1):
-            # Clause falsified when x_i=1 for positive literal; x_i=0 for negative.
-            # For sign mask 'negative bits', falsified assignment is ~mask;
-            # its XOR parity = (k % 2) XOR parity(mask).
+            # The falsifying assignment sets each negative literal's
+            # variable to true and positive literal's variable to false.
+            # Therefore its truth mask equals the negative-literal mask.
             required = {mask for mask in range(1 << k)
-                        if ((k & 1) ^ (mask.bit_count() & 1)) != rhs}
+                        if (mask.bit_count() & 1) != rhs}
             if required <= masks:
                 seeds.append((vars_, rhs))
     return sorted(set(seeds)), occurrences, existing
