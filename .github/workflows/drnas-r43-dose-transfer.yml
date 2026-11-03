@@ -1,0 +1,152 @@
+name: DRNAS R43 small hint dose transfer 0-16-32-64 official 5
+on:
+  push:
+    branches: [experiment/drnas-r43-small-dose-transfer-20261103]
+    paths:
+      - '.github/workflows/drnas-r43-dose-transfer.yml'
+      - 'experiments/drnas_v16/r43_patch_doses.py'
+      - 'experiments/drnas_v16/r43_dose_probe.py'
+      - 'experiments/drnas_v16/r43_dose_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r43-small-dose-transfer
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact source before compiling native intervention
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r40_patch_early_rescue.py experiments/drnas_v16/r41_trace_patch.py experiments/drnas_v16/r42_cap_patch.py experiments/drnas_v16/r43_patch_doses.py experiments/drnas_v16/r43_dose_probe.py experiments/drnas_v16/r43_dose_audit.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+      - name: Compile exact R42 policy with additional 16 and 64 hint caps
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          python3 -u experiments/drnas_v16/r40_patch_early_rescue.py --source research/drnas-sat-v7-8/v94_cautious_probe.cpp --dest research/drnas-sat-v7-8/r43_r40.cpp
+          python3 -u experiments/drnas_v16/r41_trace_patch.py --source research/drnas-sat-v7-8/r43_r40.cpp --dest research/drnas-sat-v7-8/r43_r41.cpp
+          python3 -u experiments/drnas_v16/r42_cap_patch.py --source research/drnas-sat-v7-8/r43_r41.cpp --out research/drnas-sat-v7-8/r43_r42.cpp
+          python3 -u experiments/drnas_v16/r43_patch_doses.py --source research/drnas-sat-v7-8/r43_r42.cpp --out research/drnas-sat-v7-8/r43_native.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert source.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(source.split(marker,1)[0]+'\n')
+          PY
+          (cd cadical-src && ./configure && make -j2 >/tmp/r43-cadical-build.log 2>&1) || { tail -100 /tmp/r43-cadical-build.log; exit 1; }
+          mkdir -p compiled
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src research/drnas-sat-v7-8/r43_native.cpp cadical-src/build/libcadical.a -o compiled/r43_native -pthread -ldl -lz
+          chmod +x compiled/r43_native
+          (cd compiled && sha256sum r43_native > binaries.sha256 && sha256sum -c binaries.sha256)
+          sha256sum research/drnas-sat-v7-8/r43_native.cpp > compiled/source.sha256
+          git rev-parse HEAD > compiled/commit.txt
+      - name: Verify all four modes produce same correct tiny SAT result
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' >/tmp/r43-smoke.cnf
+          for mode in v91_quality_gate v91_cap16 v91_cap32 v91_cap64; do
+            compiled/r43_native "$mode" /tmp/r43-smoke.cnf 43 >"/tmp/r43-$mode.txt" 2>"/tmp/r43-$mode.err"
+            grep -q "DRNAS_CAUSAL.*mode=$mode.*answer=SAT" "/tmp/r43-$mode.txt"
+            echo "R43_SMOKE_PASS $mode"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r43-pinned-native-binary
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+  measure:
+    needs: build
+    if: needs.build.result == 'success'
+    name: r43-official-dose-${{ matrix.index }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        index: [0,1,2,3,4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r43-pinned-native-binary
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: official_manifest
+      - name: Verify single binary and original SHA-256, run 8 paired native attempts
+        env:
+          INDEX: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/r43_native
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          lscpu > cpu.txt
+          python3 -u experiments/drnas_v16/r43_dose_probe.py --manifest official_manifest/official_v94_manifest.json --native compiled/r43_native --index "$INDEX" --out results | tee r43-live.log
+          test -s results/trials.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r43-case-${{ matrix.index }}
+          path: |
+            results/
+            cpu.txt
+            r43-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [build,measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: official_manifest
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r43-case-*
+          path: combined
+      - name: Strict SHA/prefix parity, activated hints, PAR2 aggregate
+        run: |
+          set -euo pipefail
+          test "${{ needs.build.result }}" = success
+          test "${{ needs.measure.result }}" = success
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          python3 -u experiments/drnas_v16/r43_dose_audit.py --manifest official_manifest/official_v94_manifest.json --combined combined --out r43-results.json | tee r43-audit.log
+          test -s r43-results.json
+          cat r43-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R43-FIVE-OFFICIAL-HINT-DOSE-40-PAIRED-FINAL
+          path: |
+            r43-results.json
+            r43-audit.log
+          if-no-files-found: warn
+          retention-days: 90
