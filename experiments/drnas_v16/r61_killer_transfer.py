@@ -246,7 +246,7 @@ def race_trial(source,kissat,cpus):
  handles=[]
  status="TIMEOUT"
  winner="none"
- added=0;candidate_started=False
+ added=0;worker_checked=False
  prep=0.0
  with tempfile.TemporaryDirectory(prefix="r61-two-core-") as folder:
   d=Path(folder)
@@ -285,7 +285,8 @@ def race_trial(source,kissat,cpus):
      winner=tag
      break
     if status!="TIMEOUT":break
-    if other is None and work.poll() is not None:
+    if not worker_checked and work.poll() is not None:
+     worker_checked=True
      check(work.returncode==0 and ready.is_file(),
           "certified clause preparation failed: "+(d/"prepare.stderr").read_text()[-260:])
      meta=json.loads(ready.read_text())
@@ -303,11 +304,7 @@ def race_trial(source,kissat,cpus):
       processes.append(other)
       output_by_process[other]=second_out
       errors_by_process[other]=second_err
-     else:
-      # Keep the original Kissat only (no point in duplicate identical race).
-      other=baseline if False else None
-      # Mark no second worker to start by removing the worker object.
-      work=None
+     # If no certified clauses were chosen, baseline alone finishes.
     time.sleep(.004)
   finally:
    for proc in processes:
