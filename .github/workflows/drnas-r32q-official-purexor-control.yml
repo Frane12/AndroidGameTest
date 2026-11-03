@@ -1,0 +1,68 @@
+name: DRNAS R32q known official SATComp2026 real XOR exact-GF2 diagnosis
+on:
+  push:
+    branches: [experiment/drnas-r32q-official-exactgf2-20261103]
+    paths:
+      - '.github/workflows/drnas-r32q-official-purexor-control.yml'
+      - 'experiments/drnas_v16/r32q_real_official_purexor_control.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32q-official-exactgf2-v1
+  cancel-in-progress: true
+jobs:
+  diagnose:
+    name: Compare original Kissat 60s to exact certified XOR SAT solver on same official original
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python benchmark syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32q_real_official_purexor_control.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32p-official-2026-size-bounded-frozen-originals
+          run-id: 41656883104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Validate SHA pinned 2026 real DIMACS and original Kissat GF2 binaries
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+          (cd compiled && sha256sum -c binary.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          p=next(x for x in m["cases"] if x["gbd"]=="75429ff7acb5acb597abe01aa745c2a6")
+          assert p["vars"]==250 and p["clauses"]==1000
+          print("R32Q_ORIGINAL_SATCOMP2026_IDENTITY_PASS",p["sha256"])
+          PY
+      - name: Exact source-verified GF2 versus clean Kissat on same runner
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32q_real_official_purexor_control.py \
+            --frozen frozen --clean compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r32q-live.log
+          grep -q '^R32Q_REAL_OFFICIAL_DIAGNOSTIC_AUDIT_PASS' r32q-live.log
+          cat results/r32q-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32Q-KNOWN-OFFICIAL-EXACTGF2-CONTROL
+          path: |
+            results/
+            r32q-live.log
+          if-no-files-found: warn
