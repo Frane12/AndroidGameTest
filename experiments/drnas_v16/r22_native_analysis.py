@@ -75,7 +75,7 @@ def load():
       manifest["historic_sha256"]!=hashlib.sha256(
         "\n".join(sorted(oldhashes)).encode()).hexdigest() or
       manifest["cpu_affinity"]!=[manifest["cpu_core"]] or
-      manifest["kissat_pin"]!=protocol["history"]["pinned_kissat_commit"] or
+      manifest["kissat_pin"]!=protocol["instrumentation"]["upstream_kissat"] or
       manifest["v1531_blob"]!=protocol["history"]["frozen_v1531_blob"]):
    fail("source/CPU/protocol/hash mismatch "+category)
   cases={x["formula"]:x for x in manifest["cases"]}
