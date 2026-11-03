@@ -1,0 +1,150 @@
+name: DRNAS R29 certified hidden and partial XOR paired holdout
+on:
+  push:
+    branches: [experiment/drnas-r29-hidden-partial-xor-20261103]
+    paths:
+      - '.github/workflows/drnas-r29-hidden-partial-xor.yml'
+      - 'experiments/drnas_v16/r29_hidden_partial.cpp'
+      - 'experiments/drnas_v16/r29_hidden_partial_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r29-hidden-partial-xor
+  cancel-in-progress: true
+jobs:
+  freeze_build:
+    name: Build original Kissat, R28, R29 and prove hidden-XOR preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate benchmark and C++ source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r29_hidden_partial_benchmark.py
+          g++ --version | head -1
+      - name: Build unmodified pinned Kissat and native proof solvers
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r29-kissat-original
+          git -C /tmp/r29-kissat-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r29-kissat-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/r29-kissat-original && ./configure && make -j2 >/tmp/r29-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/r29-kissat-original/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o compiled/r28
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r29_hidden_partial.cpp -o compiled/r29
+          chmod +x compiled/kissat compiled/r28 compiled/r29
+          (cd compiled && sha256sum kissat r28 r29 > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Freeze 72 brand-new SHA-locked six-family formulas
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r29_hidden_partial_benchmark.py prepare --outdir frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Verify reversible hidden-XOR SAT witnesses and independent UNSAT parity-resolution certificates
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r29_hidden_partial_benchmark.py preflight \
+            --inputs frozen --kissat compiled/kissat --r28 compiled/r28 --r29 compiled/r29 \
+            | tee r29-preflight.log
+          grep -q '^R29_PREFLIGHT_PASS' r29-preflight.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r29-preflight-proofs
+          path: r29-preflight.log
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r29-fixed-three-binaries
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r29-72-locked-inputs
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+  holdout:
+    needs: freeze_build
+    name: R29 SHA-locked shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r29-fixed-three-binaries
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: r29-72-locked-inputs
+          path: frozen
+      - name: Verify binaries and frozen formula inputs
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat compiled/r28 compiled/r29
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Run four paired strategies with independent proof checking
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r29_hidden_partial_benchmark.py measure \
+            --inputs frozen --kissat compiled/kissat --r28 compiled/r28 \
+            --r29 compiled/r29 --shard "$SHARD" --outdir results | tee r29-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r29-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r29-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [freeze_build, holdout]
+    if: always()
+    name: Audit 576 measurements and the certified action / fallback decision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r29-72-locked-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r29-shard-*
+          path: combined
+      - name: Fail incomplete tests, bad SHA, missing proofs or binary drift
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r29_hidden_partial_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r29-results.json \
+            --report r29-results.md --csv r29-results.csv
+          cat r29-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R29-FINAL-SHA-PROOF-GATED-HOLDOUT
+          path: |
+            frozen/manifest.json
+            r29-results.json
+            r29-results.csv
+            r29-results.md
+          if-no-files-found: warn
+          retention-days: 90
