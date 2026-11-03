@@ -1,0 +1,175 @@
+name: DRNAS R73 strictly new quick unused official 2025 SAT originals
+
+on:
+  push:
+    branches: [experiment/drnas-r73-quick-unused-2025-20261103]
+    paths:
+      - '.github/workflows/drnas-r73-fresh-quick.yml'
+      - 'experiments/drnas_v16/r73_fresh_quick_unseen_2025.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r73-fresh-quick-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Prove prior source exclusion; select never-seen 2025 only for 8 Kissat unselected
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and original R65 XOR implication soundness tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r73_fresh_quick_unseen_2025.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R63-REAL2026-XOR-PREVALENCE-FALLBACK-FINAL
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r63
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          run-id: 41717235335
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r66
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r67
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r67-report
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: SHA-verify and select fresh source identity and unselected real Kissat timing
+        run: |
+          set -euo pipefail
+          test -s old-r63/r63-final.json
+          test -s old-r66/new/manifest.json
+          test -s old-r67/new/manifest.json
+          test -s old-r67-report/r67-final.json
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat
+          python3 -u experiments/drnas_v16/r73_fresh_quick_unseen_2025.py freeze \
+            --r63 old-r63/r63-final.json \
+            --r66 old-r66/new/manifest.json \
+            --r67 old-r67/new/manifest.json \
+            --r67final old-r67-report/r67-final.json \
+            --kissat compiled/kissat --out new | tee r73-freeze.log
+          (cd new && sha256sum -c source.sha256)
+          test -s new/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r73-fresh-selected-sources
+          path: |
+            new/
+            r73-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R73 source-${{ matrix.shard }} (same 3 modes x 2 repeats; 25s cap)
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Compare real solve seconds including bounded preprocessing, SHA-pinned
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat
+          python3 -u experiments/drnas_v16/r73_fresh_quick_unseen_2025.py measure \
+            --sources new --kissat compiled/kissat \
+            --shard "$SHARD" --out results | tee r73-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r73-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r73-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R73 frozen SHA, zero historical reuse, paired solving seconds and PAR2
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r73-shard-*
+          path: combined
+      - name: Fail-closed paired timing audit
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r73_fresh_quick_unseen_2025.py audit \
+            --sources new --combined combined \
+            --json r73-final.json --md r73-final.md
+          cat r73-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R73-FRESH-8FORMULA-5TO30S-FINAL
+          path: |
+            r73-final.json
+            r73-final.md
+          if-no-files-found: error
+          retention-days: 90
