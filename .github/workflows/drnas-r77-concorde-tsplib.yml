@@ -1,0 +1,117 @@
+name: DRNAS R77 vs original Concorde on frozen TSPLIB95
+on:
+  push:
+    branches: [experiment/drnas-r77-concorde-tsplib-20261104]
+    paths:
+      - '.github/workflows/drnas-r77-concorde-tsplib.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r77-tsplib-concorde-20261104
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Download and SHA-freeze real TSPLIB95 51-70 city graphs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and official TSPLIB graph freeze
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/drnas_r77_tsplib_concorde.py
+          python3 -u experiments/drnas_v16/drnas_r77_tsplib_concorde.py freeze \
+            --out frozen | tee r77-freeze.log
+          (cd frozen && sha256sum -c sources.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r77-frozen-TSPLIB-EUC2D
+          path: |
+            frozen/
+            r77-freeze.log
+          if-no-files-found: warn
+
+  measure:
+    name: r77-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r77-frozen-TSPLIB-EUC2D
+          path: .
+      - name: Freeze source SHA, download authentic Waterloo Concorde 2003
+        run: |
+          set -euo pipefail
+          test "$(nproc)" -ge 4
+          (cd frozen && sha256sum -c sources.sha256)
+          curl -fSL --retry 3 --connect-timeout 10 --max-time 50 \
+            https://math.uwaterloo.ca/tsp/concorde/downloads/codes/linux24/concorde.gz \
+            -o concorde.gz
+          echo "cc09e4a0031ed15770c407214285d021b438145a13454a979349e0d76eb66a56  concorde.gz" | sha256sum -c -
+          gzip -dc concorde.gz > concorde
+          chmod +x concorde
+          file concorde
+          timeout 15s ./concorde -s 99 -k 8 > smoke.log
+          grep -q 'Optimal Solution:' smoke.log
+      - name: Same exact problem, 12s each, pinned 1core DRNAS / 1core Concorde / 4core DRNAS
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r77_tsplib_concorde.py measure \
+            --sources frozen --concorde ./concorde \
+            --shard "$SHARD" --out results | tee r77-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r77-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r77-live.log
+            smoke.log
+          if-no-files-found: warn
+
+  audit:
+    name: R77 all 18 paired trials final SHA and optimum audit
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r77-frozen-TSPLIB-EUC2D
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r77-shard-*
+          path: combined
+      - name: Verify complete paired results, original route witnesses and TSPLIB known optimality
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256)
+          python3 -u experiments/drnas_v16/drnas_r77_tsplib_concorde.py audit \
+            --sources frozen --combined combined \
+            --json r77-final.json --md r77-final.md
+          cat r77-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R77-TSPLIB-REAL-CONCORDE-AUDITED-FINAL
+          path: |
+            r77-final.json
+            r77-final.md
+            frozen/manifest.json
+          if-no-files-found: error
