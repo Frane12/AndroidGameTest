@@ -142,7 +142,7 @@ def audit(a):
         for mode in MODES:
             sub=[r for r in rr if r["mode"]==mode]
             check(len(sub)==REPS and
-                  {r["repetition"] for r in sub}=={1,2,3},
+                  {r["repetition"] for r in sub}==set(range(1,REPS+1)),
                   "repetitions missing")
             per[g][mode]=dict(
                 solved=sum(r["answer"]!="TIMEOUT" for r in sub),
