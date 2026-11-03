@@ -130,7 +130,7 @@ def audit(a):
             seen.add(key);rows.append(item)
     check(len(rows)==TARGET*REPS*len(MODES) and
           all(len(s)==1 for s in binhash.values()),
-          "incomplete 450 trials or binary mismatch")
+          "incomplete expected paired trials or binary mismatch")
     per={}
     for case in m["cases"]:
         g=case["gbd"];rr=[r for r in rows if r["gbd"]==g]
@@ -155,7 +155,7 @@ def audit(a):
         rr=[r for r in rows if r["mode"]==mode]
         summary[mode]=dict(trials=len(rr),
             solved_trials=sum(r["answer"]!="TIMEOUT" for r in rr),
-            fully_solved_cases=sum(per[g][mode]["solved"]==3 for g in per),
+            fully_solved_cases=sum(per[g][mode]["solved"]==REPS for g in per),
             at_least_once_solved_cases=sum(per[g][mode]["solved"]>0 for g in per),
             timeouts=sum(r["answer"]=="TIMEOUT" for r in rr),
             par2_sum_s=round(sum(r["par2_s"] for r in rr),6),
@@ -179,22 +179,22 @@ def audit(a):
         limitation="not globally unseen; not official competition; UNSAT without separate LRAT")
     write(a.out,report)
     md=["# DRNAS R53 — 50 known-registry-unseen official 2026 cases x 3 repeats",
-      "Sample selected by salted hash, without using solver results. 40s cap, PAR-2 timeout 80s.",
+      f"Sample selected by salted hash, without using solver results. {CAP:g}s cap, PAR-2 timeout {2*CAP:g}s.",
       "Not an official competition score or guarantee of globally never-seen problems.",
       "","| Solver | Solved trials | All repeats solved | PAR-2 total (s) | Gain vs Kissat |",
       "|---|---:|---:|---:|---:|"]
     for mode in MODES:
         q=summary[mode]
-        md.append(f'| {mode} | {q["solved_trials"]}/150 | {q["fully_solved_cases"]}/50 | {q["par2_sum_s"]:.3f} | {q["gain_over_kissat_pct"]:+.2f}% |')
+        md.append(f'| {mode} | {q["solved_trials"]}/{TARGET*REPS} | {q["fully_solved_cases"]}/{TARGET} | {q["par2_sum_s"]:.3f} | {q["gain_over_kissat_pct"]:+.2f}% |')
     md+=["",f'Bootstrap 95% vs Kissat: {ci["kissat_pinned"]}; vs CaDiCaL: {ci["cadical_3_0_1"]}.',
-      "","## Per-formula median PAR-2 seconds over 3 runs",
-      "| Instance ID prefix | Kissat | DRNAS R49 | CaDiCaL | DRNAS solved |",
-      "|---|---:|---:|---:|---:|"]
+      "",f"## Per-formula median PAR-2 seconds over {REPS} runs",
+      "| Instance ID prefix | " + " | ".join(MODES) + " | R49 solved |",
+      "|"+"|".join(["---"]+["---:"]*(len(MODES)+1))+"|"]
     for c in m["cases"]:
         p=per[c["gbd"]]
         md.append("| "+c["gbd"][:12]+" | "+" | ".join(
           f'{p[k]["median_par2"]:.3f}' for k in MODES)+
-          f' | {p["drnas_r49_gate"]["solved"]}/3 |')
+          f' | {p["drnas_r49_gate"]["solved"]}/{REPS} |')
     md+=["","Full GBD IDs, exact individual times and source SHA256 in JSON."]
     Path(a.markdown).write_text("\n".join(md)+"\n")
     print("R53_FINAL_AUDIT_PASS",json.dumps(summary),flush=True)
