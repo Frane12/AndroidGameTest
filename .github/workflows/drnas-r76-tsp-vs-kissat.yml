@@ -1,0 +1,132 @@
+name: DRNAS R76 TSP exact optimization vs clean Kissat
+on:
+  push:
+    branches: [experiment/drnas-r76-tsp-vs-kissat-20261104]
+    paths:
+      - '.github/workflows/drnas-r76-tsp-vs-kissat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r76-tsp-vs-kissat-20261104
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze four TSP graphs and independently check Kissat SAT optimization
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Check pinned solver SHA and solve brute-force small TSP cases
+        run: |
+          set -euo pipefail
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+          python3 -m py_compile experiments/drnas_v16/drnas_r76_tsp_vs_kissat.py
+          python3 -u experiments/drnas_v16/drnas_r76_tsp_vs_kissat.py selftest \
+            --kissat bins/kissat_pinned | tee selftest.log
+      - name: Freeze source graphs with SHA and precommitted parameter set
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r76_tsp_vs_kissat.py freeze \
+            --out frozen | tee freeze.log
+          (cd frozen && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r76-source-graphs-and-solver-selftest
+          path: |
+            frozen/
+            freeze.log
+            selftest.log
+          if-no-files-found: warn
+
+  measure:
+    name: r76-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r76-source-graphs-and-solver-selftest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Verify original source and pinned solver SHA
+        run: |
+          set -euo pipefail
+          test "$(nproc)" -ge 4
+          (cd frozen && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+      - name: Same initial route, four-core/one-core R75, one-core Kissat exact optimum
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r76_tsp_vs_kissat.py measure \
+            --sources frozen --kissat bins/kissat_pinned \
+            --shard "$SHARD" --out results | tee r76-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r76-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r76-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: Audit R76 24 matched trials, proof status, SAT witness and core cost
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r76-source-graphs-and-solver-selftest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r76-shard-*
+          path: combined
+      - name: Verify all 24 measurements and reject conflicting proven minima
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/drnas_r76_tsp_vs_kissat.py audit \
+            --sources frozen --combined combined \
+            --json r76-final.json --md r76-final.md
+          cat r76-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R76-TSP-VS-KISSAT-FINAL-AUDITED
+          path: |
+            r76-final.json
+            r76-final.md
+            frozen/manifest.json
+          if-no-files-found: error
