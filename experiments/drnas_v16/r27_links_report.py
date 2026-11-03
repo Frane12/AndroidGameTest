@@ -29,13 +29,16 @@ def main():
     inputs={c["sha256"]:c for c in manifest["cases"]}
     indexed={}
     for shard in range(5):
-        for r in load(Path(a.historical)/f"r26-shard-{shard}/rows.json"):
+        for r in load(next(p for p in (Path(a.historical)/f"r26-shard-{shard}/rows.json",
+                             Path(a.historical)/f"r26-shard-{shard}/results/rows.json") if p.exists())):
             spec=r["case"];key=spec["sha256"]
             assert key in inputs and inputs[key]["id"]==spec["id"]
             indexed[key]={m:median_par2(r["trials"],m) for m in MODES}
     analyzed={}
     for shard in range(4):
         folder=Path(a.combined)/f"r27-shard-{shard}"
+        if not (folder/"metadata.json").exists():
+            folder=folder/"results"  # artifact contains root log plus results/
         meta=load(folder/"metadata.json")
         assert meta["selected_count"]==len(meta["sha256"]), "Inconsistent shard"
         for sha in meta["sha256"]:
