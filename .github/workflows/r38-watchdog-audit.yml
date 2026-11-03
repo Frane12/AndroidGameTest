@@ -1,0 +1,99 @@
+name: DRNAS R38 bounded XOR structure utility watchdog
+on:
+  push:
+    branches: [experiment/drnas-r38-structure-utility-audit-20261103]
+    paths:
+      - '.github/workflows/r38-watchdog-audit.yml'
+      - 'r38_watchdog.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify watchdog syntax and XOR toy example
+        run: |
+          set -euo pipefail
+          python3 -m py_compile r38_watchdog.py
+          python3 r38_watchdog.py selftest
+  scan:
+    needs: selftest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve frozen R37 official 2026 input manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v94-2026-official-12-new-CNFs-full-results
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r37
+      - name: Scan SHA-verified CNFs with hard per-case watchdog
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f r37/official_manifest/official_v94_manifest.json
+          test -f r37/combined-v94/v94_report.json
+          timeout --signal=TERM --kill-after=5s 15m python3 -u r38_watchdog.py scan \
+            --manifest r37/official_manifest/official_v94_manifest.json \
+            --shard "$SHARD" --out "r38-shard-$SHARD"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r38-shard-${{ matrix.shard }}
+          path: r38-shard-${{ matrix.shard }}/
+          if-no-files-found: warn
+  audit:
+    needs: [selftest, scan]
+    if: always() && needs.selftest.result == 'success' && needs.scan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve R37 fixed parent manifest and benchmark
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-v94-2026-official-12-new-CNFs-full-results
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r37
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r38-shard-*
+          path: scans
+          merge-multiple: false
+      - name: Correlate structure, kill reasons and pre-existing solver timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u r38_watchdog.py audit \
+            --manifest r37/official_manifest/official_v94_manifest.json \
+            --report r37/combined-v94/v94_report.json \
+            --scans scans --out r38-final
+          cat r38-final/r38_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R38-WATCHDOG-STRUCTURE-UTILITY-AUDIT
+          path: r38-final/
+          if-no-files-found: warn
