@@ -8,7 +8,7 @@ Never re-runs original 120 R37 trials. Portfolio is NOT a 1-core speedup.
 """
 import argparse,hashlib,json,os,random,resource,signal,subprocess,sys,time
 from pathlib import Path
-ROOT=Path(__file__).resolve().parent
+ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"research/drnas-sat-v7-8"))
 from official_v94_select import download_and_features
 CASES=(
