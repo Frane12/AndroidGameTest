@@ -1,0 +1,140 @@
+name: DRNAS R45 original SAT Competition 2026 R32l GF2 real benchmark
+on:
+  push:
+    branches: [experiment/drnas-r45-r32l-real-official-20261103]
+    paths:
+      - '.github/workflows/drnas-r45-r32l-real-official.yml'
+      - 'experiments/drnas_v16/r45_r32l_official_2026.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r45-r32l-official-2026
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify R45 script syntax and unchanged frozen R32l method
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r45_r32l_official_2026.py
+          python3 -m py_compile experiments/drnas_v16/r32l_early_cdcl_benchmark.py
+          test "$(git hash-object experiments/drnas_v16/r32l_early_cdcl_benchmark.py)" = 354fb0a29cf7550dd3adb8edd8afa72c3b545e48
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          run-id: 41231153158
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior18
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior12
+      - name: Freeze preselected real official SAT Competition 2026 6 SAT and 6 UNSAT
+        run: |
+          set -euo pipefail
+          (cd prior18 && sha256sum -c manifest.sha256)
+          (cd prior12 && sha256sum -c manifest.sha256)
+          mkdir -p frozen
+          python3 -u experiments/drnas_v16/r45_r32l_official_2026.py freeze --prior18 prior18/official_shortlong_manifest.json --prior12 prior12/official_v94_manifest.json --out frozen/manifest.json | tee freeze.log
+          (cd frozen && sha256sum manifest.json > manifest.sha256 && sha256sum -c manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r45-original-official-12-cnf-frozen-manifest
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+  paired:
+    needs: freeze
+    name: r45-shard-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r45-original-official-12-cnf-frozen-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32l-pinned-kissat-binary-pair
+          run-id: 41647823014
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify frozen inputs and certified original Kissat binary pair
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd frozen && sha256sum -c manifest.sha256)
+      - name: Run 3 original competition CNFs x 4 same-Kissat modes x 2 repeats
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          lscpu > cpu.txt
+          python3 -u experiments/drnas_v16/r45_r32l_official_2026.py measure --manifest frozen/manifest.json --clean compiled/clean --native compiled/native --shard "$SHARD" --outdir results | tee r45-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r45-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+            r45-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [freeze,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r45-original-official-12-cnf-frozen-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r45-shard-*
+          path: combined
+      - name: Strict paired audit 96 real SAT Competition original-source attempts
+        run: |
+          set -euo pipefail
+          test "${{ needs.freeze.result }}" = success
+          test "${{ needs.paired.result }}" = success
+          (cd frozen && sha256sum -c manifest.sha256)
+          python3 -u experiments/drnas_v16/r45_r32l_official_2026.py aggregate --manifest frozen/manifest.json --combined combined --out r45-final.json | tee r45-audit.log
+          test -s r45-final.json
+          cat r45-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R45-REAL-OFFICIAL-R32L-GF2-96-TRIALS
+          path: |
+            r45-final.json
+            r45-audit.log
+          if-no-files-found: warn
+          retention-days: 90
