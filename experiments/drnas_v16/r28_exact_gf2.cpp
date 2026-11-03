@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
