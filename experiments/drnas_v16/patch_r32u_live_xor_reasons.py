@@ -277,8 +277,10 @@ def main():
        "live_initialization")
     s=once(s,
        "      clause *conflict = kissat_search_propagate (solver);\n"
+       "      if (!conflict) r32b_native_snapshot (solver);\n"
        "      if (conflict) {",
        "      clause *conflict = kissat_search_propagate (solver);\n"
+       "      if (!conflict) r32b_native_snapshot (solver);\n"
        "      if (!conflict) {\n"
        "        r32u_scan(solver);\n"
        "        if(r32u_last_assigned)continue; // BCP before a new decision\n"
