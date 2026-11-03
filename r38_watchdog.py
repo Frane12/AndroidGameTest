@@ -238,7 +238,7 @@ def audit(args):
             "INSUFFICIENT_EVIDENCE" if new["status"]!="complete" else
             "CERTIFIED_SIGNAL" if new.get("certified_units",0)>0 else
             "XOR_ONLY" if new.get("xor_variables",0)>0 else
-            "NO_SIGNAL_IN_BOUNDED_SCAN"))))
+            "NO_SIGNAL_IN_BOUNDED_SCAN")))
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
     with (out/"r38_cases.csv").open("w",newline="") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]))
