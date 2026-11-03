@@ -20,6 +20,9 @@ FIELDS=prior.FIELDS+("r22_native_decision","r22_python_selected","r22_python_wea
  "r22_mature_low_recent","r22_share_prev","r22_share_recent",
  "r22_trace_checkpoint_count","r22_protocol_sha256","r22_error")
 PREV_PARSE=prior.parse
+PREV_HISTORY=prior.history
+PREV_ACTUAL=prior.actual_run
+PRIOR_LOCAL=prior.LOCAL
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def cfg():
  c=json.loads(PROTOCOL.read_text())
@@ -35,7 +38,7 @@ def cfg():
   raise RuntimeError("R22_FROZEN_PROTOCOL_OR_PIN_CHANGED")
  return c
 def history():
- used=prior.history()
+ used=PREV_HISTORY()
  if len(used)!=2894:raise RuntimeError("R22_2894_HISTORIC_CNFS_MISSING")
  if prior.r20.r19.git_blob(PRIOR_CSV)!=cfg()["history"]["r21_formula_features_blob"]:
   raise RuntimeError("R22_R21_FORMULA_CATALOG_GIT_BLOB_DRIFT")
