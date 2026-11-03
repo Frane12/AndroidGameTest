@@ -298,7 +298,7 @@ def measure(a):
         check(n==case["n"] and len(clauses)==case["m"],"DIMACS mismatch")
         for rep in range(REPS):
             order=list(MODES)
-            random.Random(int(digest("r29-order/"+case["sha256"]+"/"+str(rep)),16)).shuffle(order)
+            random.Random(int(digest(("r29-order/"+case["sha256"]+"/"+str(rep)).encode()),16)).shuffle(order)
             for mode in order:
                 result=run_one(mode,bins,path,clauses,case)
                 rows.append(dict(formula=case["name"],family=case["family"],
