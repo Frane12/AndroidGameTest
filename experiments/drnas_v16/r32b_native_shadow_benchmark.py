@@ -70,7 +70,7 @@ def parse_native(text):
     for line in text.splitlines():
         if line.startswith("c R32B_PROBE "):
             m=dict(re.findall(r"([A-Za-z_]+)=([A-Za-z_0-9.+-]+)",line))
-            samples=line.split("samples=",1)[1].split()[0] if "samples=" in line else ""
+            samples=line.partition("samples=")[2].strip() if "samples=" in line else ""
             try:sample=[int(x) for x in samples.split(",") if x]
             except ValueError:sample=[]
             row={k:(float(v) if k.endswith("_us") else int(v)
