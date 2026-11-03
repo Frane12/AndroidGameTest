@@ -1,0 +1,172 @@
+name: DRNAS R49 frozen risk gate known vs SHA-disjoint official SATComp26
+on:
+  push:
+    branches: [experiment/drnas-r49-risk-gate-blind-20261103]
+    paths:
+      - '.github/workflows/drnas-r49-frozen-risk-gate.yml'
+      - 'experiments/drnas_v16/r49_risk_gate_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r49-frozen-gate-20261103-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Selftest, verify 25 original CNFs and freeze pre-registered R49 gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and self-test frozen gate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r49_risk_gate_benchmark.py
+          python3 -m py_compile experiments/drnas_v16/r48_causal_clause_dose.py
+          python3 experiments/drnas_v16/r49_risk_gate_benchmark.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-frozen-source
+          run-id: 41669951007
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: known
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-prospective-satcomp26-frozen-originals
+          run-id: 41662134252
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: external
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-pinned-binary
+          run-id: 41669951007
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify actual source SHA256 and pinned clean Kissat; freeze the gate
+        run: |
+          set -euo pipefail
+          (cd known && sha256sum -c source.sha256)
+          (cd external && sha256sum -c source.sha256)
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 -u experiments/drnas_v16/r49_risk_gate_benchmark.py freeze \
+            --known known --external external --clean compiled/clean \
+            --output r49-design.json
+          test -s r49-design.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-frozen-known
+          path: known/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-frozen-external
+          path: external/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-frozen-kissat
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-frozen-design
+          path: r49-design.json
+          if-no-files-found: error
+          retention-days: 30
+  paired:
+    needs: freeze
+    name: r49-${{ matrix.cohort }}-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        cohort: [known, external]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-known
+          path: known
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-external
+          path: external
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-kissat
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-design
+          path: design
+      - name: Run solo pinned Kissat and deterministic frozen gate
+        env:
+          COHORT: ${{ matrix.cohort }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd "$COHORT" && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r49_risk_gate_benchmark.py measure \
+            --cohort "$COHORT" --inputs "$COHORT" \
+            --design design/r49-design.json --clean compiled/clean \
+            --shard "$SHARD" --out results | tee r49-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r49-${{ matrix.cohort }}-${{ matrix.shard }}
+          path: |
+            results/
+            r49-live.log
+          if-no-files-found: warn
+          retention-days: 30
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    name: Check every paired trial, strict wall cap, and PAR-2 separately by cohort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-design
+          path: design
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r49-known-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r49-external-*
+          path: combined
+      - name: Honest freeze, complete paired audit and report
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r49_risk_gate_benchmark.py aggregate \
+            --design design/r49-design.json --combined combined \
+            --output r49-final.json --report r49-final.md
+          cat r49-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R49-FROZEN-RISK-GATE-COMPLETE
+          path: |
+            r49-final.md
+            r49-final.json
+            design/r49-design.json
+          if-no-files-found: warn
+          retention-days: 30
