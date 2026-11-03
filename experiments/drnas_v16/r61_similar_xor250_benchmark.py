@@ -188,18 +188,20 @@ def aggregate(a):
         by={m:[x for x in rs if x["mode"]==m] for m in MODES}
         k=by["kissat_pinned"];g=by["r28_exact_gf2"]
         check(all(x["status"] in ("SAT","TIMEOUT") for x in rs),"Invalid status")
-        check(all(x["status"]=="SAT" and x["witness_checked"] for x in g),"GF2 mode fails planted model")
+        if case["family"]!="near_xor3_control":
+            check(all(x["status"]=="SAT" and x["witness_checked"] for x in g),"Pure XOR exact-GF2 route failed")
         km=statistics.median(x["wall_s"] for x in k)
         gm=statistics.median(x["wall_s"] for x in g)
-        both_timeout=all(x["status"]=="TIMEOUT" for x in k)
+        gf2_solved=sum(x["status"]=="SAT" for x in g)
+        both_timeout=all(x["status"]=="TIMEOUT" for x in k) and gf2_solved==2
         ratio=round(CAP/gm,1) if both_timeout else (
-            round(km/gm,1) if all(x["status"]=="SAT" for x in k) else None)
+            round(km/gm,1) if gf2_solved==2 and all(x["status"]=="SAT" for x in k) else None)
         metric="censored_lower_bound" if both_timeout else (
             "both_solved_exact_ratio" if ratio is not None else "mixed_censoring")
         report.append(dict(formula=case["name"],family=case["family"],
                            kissat_median_observed_s=km,gf2_median_s=gm,
                            kissat_solved=sum(x["status"]=="SAT" for x in k),
-                           gf2_solved=2,ratio=ratio,ratio_kind=metric,
+                           gf2_solved=gf2_solved,ratio=ratio,ratio_kind=metric,
                            kissat_PAR2=sum(x["par2_s"] for x in k),
                            gf2_PAR2=sum(x["par2_s"] for x in g)))
     totals={}
