@@ -308,6 +308,21 @@ def selftest():
         p.write_text("p cnf 20 20\n"+"\n".join(clauses)+"\n")
         result=bounded_scan(p)
         assert result["stop_reason"]=="stagnation" and result["status"]=="partial",result
+        # Exercise independent watchdog budgets without changing production constants.
+        global SOURCE_BUDGET, GLOBAL_VISIT_BUDGET
+        original_sources=SOURCE_BUDGET
+        original_visits=GLOBAL_VISIT_BUDGET
+        try:
+            SOURCE_BUDGET=4
+            result=bounded_scan(p)
+            assert result["stop_reason"]=="source_budget",result
+            SOURCE_BUDGET=original_sources
+            GLOBAL_VISIT_BUDGET=1
+            result=bounded_scan(p)
+            assert result["stop_reason"]=="visit_budget",result
+        finally:
+            SOURCE_BUDGET=original_sources
+            GLOBAL_VISIT_BUDGET=original_visits
     print("R38_SELFTEST_PASS")
 
 def main():
