@@ -92,10 +92,10 @@
      d.blocks++;
      d.covered+=1u<<(kv.second.k-1);
    }
-   // Require actual complete XOR blocks, not merely repeated supports.
+   // Require >=90% complete XOR coverage, not merely repeated supports.\n   // 45% flagged authentic polynomial multiplication: reject such mixed CNFs.
    // This deliberately routes ambiguous/mixed formulas to Kissat.
    if(d.blocks>=4 && d.covered>=24 &&
-      uint64_t(d.covered)*100>=uint64_t(d.scanned)*45)
+      uint64_t(d.covered)*100>=uint64_t(d.scanned)*90)
      d.route="v1531_certified_xor";
    return d;
  }
