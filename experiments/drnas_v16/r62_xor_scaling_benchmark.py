@@ -113,7 +113,7 @@ def prepare(folder):
     (out/"source.sha256").write_text("".join(f'{x["sha256"]}  {x["name"]}\n' for x in cases))
     print("R62_FROZEN",len(cases),"MANIFEST",sha(out/"manifest.json"),flush=True)
 
-def solve(mode,source,kissat,gf2,clauses):
+def solve(mode,source,kissat,gf2,clauses,n):
     cmd=[str(kissat),str(source)] if mode=="kissat_pinned" else [str(gf2),str(source),str(kissat)]
     start=time.monotonic()
     try:
@@ -123,7 +123,7 @@ def solve(mode,source,kissat,gf2,clauses):
         check(p.returncode in (10,20),f"Native bad exit {mode} {p.returncode} {p.stderr[-240:]}")
         status="SAT" if p.returncode==10 else "UNSAT"
         check(status=="SAT","Planted formula cannot be UNSAT")
-        check(r28.check_sat_model(p.stdout,N,clauses),"SAT certificate/witness invalid")
+        check(r28.check_sat_model(p.stdout,n,clauses),"SAT certificate/witness invalid")
         if mode=="r28_exact_gf2":
             route=next((line.split()[2] for line in p.stdout.splitlines()
                         if line.startswith("c R28_ROUTE ")),"missing")
@@ -158,7 +158,7 @@ def measure(a):
             order=list(MODES)
             random.Random(int(sha(f'R61/order/{case["sha256"]}/{rep}'.encode()),16)).shuffle(order)
             for mode in order:
-                result=solve(mode,path,kissat,gf2,clauses)
+                result=solve(mode,path,kissat,gf2,clauses,n)
                 if result["status"]=="SAT" and mode=="r28_exact_gf2":
                     expected_route="fallback" if case["family"]=="near_xor3_control" else "certified_pure_xor_sat"
                     check(result["route"]==expected_route,f"Unexpected GF2 route: {result['route']}")
