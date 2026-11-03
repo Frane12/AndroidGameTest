@@ -25,7 +25,7 @@ MODES=("Kissat_clean","Kissat_R30_passive")
 FAMILIES=("xor3_visible","xor3_hidden","xor3_mixed","parity_bridge",
           "random3_critical","xor_decoy")
 PER_FAMILY=4
-OFFICIAL_INDICES=(0,3,10,12)
+OFFICIAL_INDICES=(0,3,14,16)
 
 def check(x,reason):
     if not x:raise RuntimeError("R30_AUDIT_ERROR "+reason)
