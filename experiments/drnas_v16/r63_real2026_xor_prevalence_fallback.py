@@ -173,7 +173,7 @@ def selftest():
         a=inspect_exact_xor(p,3,5)
         ck(a["complete_blocks"]==1 and a["covered_clauses"]==4
             and not a["pure_exact_xor"],"mixed exact XOR detector broken")
-        write([(1,2),(-1,2)])
+        write([(1,2),(-1,-2)])
         a=inspect_exact_xor(p,3,2)
         ck(a["complete_blocks"]==1 and a["pure_exact_xor"],
            "binary parity block detector broken")
