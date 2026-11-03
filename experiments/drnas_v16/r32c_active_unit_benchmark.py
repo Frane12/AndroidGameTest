@@ -113,7 +113,7 @@ def one_trial(case,path,mode,bins):
         check(active["certified"]>=active["injected"],"Uncertified injection")
         if approved:
             check(signal=="APPLIED","Unit-eligible but not applied")
-            literal_lines=re.findall(r"^c R32C_INJECTED_LITS count=(\\d+) lits=([0-9,-]+)$",
+            literal_lines=re.findall(r"^c R32C_INJECTED_LITS count=(\d+) lits=([0-9,-]+)$",
                                      stdout,re.MULTILINE)
             check(len(literal_lines)==1,"No signed literal disclosure for active injection")
             count_str,signed=literal_lines[0]
