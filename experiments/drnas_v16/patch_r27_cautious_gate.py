@@ -83,9 +83,11 @@ static inline void r24_reason (const clause *c) {""", "deduce_getter")
         }
 '''
     s = replace_once(s, anchor, block + anchor, "r27_gate_before_switch")
+    # R16's audited base patch already wraps the option in its r16_active
+    # ternary; keep that original expression and add the R27 50 option only.
     s = replace_once(s,
-        '          kissat_set_option(solver,"restartint",r11_mode ? r11_interval : 25);',
-        '          kissat_set_option(solver,"restartint",r27_cautious ? 50 : (r11_mode ? r11_interval : 25));',
+        'r11_mode ? r11_interval : (r16_active ||',
+        'r11_mode ? r11_interval : (r27_cautious || r16_active ||',
         "set_interval")
     if d.count("drnas_r27_get_reason_statistics") != 1:
         raise RuntimeError("R27_GETTER_COUNT")
