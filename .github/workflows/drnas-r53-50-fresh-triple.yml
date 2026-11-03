@@ -1,0 +1,134 @@
+name: DRNAS R53 50 unseen official SAT2026 triple paired R49 vs Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-r53-50-unseen-triple-20261103]
+    paths:
+      - '.github/workflows/drnas-r53-50-fresh-triple.yml'
+      - 'experiments/drnas_v16/r53_fifty_fresh_triple.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r53-50-fresh-triple-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Hash-precommit 50 non-overlapping SATComp2026 original CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check R53 Python and frozen R49 mathematical checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r53_fifty_fresh_triple.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R52-FRESH-SATCOMP2026-MATCHED-REFERENCE-FINAL
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r52
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R32U-15-ORIGINAL-SATCOMP2026-FINAL-VERIFIED
+          run-id: 41684287942
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r32u
+      - name: Freeze 50 hash-sampled SATComp2026 sources without solver score selection
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r53_fifty_fresh_triple.py freeze \
+            --out originals --prior prior | tee r53-freeze.log
+          (cd originals && sha256sum -c source.sha256)
+          test "$(python3 -c 'import json;print(len(json.load(open("originals/manifest.json"))["cases"]))')" = 50
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r53-frozen-50-originals
+          path: |
+            originals/
+            r53-freeze.log
+          if-no-files-found: warn
+  paired:
+    name: r53-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 66
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r53-frozen-50-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Verify all frozen sources and exact unchanged baseline binaries
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          chmod +x bins/kissat_pinned bins/cadical_3_0_1
+          (cd bins && sha256sum -c binaries.sha256)
+      - name: Three randomized paired runs each, single core, fixed 40s inclusive cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r53_fifty_fresh_triple.py measure \
+            --sources originals --shard "$SHARD" --out results \
+            --kissat_pinned bins/kissat_pinned \
+            --cadical_3_0_1 bins/cadical_3_0_1 | tee r53-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r53-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r53-live.log
+          if-no-files-found: warn
+  audit:
+    name: Fail-closed 450 trial SHA and PAR2 audit with 50 row total table
+    needs: [freeze, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r53-frozen-50-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r53-shard-*
+          path: combined
+      - name: Validate exactly 450 original-source paired trials; publish report
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r53_fifty_fresh_triple.py audit \
+            --sources originals --combined combined \
+            --out r53-final.json --markdown r53-final.md
+          cat r53-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R53-50-UNSEEN-TRIPLE-PAR2-FINAL
+          path: |
+            r53-final.json
+            r53-final.md
+            originals/manifest.json
+          if-no-files-found: error
