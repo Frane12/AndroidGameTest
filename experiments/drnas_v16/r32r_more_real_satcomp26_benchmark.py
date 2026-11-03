@@ -408,7 +408,7 @@ def main():
     sub=parser.add_subparsers(dest="cmd",required=True)
     q=sub.add_parser("freeze");q.add_argument("--out",required=True)
     q=sub.add_parser("measure")
-    for name in ("inputs","clean","native","out"):q.add_argument("--"+name,required=True)
+    for name in ("inputs","clean","native","r28","out"):q.add_argument("--"+name,required=True)
     q.add_argument("--shard",type=int,required=True)
     q=sub.add_parser("aggregate")
     for name in ("inputs","combined","output","report"):q.add_argument("--"+name,required=True)
