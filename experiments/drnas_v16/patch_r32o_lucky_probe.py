@@ -75,8 +75,8 @@ def patch_direction(source, direction):
     if future<0:
         future=source.index("\nint kissat_lucky ",start+len(marker))
     block=source[start:future]
-    block=once(block,"  assert (!solver->level);",
-        '  assert (!solver->level);\n  r32o_begin("'+direction+'");',
+    block=once(block,marker+"\n  assert (!solver->level);",
+        marker+'\n  assert (!solver->level);\n  r32o_begin("'+direction+'");',
         direction+"_begin")
     signed="not_lit" if direction.endswith("false") else "lit"
     first="    kissat_internal_assume (solver, "+signed+");\n    clause *c = kissat_probing_propagate (solver, 0, true);"
