@@ -179,9 +179,12 @@ int main(int argc,char** argv){
   }
   const string filename=argv[1],kissat=argv[2];
   const bool classify=argc==4;
+  // Production-safe default: do not inject even provable GF2 units unless
+  // an explicit research flag opts in. R29 holdout showed unit injection
+  // can cost more than solving simple mixed SAT instances directly.
   const bool shadow=[](){
     const char* mode=getenv("R29_MODE");
-    return mode && !strcmp(mode,"shadow");
+    return !mode || strcmp(mode,"active");
   }();
   int n=0;vector<vector<int>> original;
   if(!read_cnf(filename,n,original))
