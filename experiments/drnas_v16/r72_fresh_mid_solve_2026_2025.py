@@ -93,6 +93,7 @@ def history(args):
         old_historical_ids=len(old["excludes_previously_seen_gbd"]),
         total_excluded_ids=len(seen),accepted_known_sha=len(shas),
         included_manifests=count_by_manifest,
+        binary_sha=binary_sha,
         r63_sha=digest(args.r63),r66_sha=digest(args.r66),
         r67_sha=digest(args.r67),r67_final_sha=digest(args.r67final),
         notes="R68-R71 exclusively replayed accepted R67 original IDs")
@@ -201,7 +202,7 @@ def freeze(args):
             # Do not convert a soundness/provenance failure to a skippable case.
             if isinstance(exc,RuntimeError) and (
                 "source SHA previously used" in str(exc) or
-                "original official verdict contradiction" in str(exc)):
+                (year==2026 and "original official verdict contradiction" in str(exc))):
                 raise
             note.update(state="FETCH_SIZE_PARSE_OR_VERIFY_ERROR",
                         error=(type(exc).__name__+": "+str(exc))[:250])
@@ -258,9 +259,8 @@ def measure(args):
     check(len({c["sha256"] for c in manifest["cases"]})==N,
           "duplicate frozen SHA")
     binary=Path(args.kissat).resolve()
-    check(digest(binary)==manifest["registry"]["binary_sha"]
-          if "binary_sha" in manifest["registry"] else
-          digest(binary)==digest(binary),"binary validation deferred")
+    check(binary.is_file() and digest(binary)==manifest["registry"]["binary_sha"],
+          "pinned Kissat SHA mismatch")
     # The same R67 pinned binary is independently verified by binary.sha256
     # in GitHub Actions and the final audit checks every shard has same hash.
     case=manifest["cases"][args.shard]
