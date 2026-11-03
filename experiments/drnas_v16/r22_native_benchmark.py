@@ -107,3 +107,113 @@ prior.history=history
 prior.make_cases=make_cases
 
 # R22 run_one and smoke are appended below.
+
+def actual_run(case,repeat,mode,runner):
+ if mode not in LOCAL:
+  # The previous R21 inverse strategy must retain its own native audit.
+  previous_local=prior.LOCAL
+  prior.LOCAL=PRIOR_LOCAL
+  try:row,trace=PREV_ACTUAL(case,repeat,mode,runner)
+  finally:prior.LOCAL=previous_local
+  event={};values={}
+ else:
+  features=case["metadata"]["features"]
+  env={"DRNAS_R16_GINI":features["degree_gini"],
+       "DRNAS_R16_POLARITY":features["polarity_imbalance"]}
+  old={k:os.environ.get(k) for k in env}
+  try:
+   for k,v in env.items():os.environ[k]=format(v,".17g")
+   row,trace=prior.r20.r16.previous.r14.run_one(case,repeat,mode,runner)
+  finally:
+   for k,v in old.items():
+    if v is None:os.environ.pop(k,None)
+    else:os.environ[k]=v
+  row["fold"]=prior.r20.r16.previous.r14.fold_from_category(case["category"])
+  row["r16_protocol_sha256"]=sha(prior.r20.r16.CONFIG)
+  row["r16_model_sha256"]=sha(prior.r20.r16.MODEL)
+  early=trace.get("early",{})
+  inherited=early.get("r16_event",{})
+  event=early.get("r22_decision",{})
+  checkpoints=early.get("r22_checkpoints",[])
+  row.update(r16_native_conflict=inherited.get("conflict",""),
+       r16_native_ready=inherited.get("complete",""),
+       r16_native_score=inherited.get("score",""),
+       r16_python_score="",r16_selected=inherited.get("selected",""),
+       r16_expected_target=inherited.get("target",""),
+       r16_threshold=inherited.get("threshold",""),
+       r16_model=inherited.get("model",""),r16_decision_error="")
+  values={}
+  if event:
+   ticks=[int(q["conflict"]) for q in checkpoints]
+   if not(len(ticks)==3 and 256<=ticks[0]<512 and
+          512<=ticks[1]<1024 and 1024<=ticks[2]<2048):
+    row["error"]="R22 INVALID ORDERED ACTUAL NATIVE CHECKPOINTS"
+   else:
+    a,b,c=checkpoints
+    delta=lambda key,p,q:int(q[key])-int(p[key])
+    d0=delta("antecedent",a,b)
+    d1=delta("antecedent",b,c)
+    u0=delta("mature_low_antecedent",a,b)
+    u1=delta("mature_low_antecedent",b,c)
+    if min(d0,d1,u0,u1)<0:row["error"]="R22 NON-MONOTONIC CLAUSE REASON COUNTER"
+    p0=u0/(1.+d0);p1=u1/(1.+d1)
+    weak=(p1<.105 or (p1<.14 and p1<1.8*p0))
+    selected=(case["n"]>=220 and
+       (weak if mode=="r22_chain50" else not weak))
+    expected="2048" if selected else "0"
+    calculated=dict(antecedent_prev=d0,antecedent_recent=d1,
+      mature_low_prev=u0,mature_low_recent=u1,
+      share_prev=p0,share_recent=p1)
+    mismatch=[]
+    for k,v in calculated.items():
+     val=float(event.get(k,"nan"))
+     if not math.isfinite(val) or abs(val-v)>2e-5:mismatch.append(k)
+    if (mismatch or event.get("selected")!=str(int(selected)) or
+        event.get("weak")!=str(int(weak)) or
+        event.get("target")!=expected or
+        event.get("complete")!="1" or
+        event.get("model")!=("chain" if mode=="r22_chain50" else "inverse") or
+        int(event.get("n","-1"))!=case["n"] or
+        inherited.get("selected")!=str(int(selected)) or
+        inherited.get("target")!=expected):
+     row["error"]="R22 C/PYTHON CONFLICT-CHAIN PARITY MISMATCH "+str(mismatch)
+    if row["switch_at"] and (not selected or
+       int(row["switch_at"])<2048 or int(row["restart_after"])!=50 or
+       row["learned_before"]!=row["learned_after"]):
+     row["error"]="R22 UNAUTHORIZED SWITCH OR CLAUSE RESET"
+    values=dict(r22_python_selected=int(selected),r22_python_weak=int(weak),
+     r22_antecedent_prev=d0,r22_antecedent_recent=d1,
+     r22_mature_low_prev=u0,r22_mature_low_recent=u1,
+     r22_share_prev=p0,r22_share_recent=p1)
+  elif row["switch_at"]:row["error"]="R22 SWITCH WITHOUT NATIVE DECISION"
+  if event and not inherited:row["error"]="R22 MISSING SHARED 1024 PREFIX"
+  trace["r22_native_event"]=event
+  trace["r22_native_checkpoints"]=checkpoints
+ row.update(r22_native_decision=json.dumps(event,sort_keys=True) if event else "",
+  r22_trace_checkpoint_count=len(trace.get("early",{}).get("r22_checkpoints",[])) if mode in LOCAL else "",
+  r22_protocol_sha256=sha(PROTOCOL),r22_error=row.get("error",""),**values)
+ return row,trace
+
+prior.actual_run=actual_run
+def smoke():
+ from tempfile import TemporaryDirectory
+ with TemporaryDirectory() as d:
+  for case in make_cases("n240_development0",Path(d),history()):
+   for arm in LOCAL:
+    row,trace=actual_run(case,0,arm,"R22 smoke")
+    if row["error"] or row["status"] not in ("SAT","UNSAT"):
+     raise RuntimeError("R22 HARD NATIVE CHECK FAILED "+str(row))
+    if row["r22_native_decision"]:
+     print("R22_LBD_CONFLICT_CHAIN_NATIVE_PYTHON_PARITY",arm,
+           case["formula"],row["r22_share_prev"],row["r22_share_recent"],flush=True)
+     return
+ raise RuntimeError("R22 NATIVE 1024 DECISION NOT OBSERVED")
+
+if __name__=="__main__":
+ parser=argparse.ArgumentParser()
+ parser.add_argument("--category",choices=SHARDS)
+ parser.add_argument("--smoke",action="store_true")
+ args=parser.parse_args()
+ if args.smoke:smoke()
+ elif args.category:prior.run_shard(args.category)
+ else:parser.error("Provide --smoke or --category")
