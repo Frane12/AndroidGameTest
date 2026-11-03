@@ -1,0 +1,151 @@
+name: DRNAS R32h causal relay restart sham versus certified units
+on:
+  push:
+    branches: [experiment/drnas-r32h-relay-causal-ablation-20261103]
+    paths:
+      - '.github/workflows/drnas-r32h-causal-relay.yml'
+      - 'experiments/drnas_v16/r32h_causal_relay_ablation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32h-causal-relay-v1
+  cancel-in-progress: false
+jobs:
+  preflight:
+    name: Pin original R32g CNFs and unchanged proven binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile only the experimental Python harness
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32h_causal_relay_ablation.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32g-36-frozen-originals
+          run-id: 41642371038
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32g-pinned-binary-pair
+          run-id: 41642371038
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Audit exact SHA and core resources before any new timing
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 - <<'PY'
+          import os,sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r32h_causal_relay_ablation as h
+          m=h.manifest("frozen")
+          assert len(m["cases"])==36
+          assert len(os.sched_getaffinity(0))>=2
+          print("R32H_PINNED_PREFLIGHT_PASS",len(m["cases"]),"reused synthetic CNFs")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32h-originals
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32h-binaries
+          path: compiled/
+          if-no-files-found: error
+
+  paired:
+    name: r32h-shard-${{ matrix.shard }}
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32h-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32h-binaries
+          path: compiled
+      - name: Verify exact immutable original and binaries
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Run 216 paired trials per shard with randomized mode order
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32h_causal_relay_ablation.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --output results | tee r32h-trials.log
+          test -s results/meta.json
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32h-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32h-trials.log
+          if-no-files-found: warn
+
+  aggregate:
+    name: Audit 864 paired trials, correctness, CPU, PAR2 and case-bootstrap
+    needs: [preflight, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32h-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32h-shard-*
+          path: combined
+      - name: Plotting support
+        run: python3 -m pip install matplotlib
+      - name: Require all new raw measurements and create complete audit
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32h_causal_relay_ablation.py aggregate \
+            --inputs frozen --combined combined \
+            --output r32h-results.json --paired r32h-paired.csv \
+            --markdown r32h-report.md --scatter r32h-paired.png
+          test -s r32h-results.json
+          test -s r32h-paired.csv
+          test -s r32h-report.md
+          test -s r32h-paired.png
+          cat r32h-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32H-CAUSAL-RELAY-ABLATION-864
+          path: |
+            r32h-results.json
+            r32h-paired.csv
+            r32h-report.md
+            r32h-paired.png
+            frozen/manifest.json
+          if-no-files-found: warn
