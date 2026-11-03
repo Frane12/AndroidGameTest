@@ -125,7 +125,7 @@ def load():
   if len(truth)>1:fail("SAT/UNSAT contradiction")
   mon={int(p["conflict"]):p for p in traces[(*key,"monitor")]["points"]
        if int(p["conflict"])<=1024}
-  for arm in ("r11_2048_50","r16_live50","r20_local50")+b.LOCAL:
+  for arm in ("r11_2048_50","r16_live50","r21_inverse50")+b.LOCAL:
    got={int(p["conflict"]):p for p in traces[(*key,arm)]["points"]
         if int(p["conflict"])<=1024}
    if set(mon)!=set(got):fail("pre1024 checkpoint list changed "+arm)
