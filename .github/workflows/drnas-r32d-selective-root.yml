@@ -1,0 +1,166 @@
+name: DRNAS R32d frozen selective GF2 4200 paired holdout
+on:
+  push:
+    branches: [experiment/drnas-r32d-selective-root-20261103]
+    paths:
+      - '.github/workflows/drnas-r32d-selective-root.yml'
+      - 'experiments/drnas_v16/patch_r32d_selective_root.py'
+      - 'experiments/drnas_v16/r32d_selective_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: r32d-frozen-selective-v1
+  cancel-in-progress: true
+jobs:
+  freeze_build:
+    name: Freeze 42 unseen CNFs and certify native gated intervention
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Python source syntax before native compilation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r32b_native_shadow.py experiments/drnas_v16/patch_r32d_selective_root.py experiments/drnas_v16/r32d_selective_benchmark.py
+      - name: Freeze entirely unseen deterministic SHA-distinct holdout formulas
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32d_selective_benchmark.py freeze --dest frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          assert m["repeats"]==20 and len(m["modes"])==5 and len(m["cases"])==42
+          assert len({c["sha256"] for c in m["cases"]})==42
+          print("R32D_FROZEN_HOLDOUT_SHA_PASS")
+          PY
+      - name: Build pinned original Kissat and native R32d experimental solver
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r32d-clean
+          git -C /tmp/r32d-clean checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r32d-clean rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cp -r /tmp/r32d-clean /tmp/r32d-native
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r32d-native
+          python3 -u experiments/drnas_v16/patch_r32d_selective_root.py --kissat-root /tmp/r32d-native
+          (cd /tmp/r32d-clean && ./configure && make -j2 > /tmp/r32d-clean-build.log)
+          (cd /tmp/r32d-native && ./configure && make -j2 > /tmp/r32d-native-build.log)
+          mkdir -p compiled
+          cp /tmp/r32d-clean/build/kissat compiled/clean
+          cp /tmp/r32d-native/build/kissat compiled/native
+          chmod +x compiled/*
+          (cd compiled && sha256sum clean native > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Mandatory certified intervention and abstention preflight
+        run: |
+          set -euo pipefail
+          for family in consistent_visible consistent_hidden consistent_mixed root_unsat xor_decoy; do
+            set +e
+            R32B_MODE=selective compiled/native "frozen/r32d_holdout_$family"_30.cnf > "$family.selective.log"
+            status=$?
+            set -e
+            test "$status" -eq 10 -o "$status" -eq 20
+            grep -q '^c R32C_ACTIVE signal=' "$family.selective.log"
+            grep -q '^c R32D_SELECT policy=direct_gap_v1 ' "$family.selective.log"
+            grep -q '^c R32B_PROBE mark=9999 ' "$family.selective.log"
+            grep -q '^c R32B_FINAL status=' "$family.selective.log"
+            grep -E '^c R32(C_ACTIVE|D_SELECT|C_INJECTED_LITS)' "$family.selective.log"
+          done
+          for family in root_unsat xor_decoy; do
+            if grep -q '^c R32C_INJECTED_LITS' "$family.selective.log"; then
+              echo "R32D_UNSOUND_INJECTION on $family" >&2
+              exit 1
+            fi
+          done
+          echo R32D_SELECTIVE_PREFLIGHT_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32d-42-frozen-originals
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32d-binary-pair
+          path: compiled/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32d-preflight
+          path: '*.selective.log'
+          if-no-files-found: warn
+  paired:
+    needs: freeze_build
+    name: r32d-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32d-42-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32d-binary-pair
+          path: compiled
+      - name: Check frozen source and identical binary SHA fingerprints
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Twenty paired repetitions of five policies on unseen cases
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32d_selective_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --outdir results | tee r32d-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32d-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32d-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze_build, paired]
+    if: always()
+    name: Validate 4200 paired runs, proofs, policy and case-bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32d-42-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32d-shard-*
+          path: combined
+      - name: Verify every case and build statistical aggregate
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32d_selective_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r32d-results.json --report r32d-results.md
+          cat r32d-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32D-FROZEN-SELECTIVE-GF2-FINAL-4200
+          path: |
+            r32d-results.json
+            r32d-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
