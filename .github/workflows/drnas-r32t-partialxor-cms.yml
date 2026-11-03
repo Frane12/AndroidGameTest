@@ -1,0 +1,121 @@
+name: DRNAS R32t five real SATComp26 certified partial XOR vs CryptoMiniSat
+on:
+  push:
+    branches: [experiment/drnas-r32t-partialxor-cms-20261103]
+    paths:
+      - '.github/workflows/drnas-r32t-partialxor-cms.yml'
+      - 'experiments/drnas_v16/r32t_partial_xor_cms_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32t-matched-5-real-originals-20261103-v1
+  cancel-in-progress: true
+jobs:
+  smoke:
+    name: Verify Python source and install single-thread CryptoMiniSat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python parser preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32t_partial_xor_cms_benchmark.py
+          python3 -m py_compile experiments/drnas_v16/r32r_more_real_satcomp26_benchmark.py
+      - name: Install Ubuntu CryptoMiniSat and verify CLI
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cryptominisat
+          command -v cryptominisat5
+          cryptominisat5 --version
+          dpkg-query -W cryptominisat
+  paired:
+    needs: smoke
+    name: r32t-case-${{ matrix.index }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        index: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-prospective-satcomp26-frozen-originals
+          run-id: 41662134252
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-pinned-clean-native-traced-r28
+          run-id: 41667090339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify canonical real CNF and paired Kissat binaries
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native compiled/r28
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Install exact distro CryptoMiniSat package, single-thread only
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cryptominisat
+          cryptominisat5 --version
+      - name: Five case pinned paired benchmark - 75 seconds per mode
+        env:
+          CASE_INDEX: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32t_partial_xor_cms_benchmark.py measure \
+            --frozen frozen --clean compiled/clean --native compiled/native \
+            --cms "$(command -v cryptominisat5)" \
+            --clean-sha "$(sha256sum compiled/clean | awk '{print $1}')" \
+            --native-sha "$(sha256sum compiled/native | awk '{print $1}')" \
+            --cms-version "$(dpkg-query -W -f='${Version}' cryptominisat)" \
+            --index "$CASE_INDEX" --out results | tee r32t-live.log
+          test -s results/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32t-case-${{ matrix.index }}
+          path: |
+            results/report.json
+            results/rows.json
+            r32t-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [smoke, paired]
+    if: always()
+    name: Audit source SHA, parity certificates, SAT witnesses and matched timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32t-case-*
+          path: combined
+      - name: No incomplete or unpaired results permitted
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32t_partial_xor_cms_benchmark.py aggregate \
+            --combined combined --output r32t-results.json \
+            --report r32t-results.md
+          cat r32t-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32T-REAL-5-CNF-PARTIAL-XOR-CMS-FINAL
+          path: |
+            r32t-results.json
+            r32t-results.md
+          if-no-files-found: warn
