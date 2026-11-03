@@ -284,8 +284,10 @@ def audit(a):
       "", "| Group | Kissat PAR2 (s) | R65 PAR2 (s) | Gain |",
       "|---|---:|---:|---:|"]
     for group, data in bygroup.items():
+        gain = data["gain_pct"]
+        gain_text = f"{gain:+.3f}%" if gain is not None else "n/a (0 trials)"
         lines.append(f"| {group} | {data[MODES[0]]['par2_s']:.3f} | "
-            f"{data[MODES[1]]['par2_s']:.3f} | {data['gain_pct']:+.3f}% |")
+            f"{data[MODES[1]]['par2_s']:.3f} | {gain_text} |")
     lines += ["", "## R65 active benefit and harm",
       json.dumps(significant, sort_keys=True), "",
       "| ID | Group | Kissat PAR2 (s) | R65 PAR2 (s) | Saved (s) | New clauses trials |",
