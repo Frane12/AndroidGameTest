@@ -1,0 +1,161 @@
+name: DRNAS R32j fair monotonic poll SAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-r32j-uniform-wall-20261103]
+    paths:
+      - '.github/workflows/drnas-r32j-uniform-wall.yml'
+      - 'experiments/drnas_v16/r32j_uniform_poll_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32j-uniform-wall-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Freeze 42 new sources and validate certified three-core relay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32j_uniform_poll_benchmark.py
+      - name: Generate SHA-frozen holdout
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32j_uniform_poll_benchmark.py freeze --dest frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          assert m["total_trials"]==882 and len(m["cases"])==42 and len(m["modes"])==7
+          assert len({c["sha256"] for c in m["cases"]})==42
+          print("R32J_FROZEN_SHA_PASS")
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32e-binary-pair
+          run-id: 41638482746
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify original pinned Kissat pair and isolated helper CPU
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 - <<'PY'
+          import os
+          cores=sorted(os.sched_getaffinity(0))
+          assert len(cores)>=3, f"Three allocated cores required, got {cores}"
+          print("R32J_PINNED_CPU",cores[:3])
+          PY
+      - name: Native-GF2 and uniformly timed helper functional smoke test
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,json,sys
+          from pathlib import Path
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r32j_budget_watchdog_benchmark as h
+          import r31_consistent_gf2_test as r31
+          d=json.load(open("frozen/manifest.json"))
+          c=next(v for v in d["cases"] if v["cohort"]=="coupled_stress" and v["family"]=="consistent_hidden")
+          path=Path("frozen")/c["name"]
+          p,_=r31.structure(path)
+          assert p["signal"]=="CONSISTENT_EXTRA_UNITS"
+          units={int(u["literal"]) for u in p["units"]}
+          cores=sorted(os.sched_getaffinity(0))[:3]
+          binaries={"clean":Path("compiled/clean").resolve(),"native":Path("compiled/native").resolve()}
+          trial=h.budget_watchdog(c,path,binaries,cores,units)
+          assert trial["status"]=="SAT",trial
+          print("R32J_BUDGET_WATCHDOG_PREFLIGHT_PASS",trial)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32j-42-frozen-originals
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32j-pinned-kissat-pair
+          path: compiled/
+          if-no-files-found: error
+  paired:
+    needs: freeze
+    name: r32j-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32j-42-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32j-pinned-kissat-pair
+          path: compiled
+      - name: Verify source and binary fingerprints
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Compare six policies with timed certified third-worker communication
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32j_uniform_poll_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --outdir results | tee r32j-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32j-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32j-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    name: Validate 882 attempts, three-worker relay and total CPU cost
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32j-42-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32j-shard-*
+          path: combined
+      - name: Audit all paired original-CNF formula results
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32j_uniform_poll_benchmark.py aggregate \
+            --inputs frozen --combined combined \
+            --output r32j-results.json --report r32j-results.md
+          cat r32j-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32J-BUDGET-WATCHDOG-FINAL-882
+          path: |
+            r32j-results.json
+            r32j-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
