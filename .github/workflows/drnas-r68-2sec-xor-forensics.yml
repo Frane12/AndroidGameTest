@@ -1,0 +1,76 @@
+name: DRNAS R68 short 2s XOR-CNF mechanism probe
+
+on:
+  push:
+    branches: [experiment/drnas-r68-xor-forensics-20261103]
+    paths:
+      - '.github/workflows/drnas-r68-2sec-xor-forensics.yml'
+      - 'experiments/drnas_v16/r68_xor_2sec_forensics.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r68-2sec-forensics
+  cancel-in-progress: false
+
+jobs:
+  brief_forensics:
+    name: 3 frozen formulas; 6 paired Kissat pulses; 2 seconds each
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python validation and R65 soundness self-tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r68_xor_2sec_forensics.py
+          python3 experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: previous
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify source, binary SHA and R67 report; run short probes
+        run: |
+          set -euo pipefail
+          test -s sources/new/manifest.json
+          test -s previous/r67-final.json
+          (cd sources/new && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+          python3 -u experiments/drnas_v16/r68_xor_2sec_forensics.py \
+            --sources sources/new \
+            --prior previous/r67-final.json \
+            --kissat compiled/kissat \
+            --out results | tee r68-quick-live.log
+          cat results/r68-quick.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R68-2SEC-XOR-FORENSICS
+          path: |
+            results/
+            r68-quick-live.log
+          if-no-files-found: warn
+          retention-days: 90
