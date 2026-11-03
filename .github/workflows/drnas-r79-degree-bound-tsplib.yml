@@ -1,0 +1,122 @@
+name: DRNAS R79 degree bound vs original R75 and Concorde
+on:
+  push:
+    branches: [experiment/drnas-r79-degree-bound-20261104]
+    paths:
+      - '.github/workflows/drnas-r79-degree-bound-tsplib.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r79-degree-bound-20261104
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Prove safe new degree bound and freeze same official TSPLIB sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax and exhaustive small-state validity test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/drnas_r79_degree_bound.py
+          python3 -m py_compile experiments/drnas_v16/drnas_r79_tsplib_benchmark.py
+          python3 -u experiments/drnas_v16/drnas_r79_tsplib_benchmark.py selftest | tee selftest.log
+      - name: Freeze original TSPLIB problem bytes and known optima in locked manifest
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r79_tsplib_benchmark.py freeze \
+            --out frozen | tee freeze.log
+          (cd frozen && sha256sum -c sources.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r79-verified-degree-and-frozen-TSPLIB
+          path: |
+            frozen/
+            selftest.log
+            freeze.log
+          if-no-files-found: warn
+
+  measure:
+    name: r79-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r79-verified-degree-and-frozen-TSPLIB
+          path: .
+      - name: Verify frozen source and pinned genuine Waterloo Concorde
+        run: |
+          set -euo pipefail
+          test "$(nproc)" -ge 4
+          (cd frozen && sha256sum -c sources.sha256)
+          curl -fSL --retry 3 --connect-timeout 10 --max-time 50 \
+            https://math.uwaterloo.ca/tsp/concorde/downloads/codes/linux24/concorde.gz \
+            -o concorde.gz
+          echo "cc09e4a0031ed15770c407214285d021b438145a13454a979349e0d76eb66a56  concorde.gz" | sha256sum -c -
+          gzip -dc concorde.gz > concorde
+          chmod +x concorde
+          timeout 15s ./concorde -s 99 -k 8 > smoke.log
+          grep -q 'Optimal Solution:' smoke.log
+      - name: Randomized one-core R75/R79/Concorde plus four-core R79, 12s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r79_tsplib_benchmark.py measure \
+            --sources frozen --concorde ./concorde \
+            --shard "$SHARD" --out results | tee r79-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r79-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r79-live.log
+            smoke.log
+          if-no-files-found: warn
+
+  audit:
+    name: R79 final 24 trials, source SHA, routes and correct optimum audit
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r79-verified-degree-and-frozen-TSPLIB
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r79-shard-*
+          path: combined
+      - name: Reject wrong tour, mismatched binary, false optimum and missing measurements
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256)
+          python3 -u experiments/drnas_v16/drnas_r79_tsplib_benchmark.py audit \
+            --sources frozen --combined combined \
+            --json r79-final.json --md r79-final.md
+          cat r79-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R79-TSPLIB-DEGREE-BOUND-VS-CONCORDE-FINAL
+          path: |
+            r79-final.json
+            r79-final.md
+            frozen/manifest.json
+          if-no-files-found: error
