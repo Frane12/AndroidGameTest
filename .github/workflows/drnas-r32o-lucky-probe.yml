@@ -1,0 +1,175 @@
+name: DRNAS R32o native lucky probe causality replay
+on:
+  push:
+    branches: [experiment/drnas-r32o-lucky-probe-causality-20261103]
+    paths:
+      - '.github/workflows/drnas-r32o-lucky-probe.yml'
+      - 'experiments/drnas_v16/patch_r32o_lucky_probe.py'
+      - 'experiments/drnas_v16/r32o_lucky_probe_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32o-lucky-probe-20261103
+  cancel-in-progress: true
+jobs:
+  freeze_build:
+    name: Pin exact R32n source CNFs and patch read-only lucky instrumentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r32o_lucky_probe.py experiments/drnas_v16/r32o_lucky_probe_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32n-65-frozen-originals
+          run-id: 41653089760
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32n-pinned-binaries
+          run-id: 41653089760
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-binaries
+      - name: Verify 65 original CNF hashes from successful R32n
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd prior-binaries && sha256sum -c binaries.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          assert len(m["cases"])==65
+          assert len({c["sha256"] for c in m["cases"]})==65
+          assert sum(c["cohort"]!="prior_development" for c in m["cases"])==60
+          print("R32O_FROZEN_R32N_REPLAY_65_PASS")
+          PY
+      - name: Build pinned native Kissat with original R32n policy and new lucky trace
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r32o-kissat
+          git -C /tmp/r32o-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r32o-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r32o-kissat
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r32o-kissat
+          python3 -u experiments/drnas_v16/patch_r32l_early_trace.py --kissat-root /tmp/r32o-kissat
+          python3 -u experiments/drnas_v16/patch_r32m_phase_timing.py --kissat-root /tmp/r32o-kissat
+          python3 -u experiments/drnas_v16/patch_r32o_lucky_probe.py --kissat-root /tmp/r32o-kissat
+          (cd /tmp/r32o-kissat && ./configure && make -j2 > /tmp/r32o-make.log)
+          mkdir -p compiled
+          cp prior-binaries/clean compiled/clean
+          cp /tmp/r32o-kissat/build/kissat compiled/native
+          chmod +x compiled/*
+          (cd compiled && sha256sum clean native > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Preflight read-only trace and original CNF verdict
+        run: |
+          set -euo pipefail
+          for mode in off full omit4; do
+            set +e
+            R32B_MODE=$([ "$mode" = off ] && echo off || echo r32k) \
+            R32K_VARIANT="$mode" R32L_TRACE=1 R32M_PHASES=1 R32O_TRACE=1 \
+              compiled/native frozen/r32l_stress_consistent_visible_331.cnf > "preflight-$mode.log"
+            status=$?
+            set -e
+            test "$status" -eq 10 -o "$status" -eq 20
+            grep -q '^c R32O_LUCKY ' "preflight-$mode.log"
+            grep -q '^c R32O_DIR ' "preflight-$mode.log"
+            grep -q '^c R32M_PHASE phase=lucky_early ' "preflight-$mode.log"
+            grep -q '^c R32B_FINAL status=' "preflight-$mode.log"
+          done
+          echo R32O_PREFLIGHT_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32o-65-replayed-originals
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32o-pinned-binaries
+          path: compiled/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32o-preflight-logs
+          path: preflight-*.log
+          if-no-files-found: warn
+  paired:
+    needs: freeze_build
+    name: r32o-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32o-65-replayed-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32o-pinned-binaries
+          path: compiled
+      - name: Audit identities and measure 6 serial root-unit policies
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c cnf.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 -u experiments/drnas_v16/r32o_lucky_probe_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --outdir results | tee r32o-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32o-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32o-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze_build, paired]
+    if: always()
+    name: Audit lucky direction transitions against frozen R32n baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32o-65-replayed-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32o-shard-*
+          path: combined
+      - name: Audit 1170 paired attempts and lucky paths
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32o_lucky_probe_benchmark.py aggregate \
+            --inputs frozen --combined combined \
+            --output r32o-results.json --report r32o-results.md
+          cat r32o-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32O-LUCKY-PROBE-RESULTS
+          path: |
+            r32o-results.json
+            r32o-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
