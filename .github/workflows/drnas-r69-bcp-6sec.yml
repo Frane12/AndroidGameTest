@@ -1,0 +1,120 @@
+name: DRNAS R69 6s original vs full XOR vs BCP-filtered XOR
+
+on:
+  push:
+    branches: [experiment/drnas-r69-bcp-ablation-20261103]
+    paths:
+      - '.github/workflows/drnas-r69-bcp-6sec.yml'
+      - 'experiments/drnas_v16/r69_bcp_6sec_ablation.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r69-bcp-6sec-20261103
+  cancel-in-progress: false
+
+jobs:
+  short:
+    name: R69 source-${{ matrix.shard }} (6s x 3 modes x 2 repeats)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax, original R65 soundness tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r69_bcp_6sec_ablation.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: previous
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Hash verification and paired six-second XOR BCP ablation
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          test -s sources/new/manifest.json
+          test -s previous/r67-final.json
+          (cd sources/new && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat
+          python3 -u experiments/drnas_v16/r69_bcp_6sec_ablation.py measure \
+            --sources sources/new --prior previous/r67-final.json \
+            --kissat compiled/kissat --shard "$SHARD" --out results | tee r69-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r69-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r69-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R69 final paired metrics and correctness audit
+    needs: short
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r69-shard-*
+          path: combined
+      - name: Audit exact 18 short pulses from same pinned 3 original CNFs
+        run: |
+          set -euo pipefail
+          test -s sources/new/manifest.json
+          (cd sources/new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r69_bcp_6sec_ablation.py audit \
+            --sources sources/new --combined combined \
+            --json r69-final.json --md r69-final.md
+          cat r69-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R69-6SEC-BCP-ABLATION-FINAL
+          path: |
+            r69-final.json
+            r69-final.md
+          if-no-files-found: error
+          retention-days: 90
