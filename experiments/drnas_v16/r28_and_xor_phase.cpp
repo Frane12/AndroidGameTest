@@ -124,8 +124,8 @@ static R28Graph r28_extract(const Formula &f) {
 }
 int main(int argc,char **argv) {
     try {
-        if(argc!=4) {
-            std::cerr<<"Usage: r28 MODE ORIGINAL_CNF SEED\n";
+        if(argc!=4 && !(argc==5 && std::string(argv[4])=="--classify-only")) {
+            std::cerr<<"Usage: r28 MODE ORIGINAL_CNF SEED [--classify-only]\n";
             return 2;
         }
         const std::string mode=argv[1];
@@ -136,6 +136,14 @@ int main(int argc,char **argv) {
         const Formula f=read_cnf(argv[2]);
         const uint32_t seed=static_cast<uint32_t>(std::stoul(argv[3]));
         const R28Graph graph=r28_extract(f);
+        if(argc==5) {
+            std::cout<<"DRNAS_R28_CLASSIFY\t"<<graph.exact_xor3_blocks
+                     <<"\t"<<graph.exact_and3_gates
+                     <<"\t"<<graph.joined_outputs
+                     <<"\t"<<graph.chosen
+                     <<"\t"<<graph.extraction_us<<"\n";
+            return 0;
+        }
         CaDiCaL::Solver solver;
         fill_solver(solver,f);
         std::mt19937 rng(seed);
