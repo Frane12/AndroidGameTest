@@ -1,0 +1,65 @@
+name: DRNAS R37 artifact-only audit (NO SAT solver rerun)
+on:
+  push:
+    branches: [experiment/r37-artifact-audit-only-20261103]
+    paths: ['.github/workflows/r37-artifact-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  reuse-and-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reuse existing frozen official 12-case manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: official_manifest
+      - name: Reuse all 120 completed native solver trial results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: official-v94-shard-*
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined-v94
+      - name: Validate old paired SAT results without executing solvers
+        run: |
+          set -euo pipefail
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/official_v94_audit.py combined-v94 | tee v94-reused-audit.log
+          test -s combined-v94/v94_report.json
+      - name: Complete ONLY R36 passive structural scans on frozen official inputs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile r37_holdout_shadow.py experiments/drnas_v16/r36_binary_xor_proofs.py r37_artifact_only_audit.py
+          mkdir -p r37-postprocess
+          for shard in 0 1 2 3; do
+            python3 -u r37_holdout_shadow.py --manifest official_manifest/official_v94_manifest.json --shard "$shard" --out "r37-postprocess/shadow-$shard" | tee "r37-postprocess/shadow-$shard.log"
+          done
+          python3 -u r37_artifact_only_audit.py --manifest official_manifest/official_v94_manifest.json --root r37-postprocess --out r37-postprocess/verified.json | tee r37-postprocess/audit.log
+      - name: Summary
+        if: success()
+        run: |
+          cat combined-v94/v94_report.md >> "$GITHUB_STEP_SUMMARY"
+          printf '\n## R37 verified passive scans (no SAT rerun)\n' >> "$GITHUB_STEP_SUMMARY"
+          cat r37-postprocess/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R37-REUSED-120-TRIALS-PASSIVE-SHADOW-12
+          path: |
+            r37-postprocess/
+            v94-reused-audit.log
+            combined-v94/v94_report.json
+            combined-v94/v94_report.md
+          if-no-files-found: warn
+          retention-days: 90
