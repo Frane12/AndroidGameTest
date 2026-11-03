@@ -35,10 +35,10 @@ def main():
   label={"sat-verified":"SAT","unsat-verified":"UNSAT"}.get(x["status"])
   if label is None or x["instanceid"] in excluded_ids:continue
   t=float(x["runtime"])
-  if not .05<=t<=30.:continue
+  if not .05<=t<=5000.:continue
   candidates[label].append(dict(id=x["instanceid"],label=label,reference_s=t))
  def rank(row):
-  return (abs(math.log(row["reference_s"]/2.0)),
+  return (abs(math.log(row["reference_s"]/8.0)),
           hashlib.sha256((SALT+"/"+row["id"]).encode()).hexdigest())
  selected=[];decisions=[]
  for label,count in QUOTAS.items():
@@ -46,8 +46,8 @@ def main():
    if sum(v["official_label"]==label for v in selected)>=count:break
    try:
     c=download_and_features(x["id"])
-    if c["cnf_bytes"]>24*1024*1024:raise ValueError("raw DIMACS >24 MiB")
-    if c["clauses"]>280000:raise ValueError("more than 280k clauses")
+    if c["cnf_bytes"]>44*1024*1024:raise ValueError("raw DIMACS >44 MiB")
+    if c["clauses"]>650000:raise ValueError("more than 650k clauses")
     if c["sha256"] in excluded_sha:raise ValueError("original CNF SHA already used")
     if c["sha256"] in {v["sha256"] for v in selected}:raise ValueError("duplicate case SHA")
     selected.append({**c,"official_label":label,
