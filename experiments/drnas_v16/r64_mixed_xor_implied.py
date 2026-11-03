@@ -136,7 +136,7 @@ def implied_clauses(equations,existing):
     for vs,rhs in equations:
         vector=sum(1<<(v-1) for v in vs)
         while vector:
-            p=vector.bit_length()-1
+            p=(vector & -vector).bit_length()-1
             if p not in basis:
                 basis[p]=(vector,rhs);break
             old,bit=basis[p]
