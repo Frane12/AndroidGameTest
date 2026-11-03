@@ -35,8 +35,8 @@ CAP=40.0
 REPS=2
 SHARDS=8
 MODES=("clean","r49_full40","r60_visits_shadow","r60_visits_gate40")
-STRATA=("sat_fast","unsat_fast","sat_mid","unsat_mid")
-MAX_CANDIDATES_PER_STRATUM=22
+STRATA=("sat_fast","unsat_fast","sat_mid","unsat_mid","sat_slow","unsat_slow")
+MAX_CANDIDATES_PER_STRATUM=32
 TARGET_COUNTS={"positive":5,"nonpositive":5,"inactive":4}
 RAW_CAP=28*1024*1024
 CNF_CAP=48*1024*1024
@@ -98,7 +98,7 @@ def freeze(args):
   g=e["instanceid"]
   if g in old or e["status"] not in ("sat-verified","unsat-verified"):continue
   t=float(e["runtime"])
-  tier="fast" if 0<=t<10 else "mid" if 10<=t<80 else None
+  tier="fast" if 0<=t<10 else "mid" if 10<=t<80 else "slow" if 80<=t<5000 else None
   if tier is None:continue
   stratum=("sat" if e["status"]=="sat-verified" else "unsat")+"_"+tier
   pools[stratum].append(dict(gbd=g,
@@ -111,7 +111,7 @@ def freeze(args):
  for i in range(MAX_CANDIDATES_PER_STRATUM):
   for s in STRATA:
    if i<len(ordered[s]):seq.append(ordered[s][i])
- source_limit=88
+ source_limit=180
  output=[];attempts=[];counts={q:0 for q in TARGET_COUNTS}
  r32p.CNF_LIMIT=CNF_CAP
  for c in seq[:source_limit]:
@@ -159,6 +159,7 @@ def freeze(args):
          "not enough new distinct official sources for test")
  manifest=dict(protocol=PROTO,source_salt=SALT,
    scope="Feature-stratified prospective official SATComp2026 original sources",
+   sampling_revision="expanded to 80-5000s publicly scored strata after an insufficient-source-size-only freeze failure; no R60 solver times existed",
    previous_runs=list(PREVIOUS_RUNS),
    disjoint_previous_id_count=len(old),prior_r52_r55b_r57_only_hashes=sorted(oldsha),
    public_2026_index_sha256=hashlib.sha256(raw_list).hexdigest(),
