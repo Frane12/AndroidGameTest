@@ -111,8 +111,22 @@ def one_trial(case,path,mode,bins):
         check(active["injected"]==approved,
               f"Unsound active unit count on {case['name']}: {active} expected={approved}")
         check(active["certified"]>=active["injected"],"Uncertified injection")
-        if approved:check(signal=="APPLIED","Unit-eligible but not applied")
-        else:check(signal!="APPLIED","Active intervention on abstained formula")
+        if approved:
+            check(signal=="APPLIED","Unit-eligible but not applied")
+            literal_lines=re.findall(r"^c R32C_INJECTED_LITS count=(\\d+) lits=([0-9,-]+)$",
+                                     stdout,re.MULTILINE)
+            check(len(literal_lines)==1,"No signed literal disclosure for active injection")
+            count_str,signed=literal_lines[0]
+            literals=[int(z) for z in signed.split(",")]
+            check(int(count_str)==len(literals)==approved,
+                  "Injected literal count does not match independent proof")
+            check(sorted(literals)==sorted(root["sample"]),
+                  "Injected literals do not match independently proven signed units")
+            active["literals"]=literals
+        else:
+            check(signal!="APPLIED","Active intervention on abstained formula")
+            check("R32C_INJECTED_LITS" not in stdout,
+                  "Disclosed root injection on abstained formula")
     if status!="TIMEOUT" and mode!="clean":
         check(final is not None,"Native final counters missing")
         check(final["status"]==(10 if status=="SAT" else 20),
