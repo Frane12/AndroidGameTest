@@ -1,10 +1,9 @@
-name: DRNAS R62 new XOR scaling 125 250 500 and near-XOR controls
+name: DRNAS R62 audit-only reuse frozen 41704568550
 on:
   push:
     branches: [experiment/drnas-r62-xor-scaling-20261103]
     paths:
       - '.github/workflows/drnas-r62-xor-scaling.yml'
-      - 'experiments/drnas_v16/r62_xor_scaling_benchmark.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,85 +12,8 @@ concurrency:
   group: drnas-r62-xor-scaling-frozen-20261103
   cancel-in-progress: false
 jobs:
-  freeze:
-    name: Freeze 48 new distinct XOR original DIMACS sizes and negative controls
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate generator and SHA freeze source formulas before SAT timing
-        run: |
-          set -euo pipefail
-          python3 -m py_compile experiments/drnas_v16/r62_xor_scaling_benchmark.py
-          python3 -u experiments/drnas_v16/r62_xor_scaling_benchmark.py prepare --out frozen
-          (cd frozen && sha256sum -c source.sha256)
-          python3 - <<'PY'
-          import json
-          x=json.load(open("frozen/manifest.json"))
-          assert len(x["cases"])==48
-          assert {z["vars"] for z in x["cases"]}=={125,250,500}
-          assert {z["family"] for z in x["cases"]}=={
-            "regular_xor3","local_xor3","rewired_xor3","near_xor3_control"}
-          assert all(c["clauses"]==4*c["vars"] for c in x["cases"])
-          print("R62_48_SOURCES_FROZEN_AUDIT_PASS")
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: r62-frozen-synthetic-scaling-originals
-          path: frozen/
-          if-no-files-found: error
-          retention-days: 90
-  benchmark:
-    name: r62-shard-${{ matrix.shard }}
-    needs: freeze
-    runs-on: ubuntu-24.04
-    timeout-minutes: 34
-    strategy:
-      fail-fast: false
-      max-parallel: 8
-      matrix:
-        shard: [0,1,2,3,4,5,6,7]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: r62-frozen-synthetic-scaling-originals
-          path: frozen
-      - uses: actions/download-artifact@v4
-        with:
-          name: r28-identical-binaries
-          run-id: 41613064879
-          repository: Frane12/AndroidGameTest
-          github-token: ${{ github.token }}
-          path: compiled
-      - name: Verify all formula and both binary SHA
-        run: |
-          set -euo pipefail
-          (cd frozen && sha256sum -c source.sha256)
-          (cd compiled && sha256sum -c binary.sha256)
-          chmod +x compiled/kissat compiled/r28_gf2
-      - name: Paired two repeats Kissat and exact GF2 on unchanged hardware, 60s cap
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: |
-          set -euo pipefail
-          python3 -u experiments/drnas_v16/r62_xor_scaling_benchmark.py measure \
-            --inputs frozen --out results --kissat compiled/kissat \
-            --gf2 compiled/r28_gf2 --shard "$SHARD" | tee r62-live.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: r62-shard-${{ matrix.shard }}
-          path: |
-            results/
-            r62-live.log
-          if-no-files-found: warn
   audit:
     name: R62 final 192 trial audit size effects speedups control regressions
-    needs: [freeze,benchmark]
-    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 14
     steps:
@@ -99,10 +21,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: r62-frozen-synthetic-scaling-originals
+          run-id: 41704568550
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
           path: frozen
       - uses: actions/download-artifact@v4
         with:
           pattern: r62-shard-*
+          run-id: 41704568550
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
           path: combined
       - name: Audit 48 sources times SAT witnesses and PAR2 by dimension and control
         run: |
