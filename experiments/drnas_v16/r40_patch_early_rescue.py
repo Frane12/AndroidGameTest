@@ -26,9 +26,6 @@ def once(before,after,expected=1):
 once('policy!="v91_gate" && policy!="v91_always" && policy!="v91_never")',
      'policy!="v91_gate" && policy!="v91_always" && policy!="v91_never" &&\n'
      '       policy!="v91_rescue" && policy!="v91_force_fallback")')
-once('policy=="v91_always" || policy=="v91_never")',
-     'policy=="v91_always" || policy=="v91_never" ||\n'
-     '       policy=="v91_rescue" || policy=="v91_force_fallback")',expected=3)
 once('const bool apply=policy=="v91_always" ||\n'
      '                    (policy=="v91_gate" && a.v91_gate_quality);',
      'const bool apply=policy=="v91_always" ||\n'
@@ -71,6 +68,9 @@ once('''        if(after==0) {
                 for(const int lit:h.literals)solver.unphase(lit);
             auto next=Clock::now();
             a.status=solver.solve();''')
+once('policy=="v91_always" || policy=="v91_never")',
+     'policy=="v91_always" || policy=="v91_never" ||\n'
+     '       policy=="v91_rescue" || policy=="v91_force_fallback")',expected=4)
 once('''        } else if(mode=="v91_quality_gate") {
             a=ablation(f,"v91_gate",false,seed,true);
         } else if(mode=="v91_always_late") {''',
