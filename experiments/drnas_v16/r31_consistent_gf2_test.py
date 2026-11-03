@@ -85,7 +85,7 @@ def make_case(family,idx):
                 random_cl=list(cl);rng.shuffle(random_cl)
                 n+=1
                 transformed.extend([[random_cl[0],n],[-n]+random_cl[1:]])
-                truth[n]=1 if (random_cl[0]>0)==bool(truth[abs(random_cl[0])]) else 0
+                truth[n]=0 if (random_cl[0]>0)==bool(truth[abs(random_cl[0])]) else 1
                 # With (a v t) AND (!t v b v c), when a=false, t=true;
                 # when a=true and (b v c)=true, t=false is valid.
             else:transformed.append(cl)
