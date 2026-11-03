@@ -1,0 +1,193 @@
+name: DRNAS R40 prospective early-resume v9.1 quality rescue official 8
+on:
+  push:
+    branches: [experiment/drnas-r40-v91-checkpoint-rescue-20261103]
+    paths:
+      - '.github/workflows/drnas-r40-early-rescue.yml'
+      - 'experiments/drnas_v16/r40_patch_early_rescue.py'
+      - 'experiments/drnas_v16/r40_freeze_official.py'
+      - 'experiments/drnas_v16/r40_benchmark.py'
+      - 'experiments/drnas_v16/r40_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r40-official-early-rescue
+  cancel-in-progress: false
+jobs:
+  freeze_build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate exact source and frozen experimental protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r40_patch_early_rescue.py experiments/drnas_v16/r40_freeze_official.py experiments/drnas_v16/r40_benchmark.py experiments/drnas_v16/r40_audit.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+      - name: Download previously frozen original 18 official formula identities
+        uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          run-id: 41231153158
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior18
+      - name: Download previously frozen R37 official 12 formula identities
+        uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior12
+      - name: Freeze eight new SAT Competition 2026 originals BEFORE any new solver trials
+        run: |
+          set -euo pipefail
+          (cd prior12 && sha256sum -c manifest.sha256)
+          test -f prior18/official_shortlong_manifest.json
+          curl -fLsS --retry 3 --max-time 90 https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          mkdir -p frozen
+          python3 -u experiments/drnas_v16/r40_freeze_official.py --scores official_scores.csv --prior18 prior18/official_shortlong_manifest.json --prior12 prior12/official_v94_manifest.json --out frozen/manifest.json | tee r40-freeze.log
+          (cd frozen && sha256sum manifest.json > manifest.sha256 && sha256sum -c manifest.sha256)
+      - name: Fetch exact pinned original Kissat binary
+        uses: actions/download-artifact@v4
+        with:
+          name: r32-official-pinned-binaries
+          run-id: 41623227197
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: pinned
+      - name: Produce exactly one safe modified CaDiCaL probe and untouched Kissat
+        run: |
+          set -euo pipefail
+          chmod +x pinned/kissat pinned/cadical pinned/r29
+          (cd pinned && sha256sum -c bin.sha256)
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          python3 experiments/drnas_v16/r40_patch_early_rescue.py --source research/drnas-sat-v7-8/v94_cautious_probe.cpp --dest research/drnas-sat-v7-8/r40_native_generated.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(src.split(marker,1)[0]+'\n')
+          PY
+          (cd cadical-src && ./configure && make -j2 >/tmp/r40-cadical-build.log 2>&1) || { tail -110 /tmp/r40-cadical-build.log; exit 1; }
+          mkdir -p compiled
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src research/drnas-sat-v7-8/r40_native_generated.cpp cadical-src/build/libcadical.a -o compiled/r40_native -pthread -ldl -lz
+          cp pinned/kissat compiled/kissat
+          chmod +x compiled/r40_native compiled/kissat
+          (cd compiled && sha256sum r40_native kissat > bin.sha256 && sha256sum -c bin.sha256)
+          sha256sum research/drnas-sat-v7-8/v94_cautious_probe.cpp research/drnas-sat-v7-8/r40_native_generated.cpp > compiled/source.sha256
+          git rev-parse HEAD > compiled/repo_commit.txt
+      - name: Short native safety smoke test on trivial CNF (NOT counted as official)
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' > /tmp/r40_smoke.cnf
+          for m in v91_quality_gate v91_rescue v91_force_fallback v91_never_late; do
+            compiled/r40_native "$m" /tmp/r40_smoke.cnf 401 > "/tmp/r40_$m.txt"
+            grep -q "DRNAS_CAUSAL.*mode=$m.*answer=SAT" "/tmp/r40_$m.txt"
+            echo "R40_SMOKE_PASS $m"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r40-frozen-official8-and-protocol
+          path: |
+            frozen/
+            r40-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r40-pinned-native-kissat-pair
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+  benchmark:
+    needs: freeze_build
+    if: needs.freeze_build.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    name: r40-official-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r40-frozen-official8-and-protocol
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r40-pinned-native-kissat-pair
+          path: compiled
+      - name: Run 2 official CNFs x 5 modes x 2 paired seeds, cap 12 seconds
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/r40_native compiled/kissat
+          (cd compiled && sha256sum -c bin.sha256)
+          test -f frozen/frozen/manifest.json
+          (cd frozen/frozen && sha256sum -c manifest.sha256)
+          lscpu > cpu.txt
+          python3 -u experiments/drnas_v16/r40_benchmark.py --manifest frozen/frozen/manifest.json --shard "$SHARD" --probe compiled/r40_native --kissat compiled/kissat --out results | tee r40-live.log
+          test -s results/raw.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r40-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+            r40-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [freeze_build,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r40-frozen-official8-and-protocol
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r40-shard-*
+          path: combined
+      - name: Strict audit native first-256 prefix parity and per-formula bootstrap
+        run: |
+          set -euo pipefail
+          test "${{ needs.freeze_build.result }}" = success
+          test "${{ needs.benchmark.result }}" = success
+          (cd frozen/frozen && sha256sum -c manifest.sha256)
+          python3 -u experiments/drnas_v16/r40_audit.py --manifest frozen/frozen/manifest.json --combined combined --out r40-official-results.json | tee r40-official-audit.log
+          test -s r40-official-results.json
+          cat r40-official-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R40-OFFICIAL8-PAIR-V91-RESCUE-FINAL
+          path: |
+            r40-official-results.json
+            r40-official-audit.log
+          if-no-files-found: warn
+          retention-days: 90
