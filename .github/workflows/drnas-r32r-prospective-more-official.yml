@@ -1,0 +1,163 @@
+name: DRNAS R32r more real SATComp26 original CNFs exact GF2 controls
+on:
+  push:
+    branches: [experiment/drnas-r32r-official26-more-20261103]
+    paths:
+      - '.github/workflows/drnas-r32r-prospective-more-official.yml'
+      - 'experiments/drnas_v16/r32r_more_real_satcomp26_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32r-prospective-more-real-20261103-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Freeze pre-selected 2026 official GBD source SHAs and pinned native Kissat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32r_more_real_satcomp26_benchmark.py
+      - name: Download and audit 23 new precommitted SATComp2026 Main GBD candidates
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32r_more_real_satcomp26_benchmark.py freeze --out frozen | tee r32r-freeze.log
+          (cd frozen && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import json
+          j=json.load(open("frozen/manifest.json"))
+          assert j["protocol"].startswith("DRNAS-R32R-REAL-SATCOMP2026")
+          assert len(j["precommitted_candidates"])==23
+          assert len(j["complete_download_log"])==23
+          assert len(j["cases"])>=5
+          assert len({x["sha256"] for x in j["cases"]})==len(j["cases"])
+          print("R32R_EXTERNAL_SOURCE_FREEZE_PASS",len(j["cases"]))
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32n-pinned-binaries
+          run-id: 41653089760
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r28_previous
+      - name: Verify exact previous R32n native/clean binary and mode support
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          chmod +x r28_previous/r28_gf2 r28_previous/kissat
+          (cd r28_previous && sha256sum -c binary.sha256)
+          cp r28_previous/r28_gf2 compiled/r28
+          chmod +x compiled/r28
+          (cd compiled && sha256sum r28 >> binaries.sha256 && sha256sum -c binaries.sha256)
+          compiled/clean --version
+          compiled/native --version
+          echo R32R_PINNED_KISSAT_VERIFIED
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32r-prospective-satcomp26-frozen-originals
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32r-kissat-r28-pinned-binaries
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32r-official-source-download-audit
+          path: |
+            r32r-freeze.log
+            frozen/manifest.json
+            frozen/source.sha256
+          if-no-files-found: warn
+  paired:
+    needs: freeze
+    name: r32r-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-prospective-satcomp26-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-kissat-r28-pinned-binaries
+          path: compiled
+      - name: Verify frozen official source and compiled solver SHA256
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Run solo 30-second paired Kissat, native GF2 and exact Gaussian-elimination R28
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32r_more_real_satcomp26_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --out results | tee r32r-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32r-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32r-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    name: Audit real 2026 original SAT verdicts, exact parity certificates and 30s PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32r-prospective-satcomp26-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32r-shard-*
+          path: combined
+      - name: Validate paired original-CNF benchmark and report all exclusions
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32r_more_real_satcomp26_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r32r-official-results.json \
+            --report r32r-official-results.md
+          cat r32r-official-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32R-MORE-SATCOMP2026-EXACT-GF2-30S-FINAL
+          path: |
+            r32r-official-results.json
+            r32r-official-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
