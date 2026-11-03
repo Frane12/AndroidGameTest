@@ -25,7 +25,7 @@ MODES=("Kissat_clean","Kissat_R30_passive")
 FAMILIES=("xor3_visible","xor3_hidden","xor3_mixed","parity_bridge",
           "random3_critical","xor_decoy")
 PER_FAMILY=4
-OFFICIAL_INDICES=(0,3,14,16)
+OFFICIAL_SAMPLE_ROLES=("previously_measured_development","r28_additional_original_holdout")
 
 def check(x,reason):
     if not x:raise RuntimeError("R30_AUDIT_ERROR "+reason)
@@ -126,9 +126,11 @@ def freeze(out, official):
         archive=json.loads((src/"manifest.json").read_text())
         check(archive.get("protocol")=="DRNAS-R28-AND-XOR-PHASE-AB-AUDIT-20261103-v1",
               "Incorrect original official archive")
-        for idx in OFFICIAL_INDICES:
-            c=archive["cases"][idx]
-            check(c["role"]!="xor_structure_control","Official sample must be original")
+        selected=( [x for x in archive["cases"] if x["role"]=="previously_measured_development"][:2]
+                  +[x for x in archive["cases"] if x["role"]=="r28_additional_original_holdout"][:2] )
+        check(len(selected)==4 and len({x["sha256"] for x in selected})==4,
+              "Expected two development plus two previously-held-out original GBD cases")
+        for idx,c in enumerate(selected):
             p=src/c["path"]
             check(digest(p)==c["sha256"],"Official original source SHA mismatch")
             data=p.read_bytes()
