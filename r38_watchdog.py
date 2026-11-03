@@ -330,8 +330,7 @@ def selftest():
             repeat=5 if i<17 else 1
             delayed.extend([f"{i} {i+1} 0",f"-{i} -{i+1} 0"]*repeat)
         delayed.append("17 -18 0")
-        p.write_text(f"p cnf 20 {len(delayed)}\\n".replace("\\\\n","\\n")+
-                     "\\n".join(delayed)+"\\n")
+        p.write_text(f"p cnf 20 {len(delayed)}\n" + "\n".join(delayed) + "\n")
         global STALL_BUDGET
         original_stall=STALL_BUDGET
         try:
