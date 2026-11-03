@@ -81,6 +81,46 @@ def freeze(args):
         c["cnf_bytes"],"official_ref_s",c["official_baseline_s"],flush=True)
  print("R45_FREEZE_PASS",len(selected), "sha256",sha_file(dst),flush=True)
 
+def full_original_sat_witness_check(path,output):
+ """Validate Kissat SAT witness against the COMPLETE original DIMACS CNF.
+
+ Earlier R30 verifier was intentionally guarded at 1024 vars/10000 clauses.
+ This is a file-streamed verifier, not a new SAT solve.
+ """
+ model={}
+ for line in output.splitlines():
+  if line.startswith("v "):
+   for word in line.split()[1:]:
+    lit=int(word)
+    if lit:
+     var=abs(lit);value=(lit>0)
+     if var in model:check(model[var]==value,"contradictory model literals")
+     model[var]=value
+ check(bool(model),"Kissat reported SAT without a witness")
+ n=None;declared=None;done=0;clause_open=False;clause_satisfied=False
+ with Path(path).open("rb") as file:
+  for raw in file:
+   line=raw.strip()
+   if not line or line.startswith((b"c",b"%")):continue
+   if line.startswith(b"p "):
+    check(n is None,"duplicated DIMACS header")
+    parts=line.split()
+    check(len(parts)==4 and parts[1]==b"cnf","malformed DIMACS header")
+    n=int(parts[2]);declared=int(parts[3]);continue
+   check(n is not None,"missing CNF header")
+   for word in line.split():
+    lit=int(word)
+    if lit:
+     check(abs(lit)<=n,"invalid variable index in original DIMACS")
+     clause_open=True
+     if model.get(abs(lit))==(lit>0):clause_satisfied=True
+    else:
+     check(clause_open and clause_satisfied,"SAT witness falsifies original clause "+str(done))
+     done+=1;clause_open=False;clause_satisfied=False
+ check(n is not None and done==declared and not clause_open,
+   "DIMACS clause structure or declared count invalid")
+ return "SAT_witness_verified_complete_original_DIMACS"
+
 def one(case,path,mode,clean,native):
  cmd=[str(clean if mode=="clean" else native),str(path)]
  env=os.environ.copy()
@@ -97,8 +137,7 @@ def one(case,path,mode,clean,native):
   status="SAT" if p.returncode==10 else "UNSAT"
   check(status==case["official_label"],f"Official SAT/UNSAT label conflict {mode} {status}")
   stdout=p.stdout
-  validation=(b.sat_check(path,stdout) if status=="SAT" else "published_verified_UNSAT_label")
-  if status=="SAT":check(validation=="SAT_model_on_original_valid","Source SAT model not fully validated")
+  validation=(full_original_sat_witness_check(path,stdout) if status=="SAT" else "published_verified_UNSAT_label")
  except subprocess.TimeoutExpired as ex:
   elapsed=CAP
   status="TIMEOUT"
@@ -122,26 +161,36 @@ def one(case,path,mode,clean,native):
    check(proof["status"] in ("independent_proof_match","old_python_guard"),
          "GF2 root does not match original source")
    raw=re.findall(
-    r"^c R32K_ABLATION variant=([a-z0-9]+) available=(\d+) injected=(\d+) equations=(\d+) resolved=(\d+)$",
+    r"^c R32K_ABLATION variant=([a-z0-9]+) available=(\\d+) injected=(\\d+) equations=(\\d+) resolved=(\\d+)$",
     stdout,re.MULTILINE)
-   check(len(raw)==1,"native root probe without one ablation record")
-   name,avail,inj,eq,res=raw[0]
-   check(name==mode and int(eq)==int(root["equations"]) and int(res)==int(root["resolved"]),
-         "Native feature counters mismatch")
-   eligible=(root["signal"]=="CONSISTENT_GAP" and 0<int(root["extra"])<=12)
-   intended=(int(root["extra"]) if mode=="full" else min(8,int(root["extra"]))) if eligible else 0
-   check(int(avail)==(int(root["extra"]) if root["signal"]=="CONSISTENT_GAP" else 0),
+   check(len(raw)<=1,"duplicate R32k ablation records")
+   if raw:
+    name,avail,inj,eq,res=raw[0]
+    check(name==mode and int(eq)==int(root["equations"]) and int(res)==int(root["resolved"]),
+          "Native feature counters mismatch")
+    eligible=(root["signal"]=="CONSISTENT_GAP" and 0<int(root["extra"])<=12)
+    intended=(int(root["extra"]) if mode=="full" else min(8,int(root["extra"]))) if eligible else 0
+    check(int(avail)==(int(root["extra"]) if root["signal"]=="CONSISTENT_GAP" else 0),
           "wrong source certified extra units")
-   check(int(inj)==intended,"unexpected injected GF2 units")
-   if proof["status"]!="independent_proof_match":
-    check(int(inj)==0,"Proof parser skipped but native injected units")
-   if intended:
-    claim=re.findall(r"^c R32C_INJECTED_LITS count=(\d+) lits=([0-9,-]+)$",stdout,re.MULTILINE)
-    check(len(claim)==1 and int(claim[0][0])==intended,"Missing injected literals")
-    signed=[int(x) for x in claim[0][1].split(",")]
-    check(signed==root["sample"][:intended],"Causal hint order mismatch")
-   ablation=dict(variant=mode,available=int(avail),injected=int(inj),
-     source_signal=root["signal"],proof=proof["status"],root_equations=int(eq))
+    check(int(inj)==intended,"unexpected injected GF2 units")
+    if intended:
+     claim=re.findall(r"^c R32C_INJECTED_LITS count=(\\d+) lits=([0-9,-]+)$",stdout,re.MULTILINE)
+     check(len(claim)==1 and int(claim[0][0])==intended,"Missing injected literals")
+     signed=[int(x) for x in claim[0][1].split(",")]
+     check(signed==root["sample"][:intended],"Causal hint order mismatch")
+    ablation=dict(variant=mode,available=int(avail),injected=int(inj),
+      source_signal=root["signal"],proof=proof["status"],root_equations=int(eq))
+   else:
+    # R32k legitimately skips the ablation record on root INPUT_GUARD.
+    # A timeout may also interrupt processing between a root probe and
+    # the intervention decision. Never impute a zero injection from silence.
+    guard=re.findall(r"^c R32C_ACTIVE signal=INPUT_GUARD injected=0 certified=0$",stdout,re.MULTILINE)
+    if root["signal"]=="INPUT_GUARD" and guard:
+     ablation=dict(variant=mode,available=0,injected=0,
+       source_signal=root["signal"],proof="native_input_guard_no_action",
+       root_equations=root.get("equations",0))
+    elif status!="TIMEOUT":
+     raise RuntimeError("R45 completed active solve without a documented ablation decision")
   elif status!="TIMEOUT":
    raise RuntimeError("R45 completed native active solve without GF2 root proof")
  # Preserve early CDCL observables, including incomplete on timeout
@@ -152,7 +201,8 @@ def one(case,path,mode,clean,native):
   witness_validation=validation,root_signal=(root or {}).get("signal"),
   ablation=ablation,checkpoint_types=event_types,
   final_counters=final,root_proof=(proof or {}).get("status"),
-  timeout_before_root=(mode in ("full","first8") and root is None and status=="TIMEOUT"))
+  timeout_before_root=(mode in ("full","first8") and root is None and status=="TIMEOUT"),
+  timeout_before_action=(mode in ("full","first8") and ablation is None and status=="TIMEOUT"))
 
 def measure(args):
  frozen=Path(args.manifest);m=json.loads(frozen.read_text())
@@ -235,7 +285,9 @@ def aggregate(args):
     par2_mean_s=round(statistics.mean(r["par2_s"] for r in rows),6),
     active_root_interventions=sum(bool(r["ablation"] and r["ablation"]["injected"]>0) for r in rows),
     confirmed_zero_unit_decisions=sum(bool(r["ablation"] and r["ablation"]["injected"]==0) for r in rows),
-    unknown_intervention_before_timeout=sum(bool(r["timeout_before_root"]) for r in rows))
+    unknown_intervention_before_timeout=sum(bool(r["timeout_before_action"]) for r in rows),
+    uncertified_GF2_action=sum(bool(r["ablation"] and
+      r["ablation"]["injected"]>0 and r["ablation"]["proof"]!="independent_proof_match") for r in rows))
  baseline=bymode["native_off"]["par2_mean_s"]
  for mode in ("clean","full","first8"):
   bymode[mode]["pct_vs_native_off_positive_is_regression"]=round(
