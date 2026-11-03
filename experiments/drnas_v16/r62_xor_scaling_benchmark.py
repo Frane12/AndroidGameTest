@@ -181,7 +181,7 @@ def aggregate(a):
     spec=json.loads((inputs/"manifest.json").read_text())
     full=[];binary_shas=set()
     for shard in range(SHARDS):
-        root=Path(a.combined)/f"r61-shard-{shard}"/"results"
+        root=Path(a.combined)/f"r62-shard-{shard}"/"results"
         meta=json.loads((root/"metadata.json").read_text())
         check(meta["shard"]==shard and meta["manifest_sha"]==sha(inputs/"manifest.json"),"Shard provenance")
         binary_shas.add((meta["kissat_sha"],meta["gf2_sha"]))
