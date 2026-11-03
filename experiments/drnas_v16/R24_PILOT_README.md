@@ -17,8 +17,11 @@ and a forced restart interval 50 after >=2048 conflicts, 128 executions. The
 same binary was used for both arms, order shuffled, one CPU pinned, 2s cap,
 PAR-2 on timeout and sum of per-formula medians. SAT assignments checked against
 their original CNF; UNSAT claims lack independently verified certificates.
-Seeds are different from R21/R22, and pilot hashes are distinct from each other;
-no complete check against every historical corpus was carried out. The locally
+Seeds are different from R21/R22, and pilot hashes are distinct from each other.
+After both batches, all 64 file SHA-256 hashes were also compared to 3,214
+archived hashes from the historical registry and R16–R22, with no exact file
+matches. This checks bytes, not semantic equivalence after comments, variable
+renaming, or reordering; other historical corpora have not all been checked. The locally
 reconstructed Kissat source matched upstream's 206 `src/` file blobs before
 patching, except the generated configuration after build. Hardware is this
 workspace, not the earlier GitHub Actions machine.
@@ -83,3 +86,15 @@ A fixed-seed formula bootstrap 95% interval was approximately -2.92% to
 186 paired pre-intervention checkpoints matched; two formulas lacked a usable
 1024 snapshot and defaulted to monitor. The selector does not pass the safety
 or improvement bar; these observations are not proof of a live speedup.
+
+The same frozen model and same 32 fresh formulas were rerun on GitHub Actions
+run 41603626692 (not an independent new formula sample). On random3 the
+monitor sum was 8.8356s and shadow 8.5032s, 3.76% lower; four selected,
+three wins and one >2x regression. The regressing formula was 0.0565s versus
+0.1754s. The formula-bootstrap interval was approximately -3.35% to +13.29%.
+Community3 again had zero choices. All 128 attempts completed without timeout
+on the GitHub runner. The paired R22-to-R24 monitor overhead diagnostic was
+approximately +4.22% on eight development formulas. R24b validation passed.
+The full GitHub result and logs are artifact 13214469166. These are separate
+hardware repetitions of the same formula identities, not an independent
+fresh holdout or a live in-process selector.
