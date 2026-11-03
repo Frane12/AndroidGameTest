@@ -346,7 +346,8 @@ def audit(a):
     "|---|---:|---:|---:|---:|---:|"]
   for mode in MODES:
    t=results[seg][mode]
-   lines.append(f'| {mode} | {t["solved"]}/{t["attempts"]} | {t["par2_s"]:.3f} | {t["delta_vs_clean_pct"]:+.2f}% | {t["mean_prep_s"]:.4f} | {t["active_trials"]} |')
+   pct=(f'{t["delta_vs_clean_pct"]:+.2f}%' if t["delta_vs_clean_pct"] is not None else 'N/A')
+   lines.append(f'| {mode} | {t["solved"]}/{t["attempts"]} | {t["par2_s"]:.3f} | {pct} | {t["mean_prep_s"]:.4f} | {t["active_trials"]} |')
  lines+=["","## Per original, two repetitions PAR2 seconds",
       "| Source | Feature class | Saved clause visits | "+" | ".join(MODES)+" |",
       "|---|---|---:|"+("|---:|"*len(MODES))]
