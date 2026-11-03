@@ -329,7 +329,7 @@ def aggregate(args):
     Path(args.output).write_text(json.dumps(data,indent=2)+"\n")
     md=["# R32m: native phase attribution of certified XOR interventions",
         "5 previously studied development formulas + 60 new synthetic source seeds.",
-        "2100 independent SERIAL single-solver trials; omit 4/24/48 in GF2 basis.",,
+        "2100 independent SERIAL single-solver trials; omit 4/24/48 in GF2 basis.",
         "Native phase clock is *process CPU* inside Kissat search; excludes input parse and root GF2.",
         "Results are synthetic and cannot establish a general SAT speed ranking.",
         "",
