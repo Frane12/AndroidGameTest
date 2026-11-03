@@ -1,0 +1,173 @@
+name: DRNAS R32u active XOR in Kissat CDCL five official controls 75s
+on:
+  push:
+    branches: [experiment/drnas-r32u-active-xor-cdcl-20261103]
+    paths:
+      - '.github/workflows/drnas-r32u-five-official-native-xor-75s.yml'
+      - 'experiments/drnas_v16/patch_r32u_live_xor_reasons.py'
+      - 'experiments/drnas_v16/r32u_native_active_xor_benchmark.py'
+      - 'experiments/drnas_v16/r32u_random_original_model_test.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32u-75s-5-real-2026-native-reasons-v1
+  cancel-in-progress: true
+jobs:
+  freeze_compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Original SHA freeze, compile active Kissat, 60 deterministic mixed-XOR verdict audits
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check all research and patch sources compile
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            experiments/drnas_v16/patch_r32u_live_xor_reasons.py \
+            experiments/drnas_v16/r32u_native_active_xor_benchmark.py \
+            experiments/drnas_v16/r32u_random_original_model_test.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-exact-17-2026-frozen-originals
+          run-id: 41667090339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Exact same five known official SHA inputs for all modes
+        run: |
+          set -euo pipefail
+          (cd prior && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r32u_native_active_xor_benchmark.py freeze \
+            --prior prior --out frozen
+          (cd frozen && sha256sum -c original.sha256)
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32s-pinned-clean-native-traced-r28
+          run-id: 41667090339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify original clean Kissat pinned upstream commit baseline
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native compiled/r28
+          (cd compiled && sha256sum -c binaries.sha256)
+          test "$(compiled/clean --version)" = "$(compiled/native --version)"
+      - name: Compile new in-CDCL XOR implication + reason engine without changing solver policy
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r32u-75s-kissat
+          git -C /tmp/r32u-75s-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r32u-75s-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r32u-75s-kissat
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r32u-75s-kissat
+          python3 -u experiments/drnas_v16/patch_r32s_native_cdcl_progress.py --kissat-root /tmp/r32u-75s-kissat
+          python3 -u experiments/drnas_v16/patch_r32u_live_xor_reasons.py --kissat-root /tmp/r32u-75s-kissat
+          (cd /tmp/r32u-75s-kissat && ./configure && make -j2 > /tmp/r32u-build-75s.log)
+          cp /tmp/r32u-75s-kissat/build/kissat compiled/native
+          chmod +x compiled/native
+          (cd compiled && sha256sum clean native > baselines.sha256 && sha256sum -c baselines.sha256)
+          echo R32U_ACTIVE_NATIVE_CNF_REASON_BUILD_PASS
+      - name: Independently test 60 original source SAT/UNSAT verdicts and implied native trail assignments
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32u_random_original_model_test.py \
+            --clean compiled/clean --native compiled/native --out generated | tee r32u-random-audit.log
+          grep -q '^R32U_60_GENERATED_MIXED_SAT_UNSAT_VERDICT_PASS' r32u-random-audit.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32u-exact-five-official-2026-inputs
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          path: |
+            compiled/clean
+            compiled/native
+            compiled/baselines.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32u-60-mixed-verdict-audit
+          path: |
+            r32u-random-audit.log
+            frozen/manifest.json
+          if-no-files-found: warn
+  paired:
+    needs: freeze_compile
+    name: r32u-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 23
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-exact-five-official-2026-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          path: compiled
+      - name: SHA verify original CNF and identical pinned solver inputs
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c original.sha256)
+          (cd compiled && sha256sum -c baselines.sha256)
+      - name: Native active XOR trail reasons versus passive and clean, 75-second cap per trial
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32u_native_active_xor_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --out results | tee r32u-live.log
+          grep -q '^R32U_OFFICIAL_SHARD_PASS' r32u-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32u-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32u-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze_compile,paired]
+    if: always()
+    name: Final original CNF SAT witness audit, active reasons and 75s paired times
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-exact-five-official-2026-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32u-shard-*
+          path: combined
+      - name: Verify 15 trials, original source identity, native GF2 proofs and times
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32u_native_active_xor_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r32u-final.json --report r32u-final.md
+          cat r32u-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32U-FIVE-REAL2026-CDCL-NATIVE-XOR-75S-FINAL
+          path: |
+            r32u-final.json
+            r32u-final.md
+            frozen/manifest.json
+          if-no-files-found: warn
