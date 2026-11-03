@@ -247,9 +247,11 @@ int main(int argc,char** argv){
   if(classify)return 0;
   cout<<"s SATISFIABLE\n";
   for(int v=1;v<=n;v++){
-    cout<<"v "<<(truth[v]?v:-v)<<" ";
+    if((v-1)%20==0)cout<<"v ";
+    cout<<(truth[v]?v:-v)<<" ";
     if(v%20==0)cout<<"0\n";
   }
-  cout<<"v 0\n"<<flush;
+  if(n%20!=0)cout<<"0\n";
+  cout<<flush;
   return 10;
 }
