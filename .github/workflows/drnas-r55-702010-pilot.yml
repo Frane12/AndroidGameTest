@@ -1,0 +1,141 @@
+name: DRNAS R55 70-20-10 official SAT2026 paired structural XOR guard pilot
+on:
+  push:
+    branches: [experiment/drnas-r55-702010-20261103]
+    paths:
+      - '.github/workflows/drnas-r55-702010-pilot.yml'
+      - 'experiments/drnas_v16/r55_702010.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r55-702010-pilot-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: R55 hash freeze 8 non-overlapping official 2026 CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check R55 Python, certified R49 and XOR mathematical checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r55_702010.py
+          python3 -u experiments/drnas_v16/r55_702010.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R52-FRESH-SATCOMP2026-MATCHED-REFERENCE-FINAL
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r52
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R32U-15-ORIGINAL-SATCOMP2026-FINAL-VERIFIED
+          run-id: 41684287942
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r32u
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R53-50-UNSEEN-TRIPLE-PAR2-FINAL
+          run-id: 41687012202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r53
+      - name: Freeze eight balanced official-score-sampled 2026 sources without DRNAS outcome selection
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55_702010.py freeze \
+            --out originals --prior prior | tee r55-freeze.log
+          (cd originals && sha256sum -c source.sha256)
+          test "$(python3 -c 'import json;print(len(json.load(open("originals/manifest.json"))["cases"]))')" = 8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r55-frozen-8-originals
+          path: |
+            originals/
+            r55-freeze.log
+          if-no-files-found: warn
+  paired:
+    name: r55-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 66
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-8-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Verify all frozen sources and exact unchanged baseline binaries
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          chmod +x bins/kissat_pinned bins/cadical_3_0_1
+          (cd bins && sha256sum -c binaries.sha256)
+      - name: Two randomized paired runs each, single core, fixed 30s inclusive cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55_702010.py measure \
+            --sources originals --shard "$SHARD" --out results \
+            --kissat_pinned bins/kissat_pinned \
+            --cadical_3_0_1 bins/cadical_3_0_1 | tee r55-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r55-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r55-live.log
+          if-no-files-found: warn
+  audit:
+    name: Fail-closed 96 trial SHA and PAR2 audit with eight row total table
+    needs: [freeze, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-8-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r55-shard-*
+          path: combined
+      - name: Validate exactly 96 original-source paired trials; publish report
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r55_702010.py audit \
+            --sources originals --combined combined \
+            --out r55-final.json --markdown r55-final.md
+          cat r55-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R55-702010-PROSPECTIVE-PILOT-FINAL
+          path: |
+            r55-final.json
+            r55-final.md
+            originals/manifest.json
+          if-no-files-found: error
