@@ -323,6 +323,31 @@ def selftest():
         finally:
             SOURCE_BUDGET=original_sources
             GLOBAL_VISIT_BUDGET=original_visits
+        # Canary: stopping after 8 stagnant candidates can miss valid later units.
+        # Preserve PARTIAL status; never treat stagnation as XOR-negative proof.
+        delayed=[]
+        for i in range(1,21,2):
+            repeat=5 if i<17 else 1
+            delayed.extend([f"{i} {i+1} 0",f"-{i} -{i+1} 0"]*repeat)
+        delayed.append("17 -18 0")
+        p.write_text(f"p cnf 20 {len(delayed)}\\n".replace("\\\\n","\\n")+
+                     "\\n".join(delayed)+"\\n")
+        global STALL_BUDGET
+        original_stall=STALL_BUDGET
+        try:
+            STALL_BUDGET=8
+            early=bounded_scan(p)
+            STALL_BUDGET=30
+            deep=bounded_scan(p)
+        finally:
+            STALL_BUDGET=original_stall
+        assert early["stop_reason"]=="stagnation" and early["status"]=="partial",early
+        assert early["certified_units"]==0 and deep["certified_units"]>=2,(early,deep)
+        print("R38_STAGNATION_CAN_MISS_LATER_UNITS",
+              json.dumps(dict(early_sources=early["searched_sources"],
+                              deep_sources=deep["searched_sources"],
+                              early_units=early["certified_units"],
+                              deep_units=deep["certified_units"])),flush=True)
     print("R38_SELFTEST_PASS")
 
 def main():
