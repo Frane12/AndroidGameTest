@@ -2,8 +2,8 @@
 """R37 passive R36 binary-path proof scan on independently frozen official cases."""
 import argparse,hashlib,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"research/drnas-sat-v7-8"))
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"experiments/drnas_v16"))
+sys.path.insert(0,str(Path(__file__).resolve().parent/"research/drnas-sat-v7-8"))
+sys.path.insert(0,str(Path(__file__).resolve().parent/"experiments/drnas_v16"))
 from official_v94_select import download_and_features
 from r36_binary_xor_proofs import scan
 def main():
