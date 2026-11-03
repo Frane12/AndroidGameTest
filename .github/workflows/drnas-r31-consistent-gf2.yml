@@ -1,0 +1,183 @@
+name: DRNAS R31 consistent GF2 units vs CDCL contradictory XOR test
+on:
+  push:
+    branches: [experiment/drnas-r31-consistent-gf2-causal-20261103]
+    paths:
+      - '.github/workflows/drnas-r31-consistent-gf2.yml'
+      - 'experiments/drnas_v16/patch_r31_passive_final.py'
+      - 'experiments/drnas_v16/r31_consistent_gf2_test.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r31-consistent-units-ab
+  cancel-in-progress: true
+jobs:
+  frozen_build:
+    name: Freeze truth-labelled SAT/UNSAT classes, independently prove GF2 units, compile native counters
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            experiments/drnas_v16/patch_r31_passive_final.py \
+            experiments/drnas_v16/r31_consistent_gf2_test.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          run-id: 41614909924
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original_official
+      - name: Freeze new controlled cohorts plus two original GBD negative controls
+        run: |
+          set -euo pipefail
+          (cd original_official && sha256sum -c original_files.sha256)
+          python3 -u experiments/drnas_v16/r31_consistent_gf2_test.py freeze \
+            --out frozen --official original_official
+          (cd frozen && sha256sum -c cnf.sha256)
+          python3 -u experiments/drnas_v16/r31_consistent_gf2_test.py preflight \
+            --inputs frozen | tee math-preflight.log
+          grep -q '^R31_MATH_PREFLIGHT_PASS' math-preflight.log
+      - name: Compile SHA-pinned original and read-only-final-counter Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r31-kissat-clean
+          git -C /tmp/r31-kissat-clean checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r31-kissat-clean rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cp -r /tmp/r31-kissat-clean /tmp/r31-kissat-passive
+          python3 -u experiments/drnas_v16/patch_r31_passive_final.py \
+            --kissat-root /tmp/r31-kissat-passive
+          (cd /tmp/r31-kissat-clean && ./configure && make -j2 >/tmp/r31-clean-build.log)
+          (cd /tmp/r31-kissat-passive && ./configure && make -j2 >/tmp/r31-passive-build.log)
+          mkdir -p compiled
+          cp /tmp/r31-kissat-clean/build/kissat compiled/clean
+          cp /tmp/r31-kissat-passive/build/kissat compiled/passive
+          chmod +x compiled/*
+          (cd compiled && sha256sum clean passive > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Confirm no-action native monitors and correct original model
+        run: |
+          set -euo pipefail
+          set +e
+          compiled/passive frozen/consistent_hidden_00.cnf > passive-smoke.log
+          rc=$?
+          set -e
+          test "$rc" -eq 10 -o "$rc" -eq 20
+          grep -q '^c R31_FINAL status=' passive-smoke.log
+          ! grep -q '^c DRNAS_V177_SWITCH' passive-smoke.log
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r30_passive_monitor as r
+          from pathlib import Path
+          n,clauses=r.parse_dimacs(Path("frozen/consistent_hidden_00.cnf"))[0]
+          stdout=Path("passive-smoke.log").read_text()
+          assert r.model_valid(stdout,clauses,n), "Original DIMACS model failed"
+          print("R31_UNMODIFIED_POLICY_SAT_WITNESS_SMOKE_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r31-30-frozen-proven-inputs
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r31-pinned-clean-and-readonly-kissat
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r31-proof-preflight
+          path: |
+            math-preflight.log
+            passive-smoke.log
+          if-no-files-found: warn
+          retention-days: 90
+  paired:
+    needs: frozen_build
+    name: r31-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-30-frozen-proven-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-pinned-clean-and-readonly-kissat
+          path: compiled
+      - name: Audit identical source and binary SHA fingerprints
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/passive
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Four matched modes including only proven consistent GF2 units
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r31_consistent_gf2_test.py measure \
+            --inputs frozen --clean compiled/clean --passive compiled/passive \
+            --shard "$SHARD" --outdir results | tee r31-live.log
+          test -s results/trials.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r31-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r31-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [frozen_build,paired]
+    if: always()
+    name: Validate 240 paired attempts and separate algebraic gaps from UNSAT roots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r31-30-frozen-proven-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r31-shard-*
+          path: combined
+      - name: Produce unfiltered per-case PAR2, actual native conflicts and proof labels
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c cnf.sha256)
+          python3 -u experiments/drnas_v16/r31_consistent_gf2_test.py aggregate \
+            --inputs frozen --combined combined --output r31-results.json \
+            --report r31-results.md --csv r31-results.csv
+          cat r31-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R31-FINAL-CONSISTENT-GF2-VS-ROOT-UNSAT
+          path: |
+            r31-results.json
+            r31-results.csv
+            r31-results.md
+            frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
