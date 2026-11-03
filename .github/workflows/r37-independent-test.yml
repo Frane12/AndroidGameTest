@@ -1,11 +1,149 @@
-name: DRNAS R37 official 12-case comparison
+name: DRNAS R37 official-12 independent CNF plus R36 shadow
 on:
   push:
     branches: [experiment/r37-independent-sat-20261103]
+    paths:
+      - '.github/workflows/r37-independent-test.yml'
   workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
 jobs:
-  check:
-    runs-on: ubuntu-latest
+  freeze:
+    name: freeze-new-12-official-cnfs-exclude-prior-18
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m py_compile research/drnas-sat-v7-8/official_v94_run.py
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          run-id: 41231153158
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original_manifest
+      - name: Freeze new 12 official CNFs, strictly excluding prior 18
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/official_shortlong_select.py \
+            research/drnas-sat-v7-8/official_v94_select.py \
+            research/drnas-sat-v7-8/official_v94_run.py \
+            research/drnas-sat-v7-8/official_v94_audit.py
+          test -f original_manifest/official_shortlong_manifest.json
+          curl -fL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv \
+            -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 -u research/drnas-sat-v7-8/official_v94_select.py
+          sha256sum official_v94_manifest.json > manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v94-frozen-new12-official-manifest
+          path: |
+            official_v94_manifest.json
+            manifest.sha256
+          if-no-files-found: warn
+  benchmark:
+    needs: freeze
+    if: needs.freeze.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    name: official-v94-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          path: official_manifest
+      - name: Build frozen CaDiCaL 3.0.1 and new precommitted v9.4 phase gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 > /tmp/cadical-build.log 2>&1) \
+            || { tail -100 /tmp/cadical-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v94_cautious_probe.cpp \
+            cadical-src/build/libcadical.a -o v94_cautious_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Run 3 NEW official CNFs x 5 modes x 2 repeats (15s cap)
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_v94_run.py \
+            --manifest official_manifest/official_v94_manifest.json \
+            --shard "$SHARD" --out results --exe ./v94_cautious_probe
+      - name: Independently verify official CNFs for R36 structural implication scan
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile r37_holdout_shadow.py experiments/drnas_v16/r36_binary_xor_proofs.py
+          python3 -u r37_holdout_shadow.py --manifest official_manifest/official_v94_manifest.json --shard "$SHARD" --out r37-shadow | tee r37-shadow-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-v94-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+            r37-shadow/
+            r37-shadow-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          path: official_manifest
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: official-v94-shard-*
+          path: combined-v94
+      - name: Fail closed on missing attempts, SAT/UNSAT contradictions or hash mismatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_v94_audit.py combined-v94
+          cat combined-v94/v94_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v94-2026-official-12-new-CNFs-full-results
+          path: |
+            official_manifest/
+            combined-v94/
+          if-no-files-found: warn
