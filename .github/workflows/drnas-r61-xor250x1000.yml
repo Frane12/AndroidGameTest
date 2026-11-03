@@ -1,0 +1,124 @@
+name: DRNAS R61 prospective 250x1000 XOR reproduction vs Kissat
+on:
+  push:
+    branches: [experiment/drnas-r61-xor250x1000-replication-20261103]
+    paths:
+      - '.github/workflows/drnas-r61-xor250x1000.yml'
+      - 'experiments/drnas_v16/r61_similar_xor250_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r61-frozen-similar-xor-250x1000-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Freeze deterministic 16 new 250v 1000cl synthetic CNFs before timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate script and independently freeze input sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r61_similar_xor250_benchmark.py
+          python3 -u experiments/drnas_v16/r61_similar_xor250_benchmark.py prepare --out frozen
+          (cd frozen && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import json
+          x=json.load(open("frozen/manifest.json"))
+          assert len(x["cases"])==16
+          assert all(c["vars"]==250 and c["clauses"]==1000 for c in x["cases"])
+          print("R61_FROZEN_SHA_AUDIT_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r61-frozen-source-cnf
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+  benchmark:
+    needs: freeze
+    name: Fresh R61 formula shard ${{ matrix.shard }} pinned Kissat vs R28
+    runs-on: ubuntu-24.04
+    timeout-minutes: 23
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r61-frozen-source-cnf
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Validate frozen CNF and original identical binary hashes
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+          (cd compiled && sha256sum -c binary.sha256)
+          git rev-parse HEAD
+      - name: Two randomized-order repetitions for each pinned solver, cap 60s
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r61_similar_xor250_benchmark.py measure \
+            --inputs frozen --out results --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --shard "$SHARD" | tee r61-live.log
+          test -s results/rows.json
+          test -s results/metadata.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r61-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r61-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [freeze, benchmark]
+    if: always()
+    name: Verify 64 paired attempts, JSON, and censored time ratios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r61-frozen-source-cnf
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r61-shard-*
+          path: combined
+      - name: Reject missing shard, binary drift, incorrect status, or witness
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r61_similar_xor250_benchmark.py aggregate \
+            --inputs frozen --combined combined --out final
+          cat final/r61-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R61-PROSPECTIVE-XOR250-FINAL-RESULTS
+          path: |
+            final/
+            frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
