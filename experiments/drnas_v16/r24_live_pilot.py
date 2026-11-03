@@ -17,11 +17,12 @@ import time
 CAP = 2.0
 REPEATS = 2
 OUT = Path('drnas-r24-pilot')
+SEED_OFFSET = 0
 
 
 def make_case(family, fold, index, n=220):
     # Seed namespace differs from the initial four-formula smoke run.
-    seed = 2424310300 + (10000 if family == 'community3' else 0) + (1000 if fold == 'test' else 0) + index
+    seed = 2424310300 + SEED_OFFSET + (10000 if family == 'community3' else 0) + (1000 if fold == 'test' else 0) + index
     rng = random.Random(seed)
     clauses = []
     for _ in range(round(4.23 * n)):
@@ -88,10 +89,14 @@ def run(binary, path, clauses, family, fold, repeat, mode):
 
 
 def main():
+    global OUT, SEED_OFFSET
     ap = argparse.ArgumentParser()
     ap.add_argument('--binary', required=True)
     ap.add_argument('--cases-per-family-fold', type=int, default=8)
+    ap.add_argument('--seed-offset', type=int, default=0)
+    ap.add_argument('--output', type=Path, default=OUT)
     args = ap.parse_args()
+    OUT, SEED_OFFSET = args.output, args.seed_offset
     binary = str(Path(args.binary).resolve())
     (OUT / 'cnf').mkdir(parents=True, exist_ok=True)
     cpu = min(os.sched_getaffinity(0))
