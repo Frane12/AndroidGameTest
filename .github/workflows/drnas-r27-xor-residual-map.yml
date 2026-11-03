@@ -1,0 +1,142 @@
+name: DRNAS R27 exact XOR-residual interface mapping on 2025 GBD algebra
+on:
+  push:
+    branches: [experiment/drnas-r27-xor-residual-links-20261103]
+    paths:
+      - '.github/workflows/drnas-r27-xor-residual-map.yml'
+      - 'experiments/drnas_v16/r27_xor_residual_links.py'
+      - 'experiments/drnas_v16/r27_links_report.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r27-mapping-20261103
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and test strict exact GF2 bridge extractor
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r27_xor_residual_links.py experiments/drnas_v16/r27_links_report.py
+          python3 -u experiments/drnas_v16/r27_xor_residual_links.py --selftest
+          echo "R27_PRE_ANALYSIS_MATH_SELFTEST_PASS" >> "$GITHUB_STEP_SUMMARY"
+  map:
+    needs: verify
+    runs-on: ubuntu-24.04
+    name: r27-shard-${{ matrix.shard }}
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: input
+      - name: Authenticate original GBD and XOR inputs
+        run: |
+          set -euo pipefail
+          (cd input && sha256sum -c r26_all_53.sha256)
+          python3 -m py_compile experiments/drnas_v16/r27_xor_residual_links.py
+      - name: Map exact parity equations, boundary links, and sampled GF2 projections
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python3 -u - <<'PY' | tee r27-map.log
+          import hashlib,json,os,subprocess,sys
+          from pathlib import Path
+          manifest=json.load(open("input/manifest.json"))
+          chosen=[r for r in manifest["cases"] if r["family"] in
+                  ("polynomial_gbd_original","official_2025_algebra_control") or
+                  r["path"] in ("xor_16.cnf","xor_17.cnf",
+                                 "r26_xor_08.cnf","r26_xor_09.cnf")]
+          chosen.sort(key=lambda r:(r["family"],r["id"]))
+          assert len(chosen)==17 and len({r["sha256"] for r in chosen})==17
+          shard=int(os.environ["SHARD"])
+          selected=chosen[shard::4]
+          roots=Path("results")
+          metadata={"protocol":"DRNAS-R27-EXACT-XOR-RESIDUAL-INTERFACE-20261103-v1",
+                    "shard":shard, "sha256":[x["sha256"] for x in selected],
+                    "selected_count":len(selected),
+                    "original_manifest_sha256":hashlib.sha256(
+                        Path("input/manifest.json").read_bytes()).hexdigest()}
+          (roots/"metadata.json").write_text(json.dumps(metadata,indent=2))
+          for item in selected:
+              file=Path("input")/item["path"]
+              assert hashlib.sha256(file.read_bytes()).hexdigest()==item["sha256"]
+              output=roots/(item["sha256"][:20]+".json")
+              subprocess.run([sys.executable,"-u",
+                  "experiments/drnas_v16/r27_xor_residual_links.py",
+                  "--input",str(file),"--manifest","input/manifest.json",
+                  "--out",str(output)],check=True)
+              print("R27_SHARD_COMPLETE",item["id"],output,flush=True)
+          print("R27_SHARD_PASS",shard,len(selected),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r27-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r27-map.log
+          if-no-files-found: warn
+  audit:
+    needs: map
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R26-frozen-53-inputs
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r27-shard-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r26-shard-*
+          run-id: 41606832040
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: historical
+      - name: Verify all 17 SHA identities, exact certificate replay and historical paired timing
+        run: |
+          set -euo pipefail
+          (cd input && sha256sum -c r26_all_53.sha256)
+          python3 -u experiments/drnas_v16/r27_links_report.py --input input --combined combined --historical historical --json r27-bridge-report.json --md r27-bridge-report.md
+          cat r27-bridge-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R27-REAL-POLYNOMIAL-XOR-RESIDUAL-INTERFACE-AUDIT
+          path: |
+            input/manifest.json
+            r27-bridge-report.json
+            r27-bridge-report.md
+            combined/
+          if-no-files-found: warn
