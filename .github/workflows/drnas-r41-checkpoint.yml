@@ -1,0 +1,152 @@
+name: DRNAS R41 live checkpoint 256 timeout-safe native diagnostic
+on:
+  push:
+    branches: [experiment/drnas-r41-live-checkpoint-20261103]
+    paths:
+      - '.github/workflows/drnas-r41-checkpoint.yml'
+      - 'experiments/drnas_v16/r41_trace_patch.py'
+      - 'experiments/drnas_v16/r41_checkpoint_probe.py'
+      - 'experiments/drnas_v16/r41_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r41-checkpoint
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify unchanged stable source and diagnostics scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r40_patch_early_rescue.py experiments/drnas_v16/r41_trace_patch.py experiments/drnas_v16/r41_checkpoint_probe.py experiments/drnas_v16/r41_audit.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+      - name: Build R40 exact intervention with extra checkpoint stderr flushes
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          python3 -u experiments/drnas_v16/r40_patch_early_rescue.py --source research/drnas-sat-v7-8/v94_cautious_probe.cpp --dest research/drnas-sat-v7-8/r41_r40_intermediate.cpp
+          python3 -u experiments/drnas_v16/r41_trace_patch.py --source research/drnas-sat-v7-8/r41_r40_intermediate.cpp --dest research/drnas-sat-v7-8/r41_native_generated.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert source.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(source.split(marker,1)[0]+'\n')
+          PY
+          (cd cadical-src && ./configure && make -j2 >/tmp/r41-cadical-build.log 2>&1) || { tail -90 /tmp/r41-cadical-build.log; exit 1; }
+          mkdir -p compiled
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src research/drnas-sat-v7-8/r41_native_generated.cpp cadical-src/build/libcadical.a -o compiled/r41_native -pthread -ldl -lz
+          chmod +x compiled/r41_native
+          (cd compiled && sha256sum r41_native > binaries.sha256 && sha256sum -c binaries.sha256)
+          sha256sum research/drnas-sat-v7-8/r41_native_generated.cpp > compiled/trace_source.sha256
+          git rev-parse HEAD > compiled/git_commit.txt
+      - name: Smoke check all modes before official measurements
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' >/tmp/r41-smoke.cnf
+          for m in v91_quality_gate v91_rescue v91_force_fallback v91_never_late; do
+            compiled/r41_native "$m" /tmp/r41-smoke.cnf 401 >/tmp/r41-"$m".txt 2>/tmp/r41-"$m".err
+            grep -q "DRNAS_CAUSAL.*mode=$m.*answer=SAT" /tmp/r41-"$m".txt
+            echo "R41_SMOKE_PASS $m"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r41-native-verified-binary
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+  measure:
+    needs: build
+    if: needs.build.result == 'success'
+    name: r41-official-checkpoint-${{ matrix.index }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        index: [0,1,2,3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r41-native-verified-binary
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: official_manifest
+      - name: Verify existing CNF SHA and run paired R40-v91 control with live checkpoint
+        env:
+          INDEX: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/r41_native
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          lscpu > cpu.txt
+          python3 -u experiments/drnas_v16/r41_checkpoint_probe.py --manifest official_manifest/official_v94_manifest.json --index "$INDEX" --native compiled/r41_native --out results | tee r41-live.log
+          test -s results/trials.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r41-case-${{ matrix.index }}
+          path: |
+            results/
+            cpu.txt
+            r41-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [build,measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v94-frozen-new12-official-manifest
+          run-id: 41632056202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: official_manifest
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r41-case-*
+          path: combined
+      - name: Strict timestamped checkpoint parity, timeout and activation audit
+        run: |
+          set -euo pipefail
+          test "${{ needs.build.result }}" = success
+          test "${{ needs.measure.result }}" = success
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          python3 -u experiments/drnas_v16/r41_audit.py --manifest official_manifest/official_v94_manifest.json --root combined --out r41-audit.json | tee r41-audit.log
+          test -s r41-audit.json
+          cat r41-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R41-LIVE-CHECKPOINT-4-OFFICIAL-CAUSAL-AUDIT
+          path: |
+            r41-audit.json
+            r41-audit.log
+          if-no-files-found: warn
+          retention-days: 90
