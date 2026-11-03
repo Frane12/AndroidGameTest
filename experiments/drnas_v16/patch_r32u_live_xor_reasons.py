@@ -272,6 +272,7 @@ def main():
        "  r32s_emit(solver,\"entry\",0);",
        "  r32b_shadow_native_probe(NULL,0,9999);\n"
        "  r32u_initialize(solver);\n"
+       "  if(r32s_on()) { r32s_next_mark=0; r32s_epoch=r32s_now_ms(); }\n"
        "  r32s_emit(solver,\"entry\",0);",
        "live_initialization")
     s=once(s,
