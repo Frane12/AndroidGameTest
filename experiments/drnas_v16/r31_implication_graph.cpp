@@ -3,8 +3,8 @@
 // fallback; all other motifs are ANALYSIS ONLY, never unproved solver answers.
 // "Active" uses a certificate only if original binary clauses alone prove UNSAT,
 // or when the ENTIRE original CNF is 2-CNF and a verified SAT model is found.
-#define main r29_inherited_main
-#include "r29_hidden_partial.cpp"
+#define main r28_inherited_main
+#include "r28_exact_gf2.cpp"
 #undef main
 #include <functional>
 #include <queue>
