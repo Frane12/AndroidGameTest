@@ -1,0 +1,139 @@
+name: DRNAS R55 70-20-10 structural XOR early diagnostic
+on:
+  push:
+    branches: [experiment/drnas-r55-702010-20261103]
+    paths:
+      - '.github/workflows/drnas-r55-702010.yml'
+      - 'experiments/drnas_v16/r55_research_702010.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r55-702010-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: R55 verify R53 source SHA and freeze retrospective diagnostic design
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and recheck unchanged soundness fixtures
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r55_research_702010.py
+          python3 -m py_compile experiments/drnas_v16/r49_pivot_coherence_gate.py
+          python3 -m py_compile experiments/drnas_v16/r32t_certified_short_xor.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r53-frozen-50-originals
+          run-id: 41687012202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R53-50-UNSEEN-TRIPLE-PAR2-FINAL
+          run-id: 41687012202
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r53
+      - name: SHA verify 50 originals and freeze retrospective R55 cohort
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r55_research_702010.py freeze \
+            --sources originals --r53-final prior/r53/r53-final.json \
+            --out r55-design.json | tee r55-freeze.log
+          test -s r55-design.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r55-frozen-r53-sources-and-design
+          path: |
+            originals/
+            r55-design.json
+            r55-freeze.log
+          if-no-files-found: error
+
+  measure:
+    name: r55-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 52
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-r53-sources-and-design
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Check exact original SHA and pinned Kissat binary
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+      - name: Randomized paired 5-arm R55 measurements 40s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55_research_702010.py measure \
+            --sources originals --design r55-design.json \
+            --kissat bins/kissat_pinned --shard "$SHARD" \
+            --out results | tee r55-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r55-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r55-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: R55 fail-closed 120 trial paired analysis
+    needs: [freeze, measure]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-r53-sources-and-design
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r55-shard-*
+          path: combined
+          merge-multiple: false
+      - name: Audit 12 formulas x 2 repeats x 5 modes with pinned binary and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55_research_702010.py audit \
+            --design r55-design.json --combined combined \
+            --json r55-final.json --md r55-final.md
+          cat r55-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R55-702010-120-TRIAL-DIAGNOSTIC-FINAL
+          path: |
+            r55-design.json
+            r55-final.json
+            r55-final.md
+          if-no-files-found: error
