@@ -1,0 +1,120 @@
+name: DRNAS R70 8 formulas 10s original/full/BCP-filtered
+
+on:
+  push:
+    branches: [experiment/drnas-r70-eight-formulas-20261103]
+    paths:
+      - '.github/workflows/drnas-r70-8form-10sec.yml'
+      - 'experiments/drnas_v16/r70_bcp_10sec_eight_formulas.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r70-eight-formula-10sec-20261103
+  cancel-in-progress: false
+
+jobs:
+  short:
+    name: R70 source-${{ matrix.shard }} (10s x 3 modes x 2 repeats)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax, original R65 soundness tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r70_bcp_10sec_eight_formulas.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: previous
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Hash verification and paired ten-second XOR BCP ablation
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          test -s sources/new/manifest.json
+          test -s previous/r67-final.json
+          (cd sources/new && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat
+          python3 -u experiments/drnas_v16/r70_bcp_10sec_eight_formulas.py measure \
+            --sources sources/new --prior previous/r67-final.json \
+            --kissat compiled/kissat --shard "$SHARD" --out results | tee r70-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r70-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r70-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R70 final paired metrics and correctness audit
+    needs: short
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r70-shard-*
+          path: combined
+      - name: Audit exact 48 short pulses from same pinned 3 original CNFs
+        run: |
+          set -euo pipefail
+          test -s sources/new/manifest.json
+          (cd sources/new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r70_bcp_10sec_eight_formulas.py audit \
+            --sources sources/new --combined combined \
+            --json r70-final.json --md r70-final.md
+          cat r70-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R70-8FORMULA-10SEC-BCP-ABLATION-FINAL
+          path: |
+            r70-final.json
+            r70-final.md
+          if-no-files-found: error
+          retention-days: 90
