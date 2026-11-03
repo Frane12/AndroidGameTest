@@ -1,0 +1,67 @@
+name: DRNAS R32 XOR gate diagnostic pilot
+on:
+  push:
+    branches: [experiment/drnas-r32-xor-gate-diagnostics-20261103]
+    paths:
+      - '.github/workflows/drnas-r32-xor-gate-pilot.yml'
+      - 'experiments/drnas_v16/r32_xor_gate_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  r32_pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile R29 and pinned Kissat
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32_xor_gate_audit.py
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r32
+          git -C /tmp/kissat-r32 checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r32 && ./configure && make -j2 >/tmp/kissat-r32-build.log)
+          mkdir -p compiled
+          cp /tmp/kissat-r32/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 experiments/drnas_v16/r29_hidden_partial.cpp -o compiled/r29
+      - name: Generate frozen R29 pilot CNFs
+        run: |
+          python3 experiments/drnas_v16/r29_hidden_partial_benchmark.py prepare --outdir frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: R32 audit all 72 formulas and record R29 gates
+        run: |
+          python3 -u experiments/drnas_v16/r32_xor_gate_audit.py frozen/*.cnf --r29 compiled/r29 --kissat compiled/kissat --timeout 60 --out r32-gate-audit.json | tee r32-gate-live.log
+      - name: Paired pilot timing on 12 mixed/decoy/partial cases at 60 seconds
+        run: |
+          python3 - <<'PY'
+          import json,subprocess,time,os
+          from pathlib import Path
+          cases=sorted(Path("frozen").glob("visible_partial_*.cnf"))[:4]+sorted(Path("frozen").glob("split_near_xor_decoy_*.cnf"))[:4]+sorted(Path("frozen").glob("gauss_unit_partial_*.cnf"))[:4]
+          rows=[]
+          for path in cases:
+              for mode in ("Kissat","R29_shadow","R29_active"):
+                  cmd=["compiled/kissat",str(path)] if mode=="Kissat" else ["compiled/r29",str(path),"compiled/kissat"]
+                  env=os.environ.copy();env["R29_MODE"]="active" if mode=="R29_active" else "shadow"
+                  t=time.monotonic()
+                  try:
+                      r=subprocess.run(cmd,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=60)
+                      status={10:"SAT",20:"UNSAT"}.get(r.returncode,"ERROR")
+                      route=next((s for s in r.stdout.splitlines() if s.startswith("c R29_ROUTE")),"")
+                  except subprocess.TimeoutExpired:
+                      status="TIMEOUT";route=""
+                  sec=round(time.monotonic()-t,6)
+                  row=dict(formula=path.name,mode=mode,status=status,seconds=sec,route=route)
+                  rows.append(row);print("R32_PAIRED",json.dumps(row),flush=True)
+                  if status=="ERROR":raise RuntimeError("Solver error")
+          Path("r32-paired.json").write_text(json.dumps(rows,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32-XOR-GATE-PILOT
+          path: |
+            r32-gate-audit.json
+            r32-gate-live.log
+            r32-paired.json
+            frozen/manifest.json
+          retention-days: 90
