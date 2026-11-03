@@ -1,0 +1,141 @@
+name: DRNAS R30 unseen nine-family 6-solver blind benchmark
+on:
+  push:
+    branches: [experiment/drnas-r30-fresh-9family-world-controls-20261103]
+    paths:
+      - '.github/workflows/drnas-r30-fresh-blind.yml'
+      - 'experiments/drnas_v16/r30_fresh_blind_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r30-fresh-blind
+  cancel-in-progress: true
+jobs:
+  freeze_build:
+    name: Freeze new inputs, build SHA-pinned Kissat and unmodified DRNAS R28/R29
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate test generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r30_fresh_blind_benchmark.py
+          python3 -m py_compile experiments/drnas_v16/r29_hidden_partial_benchmark.py
+      - name: Freeze all 72 inputs before any timings
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r30_fresh_blind_benchmark.py prepare --outdir frozen | tee r30-freeze.log
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Build unchanged pinned Kissat and R28/R29
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r30-kissat
+          git -C /tmp/r30-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r30-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/r30-kissat && ./configure && make -j2 > /tmp/r30-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/r30-kissat/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o compiled/r28
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r29_hidden_partial.cpp -o compiled/r29
+          chmod +x compiled/kissat compiled/r28 compiled/r29
+          (cd compiled && sha256sum kissat r28 r29 > binaries.sha256 && sha256sum -c binaries.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r30-frozen-72-unseen-cnfs
+          path: frozen/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r30-frozen-native-binaries
+          path: compiled/
+          retention-days: 90
+  measure:
+    needs: freeze_build
+    name: R30 paired SHA-locked shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install additional reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat cadical
+          command -v cryptominisat5 || command -v cryptominisat
+          command -v cadical
+          dpkg-query -W cryptominisat cadical | tee apt-solvers.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: r30-frozen-72-unseen-cnfs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r30-frozen-native-binaries
+          path: compiled
+      - name: Verify binary and input SHA 256
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat compiled/r28 compiled/r29
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Run six original solver modes with paired repetitions, proof checking and one core
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          CMS="$(command -v cryptominisat5 || command -v cryptominisat)"
+          python3 -u experiments/drnas_v16/r30_fresh_blind_benchmark.py measure \
+            --inputs frozen --kissat compiled/kissat --r28 compiled/r28 \
+            --r29 compiled/r29 --cms "$CMS" --cadical "$(command -v cadical)" \
+            --shard "$SHARD" --outdir results | tee r30-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r30-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r30-live.log
+            apt-solvers.txt
+          retention-days: 90
+  audit:
+    needs: [freeze_build, measure]
+    if: always()
+    name: Audit 864 paired trials and independently verified R29 proof actions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r30-frozen-72-unseen-cnfs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r30-shard-*
+          path: combined
+      - name: Reject missing measurements or inconsistent formula and binary identities
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r30_fresh_blind_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r30-results.json \
+            --report r30-report.md --csv r30-results.csv | tee r30-audit.log
+          cat r30-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R30-FRESH-NINE-FAMILY-FINAL-AUDIT
+          path: |
+            frozen/manifest.json
+            r30-results.json
+            r30-report.md
+            r30-results.csv
+            r30-audit.log
+          retention-days: 90
