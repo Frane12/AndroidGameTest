@@ -1,0 +1,165 @@
+name: DRNAS R32 official 2026 CNFs 60s XOR gate and paired risk audit
+on:
+  push:
+    branches: [experiment/drnas-r32-xor-gate-diagnostics-20261103]
+    paths:
+      - '.github/workflows/drnas-r32-official-2026-gbd.yml'
+      - 'experiments/drnas_v16/r32_official_2026_benchmark.py'
+      - 'experiments/drnas_v16/r29_official_2026_gbd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32-official-2026-gbd
+  cancel-in-progress: true
+jobs:
+  build_and_diagnose:
+    name: Verify 14 unmodified official 2026 sources, preflight R29, freeze binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r29_official_2026_gbd.py experiments/drnas_v16/r32_official_2026_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          run-id: 41614909924
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: originals
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-verified-native-and-baselines
+          run-id: 41614909924
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: baselines
+      - name: Recheck frozen input and solver SHA256; exclude 4 synthetic controls
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c original_files.sha256)
+          (cd baselines && sha256sum -c r28_binaries.sha256)
+          python3 experiments/drnas_v16/r29_official_2026_gbd.py normalize --original originals --dest official
+          (cd official && sha256sum -c originals.sha256)
+          python3 - <<'PY'
+          import json
+          a=json.load(open('official/manifest.json'))
+          assert len(a['cases'])==14
+          assert all('xor_structure_control'!=x['source_role'] for x in a['cases'])
+          print('R32_OFFICIAL_SHA14_VERIFIED')
+          PY
+      - name: Compile unchanged R29 and copy identical pinned Kissat and CaDiCaL
+        run: |
+          set -euo pipefail
+          mkdir -p compiled
+          g++ -std=c++17 -O3 -Wall -Wextra experiments/drnas_v16/r29_hidden_partial.cpp -o compiled/r29
+          cp baselines/kissat_solver compiled/kissat
+          cp baselines/cadical_solver compiled/cadical
+          chmod +x compiled/*
+          (cd compiled && sha256sum kissat cadical r29 > bin.sha256 && sha256sum -c bin.sha256)
+      - name: Explain input_guard, bounded preview and real-formula XOR routes
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32_official_2026_benchmark.py diagnose \
+            --inputs official --r29 compiled/r29 --kissat compiled/kissat \
+            --out official/r32-official-gates.json | tee r32-official-gates-live.log
+          test -s official/r32-official-gates.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32-official-verified14-and-diagnostics
+          path: |
+            official/
+            r32-official-gates-live.log
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32-official-pinned-binaries
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+  paired:
+    needs: build_and_diagnose
+    name: r32-official-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32-official-verified14-and-diagnostics
+          path: official
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32-official-pinned-binaries
+          path: compiled
+      - name: Check binaries and original official CNF hashes
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat compiled/cadical compiled/r29
+          (cd compiled && sha256sum -c bin.sha256)
+          (cd official && sha256sum -c originals.sha256)
+      - name: Run 4 solver modes x 2 paired repeats, 60s each, on official 2026 formula set
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32_official_2026_benchmark.py run \
+            --inputs official --kissat compiled/kissat --cadical compiled/cadical \
+            --r29 compiled/r29 --outdir results --shard "$SHARD" | tee r32-official-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32-official-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32-official-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [build_and_diagnose,paired]
+    if: always()
+    name: Audit 112 paired attempts, per-formula regressions and R29 skip gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32-official-verified14-and-diagnostics
+          path: official
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32-official-shard-*
+          path: combined
+      - name: Verify 112 attempts and publish measured evidence / risk log
+        run: |
+          set -euo pipefail
+          (cd official && sha256sum -c originals.sha256)
+          python3 -u experiments/drnas_v16/r32_official_2026_benchmark.py aggregate \
+            --inputs official --combined combined \
+            --out-json r32-official-results.json --out-md r32-official-results.md
+          cat r32-official-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32-OFFICIAL-2026-GBD-RISK-112-PAIRED-FINAL
+          path: |
+            r32-official-results.json
+            r32-official-results.md
+            official/r32-official-gates.json
+            official/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
