@@ -163,7 +163,7 @@ def stop_and_reap(p):
 def read_output(file):
     file.flush();file.seek(0)
     return file.read()
-def run_trial(case,path,mode,bins,cores):
+def run_trial(case,path,mode,bins,cores,repeat):
     startcpu=cpu_usage()
     begin=time.monotonic()
     work=[]
@@ -186,7 +186,7 @@ def run_trial(case,path,mode,bins,cores):
         # Portfolio: the same native binary, OFF versus certified R32e.
         # Each runs on its own fixed core; randomized launch order across reps.
         order=[("native_off",cores[0]),("r32e_active",cores[1])]
-        if int(sha((case["sha256"]+":"+str(time.monotonic_ns()%17)).encode()),16)%2:
+        if int(sha((case["sha256"]+":"+str(repeat)+":R32F_LAUNCH").encode()),16)%2:
             order.reverse()
         for candidate,core in order:
             p,out=process(path,bins["native"],candidate,core)
@@ -236,7 +236,7 @@ def measure(a):
             order=list(MODES)
             random.Random(int(sha((case["sha256"]+str(rep)+"R32F").encode()),16)).shuffle(order)
             for mode in order:
-                measured=run_trial(case,source,mode,bins,cores)
+                measured=run_trial(case,source,mode,bins,cores,rep)
                 rows.append(dict(case=case["name"],cohort=case["cohort"],
                       family=case["family"],repeat=rep,mode=mode,**measured))
                 print("R32F_TRIAL",a.shard,case["name"],rep,mode,
