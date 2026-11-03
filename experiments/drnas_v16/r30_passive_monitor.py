@@ -144,7 +144,7 @@ def freeze(out, official):
                   "Unexpected official DIMACS bytes")
             name=f"official_{idx:02d}.cnf"
             (out/name).write_bytes(data)
-            cases.append(dict(file=name,family="official_gbd_2026",expected=c["status"],
+            cases.append(dict(file=name,family="official_gbd_2026",expected=c["expected"],
                               vars=None,clauses=None,bytes=len(data),sha256=digest(data),
                               original_sha256=c["sha256"],source=c["source"]))
     check(len(cases)==24+(4 if official else 0),"Frozen case count")
