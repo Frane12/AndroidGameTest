@@ -1,0 +1,55 @@
+name: DRNAS R26 pinned restart regression causal ablation
+on:
+  push:
+    branches: [experiment/drnas-r26-restart-regression-causal-20261103]
+    paths:
+      - '.github/workflows/drnas-r26-restart-regression.yml'
+      - 'experiments/drnas_v16/r26_restart_regression_ablation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r26-restart-regression
+  cancel-in-progress: false
+jobs:
+  causal-ablation:
+    name: R26 pinned 4-CNF same-binary restart counterfactual
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate experimental script
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r26_restart_regression_ablation.py
+      - name: Compile SHA-pinned R24 Kissat with one additional late-switch interval
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/drnas-r26
+          git -C /tmp/drnas-r26 checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/drnas-r26 rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r24_dynamics.py --kissat-root /tmp/drnas-r26
+          python3 experiments/drnas_v16/r26_restart_regression_ablation.py patch --kissat-root /tmp/drnas-r26
+          (cd /tmp/drnas-r26 && ./configure && make -j2 >/tmp/r26-build.log)
+          /tmp/drnas-r26/build/kissat --version
+          sha256sum /tmp/drnas-r26/build/kissat > r26-solver.sha256
+      - name: Repeat frozen R24 regression and three comparison cases across four intervention timings
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r26_restart_regression_ablation.py run \
+            --binary /tmp/drnas-r26/build/kissat --outdir drnas-r26-results \
+            | tee r26-live.log
+          test -s drnas-r26-results/summary.json
+          cat drnas-r26-results/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R26-RESTART-REGRESSION-ABALATION
+          path: |
+            drnas-r26-results/
+            r26-live.log
+            r26-solver.sha256
+          if-no-files-found: warn
+          retention-days: 90
