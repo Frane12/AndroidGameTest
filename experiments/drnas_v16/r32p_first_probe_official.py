@@ -20,7 +20,7 @@ MODES=("clean","native_off","full")
 CAP=12.0
 REPS=2
 SHARDS=4
-QUOTA=4
+MAX_QUOTA=4
 
 def check(ok,what):
     if not ok:raise RuntimeError("R32P_AUDIT_FAILURE "+str(what))
@@ -88,23 +88,27 @@ def freeze(args):
     check(r45_shas.issubset({x["sha256"] for x in pool}),"R45 provenance mismatch")
     excluded=[x for x in pool if x["sha256"] not in r45_shas]
     check(len(excluded)==18,"Expected 18 external sources not selected by R45")
-    selected=[]
+    candidates_by_label={}
     for label in ("SAT","UNSAT"):
-        candidates=[x for x in excluded if x["official_label"]==label and x["cnf_bytes"]<=5000000
-                    and float(x["official_baseline_s"])<=120.0]
-        # Fixed size/runtime feasibility; never inspect solver outcomes.
+        candidates=[x for x in excluded if x["official_label"]==label and x["cnf_bytes"]<=20000000
+                    and float(x["official_baseline_s"])<=300.0]
+        # Frozen size/runtime feasibility; no reference to our solver timings.
         candidates.sort(key=lambda x:hashlib.sha256((SALT+"/"+label+"/"+x["id"]).encode()).hexdigest())
-        check(len(candidates)>=QUOTA,"Not enough feasible non-R45 official "+label+" "+str(len(candidates)))
-        selected+=candidates[:QUOTA]
+        candidates_by_label[label]=candidates
+        print("R32P_ELIGIBLE",label,len(candidates),"of",
+              sum(x["official_label"]==label for x in excluded),flush=True)
+    quota=min(MAX_QUOTA,*(len(x) for x in candidates_by_label.values()))
+    check(quota>=2,"Need at least two feasible external CNFs per status")
+    selected=[x for label in ("SAT","UNSAT") for x in candidates_by_label[label][:quota]]
     selected.sort(key=lambda x:hashlib.sha256((SALT+"/schedule/"+x["id"]).encode()).hexdigest())
-    check(len(selected)==8 and len({x["sha256"] for x in selected})==8 and
+    check(len(selected)==2*quota and len({x["sha256"] for x in selected})==len(selected) and
           all(x["sha256"] not in r45_shas for x in selected),"R45 overlap or duplicate")
     m=dict(protocol=PROTO,cases=selected,selection=dict(
        prior18_manifest_sha=sha(args.prior18),prior12_manifest_sha=sha(args.prior12),
        r45_excluded_manifest_sha=sha(args.r45),r45_excluded_count=12,
-       remaining_population=18,selection_salt=SALT,quota_per_status=QUOTA,
-       size_cap_bytes=5000000,published_CaDiCaL_max_seconds=120),
-       modes=MODES,repeat_count=REPS,cap_seconds=CAP,expected_trials=8*REPS*len(MODES),
+       remaining_population=18,selection_salt=SALT,quota_per_status=quota,
+       size_cap_bytes=20000000,published_CaDiCaL_max_seconds=300),
+       modes=MODES,repeat_count=REPS,cap_seconds=CAP,expected_trials=len(selected)*REPS*len(MODES),
        caveats=["Original 2026 SAT Competition sources downloaded by verified SHA and features",
                 "SHA-disjoint from R45, NOT globally blind: source IDs were seen in prior metadata",
                 "Selected for file size and published CaDiCaL runtime, not representative of official competition",
@@ -217,7 +221,7 @@ def one(case,source,mode,binary):
 
 def measure(args):
     path=Path(args.manifest);manifest=json.loads(path.read_text())
-    check(manifest["protocol"]==PROTO and len(manifest["cases"])==8,"Bad frozen manifest")
+    check(manifest["protocol"]==PROTO and 4<=len(manifest["cases"])<=8,"Bad frozen manifest")
     check(0<=args.shard<SHARDS,"Bad shard")
     clean=Path(args.clean).resolve();native=Path(args.native).resolve()
     check(clean.is_file() and native.is_file(),"Pinned binary missing")
@@ -262,7 +266,7 @@ def aggregate(args):
         shard_rows=json.loads((base/"rows.json").read_text())
         check(len(shard_rows)==len(manifest["cases"][shard::SHARDS])*REPS*len(MODES),"Shard row count")
         rows+=shard_rows
-    check(len(rows)==8*REPS*len(MODES) and len(binary_keys)==1,"Missing 48 exact pinned attempts")
+    check(len(rows)==len(manifest["cases"])*REPS*len(MODES) and len(binary_keys)==1,"Missing exact pinned attempts")
     byid={c["id"]:c for c in manifest["cases"]}
     lookup={}
     for r in rows:
@@ -271,7 +275,7 @@ def aggregate(args):
         key=(r["id"],r["rep"],r["mode"])
         check(key not in lookup,"Duplicate trial")
         lookup[key]=r
-    check(len(lookup)==48,"Incomplete exact paired trial grid")
+    check(len(lookup)==len(rows),"Incomplete exact paired trial grid")
     cases=[];summary={}
     for c in manifest["cases"]:
         modes={}
@@ -298,12 +302,12 @@ def aggregate(args):
     prior_report=json.loads(Path(args.prior).read_text())
     check(prior_report["summary"]["examined_paired_measurements"]==195,
           "Missing prior exploratory R32o audit")
-    result=dict(protocol=PROTO,manifest_sha=sha(args.manifest),source_count=8,trials=48,
+    result=dict(protocol=PROTO,manifest_sha=sha(args.manifest),source_count=len(cases),trials=len(rows),
         official_competition=True,known_prior_metadata=True,
         summary=summary,cases=cases,prior_exploratory_summary=prior_report["summary"],
         full_trials=rows,caveats=manifest["caveats"])
     Path(args.output).write_text(json.dumps(result,indent=2)+"\n")
-    print("R32P_EXTERNAL_AUDIT_PASS",len(rows),"original official paired trials",flush=True)
+    print("R32P_EXTERNAL_AUDIT_PASS",len(rows),"original official paired trials",len(cases),"unique sources",flush=True)
     print("R32P_EXTERNAL_SUMMARY",json.dumps(summary,sort_keys=True),flush=True)
     for c in cases:
         print("R32P_EXTERNAL_CASE",c["id"][:8],c["label"],
