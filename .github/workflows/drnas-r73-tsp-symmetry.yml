@@ -1,0 +1,120 @@
+name: DRNAS R73 simple TSP reversal symmetry one-change benchmark
+on:
+  push:
+    branches: [experiment/drnas-r73-tsp-simple-symmetry-20261103]
+    paths:
+      - '.github/workflows/drnas-r73-tsp-symmetry.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r73-tsp-simple-symmetry-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze same R72 TSP routes and one reversible-tour symmetry rule
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and exhaustive small-tour proof selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/drnas_r73_tsp_symmetry.py
+          python3 -u experiments/drnas_v16/drnas_r73_tsp_symmetry.py selftest
+      - name: Freeze and SHA-check same original R72 and new R73 CNFs
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r73_tsp_symmetry.py freeze \
+            --out frozen | tee freeze.log
+          (cd frozen && sha256sum -c sources.sha256 && sha256sum -c r73_sources.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r73-frozen-tsp-original-and-symmetry
+          path: |
+            frozen/
+            freeze.log
+          if-no-files-found: warn
+
+  measurements:
+    name: r73-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-frozen-tsp-original-and-symmetry
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Freeze and binary SHA checks
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c sources.sha256 && sha256sum -c r73_sources.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+      - name: 15s end-to-end one-core randomized paired comparison
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/drnas_r73_tsp_symmetry.py measure \
+            --sources frozen --shard "$SHARD" \
+            --kissat bins/kissat_pinned --out results | tee r73-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r73-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r73-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: R73 32 paired attempts complete SHA audit and times
+    needs: [freeze, measurements]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-frozen-tsp-original-and-symmetry
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r73-shard-*
+          path: combined
+      - name: Audit exact SAT/UNSAT correctness, source identity and binary hashes
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c r73_sources.sha256)
+          python3 -u experiments/drnas_v16/drnas_r73_tsp_symmetry.py audit \
+            --sources frozen --combined combined \
+            --json r73-final.json --md r73-final.md
+          cat r73-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R73-SIMPLE-TSP-SYMMETRY-FINAL
+          path: |
+            r73-final.json
+            r73-final.md
+            frozen/r73_manifest.json
+          if-no-files-found: warn
