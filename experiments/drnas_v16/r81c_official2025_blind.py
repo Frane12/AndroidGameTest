@@ -251,9 +251,9 @@ def main():
     f=sub.add_parser("freeze")
     for key in ("r63","r66","r67","r67final","r73","r77","r78","kissat","out"):
         f.add_argument("--"+key,required=True)
-    measure=sub.add_parser("measure")
-    for key in ("sources","binaries","out"):measure.add_argument("--"+key,required=True)
-    measure.add_argument("--shard",type=int,required=True)
+    measure_parser=sub.add_parser("measure")
+    for key in ("sources","binaries","out"):measure_parser.add_argument("--"+key,required=True)
+    measure_parser.add_argument("--shard",type=int,required=True)
     auditp=sub.add_parser("audit")
     for key in ("sources","combined","out"):auditp.add_argument("--"+key,required=True)
     a=p.parse_args()
