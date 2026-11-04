@@ -1,0 +1,112 @@
+name: DRNAS TSP v4.3 bounded escapes unseen holdout vs v4 v4.2 LKH
+on:
+  push:
+    branches: [experiment/drnas-tsp-v43-bounded-escape-20261104]
+    paths:
+      - .github/workflows/drnas-tsp-v43-holdout.yml
+      - experiments/tsp_shared_v31/drnas_v43.py
+      - experiments/tsp_shared_v31/compare_v43.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-tsp-v43-holdout
+  cancel-in-progress: false
+jobs:
+  holdout:
+    name: 2k-5k unseen seeds 3-4-5 / bounded uphill escape
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout frozen experiment
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numerical packages
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Build pinned real LKH-3
+        run: |
+          git clone https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          git -C LKH3 rev-parse HEAD | tee lkh_version.txt
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Audit bounded uphill move delta and restart safety
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import time
+          import numpy as np
+          from drnas_v4 import fast_make,tour_len
+          from drnas_v43 import bounded_uphill_two_opt,run,warmup
+          warmup()
+          _,d,nn=fast_make(100,661)
+          t=np.arange(100,dtype=np.int32)
+          pos=np.empty_like(t);pos[t]=np.arange(len(t),dtype=np.int32)
+          hits=0
+          for i in range(60):
+            before=tour_len(t,d)
+            delta,yes=bounded_uphill_two_opt(t,pos,d,nn,i*43,100000.)
+            after=tour_len(t,d)
+            if yes:
+              hits+=1
+              assert abs((after-before)-delta)<0.2,(before,after,delta)
+            else:assert before==after
+            assert len(set(map(int,t)))==len(t) and np.all(pos[t]==np.arange(len(t)))
+          assert hits>0,'No valid bounded move found in smoke test'
+          started=time.perf_counter()
+          _,d2,nn2=fast_make(240,881)
+          r=run(240,881,d2,nn2,budget=3.3,start=started,
+                stall_seconds=0.0,agent_stall_seconds=0.0,restart_cooldown=0.2)
+          assert r['restart_waves']>=1,r
+          assert r['uphill_kicks']>=1,r
+          assert r['final']>0 and r['events'],r
+          assert all(a[1]>=b[1] for a,b in zip(r['events'],r['events'][1:]))
+          print('V43_SMOKE_PASS',hits,{k:v for k,v in r.items() if k!='events'},flush=True)
+          PY
+      - name: Compare v4 vs v4.2 vs v4.3 vs LKH on 6 unseen matched instances
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v43.py \
+            --cities 2000 5000 --seeds 3 4 5 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v43_holdout.csv --work drnas_tsp_v43_logs \
+            | tee drnas_tsp_v43_live.log
+      - name: Audit completeness route monotonicity and compare
+        run: |
+          python - <<'PY'
+          import csv,statistics
+          rows=list(csv.DictReader(open('drnas_tsp_v43_holdout.csv')))
+          ms=('LKH-3','DRNAS v4','DRNAS v4.2 selective','DRNAS v4.3 bounded')
+          cuts=(2,4,6,8,10,15,20,25,30)
+          assert len(rows)==2*3*len(ms)*len(cuts),(len(rows),)
+          for n in (2000,5000):
+            print('===',n,'CITIES===')
+            for seed in (3,4,5):
+              for m in ms:
+                rr=[r for r in rows if int(r['cities'])==n and int(r['seed'])==seed and r['method']==m]
+                assert [int(x['checkpoint_s']) for x in rr]==list(cuts),(n,seed,m)
+                assert all(x['status']!='error' for x in rr),(n,seed,m)
+                assert rr[-1]['final_length_units']!='',(n,seed,m)
+                vals=[float(x['length_units']) for x in rr if x['length_units']]
+                assert all(a>=b for a,b in zip(vals,vals[1:])),(n,seed,m,vals)
+            for m in ms:
+              rr=[r for r in rows if int(r['cities'])==n and int(r['checkpoint_s'])==30 and r['method']==m]
+              means=statistics.mean(float(r['final_length_units']) for r in rr)
+              print(m,round(means,5),'seed routes',[r['final_length_units'] for r in rr],
+                    'restart-lineage new best',[r['restart_lineage_best_updates'] for r in rr])
+          print('PAIRED_HOLDOUT_AUDIT_PASS')
+          PY
+      - name: Always save raw paired data and LKH logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-TSP-V43-BOUNDED-ESCAPE-PAIRED-UNSEEN
+          path: |
+            drnas_tsp_v43_holdout.csv
+            drnas_tsp_v43_live.log
+            drnas_tsp_v43_logs/*.log
+            drnas_tsp_v43_logs/*.tour
+            drnas_tsp_v43_logs/*.tsp
+            lkh_version.txt
+          if-no-files-found: warn
+          retention-days: 90
