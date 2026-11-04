@@ -147,7 +147,7 @@ def solve_budget(exe,path,original,preparation=0):
 def one(mode,source,compiled,probe,preps):
     clean=compiled/"clean"
     if mode=="clean":
-        return score(solve_budget(clean,source),stage="original")
+        return score(solve_budget(clean,source,source),stage="original")
     if mode in ("legacy_corrected","lean_exchange"):
         p=preps[mode]
         return score(solve_budget(clean,p["path"] or source,source,p["prep_s"]),
@@ -378,6 +378,19 @@ def selftest():
             "solver beyond inclusive preparation budget wrongly counted as solved")
     require(score({"answer":"TIMEOUT","wall_s":12},.15)["par2_s"]==24,
             "timeout penalty incorrectly includes preprocessing")
+    # Catch wrapper arity before launching 12 parallel benchmark jobs.
+    saved=globals()["solve_budget"]
+    calls=[]
+    def stub(exe,path,original,preparation=0):
+        calls.append((exe,path,original,preparation))
+        return dict(answer="TIMEOUT",wall_s=12,par2_s=24)
+    try:
+        globals()["solve_budget"]=stub
+        one("clean",Path("test-original.cnf"),Path("/tmp/solver"),{}, {})
+    finally:
+        globals()["solve_budget"]=saved
+    require(len(calls)==1 and calls[0][1]==calls[0][2] and
+            calls[0][1]==Path("test-original.cnf"),"clean wrapper missing original source")
     print("R88V2_SINGLE_GLOBAL_12S_CAP_AND_SAFE_FALLBACK_SELFTEST_PASS",len(selected))
 
 if __name__=="__main__":
