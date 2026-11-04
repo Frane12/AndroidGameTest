@@ -1,0 +1,128 @@
+name: DRNAS R92 verified XOR<->CNF bridge (proof + real parity pilot)
+on:
+  push:
+    branches: [experiment/drnas-r92-verified-xor-bridge-20261104]
+    paths:
+      - 'research/r92_verified_xor_bridge.py'
+      - '.github/workflows/drnas-r92-verified-xor-bridge.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  proof-selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independent XOR row replay, negative pivots, truth-table invariants
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r92_verified_xor_bridge.py
+          python3 research/r92_verified_xor_bridge.py selftest | tee r92-selftest.log
+          grep -q '^R92_SELFTEST_PASS' r92-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R92-proof-selftest
+          path: r92-selftest.log
+  matched-real-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    needs: proof-selftest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned upstream Kissat and local source hash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/arminbiere/kissat.git /tmp/r92-kissat
+          cd /tmp/r92-kissat
+          git checkout rel-3.1.1
+          mkdir -p "$GITHUB_WORKSPACE/r92-results"
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/r92-results/kissat_source_sha.txt"
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Frozen external SATLIB PARITY corpus (public, previously examined; not unseen)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r92-parity r92-results
+          curl --fail --location --retry 3 --max-time 90 'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz' -o /tmp/r92-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r92-parity/parity.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r92-parity/parity.tar.gz -C /tmp/r92-parity
+          find /tmp/r92-parity -type f -name '*.cnf' | LC_ALL=C sort | head -n 6 > r92-results/manifest.txt
+          test "$(wc -l < r92-results/manifest.txt)" -eq 6
+          while read -r f; do sha256sum "$f"; done < r92-results/manifest.txt > r92-results/formula_sha256.txt
+      - name: Paired clean vs monitor-only vs verified XOR bridge (all overhead counted)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv, hashlib, json, pathlib, random, subprocess, sys, time
+          sys.path.insert(0,'research')
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r92_verified_xor_bridge as r92
+          import r88_cooperative as r88
+          import r32p_real_satcomp26_benchmark as ref
+          files=pathlib.Path('r92-results/manifest.txt').read_text().splitlines()
+          rows=[]
+          exe='/tmp/r92-kissat/build/kissat'
+          for src in files:
+              orig=pathlib.Path(src)
+              n, clauses = r88.read_cnf(orig)
+              prep_start=time.monotonic()
+              additions, diag=r92.bridge(clauses,budget_s=0.15)
+              prep=time.monotonic()-prep_start
+              dest=pathlib.Path('r92-results') / ('augmented-'+hashlib.sha256(orig.read_bytes()).hexdigest()[:16]+'.cnf')
+              r88.write_augmented(n,clauses,additions,dest)
+              for rep in range(2):
+                  order=['clean','monitor_only','verified_xor']
+                  random.Random(hashlib.sha256((r88.sha(orig)+str(rep)).encode()).hexdigest()).shuffle(order)
+                  for mode in order:
+                      overhead=prep if mode != 'clean' else 0.0
+                      solver_path=str(dest) if mode=='verified_xor' else str(orig)
+                      limit=max(.01, 6.0-overhead)
+                      t=time.perf_counter()
+                      try:
+                          p=subprocess.run([exe,solver_path],capture_output=True,text=True,timeout=limit)
+                          elapsed=time.perf_counter()-t
+                          if p.returncode not in (10,20):
+                              raise RuntimeError(f'Kissat crashed {p.returncode}: {p.stderr[-500:]}')
+                          status='SAT' if p.returncode==10 else 'UNSAT'
+                          if status=='SAT':
+                              ref.verify_sat_witness(orig,p.stdout)
+                          if elapsed+overhead>6:
+                              status='TIMEOUT'
+                      except subprocess.TimeoutExpired:
+                          elapsed=limit
+                          status='TIMEOUT'
+                      total=elapsed+overhead
+                      rows.append(dict(formula=orig.name,sha256=r88.sha(orig),
+                          rep=rep,mode=mode,status=status,solver_s=round(elapsed,6),
+                          analysis_s=round(overhead,6),total_s=round(total,6),
+                          par2_s=round(12.0 if status=='TIMEOUT' else total,6),
+                          xor_equations=diag['xor_equations'],
+                          verified_clauses=len(additions),rejected=diag['rejected'],
+                          analysis_reason=diag['reason'],sat_witness_checked=(status=='SAT'),
+                          unsat_proof_checked=False))
+              print('R92_CASE',orig.name,diag,'prep_s',round(prep,6),flush=True)
+          with open('r92-results/paired.csv','w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+          totals={}
+          for mode in ('clean','monitor_only','verified_xor'):
+              filtered=[r for r in rows if r['mode']==mode]
+              totals[mode]=dict(par2_s=round(sum(r['par2_s'] for r in filtered),6),
+                  solved=sum(r['status']!='TIMEOUT' for r in filtered),
+                  trials=len(filtered))
+          assert len(rows)==36
+          result=dict(protocol=r92.PROTO,benchmark='SATLIB PARITY public reused corpus',
+              source='pinned archive SHA256',total_rows=len(rows),
+              modes=totals,meanings='preprocessing before Kissat, not live in-process exchange; UNSAT proofs not checked')
+          pathlib.Path('r92-results/audit.json').write_text(json.dumps(result,indent=2)+'\n')
+          print('R92_REAL_PARITY_AUDIT',json.dumps(result),flush=True)
+          PY
+      - name: Upload complete benchmark + evidence even on failure
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R92-VERIFIED-XOR-REAL-PARITY-PILOT
+          path: r92-results/
+          retention-days: 90
