@@ -1,0 +1,113 @@
+name: DRNAS R65x-Live official SAT2025 frozen source recovery benchmark
+on:
+  push:
+    branches: [experiment/drnas-r65xl-real2025-fresh-impact-20261104]
+    paths: ['.github/workflows/drnas-r65xl-real2025-frozen-recovery.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65xl-frozen-2025-recovery-v1
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: r65xl2025-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-real2025-xor3-control3-original-sha-freeze
+          run-id: 41801010827
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-real2025-bitidentical-pinned-solvers
+          run-id: 41801010827
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          # Artifact root holds old/ and new/, not compiled/old and compiled/new.
+          path: compiled
+      - name: Verify unchanged original 2025 CNFs and exact upstream/native solver SHAs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65xl_real2025_fresh_impact.py
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled/old && sha256sum -c r65xl-binaries.sha256)
+          (cd compiled/new && sha256sum -c r65xl-v2-binaries.sha256)
+          chmod +x compiled/old/clean compiled/new/native-r65xl-v2
+      - name: Seven paired normal-Kissat and native-XOR arms with 60-second cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65xl_real2025_fresh_impact.py measure \
+            --sources fresh --compiled compiled \
+            --shard "$SHARD" --out results | tee r65xl2025-live.log
+          grep -q '^R65XL_REAL2025_SHARD_PASS' r65xl2025-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65xl2025-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r65xl2025-live.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: SHA-audit all 84 real SAT2025 attempts no solver reruns
+    needs: [benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-real2025-xor3-control3-original-sha-freeze
+          run-id: 41801010827
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65xl2025-shard-*
+          path: combined
+      - name: 'Fail closed: check all original SHA identities and matched arms'
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r65xl_real2025_fresh_impact.py audit \
+            --sources fresh --combined combined \
+            --json r65xl2025-final.json --md r65xl2025-final.md \
+            | tee r65xl2025-audit.log
+          grep -q '^R65XL_REAL2025_FINAL_AUDIT_PASS' r65xl2025-audit.log
+          cat r65xl2025-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65XL-REAL2025-84-PAIRED-SHA-FINAL
+          path: |
+            r65xl2025-final.json
+            r65xl2025-final.md
+            r65xl2025-audit.log
+            fresh/manifest.json
+          retention-days: 90
+          if-no-files-found: error
