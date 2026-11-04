@@ -137,11 +137,27 @@ class Circuit:
         for i,v in enumerate(y):C.fix(v,(Q[1]>>i)&1)
         C.fix(inf,False)
         return keys
+def pick_fresh_secret(bits, trial):
+    """Frozen R2 challenge stream: unique keys, disjoint from all R1 seeded cases."""
+    excluded={random.Random(20261104+bits*10007+i*997).randrange(1,1<<bits)
+              for i in range(3)}
+    rng=random.Random(20261205+bits*10007)
+    used=set(excluded)
+    chosen=[]
+    while len(chosen)<=trial:
+        candidate=rng.randrange(1,1<<bits)
+        if candidate in used:
+            continue
+        used.add(candidate)
+        chosen.append(candidate)
+    assert len(chosen)==trial+1 and not (set(chosen)&excluded)
+    return chosen[-1]
+
 def generate(bits,trial,out):
     c=(bits,)+CURVES[bits]
     assert point(c[5],c) is None
     assert c[5]>=1<<bits and all(point(k,c) is not None for k in range(1,1<<bits))
-    secret=random.Random(20261204+bits*10007+trial*997).randrange(1,1<<bits)
+    secret=pick_fresh_secret(bits,trial)
     Q=point(secret,c)
     C=CNF();key=Circuit(c,C).encode(Q)
     src=out/('curve%d_trial%d.cnf'%(bits,trial));C.write(src)
