@@ -1,0 +1,70 @@
+name: DRNAS R111 safe problem-type sensitivity experimental audit
+on:
+  push:
+    branches: [experiment/drnas-r111-sensitive-safe-gate-20261104]
+    paths:
+      - 'research/r111_sensitive_safe_gate.py'
+      - '.github/workflows/drnas-r111-safe-sensitivity.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  safety-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile frozen native proof verifier and validate scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r111_sensitive_safe_gate.py
+          g++ -std=c++17 -O2 -Wall -Wextra research/r107c_native_xor_finder.cpp -o /tmp/r111_native
+          sha256sum research/r111_sensitive_safe_gate.py research/r107c_native_xor_finder.cpp > provenance.sha256
+      - name: Differential safety and sensitivity fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p r111-results
+          cat > r111-results/xor_unsat.cnf <<'EOF'
+          p cnf 2 4
+          1 2 0
+          -1 -2 0
+          1 -2 0
+          -1 2 0
+          EOF
+          cat > r111-results/sat.cnf <<'EOF'
+          p cnf 2 2
+          1 2 0
+          1 -2 0
+          EOF
+          cat > r111-results/plain.cnf <<'EOF'
+          p cnf 2 1
+          1 0
+          EOF
+          python3 research/r111_sensitive_safe_gate.py r111-results/xor_unsat.cnf --native /tmp/r111_native --out r111-results/unsat.json
+          python3 research/r111_sensitive_safe_gate.py r111-results/sat.cnf --native /tmp/r111_native --out r111-results/sat.json
+          python3 research/r111_sensitive_safe_gate.py r111-results/plain.cnf --native /tmp/r111_native --out r111-results/plain.json
+          python3 research/r111_sensitive_safe_gate.py r111-results/xor_unsat.cnf --native /bin/false --out r111-results/fail_closed.json
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          p=pathlib.Path('r111-results')
+          results={name:json.loads((p/(name+'.json')).read_text()) for name in ('unsat','sat','plain','fail_closed')}
+          assert results['unsat']['decision']=='certified_unsat',results['unsat']
+          assert all(results[x]['decision']=='fallback' for x in ('sat','plain','fail_closed')),results
+          assert results['fail_closed']['reason'].startswith('fail_closed')
+          for name in ('xor_unsat','sat','plain'):
+              f=p/(name+'.cnf')
+              assert f.is_file()
+          (p/'audit.json').write_text(json.dumps({'pass':True,'results':results},indent=2))
+          print('R111_SAFE_SENSITIVITY_AUDIT_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R111-safe-sensitivity-audit
+          path: |
+            r111-results/
+            provenance.sha256
+          if-no-files-found: warn
+          retention-days: 60
