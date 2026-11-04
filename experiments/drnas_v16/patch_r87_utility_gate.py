@@ -68,9 +68,11 @@ def patch(path):
         "static void r32u_initialize(kissat *solver) {",
         DECL+"\nstatic void r32u_initialize(kissat *solver) {",
         "declaration_before_initialization")
+    # R84 sets r84_interval AFTER the earlier R85 reset;
+    # R87 must start after the final R86 frequency selection.
     s=replace_once(s,
-        "  r85_last_ms=-1;\n",
-        '  r85_last_ms=-1;\n'
+        '               freq && !strcmp(freq,"256") ? 256 : 16;\n',
+        '               freq && !strcmp(freq,"256") ? 256 : 16;\n'
         '  const char *r87_env=getenv("R87_ADAPT");\n'
         '  r87_adapt=r87_env && !strcmp(r87_env,"1");\n'
         '  r87_last_window=r87_idle_windows=r87_switches=0;\n'
@@ -79,7 +81,7 @@ def patch(path):
         '  printf("c R87_MODE dynamic=%d initial_interval=%u window_scans=128\\n",\n'
         '      r87_adapt,(unsigned)r84_interval);\n'
         '  fflush(stdout);\n',
-        "initialize_adaptive_state")
+        "initialize_after_r84_interval")
     s=replace_once(s,
         'static void r32u_scan(kissat *solver) {\n  r85_emit(solver,0);',
         'static void r32u_scan(kissat *solver) {\n'
