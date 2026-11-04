@@ -1,0 +1,124 @@
+name: DRNAS TSP v5.1 true five-opt holdout vs LKH and v5
+on:
+  push:
+    branches: [experiment/drnas-tsp-v51-five-opt-20261104]
+    paths:
+      - .github/workflows/drnas-tsp-v51-five-opt.yml
+      - experiments/tsp_shared_v31/drnas_v51.py
+      - experiments/tsp_shared_v31/five_opt_v51.py
+      - experiments/tsp_shared_v31/compare_v51.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-tsp-v51-five-opt-holdout
+  cancel-in-progress: false
+jobs:
+  test:
+    name: 2k/5k seed 12-13-14 true 5-opt vs v5 and LKH
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout fixed source
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python dependencies
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Compile pinned genuine LKH-3
+        run: |
+          git clone https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          git -C LKH3 rev-parse HEAD | tee lkh_version.txt
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Exact five-opt cost, connectivity and full solver smoke audit
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import time,numpy as np
+          from drnas_v4 import fast_make,tour_len
+          from five_opt_v51 import five_opt_candidate
+          from drnas_v51 import run,warmup
+          warmup()
+          _,d,nn=fast_make(140,1501)
+          rng=np.random.default_rng(5151)
+          accepted=0
+          for z in range(40):
+            t=rng.permutation(140).astype(np.int32)
+            pos=np.empty(140,dtype=np.int32)
+            pos[t]=np.arange(140,dtype=np.int32)
+            before=tour_len(t,d)
+            delta,code=five_opt_candidate(t,pos,d,nn,
+                cursor=(z*27)%140,starts=30,width=21,samples=14,
+                third_width=18,fourth_width=18)
+            after=tour_len(t,d)
+            assert len(set(map(int,t)))==140,(z,'duplicate cities')
+            assert np.all(pos[t]==np.arange(140,dtype=np.int32)),(z,'position map')
+            assert abs((after-before)-delta)<0.3,(z,before,after,delta)
+            if code>=0:
+              accepted+=1
+              assert delta<-0.001,(z,delta)
+            else:
+              assert before==after,(z,before,after)
+          assert accepted>=1,accepted
+          start=time.perf_counter()
+          _,d2,nn2=fast_make(240,912)
+          r=run(240,912,d2,nn2,budget=4.5,mode='v51_five',start=start,
+                stall_seconds=0.2,restart_cooldown=0.3,agent_stall_seconds=0.1)
+          assert r['events'] and r['final']>0,r
+          assert r['five_opt_calls']>0,r
+          assert r['shared_packets']==0,r
+          assert all(a[1]>=b[1] for a,b in zip(r['events'],r['events'][1:])),r
+          print('V51_FIVE_OPT_SMOKE_PASS',accepted,{k:v for k,v in r.items() if k!='events'},flush=True)
+          PY
+      - name: Run paired LKH v4.3 v5 baseline v5.1 true five-opt
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v51.py \
+            --cities 2000 5000 --seeds 12 13 14 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v51_holdout.csv --work drnas_tsp_v51_logs \
+            | tee drnas_tsp_v51_live.log
+      - name: Audit all runs and report efficacy of deeper moves
+        run: |
+          python - <<'PY'
+          import csv,statistics
+          rows=list(csv.DictReader(open('drnas_tsp_v51_holdout.csv')))
+          methods=('LKH-3','DRNAS v4.3 bounded','DRNAS v5 no-sharing','DRNAS v5.1 five-opt')
+          checkpoints=(2,4,6,8,10,15,20,25,30)
+          assert len(rows)==2*3*len(methods)*len(checkpoints),len(rows)
+          for city in (2000,5000):
+            print('===',city,'CITIES ===')
+            for seed in (12,13,14):
+              for method in methods:
+                rr=[r for r in rows if int(r['cities'])==city and int(r['seed'])==seed and r['method']==method]
+                assert [int(r['checkpoint_s']) for r in rr]==list(checkpoints),(city,seed,method)
+                assert all(r['status']!='error' for r in rr),(city,seed,method,rr[0]['notes'])
+                assert rr[-1]['final_length_units']!='',(city,seed,method)
+                available=[float(r['length_units']) for r in rr if r['length_units']]
+                assert all(a>=b for a,b in zip(available,available[1:])),(city,seed,method,available)
+            for method in methods:
+              rr=[r for r in rows if int(r['cities'])==city and int(r['checkpoint_s'])==30 and r['method']==method]
+              print(method,'average final=',round(statistics.mean(float(r['final_length_units']) for r in rr),4),
+                    'seed results=',[r['final_length_units'] for r in rr],
+                    '5-opt calls=',[r['five_opt_calls'] for r in rr],
+                    '5-opt accepted=',[r['five_opt_moves'] for r in rr],
+                    '5-opt seconds=',[r['five_opt_seconds'] for r in rr])
+          r5=[r for r in rows if r['method']=='DRNAS v5.1 five-opt' and int(r['checkpoint_s'])==30]
+          assert all(int(r['five_opt_calls'])>0 for r in r5),'v5.1 five-opt was not attempted'
+          print('V51_FIVE_OPT_PAIRED_AUDIT_PASS')
+          PY
+      - name: Archive paired routes and raw LKH logs even after failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-TSP-V51-TRUE-FIVE-OPT-PAIRED-HOLDOUT
+          path: |
+            drnas_tsp_v51_holdout.csv
+            drnas_tsp_v51_live.log
+            drnas_tsp_v51_logs/*.log
+            drnas_tsp_v51_logs/*.tsp
+            drnas_tsp_v51_logs/*.tour
+            lkh_version.txt
+          if-no-files-found: warn
+          retention-days: 90
