@@ -33,7 +33,7 @@ def load_original(path):
     path=Path(path)
     if path.stat().st_size>CAP_BYTES:
         return None, "source_over_12MiB"
-    n=header_clause_count=None;clause=[];groups={};count=0
+    n=header_clause_count=None;clause=[];groups={};units=[];count=0
     with path.open(encoding="ascii",errors="strict") as f:
         for line in f:
             t=line.strip()
@@ -54,6 +54,9 @@ def load_original(path):
                     ok(len(clause)<=100000,"Excessive clause width")
                 else:
                     count+=1
+                    if len(clause)==1:
+                        literal=clause[0]
+                        units.append(((abs(literal),),int(literal>0)))
                     if 2<=len(clause)<=6:
                         vars_=tuple(sorted(abs(x) for x in clause))
                         if len(vars_)==len(set(vars_)):
@@ -64,7 +67,7 @@ def load_original(path):
                     clause=[]
         ok(n is not None and not clause and count==header_clause_count,
            "Original DIMACS declaration does not match clauses")
-    return dict(n=n,clauses=count,groups=groups),None
+    return dict(n=n,clauses=count,groups=groups,original_units=units),None
 
 def complete_parity_axioms(source):
     groups=source["groups"];equations=[]
