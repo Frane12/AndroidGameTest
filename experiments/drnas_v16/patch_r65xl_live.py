@@ -50,7 +50,7 @@ static void r65xl_emit(kissat *solver,int final) {
          " trail_row_checks=%" PRIu64 " xor_candidates=%u"
          " xor_to_cdcl_reasons=%u cdcl_first_uip_uses=%" PRIu64
          " scans=%u decisions=%" PRIu64 " conflicts=%" PRIu64
-         " cpu_ms=%.3f final=%d\\n",
+         " cpu_ms=%.3f final=%d\n",
          r65xl_adaptive,r65xl_interval,r65xl_switches,
          r32u_nrows,r84_rows_visited,r32u_implications,
          r32u_added,r85_first_uip_uses,r32u_probed,
@@ -65,9 +65,12 @@ def main():
     a=p.parse_args()
     path=a.kissat_root/"src"/"search.c"
     s=path.read_text()
+    s=once(s,"static void r32u_initialize(kissat *solver) {",
+           DECL+"\nstatic void r32u_initialize(kissat *solver) {",
+           "new_adaptive_helpers")
     s=once(s,"static int r32u_due(kissat *solver) {",
-           DECL+"\nstatic int r32u_due(kissat *solver) {\n  r65xl_refresh();",
-           "new_adaptive_feedback")
+           "static int r32u_due(kissat *solver) {\n  r65xl_refresh();",
+           "adaptive_scan_hook")
     s=once(s,
            "d<r32u_last_decisions+(uint64_t)r84_interval)",
            "d<r32u_last_decisions+(uint64_t)r65xl_interval)",
