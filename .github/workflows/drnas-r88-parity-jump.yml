@@ -1,0 +1,102 @@
+name: DRNAS R88 Parity Jump - source-certified pre-injection vs R87 native (development)
+on:
+  push:
+    branches: [experiment/drnas-r88-certified-parity-jump-20261104]
+    paths:
+      - '.github/workflows/drnas-r88-parity-jump.yml'
+      - 'experiments/drnas_v16/r88_parity_jump.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r88-parity-jump-20261104
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: R88 real-CNF parity jump shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse original R85 development sources, SHA-frozen by R87
+        uses: actions/download-artifact@v4
+        with:
+          name: R87-FROZEN-R85-DEVELOPMENT-SOURCES
+          run-id: 41774392604
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: fresh
+      - name: Reuse exactly pinned clean and native R87 Kissat binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: R87-PINNED-ORIGINAL-CLEAN-AND-FOUR-SCAN-CADENCES
+          run-id: 41774392604
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Audit SHA and certificate logic; 2 repeats by 5 arms on untouched original
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r87
+          python3 -m py_compile experiments/drnas_v16/r88_parity_jump.py
+          python3 experiments/drnas_v16/r88_parity_jump.py selftest
+          python3 -u experiments/drnas_v16/r88_parity_jump.py measure \
+            --sources fresh --compiled compiled --shard "$SHARD" --out results \
+            | tee r88-live.log
+          grep -q "^R88_SHARD_PASS $SHARD 10$" r88-live.log
+      - name: Save even unsuccessful partial evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r88-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r88-live.log
+          retention-days: 90
+
+  audit:
+    name: R88 final original CNF SHA, source parity proof and 120 trial paired audit
+    needs: [benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-FROZEN-R85-DEVELOPMENT-SOURCES
+          run-id: 41774392604
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: fresh
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88-shard-*
+          path: combined
+      - name: Fail closed on missing shards, SHA drift, verdict mismatch or uncertified cuts
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r88_parity_jump.py audit \
+            --sources fresh --combined combined --out final | tee r88-audit.log
+          grep -q '^R88_FINAL_CERTIFIED_PARITY_JUMP_AUDIT_PASS 120' r88-audit.log
+          cat final/r88-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R88-PARITY-JUMP-120-TRIALS-FINAL
+          path: |
+            final/
+            r88-audit.log
+          retention-days: 90
