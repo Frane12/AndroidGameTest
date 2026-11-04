@@ -103,7 +103,7 @@ def make_preparations(source,n,clauses,parse_s,folder):
     selected,_=v2.select_useful(clauses,raw,proof,cap=16)
     chosen=[tuple(c) for c in selected[:8]]
     learn_s=time.monotonic()-tick
-    placebo=v3.chosen_placebo(clauses,chosen)
+    placebo=prev.chosen_placebo(clauses,chosen)
     ans={}
     for mode,extras in (("certified8",chosen),("placebo",placebo)):
         tick=time.monotonic()
@@ -372,6 +372,13 @@ def selftest():
     x,_=v2.select_useful(toy,raw,stats)
     ck(len(x)<=16 and all(entry["bcp_verified"] for entry in stats["proof_chain"]),
        "RUP proof ledger missing")
+    # Full preparation path: catch module alias/writer/ledger errors BEFORE 12 parallel shards.
+    with tempfile.TemporaryDirectory() as tmp:
+        prepared,chosen=make_preparations(Path(tmp)/"original.cnf",4,toy,0.001,tmp)
+        ck(set(prepared)=={"certified8","placebo"} and
+           prepared["certified8"]["extra_count"]==len(chosen) and
+           prepared["placebo"]["extra_count"]==len(chosen),
+           "end-to-end preparation or placebo count failed")
     print("R89_PRECOMMITTED_SOURCE_GATE_AND_RUP_SELFTEST_PASS")
 
 if __name__=="__main__":
