@@ -1,0 +1,140 @@
+name: DRNAS TSP v5.3 causal two-way sharing vs sham on new 2000-5000-city instances
+on:
+  push:
+    branches: [experiment/drnas-tsp-v53-bidirectional-causal-20261104]
+    paths:
+      - '.github/workflows/drnas-tsp-v53-causal.yml'
+      - 'experiments/tsp_shared_v31/drnas_v53.py'
+      - 'experiments/tsp_shared_v31/compare_v53_causal.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-tsp-v53-causal-first-unseen-cohort
+  cancel-in-progress: false
+jobs:
+  setup:
+    name: Pin genuine LKH3, selftest causal reader, freeze seed and method policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install comparison dependencies
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Compile pinned external LKH3 from exact known commit
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout -q --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          test "$(git -C LKH3 rev-parse HEAD)" = "9a51de3161f2746e969f7a2e33220f637da64e54"
+          make -C LKH3 -j2 >/tmp/lkh-build.log 2>&1 || { tail -80 /tmp/lkh-build.log; exit 1; }
+          test -x LKH3/LKH
+          sha256sum LKH3/LKH > lkh-binary.sha256
+      - name: Verify 5-opt and shared/sham route semantics on an independent micro-instance
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import time
+          from drnas_v4 import fast_make
+          from drnas_v53 import run,warmup
+          warmup()
+          for mode in ('v53_shared','v53_sham'):
+              start=time.perf_counter()
+              _,d,nn=fast_make(240,8519)
+              r=run(240,8519,d,nn,budget=3.0,start=start,mode=mode)
+              assert r['events'] and r['final']>0
+              assert r['consumer_mode']==('incoming_messages' if mode.endswith('shared') else 'sham_zero_reads'),r
+              assert all(a[1]>=b[1] for a,b in zip(r['events'],r['events'][1:]))
+              print('V53_CAUSAL_SELFTEST',mode,r['shared_packets'],r['recipient_calls'],r['unique_sending_agents'])
+          print('V53_CAUSAL_SOURCE_AND_SEMANTICS_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v53-pinned-lkh3
+          path: |
+            LKH3/LKH
+            lkh-binary.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  measure:
+    name: heldout-seed-${{ matrix.seed }}
+    needs: setup
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        seed: [18,19,20,21,22,23]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - uses: actions/download-artifact@v4
+        with:
+          name: v53-pinned-lkh3
+          path: .
+      - name: Verify binary and Python source is same experiment revision
+        run: |
+          set -euo pipefail
+          chmod +x LKH3/LKH
+          sha256sum -c lkh-binary.sha256
+          python -m py_compile experiments/tsp_shared_v31/drnas_v53.py experiments/tsp_shared_v31/compare_v53_causal.py
+      - name: Strict same-source paired randomized shared vs sham vs external LKH3
+        env:
+          SEED: ${{ matrix.seed }}
+          NUMBA_NUM_THREADS: 1
+          OPENBLAS_NUM_THREADS: 1
+          OMP_NUM_THREADS: 1
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/tsp_shared_v31 python -u \
+            experiments/tsp_shared_v31/compare_v53_causal.py measure \
+            --seed "$SEED" --seconds 30 --lkh ./LKH3/LKH --out results \
+            | tee v53-measure.log
+          grep -q "^V53_SHARD_PASS $SEED " v53-measure.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v53-seed-${{ matrix.seed }}
+          path: |
+            results/
+            v53-measure.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Paired randomized causal timing, unique instances and bootstrapped CI
+    if: always()
+    needs: [setup, measure]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v53-seed-*
+          path: combined
+      - name: Fail-closed 72 completed attempts and valid sender and recipient channels
+        run: |
+          set -euo pipefail
+          python -u experiments/tsp_shared_v31/compare_v53_causal.py audit \
+            --combined combined --out final | tee v53-audit.log
+          grep -q '^V53_CAUSAL_AUDIT_PASS' v53-audit.log
+          cat final/v53-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TSP-V53-CAUSAL-12-UNSEEN-PAIRED-FINAL
+          path: |
+            final/
+            v53-audit.log
+          if-no-files-found: warn
+          retention-days: 90
