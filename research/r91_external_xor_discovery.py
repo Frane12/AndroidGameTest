@@ -42,9 +42,11 @@ def main():
     candidates.sort(key=lambda x:x["sha256"])
     unique={x["sha256"]:x for x in candidates}
     chosen=list(unique.values())[:a.limit]
+    status='ready_for_audited_selection' if len(chosen)>=50 else 'insufficient_external_xor_candidates'
     pathlib.Path(a.out).parent.mkdir(parents=True,exist_ok=True)
-    pathlib.Path(a.out).write_text(json.dumps(dict(requested=a.limit,found=len(unique),selected=len(chosen),items=chosen),indent=2))
+    pathlib.Path(a.out).write_text(json.dumps(dict(requested=a.limit,minimum_required=50,found=len(unique),selected=len(chosen),status=status,items=chosen),indent=2))
     print(f"XOR-pattern candidate selection: {len(chosen)}/{a.limit} (from {len(unique)} unique candidates)")
-    if len(chosen)<50: raise SystemExit("Insufficient external XOR candidates; no benchmark claim")
+    if len(chosen)<50:
+        print(f"::warning::Only {len(chosen)} verified-pattern external candidates found (need 50); benchmark is NOT ready")
 
 if __name__=="__main__": main()
