@@ -1,0 +1,194 @@
+name: DRNAS R85 prospective SHA-disjoint R83 XOR gate vs clean Kissat
+
+on:
+  push:
+    branches: [experiment/drnas-r85-prospective-structural-gate-20261104]
+    paths:
+      - .github/workflows/drnas-r85-prospective-gate.yml
+      - experiments/drnas_v16/r85_prospective_gate.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r85-prospective-gate-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Precommit new 12+12 SHA-disjoint official originals, never screen on XOR or runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R83 native proof and R85 protocol syntax and frozen gate preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r85_prospective_gate.py
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py selftest
+          python3 -u experiments/drnas_v16/r85_prospective_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old82
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          run-id: 41717235335
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior66
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior67
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior73
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81-fresh-originals-structural-holdout
+          run-id: 41752571755
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior81
+      - name: Freeze source selection and verify SHA for every original
+        run: |
+          set -euo pipefail
+          test -s old82/world/manifest.json
+          test -s prior/fresh/manifest.json
+          test -s prior66/new/manifest.json
+          test -s prior67/new/manifest.json
+          test -s prior73/new/manifest.json
+          test -s prior81/world/manifest.json
+          python3 -u experiments/drnas_v16/r85_prospective_gate.py freeze \
+            --old82 old82/world --old63 prior/fresh --old66 prior66/new \
+            --old67 prior67/new --old73 prior73/new --old81 prior81/world \
+            --out sources | tee r85-freeze.log
+          (cd sources && sha256sum -c source.sha256)
+          grep -q '^R85_FREEZE_PASS' r85-freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r85-frozen-24-originals-history-audit
+          path: |
+            sources/
+            r85-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: r85-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-frozen-24-originals-history-audit
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          run-id: 41683024261
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: world-solvers
+      - name: Independent frozen solver checksums and original source check
+        run: |
+          set -euo pipefail
+          (cd sources && sha256sum -c source.sha256)
+          (cd native && sha256sum -c baselines.sha256)
+          (cd world-solvers && sha256sum -c binaries.sha256)
+          chmod +x native/clean native/native world-solvers/kissat_4_0_4
+      - name: Five paired methods two repeats per fresh original, charged 25s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r85_prospective_gate.py measure \
+            --sources sources --native native --world world-solvers \
+            --shard "$SHARD" --out results | tee r85-live.log
+          grep -q '^R85_SHARD_PASS' r85-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r85-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r85-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Full-source SHA audit, paired PAR-2, source bootstrap and no-regression verdict
+    needs: [freeze,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-frozen-24-originals-history-audit
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r85-shard-*
+          path: combined
+      - name: Fail closed on any missing, duplicate, inconsistent or unpinned measurement
+        run: |
+          set -euo pipefail
+          (cd sources && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r85_prospective_gate.py audit \
+            --sources sources --combined combined --out final | tee r85-audit.log
+          grep -q '^R85_FINAL_AUDIT_PASS' r85-audit.log
+          cat final/r85-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R85-PROSPECTIVE-PAIRED-FINAL
+          path: |
+            final/
+            sources/manifest.json
+            sources/source.sha256
+            r85-audit.log
+          if-no-files-found: error
+          retention-days: 90
