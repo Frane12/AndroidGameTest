@@ -103,7 +103,8 @@ def selftest():
         for k in (2,3,4,5,6):
             group=cs(tuple(range(1,k+1)),0)
             d=inspect(write(f'xor{k}.cnf',k,group))
-            assert d['found_xors']==1 and d['by_width'][str(k)]==1\n            assert d['old_three_xor_count']==int(k==3)
+            assert d['found_xors']==1 and d['by_width'][str(k)]==1
+            assert d['old_three_xor_count']==int(k==3)
             assert not d['gf2_unsat']
             if k>=3:
                 partial=inspect(write(f'partial{k}.cnf',k,group[:-1]))
