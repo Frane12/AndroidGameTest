@@ -18,6 +18,10 @@ import r32p_real_satcomp26_benchmark as r32p
 import r52_prospective_2026_toprefs as r52
 import r63_real2026_xor_prevalence_fallback as r63
 import r83_live_xor_cdcl_wide as r83
+import r32t_certified_short_xor as cert
+cert.CAP_BYTES=24*1024*1024
+cert.CAP_VARIABLES=4096
+cert.CAP_CLAUSES=60000
 
 PROTO="DRNAS-R85-ABCD-FRESH-OFFICIAL2025-XOR-STRATIFIED-20261104-v1"
 SALT="DRNAS-R85-NOSPEED-NEVER-R82-R73-R72-SOURCE-SALT-20261104-v1"
@@ -161,7 +165,7 @@ def parse_counts(stdout,mode,source,cache):
              for rhs,varstr in R32U_ROWS.findall(stdout)]
     ck(last["prepared"]==len(emitted),"bad native-source GF2 row count")
     if emitted:
-        key=sha(source)
+        key=(sha(source),int(mode.startswith(("C_","D_"))),128 if mode.startswith("D_") else 64)
         if key in cache:
             ck(cache[key]==tuple(emitted),
                "native source XOR equations changed among same mode")
