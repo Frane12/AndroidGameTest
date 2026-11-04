@@ -1,10 +1,35 @@
 #!/usr/bin/env python3
 """R106 check solver-reported SAT models against immutable source DIMACS."""
 def cnf_clauses(source):
-    import pathlib,sys
-    sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'experiments'/'drnas_v16'))
-    import r88_cooperative as r88
-    return r88.read_cnf(source)[1]
+    """Bounded independent DIMACS parser; 2025 ordering-XOR has 408044 clauses."""
+    import pathlib
+    file=pathlib.Path(source)
+    if file.stat().st_size>24*1024*1024:raise RuntimeError('R106 large CNF refused')
+    n=m=None;clauses=[];pending=[]
+    with file.open('r',encoding='ascii',errors='strict') as f:
+        for line in f:
+            line=line.strip()
+            if not line or line.startswith('c'):continue
+            if line.startswith('%'):break
+            if line.startswith('p '):
+                fields=line.split()
+                if len(fields)!=4 or fields[1]!='cnf' or n is not None:
+                    raise RuntimeError('R106 bad DIMACS header')
+                n,m=int(fields[2]),int(fields[3])
+                if not 0<n<=2000000 or not 0<=m<=1500000:
+                    raise RuntimeError('R106 DIMACS header exceeds safety limits')
+                continue
+            if n is None:raise RuntimeError('R106 missing DIMACS header')
+            for field in line.split():
+                lit=int(field)
+                if abs(lit)>n:raise RuntimeError('R106 out-of-range literal')
+                if lit:pending.append(lit)
+                else:
+                    clauses.append(tuple(pending));pending=[]
+                    if len(clauses)>m:raise RuntimeError('R106 clauses exceed header')
+    if pending or n is None or len(clauses)!=m:
+        raise RuntimeError('R106 incomplete DIMACS input')
+    return clauses
 def status(output,code):
     labels=set()
     for line in output.splitlines():
