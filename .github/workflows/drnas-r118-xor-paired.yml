@@ -1,0 +1,71 @@
+name: DRNAS R118 XOR-focused proof-on-demand paired real benchmark
+on:
+  push:
+    branches: [experiment/drnas-r118-xor-proof-on-demand-20261104]
+    paths:
+      - 'research/r118_xor_proof_on_demand.cpp'
+      - 'research/r118_xor_paired_real.py'
+      - '.github/workflows/drnas-r118-xor-paired.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  xor-paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Reproducibly build R28 control and R118 proof-on-demand
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          mkdir -p r118
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o r118/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r118/r118
+          python3 -m py_compile research/r118_xor_paired_real.py
+          sha256sum research/r118_xor_proof_on_demand.cpp r118/r118 r118/r28 built/bin/kissat_4_0_4 > r118/provenance.sha256
+          lscpu > r118/cpu.txt
+      - name: Small independent SAT and UNSAT smoke checks
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          p=Path('r118')
+          examples={
+            'sat':'p cnf 2 2\n1 2 0\n-1 -2 0\n',
+            'unsat':'p cnf 2 4\n1 2 0\n-1 -2 0\n-1 2 0\n1 -2 0\n',
+            'mixed':'p cnf 2 3\n1 2 0\n-1 -2 0\n1 0\n'
+          }
+          for label,data in examples.items():
+            src=p/(label+'.cnf');src.write_text(data)
+            for binary in ('r28','r118'):
+              result=subprocess.run([str((p/binary).resolve()),str(src),str(Path('built/bin/kissat_4_0_4').resolve())],capture_output=True,text=True,timeout=10)
+              assert result.returncode == (20 if label=='unsat' else 10),(label,binary,result.returncode,result.stdout[-1000:],result.stderr)
+              if label=='unsat':assert 'certified_xor_contradiction' in result.stdout
+              if label=='sat':assert 'certified_pure_xor_sat' in result.stdout
+              if label=='mixed':assert 'fallback' in result.stdout
+          print('R118_SMOKE_ALL_PASS')
+          PY
+      - name: Three paired repetitions on four SHA-pinned real official XOR cases
+        run: |
+          set -euo pipefail
+          python3 -u research/r118_xor_paired_real.py | tee r118/benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R118-XOR-focused-real-proof-audit
+          path: |
+            r118/
+          retention-days: 90
