@@ -9,7 +9,7 @@ No synthetic fallback. Winner is the *source-built official 2026 entrant* if ava
 from __future__ import annotations
 import argparse,csv,hashlib,io,json,os,pathlib,random,resource,statistics,subprocess,sys,time,traceback
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).resolve().parent)))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent/"experiments/drnas_v16"))
 import r32p_real_satcomp26_benchmark as r32p
 import r106_verify_solver as verify
