@@ -1,0 +1,104 @@
+name: DRNAS TSP v4.4 adaptive selector unseen holdout v4.2 v4.3 LKH-3
+on:
+  push:
+    branches: [experiment/drnas-tsp-v44-adaptive-20261104]
+    paths:
+      - .github/workflows/drnas-tsp-v44-holdout.yml
+      - experiments/tsp_shared_v31/drnas_v44.py
+      - experiments/tsp_shared_v31/compare_v44.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-tsp-v44-holdout-frozen
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: 2k-5k new seeds 6-7-8 / adaptive restarts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout frozen branch
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Build pinned real LKH-3
+        run: |
+          git clone https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          git -C LKH3 rev-parse HEAD | tee lkh_version.txt
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Smoke-test policy switching and valid routes
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import numpy as np,time
+          from drnas_v4 import fast_make
+          from drnas_v44 import warmup,select_escape_policy,run
+          warmup()
+          zeros=np.zeros(2,dtype=np.int64)
+          assert select_escape_policy(2000,0,zeros,np.zeros(2),zeros)==0
+          assert select_escape_policy(5000,0,zeros,np.zeros(2),zeros)==1
+          assert select_escape_policy(2000,3,zeros,np.zeros(2),zeros)==1
+          assert select_escape_policy(5000,3,zeros,np.zeros(2),zeros)==0
+          assert select_escape_policy(2000,1,np.array([20,4]),np.array([0.,50.]),np.array([0,2]))==1
+          started=time.perf_counter()
+          _,d,nn=fast_make(240,991)
+          r=run(240,991,d,nn,budget=3.4,start=started,
+                stall_seconds=0.,agent_stall_seconds=0.,restart_cooldown=.2)
+          assert r['final']>0 and r['events'],r
+          assert r['restart_waves']>0,r
+          assert r['policy_bridge_waves']+r['policy_bounded_waves']==r['restart_waves'],r
+          assert all(a[1]>=b[1] for a,b in zip(r['events'],r['events'][1:]))
+          print('V44_ADAPTIVE_SMOKE_PASS',{k:v for k,v in r.items() if k!='events'},flush=True)
+          PY
+      - name: Compare genuine LKH v4.2 v4.3 v4.4 on six new matched instances
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v44.py \
+            --cities 2000 5000 --seeds 6 7 8 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v44_holdout.csv --work drnas_tsp_v44_logs \
+            | tee drnas_tsp_v44_live.log
+      - name: Audit complete paired results and print summary
+        run: |
+          python - <<'PY'
+          import csv,statistics
+          rows=list(csv.DictReader(open('drnas_tsp_v44_holdout.csv')))
+          ms=('LKH-3','DRNAS v4.2 selective','DRNAS v4.3 bounded','DRNAS v4.4 adaptive')
+          cuts=(2,4,6,8,10,15,20,25,30)
+          assert len(rows)==2*3*len(ms)*len(cuts),(len(rows),)
+          for n in (2000,5000):
+            print('===',n,'CITIES===')
+            for seed in (6,7,8):
+              for m in ms:
+                rr=[r for r in rows if int(r['cities'])==n and int(r['seed'])==seed and r['method']==m]
+                assert [int(x['checkpoint_s']) for x in rr]==list(cuts),(n,seed,m)
+                assert all(x['status']!='error' for x in rr),(n,seed,m)
+                assert rr[-1]['final_length_units']!='',(n,seed,m)
+                vals=[float(x['length_units']) for x in rr if x['length_units']]
+                assert all(a>=b for a,b in zip(vals,vals[1:])),(n,seed,m,vals)
+            for m in ms:
+              rr=[r for r in rows if int(r['cities'])==n and int(r['checkpoint_s'])==30 and r['method']==m]
+              means=statistics.mean(float(r['final_length_units']) for r in rr)
+              print(m,round(means,5),'seed routes',[r['final_length_units'] for r in rr],
+                    'restart success',[r['restart_lineage_best_updates'] for r in rr],
+                    'bridge/bounded waves',[(r['policy_bridge_waves'],r['policy_bounded_waves']) for r in rr])
+          print('V44_PAIRED_HOLDOUT_AUDIT_PASS')
+          PY
+      - name: Upload paired CSV and raw benchmark data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-TSP-V44-ADAPTIVE-PAIRED-UNSEEN
+          path: |
+            drnas_tsp_v44_holdout.csv
+            drnas_tsp_v44_live.log
+            drnas_tsp_v44_logs/*.log
+            drnas_tsp_v44_logs/*.tour
+            drnas_tsp_v44_logs/*.tsp
+            lkh_version.txt
+          if-no-files-found: warn
+          retention-days: 90
