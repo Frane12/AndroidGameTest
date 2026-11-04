@@ -226,13 +226,27 @@ def selftest():
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument('cmd',choices=['selftest','inspect'])
-    p.add_argument('--cnf');p.add_argument('--out');p.add_argument('--rounds',type=int,default=2)
+    p.add_argument('cmd',choices=['selftest','inspect','export'])
+    p.add_argument('--cnf');p.add_argument('--out');p.add_argument('--augmented');p.add_argument('--rounds',type=int,default=2)
     a=p.parse_args()
     if a.cmd=='selftest':selftest();return
     if not a.cnf or not a.out:p.error('missing paths')
     if a.rounds not in (0,1,2):p.error('rounds must be 0..2')
     report=scan(a.cnf,a.rounds)
+    if a.cmd=='export':
+        if not a.augmented:p.error('missing --augmented')
+        import shutil
+        result=pathlib.Path(a.augmented)
+        result.parent.mkdir(parents=True,exist_ok=True)
+        if result.resolve()==pathlib.Path(a.cnf).resolve():
+            raise RuntimeError('R108_FAIL_CLOSED cannot overwrite original input')
+        if report['gf2_unsat']:
+            base.append_empty(pathlib.Path(a.cnf),result,report['original_clauses'])
+        else:
+            shutil.copyfile(a.cnf,result)
+        if hashlib.sha256(pathlib.Path(a.cnf).read_bytes()).hexdigest()!=report['sha256']:
+            raise RuntimeError('R108_FAIL_CLOSED original CNF changed during export')
+        report['output_sha256']=hashlib.sha256(result.read_bytes()).hexdigest()
     dest=pathlib.Path(a.out);dest.parent.mkdir(parents=True,exist_ok=True)
     dest.write_text(json.dumps(report,indent=2)+'\n')
     print('R108_SCAN',json.dumps({k:v for k,v in report.items() if k!='gf2_proof_ids'}),flush=True)
