@@ -1,0 +1,174 @@
+name: DRNAS R87 frozen adaptive schedule prospective SHA-disjoint official originals
+on:
+  push:
+    branches: [experiment/drnas-r87-prospective-holdout-20261104]
+    paths:
+      - '.github/workflows/drnas-r87-prospective-holdout.yml'
+      - 'experiments/drnas_v16/r87_unseen_official.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r87-prospective-sha-originals-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze 8 not-previously-recorded SHA-disjoint real official SAT2025/2026 originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Frozen policy syntax and audit preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r87_unseen_official.py
+          python3 -u experiments/drnas_v16/r87_unseen_official.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old82
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old73
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41770427411
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old85
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-frozen-24-originals-history-audit
+          run-id: 41766835127
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old85b
+      - uses: actions/download-artifact@v4
+        with:
+          name: R85-NEW-2025-2026-ORIGINALS-FROZEN
+          run-id: 41769855957
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old85eight
+      - name: Never reuse original input from R72/R73/R82/R85 histories
+        run: |
+          set -euo pipefail
+          test -s old82/world/manifest.json
+          test -s old73/new/manifest.json
+          test -s old85/manifest.json
+          test -s old85b/sources/manifest.json
+          test -s old85eight/world/manifest.json
+          python3 -u experiments/drnas_v16/r87_unseen_official.py freeze \
+            --r82 old82/world --r73 old73/new --r85 old85 \
+            --r85b old85b/sources --r85eight old85eight/world \
+            --out original | tee r87-holdout-freeze.log
+          (cd original && sha256sum -c source.sha256)
+          grep -q '^R87_FRESH_OFFICIAL_FREEZE_PASS' r87-holdout-freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R87-FRESH-SHA-ORIGINAL-COHORT-AND-SOURCE-AUDIT
+          path: |
+            original/
+            r87-holdout-freeze.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  benchmark:
+    name: r87-holdout-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-FRESH-SHA-ORIGINAL-COHORT-AND-SOURCE-AUDIT
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-PINNED-ORIGINAL-CLEAN-AND-FOUR-SCAN-CADENCES
+          run-id: 41774392604
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Fixed, SHA-locked native and original sources
+        run: |
+          set -euo pipefail
+          (cd original && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r87
+      - name: Frozen R87, 4 paralleled modes with 2 serial paired repetitions
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r87_unseen_official.py measure \
+            --sources original --compiled compiled \
+            --shard "$SHARD" --out results | tee r87-unseen-live.log
+          grep -q '^R87_HOLDOUT_SHARD_PASS' r87-unseen-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r87-holdout-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r87-unseen-live.log
+          retention-days: 90
+
+  audit:
+    name: Final 64 attempt source-paired PAR2, original SAT witness and source/runner/SHA audit
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-FRESH-SHA-ORIGINAL-COHORT-AND-SOURCE-AUDIT
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r87-holdout-shard-*
+          path: combined
+      - name: Fail closed on missing source, duplicate SHA, wrong SAT/UNSAT or unmatched runs
+        run: |
+          set -euo pipefail
+          (cd original && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r87_unseen_official.py audit \
+            --sources original --combined combined --out final | tee r87-holdout-audit.log
+          grep -q '^R87_HOLDOUT_FINAL_AUDIT_PASS' r87-holdout-audit.log
+          cat final/r87-holdout-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R87-PROSPECTIVE-SHA-ORIGINAL-64-TRIALS-FINAL
+          path: |
+            final/
+            original/manifest.json
+            original/source.sha256
+            r87-holdout-audit.log
+          retention-days: 90
+          if-no-files-found: error
