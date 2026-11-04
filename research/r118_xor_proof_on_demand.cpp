@@ -1,4 +1,4 @@
-// DRNAS SAT R118: exact CNF parity recovery + proof-on-demand GF(2) Gaussian elimination.
+// DRNAS SAT R118: exact CNF parity recovery + GF(2), proof-on-demand UNSAT certificates.
 // Research prototype, not a new SAT algorithm. Never infer answer from a
 // partial pattern. On mixed formulas, prove UNSAT only if XOR subset itself
 // is contradictory; otherwise exec the pinned unmodified Kissat baseline.
@@ -121,11 +121,9 @@ static void print_equations(const vector<Equation>& equations) {
     cout<<"\n";
   }
 }
-// Derive a full XOR contradiction trace only when the fast proof-free pass
-// detects inconsistency. This preserves the original R28 certificate format.
-static bool reconstruct_unsat_certificate(const vector<Equation>&eqs,int n,
-                                          vector<uint64_t>&certificate){
-  const size_t words=size_t(n/64+1), proof_words=(eqs.size()+63)/64;
+// Reconstruct and independently validate the UNSAT trace on demand.
+static bool replay_unsat(const vector<Equation>&eqs,int n,vector<uint64_t>&cert){
+  const size_t words=size_t(n/64+1),proof_words=(eqs.size()+63)/64;
   vector<Row> basis(size_t(n)+1);
   for(size_t idx=0;idx<eqs.size();idx++){
     Row row;
@@ -138,15 +136,14 @@ static bool reconstruct_unsat_certificate(const vector<Equation>&eqs,int n,
       int p=lowest(row.bits);
       if(p==0){
         if(row.rhs){
-          // Independently replay the linear combination in equation space.
           vector<uint64_t> combined(words,0);
           int rhs=0;
-          for(size_t i=0;i<eqs.size();i++)if(bit(cert,int(i))){
+          for(size_t i=0;i<eqs.size();i++)if(bit(row.proof,int(i))){
             rhs^=eqs[i].rhs;
             for(int x:eqs[i].vars)flip(combined,x);
           }
           if(lowest(combined)!=0 || rhs!=1)return false;
-          certificate=move(row.proof);
+          cert=move(row.proof);
           return true;
         }
         break;
@@ -232,31 +229,33 @@ int main(int argc,char** argv){
     return fallback(filename,kissat,"no_verified_complete_xor",int(clauses.size()),covered,0,classify);
   if(eqs.size()>3000)
     return fallback(filename,kissat,"equation_limit",int(clauses.size()),covered,int(eqs.size()),classify);
-  const size_t words=size_t(n/64+1), proof_words=(eqs.size()+63)/64;
+  // R118 fast pass: no provenance bitsets unless inconsistency occurs.
+  const size_t words=size_t(n/64+1);
   vector<Row> basis(size_t(n)+1);
   int rank=0;
   for(size_t idx=0;idx<eqs.size();idx++){
     Row row;
     row.bits.assign(words,0);
-    row.proof.assign(proof_words,0);
     row.rhs=eqs[idx].rhs;
     for(int x:eqs[idx].vars)flip(row.bits,x);
-    row.proof[idx>>6]|=uint64_t(1)<<(idx&63);
     for(;;){
       int p=lowest(row.bits);
       if(p==0){
         if(row.rhs){
+          vector<uint64_t> cert;
+          if(!replay_unsat(eqs,n,cert))
+            return fallback(filename,kissat,"proof_replay_failed",int(clauses.size()),covered,int(eqs.size()),classify);
           cout<<"c R118_ROUTE certified_xor_contradiction equations="<<eqs.size()
               <<" rank="<<rank<<" clauses="<<clauses.size()
-              <<" covered="<<covered<<"\n";
+              <<" covered="<<covered<<"\\n";
           print_equations(eqs);
           cout<<"c R118_UNSAT_CERT ids=";
           bool first=true;
-          for(size_t i=0;i<eqs.size();i++)if(bit(row.proof,int(i))){
+          for(size_t i=0;i<eqs.size();i++)if(bit(cert,int(i))){
             if(!first)cout<<",";
             cout<<i;first=false;
           }
-          cout<<"\ns UNSATISFIABLE\n"<<flush;
+          cout<<"\\ns UNSATISFIABLE\\n"<<flush;
           return classify?0:20;
         }
         break;
