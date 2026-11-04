@@ -1,0 +1,60 @@
+name: DRNAS R91 external SAT XOR-adjacent pilot
+on:
+  push:
+    branches: [experiment/drnas-r91-two-way-pilot-20261104]
+    paths: ['.github/workflows/drnas-r91-external-sat.yml', 'research/r91_two_way_gate.py']
+  workflow_dispatch:
+jobs:
+  real-external-sat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned upstream Kissat
+        run: |
+          git clone https://github.com/arminbiere/kissat.git /tmp/kissat
+          cd /tmp/kissat
+          git checkout 3.1.1
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Download external SATLIB formulas (not generated in this workflow)
+        run: |
+          mkdir -p /tmp/satlib results
+          curl --fail --location --retry 3 --max-time 90 'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/uf20-91.tar.gz' -o /tmp/satlib/uf20-91.tar.gz
+          sha256sum /tmp/satlib/uf20-91.tar.gz | tee results/source_sha256.txt
+          tar -xzf /tmp/satlib/uf20-91.tar.gz -C /tmp/satlib
+          find /tmp/satlib -type f \( -name '*.cnf' -o -name '*.dimacs' \) | sort | head -n 8 > results/formulas.txt
+          test "$(wc -l < results/formulas.txt)" -eq 8
+      - name: Run paired baseline and instrumented controller overhead
+        run: |
+          python3 - <<'PY'
+          import csv, hashlib, json, pathlib, subprocess, time
+          from research.r91_two_way_gate import TwoWayGate, Suggestion
+          files=pathlib.Path('results/formulas.txt').read_text().splitlines()
+          rows=[]
+          for file in files:
+            data=pathlib.Path(file).read_bytes()
+            for rep in range(3):
+              for mode in ('clean','r91_monitor'):
+                t=time.perf_counter()
+                if mode=='r91_monitor':
+                  gate=TwoWayGate()
+                  assert not gate.propose(Suggestion('unverified',False,0.0))
+                p=subprocess.run(['/tmp/kissat/build/kissat',file],capture_output=True,text=True,timeout=15)
+                elapsed=time.perf_counter()-t
+                if p.returncode not in (10,20):
+                  raise RuntimeError(f'Unexpected solver exit {p.returncode}: {p.stderr[-1000:]}')
+                rows.append(dict(formula=pathlib.Path(file).name,sha256=hashlib.sha256(data).hexdigest(),rep=rep,mode=mode,status='SAT' if p.returncode==10 else 'UNSAT',seconds=elapsed,runner='ubuntu-latest',kind='external SATLIB random3SAT'))
+          with open('results/paired.csv','w',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+          assert len(rows)==48
+          for i in range(0,len(rows),2):
+            assert rows[i]['status']==rows[i+1]['status']
+          print(json.dumps({'runs':len(rows),'note':'R91 monitor only; NOT two-way clause exchange; no XOR advantage claim'}))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r91-external-sat-pilot
+          path: results/
