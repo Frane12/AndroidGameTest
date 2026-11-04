@@ -36,8 +36,11 @@ def main():
     candidates=[]
     for f in sorted(pathlib.Path(a.root).rglob("*.cnf")):
         xor,clauses=scan(f)
-        if xor:
-            candidates.append(dict(path=str(f),sha256=hashlib.sha256(f.read_bytes()).hexdigest(),xor_triples=xor,clauses=clauses,source="external",status="candidate"))
+        satlib_parity = 'satlib_parity' in f.parts
+        if xor or satlib_parity:
+            family='SATLIB_PARITY_external' if satlib_parity else 'external_circuit'
+            evidence='SATLIB_PARITY_family' if satlib_parity and xor == 0 else 'exact_3xor_clause_pattern'
+            candidates.append(dict(path=str(f),sha256=hashlib.sha256(f.read_bytes()).hexdigest(),xor_triples=xor,clauses=clauses,source=family,evidence=evidence,status="candidate"))
     # deterministic: avoid cherry-picking based on solver runtime
     candidates.sort(key=lambda x:x["sha256"])
     unique={x["sha256"]:x for x in candidates}
