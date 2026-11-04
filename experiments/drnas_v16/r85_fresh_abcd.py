@@ -181,8 +181,14 @@ def parse_counts(stdout,mode,source,cache):
     if not policy:
         # The original native guard rejects contradictory BCP/root input
         # before source-row selection, retaining sound fail-closed abstention.
-        ck(not emitted and last["prepared"]==0 and "R32U_GUARD" in stdout,
-           "no native row-selection tag without an explicit original guard")
+        # Original R32b may refuse whole source input BEFORE R32u can
+        # print its own guard (e.g. >1600 original XOR equations).
+        # R32b emits a specific INPUT_GUARD with a machine-readable reason.
+        guarded=("R32U_GUARD" in stdout or
+                 re.search(r"^c R32B_PROBE .+signal=INPUT_GUARD reason=\\w+",
+                           stdout,re.M) is not None)
+        ck(not emitted and last["prepared"]==0 and guarded,
+           "no native row-selection tag without an explicit original-source guard")
         candidates=selected=0
     else:
         ck(len(policy)==1,"more than one native source selection")
