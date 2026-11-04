@@ -121,6 +121,40 @@ def _reduce(rows,existing,deadline):
             canon=tuple(sorted(clause))
             if canon not in existing and canon not in short_proofs:
                 short_proofs[canon]=dict(vars=vars_,rhs=rhs,ancestry=proof)
+    # Gaussian pivot form alone does not expose all short XOR combinations.
+    # For example, (a xor b xor c) and (a xor b xor d) imply c xor d.
+    # Match rows sharing a variable *pair*, checking at most 8 earlier rows
+    # per support bucket; all derived clauses retain exact source witnesses.
+    pair_buckets=collections.defaultdict(list)
+    for i,row in enumerate(rows[:MAX_ELIMINATION_ROWS]):
+        if time.monotonic()>deadline:break
+        support=row["vs"]
+        if row["kind"]!="xor" or not 2<=len(support)<=6:continue
+        candidates=set()
+        for aa in range(len(support)):
+            for bb in range(aa+1,len(support)):
+                key=(support[aa],support[bb])
+                candidates.update(pair_buckets[key])
+                if len(pair_buckets[key])<8:
+                    pair_buckets[key].append(i)
+        current=0
+        for v in support:current^=1<<(v-1)
+        for j in sorted(candidates):
+            if time.monotonic()>deadline:break
+            prev=rows[j]
+            other=0
+            for v in prev["vs"]:other^=1<<(v-1)
+            combined=current^other
+            if not 1<=combined.bit_count()<=2:continue
+            combined_rhs=row["rhs"]^prev["rhs"]
+            vars_=[];temp=combined
+            while temp:
+                low=temp&-temp;vars_.append(low.bit_length());temp^=low
+            for clause in _clauses_from_row(vars_,combined_rhs):
+                canonical=tuple(sorted(clause))
+                if canonical not in existing and canonical not in short_proofs:
+                    short_proofs[canonical]=dict(
+                        vars=vars_,rhs=combined_rhs,ancestry=(1<<i)^(1<<j))
     return short_proofs,dict(contradiction=False,processed=visited,rank=len(basis))
 
 def prepare(original,case,max_budget=MAX_TOTAL_PREPROCESS_S, verify=True):
