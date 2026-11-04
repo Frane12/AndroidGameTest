@@ -86,6 +86,30 @@ public:
         if (old_val != 0 || new_val == 0) { disabled = true; return; }
         ++assignment_events;
         auto& refs = watch_index[var];
+        // R100: bound accumulated stale watch references without changing
+        // any current watch or undo-journal entry. Compaction is deliberately
+        // local to the notified bucket, and is never used as a correctness gate.
+        if (refs.size() >= 32) {
+            size_t live = 0;
+            for (const WatchRef& ref : refs) {
+                if (ref.row >= rows.size()) { disabled = true; return; }
+                const bool a = watch_a[ref.row] == var &&
+                               generation_a[ref.row] == ref.generation;
+                const bool b = watch_b[ref.row] == var &&
+                               generation_b[ref.row] == ref.generation;
+                if (a && b) { disabled = true; return; }
+                live += (a || b);
+            }
+            if (live * 2 <= refs.size()) {
+                refs.erase(remove_if(refs.begin(), refs.end(),
+                    [&](const WatchRef& ref) {
+                        return !((watch_a[ref.row] == var &&
+                                  generation_a[ref.row] == ref.generation) ||
+                                 (watch_b[ref.row] == var &&
+                                  generation_b[ref.row] == ref.generation));
+                    }), refs.end());
+            }
+        }
         size_t kept = 0;
         const size_t sz = refs.size();
         for (size_t k=0; k<sz; ++k) {
