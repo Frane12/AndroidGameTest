@@ -1,0 +1,133 @@
+name: DRNAS R119 real engineering circuit equivalence XOR benchmark
+on:
+  push:
+    branches: [experiment/drnas-r119-circuit-equiv-20261104]
+    paths:
+      - 'research/r119_logic_equiv.py'
+      - 'research/r119_aggregate.py'
+      - '.github/workflows/drnas-r119-circuit-equiv.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze 192 XOR and mixed digital circuit miters with exact SHA256
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Freeze deterministic netlists and mathematical truth
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r119_logic_equiv.py research/r119_aggregate.py
+          python3 -u research/r119_logic_equiv.py freeze
+          (cd r119 && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r119-frozen-192-circuits
+          path: r119/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: Paired circuits shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r119-frozen-192-circuits
+          path: r119
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Install specialized XOR-aware CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cms="$(command -v cryptominisat5 || command -v cryptominisat)"
+          test -x "$cms"
+          echo "CRYPTOMINISAT_BIN=$cms" >> "$GITHUB_ENV"
+          dpkg-query -W cryptominisat > r119/crypto-package-version.txt
+      - name: Compile pinned R28 and R118 on identical hardware
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r119/r28
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r119/r118
+          (cd r119 && sha256sum -c source.sha256)
+          lscpu > r119/cpu.txt
+          sha256sum r119/r28 r119/r118 built/bin/kissat_4_0_4 "$CRYPTOMINISAT_BIN" > r119/binaries.sha256
+          git rev-parse HEAD > r119/commit.txt
+          python3 -m py_compile research/r119_logic_equiv.py research/r118_xor_paired_real.py
+      - name: Benchmark 24 designs twice, four solvers, verify source and proofs
+        run: |
+          set -euo pipefail
+          python3 -u research/r119_logic_equiv.py run --shard ${{ matrix.shard }} | tee r119/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r119-bench-shard-${{ matrix.shard }}
+          path: |
+            r119/shard-*/
+            r119/shard-${{ matrix.shard }}.log
+            r119/cpu.txt
+            r119/commit.txt
+            r119/binaries.sha256
+            r119/crypto-package-version.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: Complete-audit paired PAR2 and reproducible comparison
+    needs: [freeze, benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r119-frozen-192-circuits
+          path: r119
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r119-bench-shard-*
+          merge-multiple: false
+          path: r119/collected
+      - name: Refuse incomplete shards, enforce SHA and paired audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r119_aggregate.py | tee r119/aggregation.log
+          cat r119/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R119-CIRCUIT-EQUIV-FULL-PAR2-AUDIT
+          path: |
+            r119/manifest.json
+            r119/source.sha256
+            r119/report.md
+            r119/aggregate.json
+            r119/scatter_pairs.csv
+            r119/aggregation.log
+          retention-days: 90
