@@ -1,0 +1,64 @@
+name: DRNAS R117 500 real SAT candidate holdout
+on:
+  push:
+    branches: [experiment/drnas-r117-500-real-holdout-20261104]
+    paths:
+      - 'research/r117_500_freeze.py'
+      - 'research/r117_500_shard.py'
+      - '.github/workflows/drnas-r117-500-real.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -u research/r117_500_freeze.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r117-500-frozen-candidate-manifest
+          path: r117/manifest.json
+  test:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r117-500-frozen-candidate-manifest
+          path: r117
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify pinned Kissat and build native DRNAS
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r117/r28
+          python3 -m py_compile research/r117_500_shard.py
+          lscpu > r117/cpu.txt
+      - name: Run shard with 5-second cap and two repetitions
+        run: python3 -u research/r117_500_shard.py --shard ${{ matrix.shard }} | tee r117/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r117-real-shard-${{ matrix.shard }}
+          path: |
+            r117/shard*/
+            r117/shard-*.log
+            r117/cpu.txt
+          retention-days: 60
