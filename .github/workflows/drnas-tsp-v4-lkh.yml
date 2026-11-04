@@ -1,0 +1,73 @@
+name: DRNAS TSP v4 early advantage vs LKH-3
+on:
+  push:
+    branches:
+      - experiment/drnas-tsp-v4-early-kopt
+    paths:
+      - .github/workflows/drnas-tsp-v4-lkh.yml
+      - experiments/tsp_shared_v31/drnas_v4.py
+      - experiments/tsp_shared_v31/compare_v4.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  v4-paired:
+    name: True 2k/5k LKH vs v3.1 vs v4 30s
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numerical packages
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Compile genuine LKH-3
+        run: |
+          git clone --depth 1 https://github.com/cerebis/LKH3.git
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Compare 2,4,6,8,10,15,20,25,30 second checkpoints
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v4.py \
+            --cities 2000 5000 --seeds 0 1 2 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v4_paired.csv --work drnas_tsp_v4_lkh_logs
+      - name: Audit and print paired summary
+        run: |
+          python - <<'PY'
+          import csv,collections,statistics
+          with open('drnas_tsp_v4_paired.csv',newline='') as f: rows=list(csv.DictReader(f))
+          methods=['LKH-3','DRNAS v3.1 route_share','DRNAS v4 early-3opt']
+          times=[2,4,6,8,10,15,20,25,30]
+          assert len(rows)==len(methods)*2*3*len(times),len(rows)
+          assert all(r['status']!='error' for r in rows)
+          for n in (2000,5000):
+            for seed in range(3):
+              for m in methods:
+                rr=[r for r in rows if (int(r['cities']),int(r['seed']),r['method'])==(n,seed,m)]
+                assert sorted(int(r['checkpoint_s']) for r in rr)==times
+                assert rr[-1]['final_length_units']
+                values=[float(r['best_length_units']) for r in rr if r['best_length_units']]
+                assert all(a>=b for a,b in zip(values,values[1:])),(n,seed,m)
+            print(f'\nCITIES {n}')
+            for m in methods:
+              rr=[r for r in rows if int(r['cities'])==n and r['method']==m]
+              summary=[]
+              for t in times:
+                rr2=[r for r in rr if int(r['checkpoint_s'])==t and r['best_length_units']]
+                summary.append(f'{t}s:{statistics.mean(float(r["best_length_units"]) for r in rr2):.2f}' if len(rr2)==3 else f'{t}s:{len(rr2)}/3')
+              print(m,' '.join(summary))
+          PY
+      - name: Upload exact input and output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-tsp-v4-early-advantage-external-lkh
+          path: |
+            drnas_tsp_v4_paired.csv
+            drnas_tsp_v4_lkh_logs/*.log
+            drnas_tsp_v4_lkh_logs/*.tsp
+            drnas_tsp_v4_lkh_logs/*.tour
+          if-no-files-found: warn
