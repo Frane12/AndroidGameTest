@@ -179,7 +179,7 @@ def one(source,mode,clean,native,cache):
     if not isclean:
         env.update(R32B_MODE="r32u",R32U_ACTIVE="0" if passive else "1",
              R84_SCAN_EVERY="16",R85_DIVERSE="0",R85_CAP="64",
-             R65XL_POLICY="fixed" if mode=="native_fixed_noprep" else "adaptive",
+             R65XL_POLICY="fixed" if passive or mode=="native_fixed_noprep" else "adaptive",
              R32S_PASSIVE_TRACE="0")
     started=time.monotonic()
     exe=clean if isclean else native
