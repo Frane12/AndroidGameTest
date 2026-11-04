@@ -1,0 +1,153 @@
+name: DRNAS R65C smart OR standard cooperative or both on real SAT2026
+on:
+  push:
+    branches:
+      - experiment/drnas-r65c-smart-or-coop-20261104
+    paths:
+      - '.github/workflows/drnas-r65c-smart-or.yml'
+      - 'experiments/drnas_v16/r65c_smart_or.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65c-smart-or
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Verify proof-carrying XOR signals and SHA-frozen R65 cohort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and logical soundness selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65c_smart_or.py
+          python3 -u experiments/drnas_v16/r65c_smart_or.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r64-frozen-stratum-spec
+          run-id: 41711695189
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r64spec
+      - name: Freeze unchanged R65 originals and pre-registered strata
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py freeze \
+            --sources sources/fresh --r64spec r64spec --out r65spec
+          test -s r65spec/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r65c-sha-frozen-cohort
+          path: r65spec/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r65c-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 36
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65c-sha-frozen-cohort
+          path: r65spec
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify frozen SHA manifests and binaries
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Paired trials - clean Kissat vs original R65 vs R65C smart OR
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65c_smart_or.py measure \
+            --sources sources/fresh --spec r65spec \
+            --shard "$SHARD" --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r65c-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65c-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r65c-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Audit all 108 paired trials and smart OR routing
+    needs: [freeze, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65c-sha-frozen-cohort
+          path: r65spec
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65c-shard-*
+          path: combined
+      - name: Fail closed on missing shards results or SHA differences
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65c_smart_or.py audit \
+            --spec r65spec --combined combined \
+            --json r65c-final.json --md r65c-final.md
+          cat r65c-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65C-SMART-OR-FINAL-AUDIT
+          path: |
+            r65c-final.json
+            r65c-final.md
+            r65spec/manifest.json
+          if-no-files-found: error
+          retention-days: 90
