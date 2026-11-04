@@ -178,15 +178,22 @@ def parse_counts(stdout,mode,source,cache):
         ck(last["attached"]==0 and last["first_uip_reason_uses"]==0,
            "passive mode improperly performed XOR reasons")
     policy=SELECTION.findall(stdout)
-    ck(len(policy)==1,"native selection policy not logged")
-    diverse,candidates,selected=map(int,policy[0])
-    ck(diverse==int(mode.startswith("C_") or mode.startswith("D_")),
-       "native row policy not matching cohort arm")
-    ck(selected==len(emitted),"actual native selected parity count mismatch")
-    if mode.startswith("D_"):
-        ck(selected<=128,"expanded cap exceeded")
+    if not policy:
+        # The original native guard rejects contradictory BCP/root input
+        # before source-row selection, retaining sound fail-closed abstention.
+        ck(not emitted and last["prepared"]==0 and "R32U_GUARD" in stdout,
+           "no native row-selection tag without an explicit original guard")
+        candidates=selected=0
     else:
-        ck(selected<=64,"standard source cap exceeded")
+        ck(len(policy)==1,"more than one native source selection")
+        diverse,candidates,selected=map(int,policy[0])
+        ck(diverse==int(mode.startswith("C_") or mode.startswith("D_")),
+           "native row policy not matching cohort arm")
+        ck(selected==len(emitted),"actual native selected parity count mismatch")
+        if mode.startswith("D_"):
+            ck(selected<=128,"expanded cap exceeded")
+        else:
+            ck(selected<=64,"standard source cap exceeded")
     return dict(snapshots=len(entries),last=last,source_rows=len(emitted),
                 total_candidates=candidates,verified=True)
 
