@@ -1,0 +1,60 @@
+name: DRNAS ECDLP R1 controlled GF2 elliptic-curve SAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-ecdlp-r1-toy-gf2-20261104]
+    paths:
+      - '.github/workflows/drnas-ecdlp-r1.yml'
+      - 'research/drnas_ecdlp_r1_toy_gf2.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  toy-ecdlp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        bits: [5, 6, 7, 8]
+    name: GF2 binary-field ECC ${{ matrix.bits }}-bit R111 clean vs bridge
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen CaDiCaL 2.1.0 and DRNAS R111 external GF2 CDCL bridge
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/ecdlp-cadical
+          cd /tmp/ecdlp-cadical
+          git checkout rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/cadical-source-revision.txt"
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -I/tmp/ecdlp-cadical/src \
+            research/r111_cdcl_gf2_bridge.cpp /tmp/ecdlp-cadical/build/libcadical.a \
+            -pthread -o /tmp/drnas-ecdlp-r111
+      - name: Run immutable DRNAS R111 math/proof selftest
+        run: |
+          set -euo pipefail
+          python3 research/r111_cdcl_gf2_selftest.py /tmp/drnas-ecdlp-r111 | tee r111-selftest.txt
+          grep -q R111_IPASIRUP_GF2_SELFTEST_PASS r111-selftest.txt
+      - name: Bit-blast self-generated EC challenges and measure paired SAT solver runs
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ecdlp_r1_toy_gf2.py \
+            --bits '${{ matrix.bits }}' \
+            --out 'ecdlp-r1-${{ matrix.bits }}' \
+            --solver /tmp/drnas-ecdlp-r111 \
+            --trials 3 --repeats 2 --cap 8 | tee 'ecdlp-r1-${{ matrix.bits }}.log'
+          grep -q '^ECDLP_COMPLETE' 'ecdlp-r1-${{ matrix.bits }}.log'
+      - name: Archive sources, SHA256, verified recovered secrets, full timing and fail-closed logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-ECDLP-R1-GF2-${{ matrix.bits }}bit
+          path: |
+            ecdlp-r1-${{ matrix.bits }}/
+            ecdlp-r1-${{ matrix.bits }}.log
+            r111-selftest.txt
+            cadical-source-revision.txt
+          if-no-files-found: warn
