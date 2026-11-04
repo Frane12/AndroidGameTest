@@ -247,7 +247,7 @@ int main(int argc,char** argv){
             return fallback(filename,kissat,"proof_replay_failed",int(clauses.size()),covered,int(eqs.size()),classify);
           cout<<"c R118_ROUTE certified_xor_contradiction equations="<<eqs.size()
               <<" rank="<<rank<<" clauses="<<clauses.size()
-              <<" covered="<<covered<<"\\n";
+              <<" covered="<<covered<<"\n";
           print_equations(eqs);
           cout<<"c R118_UNSAT_CERT ids=";
           bool first=true;
@@ -255,7 +255,7 @@ int main(int argc,char** argv){
             if(!first)cout<<",";
             cout<<i;first=false;
           }
-          cout<<"\\ns UNSATISFIABLE\\n"<<flush;
+          cout<<"\ns UNSATISFIABLE\n"<<flush;
           return classify?0:20;
         }
         break;
