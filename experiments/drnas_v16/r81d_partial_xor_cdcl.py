@@ -36,7 +36,8 @@ def clauses_for_row(vs,rhs):
 
 def verified_row_witness(original_clauses,rows,target_vars,target_rhs):
     """Validate XOR-combination proof using only ORIGINAL CNF clauses."""
-    source=set(tuple(sorted(c)) for c in original_clauses)
+    source=(original_clauses if isinstance(original_clauses,set) else
+            set(tuple(sorted(c)) for c in original_clauses))
     vector=0;rhs=0
     for row in rows:
         vs=list(row["vs"]); bit=row["rhs"]
@@ -176,13 +177,14 @@ def prepare(original,case,max_budget=MAX_TOTAL_PREPROCESS_S, verify=True):
             _,cnf=r28.load_clauses(path)
             check=lambda x: bool(x)
             certs=[]
+            original_set=set(tuple(sorted(c)) for c in cnf)
             for clause in candidates:
                 if time.monotonic()>deadline:
                     return fallback("certificate_budget_fallback")
                 p=proofs[clause]
                 witness=[row for i,row in enumerate(selected)
                          if (p["ancestry"]>>i)&1]
-                if not verified_row_witness(cnf,witness,p["vars"],p["rhs"]):
+                if not verified_row_witness(original_set,witness,p["vars"],p["rhs"]):
                     raise RuntimeError("R81D_INVALID_ORIGINAL_CNF_PROOF")
                 certs.append(dict(clause=list(clause),vs=p["vars"],
                                   rhs=p["rhs"],proof=witness))
