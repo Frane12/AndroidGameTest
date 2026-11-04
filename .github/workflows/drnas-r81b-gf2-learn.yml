@@ -1,0 +1,132 @@
+name: DRNAS R81B certified GF2 short-lemma native CDCL benchmark
+on:
+  push:
+    branches: [experiment/drnas-r81b-gf2-learn-20261104]
+    paths:
+      - '.github/workflows/drnas-r81b-gf2-learn.yml'
+      - 'experiments/drnas_v16/r81b_gf2_core.py'
+      - 'experiments/drnas_v16/r81b_live_benchmark.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r81b-gf2-20261104
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    name: Independent GF2 implication and near-XOR soundness tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static syntax and proof lineage versus exhaustive Boolean truth tables
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r81b_gf2_core.py experiments/drnas_v16/r81b_live_benchmark.py
+          python3 -u experiments/drnas_v16/r81b_gf2_core.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Audit immutable original source cohort and solver binary checksums
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          test "$(python3 -c 'import json; m=json.load(open("world/manifest.json")); print(len(m["cases"]))')" = 24
+          echo R81B_SOURCE_SHA_FROZEN_REUSED_R80_PASS
+
+  benchmark:
+    name: r81b-shard-${{ matrix.shard }}
+    needs: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 47
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Five paired methods, three repeats, frozen SAT Competition 2026 originals, 30s caps
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u experiments/drnas_v16/r81b_live_benchmark.py measure \
+            --sources world --binaries bin --shard ${{ matrix.shard }} --out results | tee r81b-live.log
+          test -s results/r81b-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81b-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r81b-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R81B final full SHA256, SAT witness, provenance, paired PAR2 audit
+    needs: [selftest,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r81b-shard-*
+          path: combined
+      - name: Fail closed on missing measurements, wrong checksums or conflicting verdicts
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r81b_live_benchmark.py audit \
+            --sources world --combined combined --out final
+          cat final/r81b-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R81B-PROOF-TRACED-GF2-NATIVE-CDCL-FINAL
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90
