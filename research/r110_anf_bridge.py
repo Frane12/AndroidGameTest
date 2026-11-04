@@ -81,6 +81,67 @@ def satisfies(clauses, assignment):
                    for lit in clause) for clause in clauses)
 
 
+def anf_polynomial(gate):
+    """Expand a verified gate exactly into algebraic normal form over GF(2).
+
+    A monomial is a tuple of positive variable IDs; () is constant 1.
+    Every term cancels modulo 2, so no floating-point algebra is involved.
+    """
+    terms = set()
+    def toggle(mon):
+        if mon in terms:
+            terms.remove(mon)
+        else:
+            terms.add(mon)
+    if gate["kind"] == "XOR3":
+        for v in gate["vars"]:
+            toggle((v,))
+        if gate["detail"]["rhs"]:
+            toggle(())
+    elif gate["kind"] == "AND":
+        a, b = gate["detail"]["inputs"]
+        z = gate["detail"]["output"]
+        pa, pb, pz = int(a < 0), int(b < 0), int(z < 0)
+        x, y = abs(a), abs(b)
+        toggle((abs(z),))
+        if pz:
+            toggle(())
+        toggle(tuple(sorted((x, y))))
+        if pb:
+            toggle((x,))
+        if pa:
+            toggle((y,))
+        if pa and pb:
+            toggle(())
+    else:
+        raise RuntimeError("R110 unknown gate")
+    return frozenset(terms)
+
+
+def anf_value(polynomial, assignment):
+    return sum(int(all(assignment[v] for v in mon)) for mon in polynomial) % 2
+
+
+def anf_elimination(gates):
+    """Formal GF2 elimination on ANF monomials; this alone does NOT solve SAT."""
+    basis = {}
+    for gate in gates:
+        row = set(anf_polynomial(gate))
+        while row:
+            pivot = max(row, key=lambda term: (len(term), term))
+            if pivot not in basis:
+                basis[pivot] = row
+                break
+            row.symmetric_difference_update(basis[pivot])
+    return dict(rank=len(basis), input_equations=len(gates),
+                linear_basis_rows=sum(all(len(mon) <= 1 for mon in row)
+                                      for row in basis.values()),
+                nonlinear_basis_rows=sum(any(len(mon) >= 2 for mon in row)
+                                         for row in basis.values()),
+                max_monomial_degree=max((len(mon) for row in basis.values()
+                                         for mon in row), default=0))
+
+
 def windows(gates):
     """Bounded XOR/AND interactions only; no unbounded component search."""
     occ = defaultdict(list)
@@ -123,6 +184,7 @@ def inspect(source):
     original_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     clauses = cnf_clauses(source)
     gates = extract(clauses)
+    anf = anf_elimination(gates)
     original_set = {canonical(c) for c in clauses}
     discovered = []
     emitted = set()
@@ -177,6 +239,8 @@ def inspect(source):
                 source_sha256=original_sha, original_clauses=len(clauses),
                 gates={"xor3": sum(g["kind"] == "XOR3" for g in gates),
                        "and": sum(g["kind"] == "AND" for g in gates)},
+                anf=anf,
+                gate_examples=gates[:8],
                 mixed_windows=count_windows, candidate_lemmas=discovered,
                 local_unsat_windows=inconsistency,
                 preparation_seconds=round(time.perf_counter()-t0, 6),
@@ -233,6 +297,14 @@ def selftest():
         lemmas = [tuple(r["clause"]) for r in report["candidate_lemmas"]]
         assert report["gates"]["xor3"] >= 1 and report["gates"]["and"] >= 1
         assert report["mixed_windows"] >= 1
+        # Each Boolean gate's original clause truth table must equal its ANF.
+        for gate in extract(original):
+            proof_clauses = [original[i] for i in gate["witness_clause_ids"]]
+            for values in itertools.product((False, True), repeat=3):
+                assignment = dict(zip((1, 2, 3), values))
+                assert satisfies(proof_clauses, assignment) == (
+                    anf_value(anf_polynomial(gate), assignment) == 0)
+        assert report["anf"]["rank"] >= 2
         assert {(-1,), (-2,), (-3,)}.issubset(set(lemmas)), report
         augmented(p, root/"aug.cnf", report)
         assert cnf_clauses(root/"aug.cnf") == original + lemmas
