@@ -1,0 +1,58 @@
+name: DRNAS R90 source-pinned 40ms fastpath guarded cooperative pilot
+on:
+  push:
+    branches: [experiment/drnas-r90-quicksolve-guard-20261104]
+    paths:
+      - '.github/workflows/drnas-r90-fastpath-gate.yml'
+      - 'experiments/drnas_v16/r90_fastpath_gate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r90-fastpath-gate
+  cancel-in-progress: false
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download SHA-frozen R88 2026 shard 2 originals
+        uses: actions/download-artifact@v4
+        with:
+          name: r88-sources-2026-2
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: source
+      - name: Download pinned clean Kissat (same binary as R88)
+        uses: actions/download-artifact@v4
+        with:
+          name: r88-pinned-solvers
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Soundness self-test and frozen SHA audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r90_fastpath_gate.py
+          python3 experiments/drnas_v16/r90_fastpath_gate.py selftest
+          (cd source/sources && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+      - name: 5 actual 2026 SATComp originals, two paired reps, 12s wall cap
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r90_fastpath_gate.py measure --sources source/sources --compiled compiled --out report | tee r90.log
+          grep -q '^R90_PAIRED_AUDIT_PASS' r90.log
+          cat report/R90_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload complete paired research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R90-FASTPATH-DEVELOPMENT-2026-SHARD2
+          path: |
+            report/
+            r90.log
+          retention-days: 90
