@@ -14,7 +14,7 @@ import r107b_certified_cadical as base
 MAX_POOL=50000
 MAX_PAIRS_PER_ROUND=35000
 MAX_NEW_PER_ROUND=3000
-MAX_CANDIDATES=35000
+MAX_CANDIDATES=5000
 MAX_XOR_ROWS=7000
 
 def normalize(clause):
@@ -124,6 +124,9 @@ def scan(source,rounds=2,do_resolve=True):
     derived_rows=0
     shortened_rows=0
     for V in keys:
+        if time.perf_counter()-started>25:
+            truncated=True
+            break
         k=len(V)
         if not 2<=k<=6:continue
         # Only supports included in V can directly falsify assignments of V.
@@ -211,11 +214,11 @@ def selftest():
         test('plain_unsat',valid+opposite,4,True)
         r=test('hidden_1_sat',hidden(valid,(5,)),5,False)
         assert r['certified_rows']>=1 and r['from_resolution_rows']>=1
-        r=test('hidden_1_unsat',hidden(valid+opposite,(5,)),5,True)
+        r=test('hidden_1_unsat',hidden(valid,(5,))+hidden(opposite,(6,)),6,True)
         assert r['from_resolution_rows']>=1
-        r=test('hidden_2_unsat',hidden(valid+opposite,(5,6)),6,True)
+        r=test('hidden_2_unsat',hidden(valid,(5,6))+hidden(opposite,(7,8)),8,True)
         assert r['from_resolution_rows']>=1
-        r=test('shortened',valid[:-1]+[(1,2,3)],4,False)
+        r=test('shortened',valid[:-1]+[valid[-1][:3]],4,False)
         assert r['from_shortened_rows']>=1
         r=test('incomplete',valid[:-1],4,False)
         assert r['certified_rows']==0
