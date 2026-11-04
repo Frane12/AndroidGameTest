@@ -1,0 +1,41 @@
+name: DRNAS R102 real and synthetic XOR paired benchmark
+on:
+  push:
+    branches: [experiment/drnas-r102-xor-value-20261104]
+    paths: ['.github/workflows/drnas-r102-xor-value.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  xor-value:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned CaDiCaL and XOR bridge
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/cadical
+          cd /tmp/cadical
+          git checkout rel-2.1.0
+          ./configure
+          make -j2
+          g++ -O2 -std=c++17 -I./src "$GITHUB_WORKSPACE/research/r99_reversible_watch_bridge.cpp" ./build/libcadical.a -o /tmp/r102-live
+          /tmp/r102-live selftest | tee "$GITHUB_WORKSPACE/r102-selftest.txt"
+          grep -q 'R99_WATCH_SELFTEST_PASS' "$GITHUB_WORKSPACE/r102-selftest.txt"
+      - name: Real SATLIB and independently generated synthetic XOR cases
+        run: |
+          set -euo pipefail
+          mkdir -p r102-results /tmp/r102-parity
+          curl -fsSL --retry 3 --max-time 90 'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz' -o /tmp/r102-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r102-parity/parity.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r102-parity/parity.tar.gz -C /tmp/r102-parity
+          python3 research/r102_real_synthetic_benchmark.py --real-root /tmp/r102-parity --out r102-results --solver /tmp/r102-live --cap 8
+      - name: Upload full paired records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: R102-REAL-SYNTHETIC-XOR-PAIRED
+          path: |
+            r102-results/
+            r102-selftest.txt
