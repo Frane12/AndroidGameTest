@@ -295,8 +295,8 @@ def audit(a):
     md=["# DRNAS R81 — Fresh official SAT2026 XOR structural holdout",
         "Unofficial source-disjoint experiment; same original CNFs, 25s cap, 2 repeats.",
         "Selection used SHA-ranked official ids and parity structure, never solve speed.",
-        f"Sources {len(mf[\'cases\'])}, XOR-positive {mf['xor_selected']}, controls {mf['controls_selected']}, trials {len(allrows)}.",
-        f"","| Solver | Solved / {len(mf[\'cases\'])*REPS} | PAR-2 sum (s) | Min solved (s) |",
+        f"Sources {len(mf['cases'])}, XOR-positive {mf['xor_selected']}, controls {mf['controls_selected']}, trials {len(allrows)}.",
+        "",f"| Solver | Solved / {len(mf['cases'])*REPS} | PAR-2 sum (s) | Min solved (s) |",
         "|---|---:|---:|---:|"]
     for m,s in summaries["ALL"].items():
         md.append(f"| {m} | {s['solved']}/{s['trials']} | {s['par2_s']:.3f} | {s['min_s']} |")
