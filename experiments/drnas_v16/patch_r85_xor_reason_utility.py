@@ -88,6 +88,21 @@ static void r85_emit(kissat *solver,int force) {
 
 def patch_search(root):
     p=root/"src"/"search.c";s=p.read_text()
+    s=once(s,
+      '#define R32U_MAX_ROWS 64',
+      '#define R32U_MAX_ROWS 128',
+      'safe_128_array_capacity')
+    s=once(s,
+      'static void r32u_initialize(kissat *solver) {',
+      'static unsigned r85_cap(void) {\n'
+      '  const char *p=getenv("R85_CAP");\n'
+      '  return p && !strcmp(p,"128") ? 128u : 64u;\n'
+      '}\nstatic void r32u_initialize(kissat *solver) {',
+      'r85_declares_dynamic_fixed_cap')
+    s=once(s,
+      'r32u_prepare_source_rows(r32u_rows,R32U_MAX_ROWS);',
+      'r32u_prepare_source_rows(r32u_rows,r85_cap());',
+      'r85_selected_cap_is_64_or_128')
     s=once(s,'static void r32u_initialize(kissat *solver) {',
        METRICS+'\nstatic void r32u_initialize(kissat *solver) {','new_R85_metrics')
     s=once(s,
