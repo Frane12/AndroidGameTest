@@ -1,0 +1,187 @@
+name: DRNAS R96-C reversible incremental XOR vs R95 paired benchmark
+on:
+  push:
+    branches: [experiment/drnas-r96c-incremental-watch-20261104]
+    paths:
+      - 'research/r96_incremental_xor_bridge.cpp'
+      - '.github/workflows/drnas-r96c-incremental-xor-benchmark.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  actual-live-cdcl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independently verify derived-row proof exporter
+        run: |
+          set -euo pipefail
+          python3 research/r92_verified_xor_bridge.py selftest
+          python3 research/r93_export_verified_rows.py selftest
+      - name: Build source-pinned CaDiCaL with IPASIR-UP
+        run: |
+          set -euo pipefail
+          git clone https://github.com/arminbiere/cadical.git /tmp/cadical
+          cd /tmp/cadical
+          git checkout rel-2.1.0
+          mkdir -p "$GITHUB_WORKSPACE/r93-results"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r93-results/cadical_commit.txt"
+          ./configure
+          make -j2
+          g++ -O2 -std=c++17 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r96_incremental_xor_bridge.cpp" ./build/libcadical.a -o /tmp/r96-live
+          g++ -O2 -std=c++17 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r95_event_driven_xor_bridge.cpp" ./build/libcadical.a -o /tmp/r95-live
+      - name: Deliberate two-XOR interaction with separate independently checked SAT witness
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0, 'experiments/drnas_v16')
+          import r88_cooperative as r88
+          clauses=[]
+          for vs in ((1,2,3),(1,2,4)):
+              for sign in (1,2,4,7):
+                  clauses.append(tuple(-v if sign&(1<<i) else v for i,v in enumerate(vs)))
+          clauses.append((3,))
+          r88.write_augmented(4,clauses,[],'r93-results/fixture.cnf')
+          PY
+          python3 research/r93_export_verified_rows.py export --cnf r93-results/fixture.cnf --rows r93-results/fixture.tsv --evidence r93-results/fixture-proof.json
+          set +e
+          /tmp/r96-live clean r93-results/fixture.cnf r93-results/fixture.tsv > r93-results/fixture-clean.log
+          baseline=$?
+          /tmp/r96-live active r93-results/fixture.cnf r93-results/fixture.tsv > r93-results/fixture-live.log
+          online=$?
+          /tmp/r96-live monitor r93-results/fixture.cnf r93-results/fixture.tsv > r93-results/fixture-monitor.log
+          observer=$?
+          /tmp/r95-live active r93-results/fixture.cnf r93-results/fixture.tsv > r93-results/fixture-r94-active.log
+          previous=$?
+          set -e
+          cat r93-results/fixture-clean.log r93-results/fixture-live.log
+          test "$baseline" -eq 10
+          test "$online" -eq 10
+          test "$observer" -eq 10
+          test "$previous" -eq 10
+          grep -q 'clauses_emitted=1' r93-results/fixture-r94-active.log
+          grep -q 'rows_scanned=' r93-results/fixture-live.log
+          grep -q 'sat_model_checked=1' r93-results/fixture-live.log
+          grep -q 'xor_rows=1' r93-results/fixture-live.log
+          grep -q 'disabled=0' r93-results/fixture-live.log
+          grep -q 'state_checks=' r93-results/fixture-live.log
+          grep -q 'clauses_emitted=1' r93-results/fixture-live.log
+          grep -q 'clauses_emitted=0' r93-results/fixture-monitor.log
+      - name: Reuse frozen SATLIB PARITY corpus and precommit structural manifest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r93-parity
+          curl --fail --location --retry 3 --max-time 90 'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz' -o /tmp/r93-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r93-parity/parity.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r93-parity/parity.tar.gz -C /tmp/r93-parity
+          python3 - <<'PY'
+          import pathlib
+          files=[p for p in sorted(pathlib.Path('/tmp/r93-parity').rglob('*.cnf')) if p.stat().st_size<2_000_000]
+          assert len(files)>=6, len(files)
+          sel = sorted({files[0],files[1],files[len(files)//2],
+                        files[len(files)//2+1],files[-2],files[-1]})
+          assert len(sel)==6
+          pathlib.Path('r93-results/manifest.txt').write_text('\n'.join(map(str,sel))+'\n')
+          print('R93_FROZEN_STRUCTURAL_MANIFEST',list(map(lambda p:p.name,sel)))
+          PY
+      - name: Paired R95 versus R96 incremental and R96-C on frozen SATLIB PARITY
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,hashlib,json,pathlib,random,subprocess,time
+          files=pathlib.Path('r93-results/manifest.txt').read_text().splitlines()
+          records=[]
+          modes=['clean','r95_active','r96_incremental','r96c_active']
+          for source in files:
+              path=pathlib.Path(source)
+              stem=hashlib.sha256(path.read_bytes()).hexdigest()
+              rows=pathlib.Path('r93-results')/(stem[:12]+'.tsv')
+              evidence=pathlib.Path('r93-results')/(stem[:12]+'.json')
+              t=time.perf_counter()
+              subprocess.run(['python3','research/r93_export_verified_rows.py','export',
+                  '--cnf',source,'--rows',str(rows),'--evidence',str(evidence)],check=True)
+              prep=time.perf_counter()-t
+              details=json.loads(evidence.read_text())
+              for rep in range(2):
+                  order=modes[:]
+                  random.Random(stem+str(rep)).shuffle(order)
+                  for mode in order:
+                      analysis=0 if mode=='clean' else prep
+                      bin='/tmp/r95-live' if mode=='r95_active' else '/tmp/r96-live'
+                      run_mode={'clean':'clean','r95_active':'active',
+                          'r96_incremental':'incremental','r96c_active':'active'}[mode]
+                      start=time.perf_counter()
+                      try:
+                          p=subprocess.run([bin,run_mode,source,str(rows)],
+                              capture_output=True,text=True,timeout=max(.01,8-analysis))
+                          elapsed=time.perf_counter()-start
+                          if p.returncode not in (10,20):
+                              raise RuntimeError(f'Native solver failure {mode} {path.name}: '
+                                  f'{p.returncode} stderr={p.stderr[-1200:]} stdout={p.stdout[-1200:]}')
+                          status='SAT' if p.returncode==10 else 'UNSAT'
+                          if status=='SAT' and 'sat_model_checked=1' not in p.stdout:
+                              raise RuntimeError('SAT source model not independently verified')
+                          if 'disabled=1' in p.stdout:
+                              raise RuntimeError('R96 state or callback invariant violation')
+                          if elapsed+analysis>8:
+                              status='TIMEOUT'
+                      except subprocess.TimeoutExpired:
+                          elapsed=max(.01,8-analysis)
+                          status='TIMEOUT'
+                          p=None
+                      txt=p.stdout if p else ''
+                      def metric(name):
+                          for token in txt.split():
+                              if token.startswith(name+'='):
+                                  return int(token.split('=',1)[1])
+                          return 0
+                      records.append(dict(formula=path.name,sha256=stem,rep=rep,mode=mode,
+                          status=status,solver_s=round(elapsed,6),prep_s=round(analysis,6),
+                          total_s=round(elapsed+analysis,6),
+                          par2_s=round(16 if status=='TIMEOUT' else elapsed+analysis,6),
+                          original_xors=details['original_xor_equations'],
+                          verified_rows=details['exported'],
+                          signals=metric('live_signals'),emitted=metric('clauses_emitted'),
+                          rows_scanned=metric('rows_scanned'),row_updates=metric('row_updates'),
+                          literal_reads=metric('row_literal_reads'),
+                          state_checks=metric('state_checks'),budget_off=metric('budget_off'),
+                          disabled=metric('disabled'),unsat_proof_checked=False))
+              print('R96_FORMULA',path.name,'verified_rows',details['exported'],
+                  'preparation_s',round(prep,6),flush=True)
+          assert len(records)==len(files)*2*len(modes)==48
+          for source in files:
+              for rep in range(2):
+                  outcomes={r['status'] for r in records if r['formula']==pathlib.Path(source).name
+                      and r['rep']==rep and r['status']!='TIMEOUT'}
+                  if len(outcomes)>1:
+                      raise RuntimeError(f'SAT/UNSAT disagreement {source} repeat {rep}: {outcomes}')
+          with open('r93-results/paired.csv','w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(records[0]));w.writeheader();w.writerows(records)
+          totals={mode:dict(par2_s=round(sum(r['par2_s'] for r in records if r['mode']==mode),6),
+              solved=sum(r['status']!='TIMEOUT' for r in records if r['mode']==mode),
+              emitted=sum(r['emitted'] for r in records if r['mode']==mode),
+              rows_scanned=sum(r['rows_scanned'] for r in records if r['mode']==mode),
+              row_updates=sum(r['row_updates'] for r in records if r['mode']==mode),
+              literal_reads=sum(r['literal_reads'] for r in records if r['mode']==mode),
+              state_checks=sum(r['state_checks'] for r in records if r['mode']==mode),
+              budget_tripped=sum(r['budget_off'] for r in records if r['mode']==mode))
+              for mode in modes}
+          base=totals['clean']['par2_s']
+          r95=totals['r95_active']['par2_s']
+          r96=totals['r96c_active']['par2_s']
+          result=dict(protocol='R96C-REVERSIBLE-XOR-READY-GATE',baseline='CaDiCaL rel-2.1.0',
+              cases=len(files),trials=len(records),modes=totals,
+              r96_vs_clean_gain_pct=round(100*(base-r96)/base,4),
+              r96_vs_r95_gain_pct=round(100*(r95-r96)/r95,4),
+              notes='Frozen reused SATLIB PARITY corpus, not blind holdout. Certified source rows; SAT models independently checked against CNF. UNSAT proofs not independently checked. Same input, runtime cap, pinned CaDiCaL and two repeats; preprocessing time charged to XOR modes.')
+          pathlib.Path('r93-results/audit.json').write_text(json.dumps(result,indent=2)+'\n')
+          print('R96_COMPLETE_AUDIT',json.dumps(result),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R96C-INCREMENTAL-XOR-R95-PAIRED-EVIDENCE
+          path: r93-results/
+          retention-days: 90
