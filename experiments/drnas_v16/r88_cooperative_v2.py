@@ -362,17 +362,17 @@ def audit(a):
 
 def selftest():
     require(len(MODES)==4 and CAP==12 and REPS==2,"fixed protocol drift")
-    one=[(1,2),(-1,3),(1,),(-3,)]
+    tiny=[(1,2),(-1,3),(1,),(-3,)]
     n=3
     # All local RUP checks still required on every emitted lemma.
-    raw,stats=base.cooperative_learn(one,max_lemmas=16,rounds=2)
-    selected,meta=select_useful(one,raw,stats)
+    raw,stats=base.cooperative_learn(tiny,max_lemmas=16,rounds=2)
+    selected,meta=select_useful(tiny,raw,stats)
     require(len(selected)<=16 and
-       all(base.bcp_conflict(one+raw[:i],tuple(-x for x in item["lemma"]))
+       all(base.bcp_conflict(tiny+raw[:i],tuple(-x for x in item["lemma"]))
            for i,item in enumerate(stats["proof_chain"])),
         "source/broadcast RUP proof chain inconsistent")
     # Ineligible empty/small CNF must never mutate original CNF.
-    require(not select_useful(one,[],{"proof_chain":[]})[0],
+    require(not select_useful(tiny,[],{"proof_chain":[]})[0],
             "empty cooperative batch must remain empty")
     require(score({"answer":"SAT","wall_s":11.95},.1)["answer"]=="TIMEOUT",
             "solver beyond inclusive preparation budget wrongly counted as solved")
