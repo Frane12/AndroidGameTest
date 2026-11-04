@@ -1,0 +1,64 @@
+name: DRNAS R81B pure-XOR native GF2 rescue targeted smoke
+on:
+  push:
+    branches: [experiment/drnas-r81b-pure-gf2-rescue-20261104]
+    paths:
+      - '.github/workflows/drnas-r81b-pure-rescue-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    name: R81B keep certified pure XOR on native GF2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify and smoke test exact GF2 proof and pure-XOR native rescue
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -m py_compile experiments/drnas_v16/r81b_gf2_core.py experiments/drnas_v16/r81b_live_benchmark.py
+          python3 experiments/drnas_v16/r81b_gf2_core.py
+          python3 -u - <<'PY'
+          import json,sys
+          from pathlib import Path
+          from types import SimpleNamespace
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r81b_live_benchmark as m
+          m.CAP=2.0
+          m.REPS=1
+          m.MODES=("r28_gf2","r81b_gf2_learn")
+          m.measure(SimpleNamespace(sources="world",binaries="bin",shard=4,out="results"))
+          data=json.loads(Path("results/r81b-shard.json").read_text())
+          pure=[r for r in data["rows"] if r["group"]=="pure_exact"]
+          assert len(pure)==2, pure
+          assert all(r["answer"]=="SAT" for r in pure), pure
+          assert all(r["solver_route"]!="budget_exhausted" for r in pure), pure
+          assert all(r["end_to_end_s"]<1.0 for r in pure), pure
+          assert pure[0]["answer"]==pure[1]["answer"], pure
+          print("R81B_PURE_GAUSS_RESCUE_PASS",pure,flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R81B-PURE-RESCUE-2SEC-SMOKE
+          path: results/
+          if-no-files-found: warn
