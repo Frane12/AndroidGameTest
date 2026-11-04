@@ -338,8 +338,8 @@ def selftest():
     with tempfile.TemporaryDirectory() as td:
         p=Path(td)/"source-units-are-axioms.cnf"
         cs=encode((1,2,3),0)+[(1,)]
-        p.write_text("p cnf 3 "+str(len(cs))+"\\n"+
-                     "".join(" ".join(map(str,cl))+" 0\\n" for cl in cs))
+        p.write_text("p cnf 3 "+str(len(cs))+"\n"+
+                     "".join(" ".join(map(str,cl))+" 0\n" for cl in cs))
         ck(source_prove_rows(p,[((2,3),1)])==1,
            "direct original unit must be in proof span")
         try:source_prove_rows(p,[((2,3),0)])
