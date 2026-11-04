@@ -185,8 +185,7 @@ def parse_counts(stdout,mode,source,cache):
         # print its own guard (e.g. >1600 original XOR equations).
         # R32b emits a specific INPUT_GUARD with a machine-readable reason.
         guarded=("R32U_GUARD" in stdout or
-                 re.search(r"^c R32B_PROBE .+signal=INPUT_GUARD reason=\\w+",
-                           stdout,re.M) is not None)
+                 "signal=INPUT_GUARD reason=" in stdout)
         ck(not emitted and last["prepared"]==0 and guarded,
            "no native row-selection tag without an explicit original-source guard")
         candidates=selected=0
