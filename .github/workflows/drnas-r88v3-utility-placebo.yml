@@ -1,0 +1,139 @@
+name: DRNAS R88.3 causal lemma utility, clause-count placebo and Kissat statistics
+on:
+  push:
+    branches: [experiment/drnas-r88v3-lemma-placebo-counters-20261104]
+    paths:
+      - '.github/workflows/drnas-r88v3-utility-placebo.yml'
+      - 'experiments/drnas_v16/r88_lemma_utility_v3.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r88v3-placebo-utility-source-paired-20261104
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    name: Pinned identical original Kissat and clause-placebo proof/timeout selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Mandatory independent cost/placebo/counter tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r88_lemma_utility_v3.py
+          python3 experiments/drnas_v16/r88_cooperative.py selftest
+          python3 experiments/drnas_v16/r88_cooperative_v2.py selftest
+          python3 -u experiments/drnas_v16/r88_lemma_utility_v3.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: R88V2-UNCHANGED-R88V1-BASELINE-PINS
+          run-id: 41778626339
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Frozen binary SHA and actual -s/--statistics CLI support
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean
+          compiled/clean --help | grep -q -e '\-s' -e '\-\-statistics'
+          echo R88V3_FIXED_CLEAN_KISSAT_STATISTICS_CLI_PASS
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R88V3-UNCHANGED-PINNED-CLEAN-KISSAT
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: r88v3-shard-${{ matrix.year }}-${{ matrix.shard }}
+    needs: baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        year: [0,2025,2026]
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-sources-${{ matrix.year }}-${{ matrix.shard }}
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: source
+      - uses: actions/download-artifact@v4
+        with:
+          name: R88V3-UNCHANGED-PINNED-CLEAN-KISSAT
+          path: compiled
+      - name: Verify all original source and solver SHA-256
+        run: |
+          set -euo pipefail
+          (cd source/sources && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean
+      - name: Matched original vs placebo vs 8/16 certified lemmas with -s counters
+        env:
+          YEAR: ${{ matrix.year }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_lemma_utility_v3.py measure \
+            --sources source/sources --compiled compiled \
+            --year "$YEAR" --shard "$SHARD" --out results | tee r88v3.log
+          grep -q '^R88V3_SHARD_PASS' r88v3.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r88v3-results-${{ matrix.year }}-${{ matrix.shard }}
+          path: |
+            results/
+            r88v3.log
+          retention-days: 90
+
+  audit:
+    name: Verify 60 original SHA, 480 matched trials, causal counter diagnostics and SQLite
+    needs: [baseline,replay]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88v3-results-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88-sources-*
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - name: Fail closed on all source, pinned counter, parity and measurement invariants
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_lemma_utility_v3.py audit \
+            --sources sources --combined combined --out final | tee r88v3-audit.log
+          grep -q '^R88V3_FULL_AUDIT_PASS' r88v3-audit.log
+          cat final/r88v3-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R88V3-LEMMA-PLACEBO-STATISTICS-480-TRIALS-FINAL
+          path: |
+            final/
+            r88v3-audit.log
+          if-no-files-found: error
+          retention-days: 90
