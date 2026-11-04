@@ -1,0 +1,92 @@
+name: DRNAS TSP v4.2 Selective Restarts vs v4 v4.1 and LKH-3
+on:
+  push:
+    branches:
+      - experiment/drnas-tsp-v42-selective-stagnation-20261104
+    paths:
+      - .github/workflows/drnas-tsp-v42-selective-stagnation.yml
+      - experiments/tsp_shared_v31/drnas_v42.py
+      - experiments/tsp_shared_v31/compare_v42.py
+      - experiments/tsp_shared_v31/audit_v42.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-tsp-v42-selective-20261104
+  cancel-in-progress: true
+
+jobs:
+  v42:
+    name: Paired 2k-5k v4-v4.1-v4.2-LKH / 30s and final audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout fixed experimental source commit
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numeric dependencies
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Pin and build real LKH-3
+        run: |
+          set -euo pipefail
+          git clone https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          git -C LKH3 rev-parse HEAD | tee lkh_version.txt
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Smoke test v4.2 local stagnation and protected-elites safety
+        run: |
+          set -euo pipefail
+          python -m py_compile experiments/tsp_shared_v31/drnas_v42.py
+          python -m py_compile experiments/tsp_shared_v31/compare_v42.py
+          python -m py_compile experiments/tsp_shared_v31/audit_v42.py
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import time
+          from drnas_v4 import fast_make
+          from drnas_v42 import run,warmup
+          warmup()
+          start=time.perf_counter()
+          _,d,nn=fast_make(240,881)
+          r=run(240,881,d,nn,budget=3.3,start=start,mode='v42',
+                stall_seconds=0,agent_stall_seconds=0,restart_cooldown=.2)
+          assert r['final']>0 and r['events'],r
+          assert r['restart_waves']>=1 and r['restarted_agents']>=1,r
+          assert 0<r['selected_agents_unique']<=48,r
+          assert r['protected_elite_slots']==16,r
+          assert all(a[1]>=b[1] for a,b in zip(r['events'],r['events'][1:])),r['events']
+          print('DRNAS_TSP_V42_SMOKE_PASS',{k:v for k,v in r.items() if k!='events'},flush=True)
+          PY
+      - name: Run 2k and 5k fixed-seed matched LKH v4 v4.1 v4.2 tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v42.py \
+            --cities 2000 5000 --seeds 0 1 2 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v42_paired.csv --work drnas_tsp_v42_lkh_logs \
+            | tee drnas_tsp_v42_live.log
+          test -s drnas_tsp_v42_paired.csv
+      - name: Verify all trails and report paired result
+        run: |
+          set -euo pipefail
+          python -u experiments/tsp_shared_v31/audit_v42.py \
+            --csv drnas_tsp_v42_paired.csv --out drnas_tsp_v42_final
+          cat drnas_tsp_v42_final/r42_final.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive CSV paired routes and final research report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TSP-V42-SELECTIVE-RESTARTS-VS-LKH-FINAL
+          path: |
+            drnas_tsp_v42_paired.csv
+            drnas_tsp_v42_live.log
+            drnas_tsp_v42_final/
+            drnas_tsp_v42_lkh_logs/*.tsp
+            drnas_tsp_v42_lkh_logs/*.tour
+            drnas_tsp_v42_lkh_logs/*.log
+            lkh_version.txt
+          if-no-files-found: warn
+          retention-days: 90
