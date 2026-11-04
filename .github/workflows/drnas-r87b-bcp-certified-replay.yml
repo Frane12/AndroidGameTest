@@ -1,0 +1,144 @@
+name: DRNAS R87b original BCP-certified exact-source audit-corrected replay
+on:
+  push:
+    branches: [experiment/drnas-r87-bcp-certified-replay-20261104]
+    paths:
+      - '.github/workflows/drnas-r87b-bcp-certified-replay.yml'
+      - 'experiments/drnas_v16/r87_bcp_certified_replay.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r87b-exact-frozen-source-bcp-proof-replay
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Exact same R87 frozen sources and R87F2 all-rows original+BCP proof certification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-FRESH-SHA-ORIGINAL-COHORT-AND-SOURCE-AUDIT
+          run-id: 41774943220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R87F2-ROOT-BCP-ORIGINAL-CNF-INDEPENDENT-GF2-PROOF
+          run-id: 41775779016
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Original SHA, immutable source manifest and independently proven 64 out of 64
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r87_bcp_certified_replay.py
+          python3 -u experiments/drnas_v16/r87_bcp_certified_replay.py selftest
+          (cd original && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import json,hashlib
+          f="bcp-proof/r87-bcp-augmented-proof.json"
+          proof=json.load(open(f))
+          h=hashlib.sha256(open("original/manifest.json","rb").read()).hexdigest()
+          assert proof["all_proved"] is True
+          assert proof["original_manifest_sha256"]==h
+          assert len(proof["sources"])==8
+          s=next(x for x in proof["sources"] if x["shard"]==6)
+          assert s["native_rows"]==64 and s["proved"]==64
+          assert s["original_root_BCP_units"]==46
+          print("R87B_PREVIOUSLY_FAILED_64_OF_64_BCP_PROOF_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R87B-LOCKED-ORIGINALS-AND-BCP-CERTIFICATE
+          path: |
+            original/
+            bcp-proof/r87-bcp-augmented-proof.json
+          retention-days: 90
+
+  benchmark:
+    name: r87-holdout-shard-${{ matrix.shard }}
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87B-LOCKED-ORIGINALS-AND-BCP-CERTIFICATE
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-PINNED-ORIGINAL-CLEAN-AND-FOUR-SCAN-CADENCES
+          run-id: 41774392604
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Exact original SHA, same original native binary SHA
+        run: |
+          set -euo pipefail
+          (cd original && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r87
+      - name: R87 adaptive and three fixed controls; independent BCP-augmented source proof
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r87_bcp_certified_replay.py measure \
+            --sources original --compiled compiled --shard "$SHARD" --out results | tee r87b-live.log
+          grep -q '^R87B_SHARD_BCP_PROOF_PASS' r87b-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r87-holdout-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r87b-live.log
+          retention-days: 90
+
+  audit:
+    name: Final same-source, runner, seed, SHA, BCP-proof, PAR2 audited replay
+    needs: [source,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87B-LOCKED-ORIGINALS-AND-BCP-CERTIFICATE
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r87-holdout-shard-*
+          path: combined
+      - name: Fail on any bad source, duplicate, missing trials or GF2 certifier
+        run: |
+          set -euo pipefail
+          (cd original && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r87_bcp_certified_replay.py audit \
+            --sources original --combined combined --out final | tee r87b-audit.log
+          grep -q '^R87B_FULL_AUDIT_CORRECTED_REPLAY_PASS' r87b-audit.log
+          cat final/r87-holdout-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R87B-BCP-CERTIFIED-EXACT-REPLAY-64-TRIALS-FINAL
+          path: |
+            final/
+            original/manifest.json
+            bcp-proof/r87-bcp-augmented-proof.json
+            r87b-audit.log
+          retention-days: 90
