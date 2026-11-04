@@ -7,6 +7,7 @@ GF(2) ancestry replay, and SAT models are verified by the native solver.
 """
 import argparse,csv,hashlib,itertools,json,pathlib,random,subprocess,sys,time
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'experiments'/'drnas_v16'))
 import r88_cooperative as r88
 import r104_static_xor_prepass as static
 import r105_gf2_contradiction_only as certificate
