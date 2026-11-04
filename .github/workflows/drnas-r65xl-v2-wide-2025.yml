@@ -1,0 +1,227 @@
+name: DRNAS R65x-Live V2 certified 4096 XOR cap and bounded feedback 2025 paired
+on:
+  push:
+    branches: [experiment/drnas-r65xl-v2-wide-budget-20261104]
+    paths:
+      - '.github/workflows/drnas-r65xl-v2-wide-2025.yml'
+      - 'experiments/drnas_v16/patch_r65xl_v2_wide.py'
+      - 'experiments/drnas_v16/r65xl_v2_benchmark.py'
+      - 'experiments/drnas_v16/r65xl_live_trial.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65xl-v2-wide-2025-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze 4 exact-XOR SAT2025 and 2 controls with SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax / existing independent soundness selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r65xl_v2_wide.py \
+             experiments/drnas_v16/r65xl_live_trial.py \
+             experiments/drnas_v16/r65xl_v2_benchmark.py
+          python3 -u experiments/drnas_v16/r85_fresh_abcd.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Keep frozen source identities unchanged
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import sys,pathlib
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r65xl_live_trial as x
+          m=x.validate_manifest(pathlib.Path('fresh'))
+          assert all(m['cases'][i]['structural_xor_positive'] for i in (1,2,8,9))
+          assert all(not m['cases'][i]['structural_xor_positive'] for i in (5,7))
+          print('R65XLV2_2025_SHA_FROZEN_XOR4_CONTROL2_PASS')
+          PY
+
+  compile:
+    name: Compare bit-pinned V1 to compiled 4096 equation-cap V2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-identical-pinned-clean-native-and-proof-tests
+          run-id: 41796870143
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Preserve V1 binaries bit-identically
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c r65xl-binaries.sha256)
+          mkdir -p compiled/old compiled/new
+          cp compiled/clean compiled/native-r65xl compiled/r65xl-binaries.sha256 compiled/old/
+          (cd compiled/old && sha256sum -c r65xl-binaries.sha256)
+          chmod +x compiled/old/clean compiled/old/native-r65xl
+      - name: Build same pinned Kissat with 4096 bounded equations and feedback
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r65xl-v2-kissat
+          git -C /tmp/r65xl-v2-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r65xl-v2-kissat rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r32s_native_cdcl_progress.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r32u_live_xor_reasons.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r84_xor_conflict_forensics.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r85_xor_reason_utility.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r65xl_live.py --kissat-root /tmp/r65xl-v2-kissat
+          python3 -u experiments/drnas_v16/patch_r65xl_v2_wide.py --kissat-root /tmp/r65xl-v2-kissat
+          (cd /tmp/r65xl-v2-kissat && ./configure && make -j2 > /tmp/r65xl-v2-compile.log 2>&1) || { tail -150 /tmp/r65xl-v2-compile.log; exit 1; }
+          cp /tmp/r65xl-v2-kissat/build/kissat compiled/new/native-r65xl-v2
+          chmod +x compiled/new/native-r65xl-v2
+          (cd compiled/new && sha256sum native-r65xl-v2 > r65xl-v2-binaries.sha256 && sha256sum -c r65xl-v2-binaries.sha256)
+          test "$(compiled/old/clean --version)" = "$(compiled/new/native-r65xl-v2 --version)"
+          echo R65XLV2_PINNED_KISSAT_WIDE_4096_COMPILE_PASS
+      - name: Native source GF2 60 synthetic SAT/UNSAT control proof test
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32u_random_original_model_test.py \
+            --clean compiled/old/clean --native compiled/new/native-r65xl-v2 \
+            --out generated | tee r65xlv2-soundness.log
+          grep -q '^R32U_60_GENERATED_MIXED_SAT_UNSAT_VERDICT_PASS' r65xlv2-soundness.log
+          python3 - <<'PY'
+          import os,subprocess,pathlib
+          p=pathlib.Path('generated/case_01.cnf')
+          assert p.exists()
+          for policy in ('fixed','adaptive'):
+              e=os.environ.copy()
+              e.update(R32B_MODE='r32u',R32U_ACTIVE='1',R65XL_POLICY=policy)
+              r=subprocess.run(['compiled/new/native-r65xl-v2',
+                '--no-luckyearly','--no-luckylate','--no-preprocess',
+                str(p)],env=e,capture_output=True,text=True,timeout=12)
+              assert r.returncode in (10,20),(policy,r.returncode,r.stderr[-300:])
+              assert 'c R65XL_LIVE ' in r.stdout,policy
+              assert 'c R65XLV2_SOURCE_GATE eq_capacity=4096' in r.stdout,policy
+          print('R65XLV2_POLICY_AND_SOURCE_GATE_SAFETY_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: r65xlv2-pinned-old-v2-proof-build
+          path: |
+            compiled/old/clean
+            compiled/old/native-r65xl
+            compiled/old/r65xl-binaries.sha256
+            compiled/new/native-r65xl-v2
+            compiled/new/r65xl-v2-binaries.sha256
+            r65xlv2-soundness.log
+          retention-days: 90
+          if-no-files-found: error
+
+  benchmark:
+    name: r65xlv2-shard-${{ matrix.shard }}
+    needs: [freeze,compile]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [1,2,5,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xlv2-pinned-old-v2-proof-build
+          path: .
+      - name: One CPU and exact prior source/binary pins
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled/old && sha256sum -c r65xl-binaries.sha256)
+          (cd compiled/new && sha256sum -c r65xl-v2-binaries.sha256)
+          chmod +x compiled/old/clean compiled/old/native-r65xl compiled/new/native-r65xl-v2
+      - name: Pair both original Kissat controls with V1 and V2 fixed/adaptive
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65xl_v2_benchmark.py measure \
+            --sources fresh --compiled compiled \
+            --shard "$SHARD" --out results | tee r65xlv2-live.log
+          grep -q '^R65XLV2_SHARD_PASS' r65xlv2-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65xlv2-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r65xlv2-live.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: Audit 72 paired tests, XOR row selection and first UIP uses
+    if: always()
+    needs: [freeze,compile,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65xlv2-shard-*
+          path: combined
+      - name: 'Fail closed: prove matched originals and complete paired benchmark'
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r65xl_v2_benchmark.py audit \
+            --sources fresh --combined combined \
+            --json r65xlv2-final.json --md r65xlv2-final.md | tee r65xlv2-audit.log
+          grep -q '^R65XLV2_FULL_AUDIT_PASS' r65xlv2-audit.log
+          cat r65xlv2-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65XLV2-SAT2025-XOR-72-TRIAL-FINAL
+          path: |
+            r65xlv2-final.json
+            r65xlv2-final.md
+            r65xlv2-audit.log
+            fresh/manifest.json
+          retention-days: 90
+          if-no-files-found: error
