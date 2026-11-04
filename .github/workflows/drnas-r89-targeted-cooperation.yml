@@ -1,0 +1,142 @@
+name: DRNAS R89 targeted cooperative admission - marginal BCP vs placebo
+on:
+  push:
+    branches: [experiment/drnas-r89-targeted-coop-utility-gate-20261104]
+    paths:
+      - '.github/workflows/drnas-r89-targeted-cooperation.yml'
+      - 'experiments/drnas_v16/r89_targeted_cooperation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r89-targeted-source-paired-20261104
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    name: Pinned Kissat, 12s budget and safe source-only gate proof selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax, certified RUP ledger and marginal fallback tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r89_targeted_cooperation.py
+          python3 experiments/drnas_v16/r88_cooperative.py selftest
+          python3 experiments/drnas_v16/r88_cooperative_v2.py selftest
+          python3 experiments/drnas_v16/r88_lemma_utility_v3.py selftest
+          python3 -u experiments/drnas_v16/r89_targeted_cooperation.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: R88V3-UNCHANGED-PINNED-CLEAN-KISSAT
+          run-id: 41780816266
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify baseline binary hash and Kissat counter support
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean
+          compiled/clean --help | grep -q -e '\-s' -e '\-\-statistics'
+          echo R89_PINNED_SOURCE_ONLY_SELFTEST_PASS
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R89-FROZEN-ORIGINAL-CLEAN-KISSAT-PIN
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: r89-shard-${{ matrix.year }}-${{ matrix.shard }}
+    needs: baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        year: [0,2025,2026]
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-sources-${{ matrix.year }}-${{ matrix.shard }}
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original
+      - uses: actions/download-artifact@v4
+        with:
+          name: R89-FROZEN-ORIGINAL-CLEAN-KISSAT-PIN
+          path: compiled
+      - name: Mandatory unchanged original SHA and executable pin
+        run: |
+          set -euo pipefail
+          (cd original/sources && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean
+      - name: Clean vs placebo vs certified8 vs source-only and marginal gates
+        env:
+          YEAR: ${{ matrix.year }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r89_targeted_cooperation.py measure \
+            --sources original/sources --compiled compiled \
+            --year "$YEAR" --shard "$SHARD" --out results | tee r89-live.log
+          grep -q '^R89_SHARD_PASS' r89-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r89-results-${{ matrix.year }}-${{ matrix.shard }}
+          path: |
+            results/
+            r89-live.log
+          retention-days: 90
+
+  audit:
+    name: 600 source-paired original SAT CNF + proof budget audit and SQLite
+    needs: [baseline,replay]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r89-results-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88-sources-*
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original-sources
+      - name: Fail on any source SHA, logic, mode, global time or provenance mismatch
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r89_targeted_cooperation.py audit \
+            --sources original-sources --combined combined --out final | tee r89-audit.log
+          grep -q '^R89_FULL_PAIRED_AUDIT_PASS' r89-audit.log
+          cat final/r89-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R89-TARGETED-COOP-UTILITY-600-PAIRED-AUDIT
+          path: |
+            final/
+            r89-audit.log
+          if-no-files-found: error
+          retention-days: 90
