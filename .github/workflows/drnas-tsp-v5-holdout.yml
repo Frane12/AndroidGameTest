@@ -1,0 +1,126 @@
+name: DRNAS TSP v5 Smart 4-opt and shared lookup holdout vs LKH-3
+on:
+  push:
+    branches: [experiment/drnas-tsp-v5-kopt-20261104]
+    paths:
+      - .github/workflows/drnas-tsp-v5-holdout.yml
+      - experiments/tsp_shared_v31/drnas_v5.py
+      - experiments/tsp_shared_v31/compare_v5.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-tsp-v5-frozen-holdout
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: 2k-5k seeds 9-10-11 v5 4-opt no-share / share vs LKH
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact experiment source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numeric dependencies
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Build pinned LKH-3 original solver
+        run: |
+          git clone https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          git -C LKH3 rev-parse HEAD | tee lkh_version.txt
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Smoke and exact four-edge move cost audit
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import time,numpy as np
+          from drnas_v4 import fast_make,tour_len
+          from drnas_v5 import warmup,four_opt_candidate,vote_improving_tour,run
+          warmup()
+          _,d,nn=fast_make(130,808)
+          votes=np.zeros((130,nn.shape[1]),dtype=np.float32)
+          rng=np.random.default_rng(7105)
+          improvements=0
+          for trial in range(70):
+              tour=rng.permutation(130).astype(np.int32)
+              pos=np.empty_like(tour)
+              pos[tour]=np.arange(130,dtype=np.int32)
+              original=tour_len(tour,d)
+              delta,accepted=four_opt_candidate(tour,pos,d,nn,votes,
+                  cursor=(trial*17)%130,shared=bool(trial%2),
+                  starts=40,width=27,samples=14)
+              changed=tour_len(tour,d)
+              assert len(set(map(int,tour)))==130
+              assert np.all(pos[tour]==np.arange(130,dtype=np.int32))
+              assert abs((changed-original)-delta)<0.3,(trial,changed,original,delta)
+              if accepted>=0:
+                  assert delta < -0.001
+                  improvements+=1
+                  vote_improving_tour(tour,nn,votes,trial*13)
+              else:
+                  assert original==changed
+          assert improvements>=10,improvements
+          for mode in ('v5_shared','v5_no_share'):
+              start=time.perf_counter()
+              _,d2,nn2=fast_make(240,990)
+              v=run(240,990,d2,nn2,budget=3.6,start=start,mode=mode,
+                    stall_seconds=0.0,agent_stall_seconds=0.0,restart_cooldown=0.2)
+              assert v['events'] and v['final']>0
+              assert all(a[1]>=b[1] for a,b in zip(v['events'],v['events'][1:]))
+              assert v['restart_waves']>=1,v
+              if mode=='v5_shared':
+                  assert v['shared_packets']>=1,v
+                  assert v['shared_edge_votes']>=1,v
+              else:assert v['shared_packets']==0,v
+              print('V5_RUN_SMOKE',mode,{k:x for k,x in v.items() if k!='events'},flush=True)
+          print('V5_FOUR_OPT_EXACT_AUDIT_PASS',improvements,flush=True)
+          PY
+      - name: Paired benchmark LKH v4.2 v4.3 v5 no-sharing v5 shared
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v5.py \
+            --cities 2000 5000 --seeds 9 10 11 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v5_holdout.csv --work drnas_tsp_v5_logs \
+            | tee drnas_tsp_v5_live.log
+      - name: Audit complete paired results
+        run: |
+          python - <<'PY'
+          import csv,statistics
+          rows=list(csv.DictReader(open('drnas_tsp_v5_holdout.csv')))
+          ms=('LKH-3','DRNAS v4.2 selective','DRNAS v4.3 bounded','DRNAS v5 no-sharing','DRNAS v5 shared-lookup')
+          cuts=(2,4,6,8,10,15,20,25,30)
+          assert len(rows)==2*3*len(ms)*len(cuts),(len(rows),)
+          for n in (2000,5000):
+              print('===',n,'CITIES===')
+              for seed in (9,10,11):
+                  for m in ms:
+                      rr=[r for r in rows if int(r['cities'])==n and int(r['seed'])==seed and r['method']==m]
+                      assert [int(x['checkpoint_s']) for x in rr]==list(cuts),(n,seed,m)
+                      assert all(x['status']!='error' for x in rr),(n,seed,m,rr)
+                      assert rr[-1]['final_length_units']!='',(n,seed,m)
+                      vals=[float(x['length_units']) for x in rr if x['length_units']]
+                      assert all(a>=b for a,b in zip(vals,vals[1:])),(n,seed,m,vals)
+              for m in ms:
+                  rr=[r for r in rows if int(r['cities'])==n and int(r['checkpoint_s'])==30 and r['method']==m]
+                  mean=statistics.mean(float(r['final_length_units']) for r in rr)
+                  print(m,round(mean,4),'seeds',[r['final_length_units'] for r in rr],
+                        '4opt',[r['four_opt_moves'] for r in rr],
+                        'shared votes',[r['shared_edge_votes'] for r in rr])
+          print('V5_PAIRED_HOLDOUT_AUDIT_PASS')
+          PY
+      - name: Upload raw CSV exact TSPLIB inputs and LKH logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-TSP-V5-SMART-4OPT-SHARED-LOOKUP-HOLDOUT
+          path: |
+            drnas_tsp_v5_holdout.csv
+            drnas_tsp_v5_live.log
+            drnas_tsp_v5_logs/*.log
+            drnas_tsp_v5_logs/*.tsp
+            drnas_tsp_v5_logs/*.tour
+            lkh_version.txt
+          if-no-files-found: warn
+          retention-days: 90
