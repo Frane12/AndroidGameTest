@@ -120,38 +120,40 @@ def partition(clauses, k=4, limit=2400):
     bridges.sort(key=lambda x:(-degrees[x],x))
     return groups, bridges, degrees
 
-def bcp_conflict(clauses, assumptions):
-    """Watched-by-variable (not watched-literal) BCP; deterministically exact."""
+def bcp_conflict(clauses, assumptions, collect=False):
+    """BCP/RUP with optional full local implication trail for safe exchange."""
     index=collections.defaultdict(list)
-    for idx,c in enumerate(clauses):
-        for x in set(abs(t) for t in c): index[x].append(idx)
+    for idx,clause in enumerate(clauses):
+        for x in {abs(t) for t in clause}:index[x].append(idx)
     assignment={}
     queue=collections.deque()
+    def reply(flag):
+        if not collect:return flag
+        return flag,tuple(x if val else -x for x,val in assignment.items())
     def add(lit):
-        x=abs(lit); val=lit>0
-        if x in assignment: return assignment[x] == val
+        x=abs(lit);val=lit>0
+        if x in assignment:return assignment[x]==val
         assignment[x]=val;queue.append(x)
         return True
     for literal in assumptions:
-        if not add(literal):return True
+        if not add(literal):return reply(True)
     for clause in clauses:
-        if not clause:return True
-        if len(clause)==1 and not add(clause[0]): return True
+        if not clause:return reply(True)
+        if len(clause)==1 and not add(clause[0]):return reply(True)
     while queue:
         var=queue.popleft()
         for idx in index[var]:
             clause=clauses[idx]
-            unassigned=0;remaining=0;satisfied=False
+            remaining=0;unassigned=0;satisfied=False
             for lit in clause:
                 val=assignment.get(abs(lit))
-                if val is None:
-                    unassigned+=1;remaining=lit
-                elif val == (lit>0):
+                if val is None:remaining=lit;unassigned+=1
+                elif val==(lit>0):
                     satisfied=True;break
             if satisfied:continue
-            if unassigned==0:return True
-            if unassigned==1 and not add(remaining):return True
-    return False
+            if not unassigned:return reply(True)
+            if unassigned==1 and not add(remaining):return reply(True)
+    return reply(False)
 
 def assumptions_for_round(bridges, rnd, budget=24):
     # Probe both polarities and a few 2-variable cuts. No outcome screening.
@@ -170,49 +172,83 @@ def assumptions_for_round(bridges, rnd, budget=24):
     return candidates[:budget]
 
 def cooperative_learn(clauses, max_lemmas=48, rounds=3):
-    groups, bridges, degree=partition(clauses)
-    # Freeze a group-limited proof environment. Base clauses are literal
-    # subsets of original; previously shared clauses are inductively entailed.
-    ledger=[]; known=set(clauses); shared=[]; total_probes=0
-    cross_received=0; useful_after_share=0
+    """Inductive, cross-community exchange of certified unit/binary/ternary.
+
+    RUP test: F_local + previously shared true clauses + negated candidate
+    must conflict by BCP. Consequently every exported lemma is entailed by
+    the original formula. Cross influence counts only lemmas NOT already
+    provable by BCP from the sender's local clauses alone.
+    """
+    start=time.monotonic()
+    # Large original CNFs remain exact for global solve; local proof
+    # communities use a deterministic subset to avoid expensive analysis.
+    stride=max(1,(len(clauses)+11999)//12000)
+    sample=clauses[::stride]
+    groups,bridges,degrees=partition(sample,limit=1800)
+    ledger=[];known=set();shared=[];total_probes=0
+    cross_received=0;useful_after_share=0;causal_cross=0
+    # Finite proactive budget even when hard formulas time out.
+    deadline=start+(0.45 if len(clauses)<=25000 else 0.8)
+    active=sum(bool(g) for g in groups)
     for rnd in range(rounds):
         newest=[]
         for group_id,local in enumerate(groups):
             if not local:continue
             premises=local+shared
             seen_before=len(shared)
-            for assumptions in assumptions_for_round(bridges,rnd):
-                if len(ledger)+len(newest)>=max_lemmas:break
+            group_count=0
+            for assumptions in assumptions_for_round(bridges,rnd,budget=18):
+                if (len(ledger)+len(newest)>=max_lemmas or
+                    group_count>=max(3,max_lemmas//max(1,active)) or
+                    time.monotonic()>=deadline):break
                 total_probes+=1
-                if not bcp_conflict(premises,assumptions):continue
-                lemma=tuple(sorted((-x for x in assumptions),key=lambda x:(abs(x),x)))
-                if lemma in known or any(x in lemma and -x in lemma for x in lemma):
-                    continue
-                # Independent same-environment RUP replay, before publishing.
-                require(bcp_conflict(premises,assumptions),
-                        "locally unverified learned implication")
-                known.add(lemma)
-                newest.append(lemma)
-                ledger.append(dict(lemma=list(lemma),from_group=group_id,
-                    round=rnd,prior_shared=seen_before,
-                    bcp_verified=True,via_prior_sharing=bool(seen_before)))
-                if seen_before:useful_after_share+=1
-        if not newest:continue
-        shared.extend(newest)
-        cross_received += len(newest)*(sum(bool(g) for g in groups)-1)
-    # Re-verify full chain, including its exact sender, timing and provenance.
+                conflict,trail=bcp_conflict(premises,assumptions,collect=True)
+                candidates=[]
+                if conflict:
+                    candidates=[tuple(-x for x in assumptions)]
+                else:
+                    # F and assumptions imply every BCP-trail literal. Negate
+                    # the guard, then append the proven consequent.
+                    guarded=tuple(-x for x in assumptions)
+                    for implied in trail:
+                        if implied not in assumptions:
+                            candidates.append(guarded+(implied,))
+                candidates.sort(key=lambda cl:(len(cl),-max(
+                    (degrees[abs(t)] for t in cl),default=0),tuple(cl)))
+                for raw in candidates[:12]:
+                    if group_count>=max(3,max_lemmas//max(1,active)):break
+                    lemma=tuple(sorted(set(raw),key=lambda x:(abs(x),x)))
+                    if lemma in known or any(-x in lemma for x in lemma):
+                        continue
+                    # Independently replay RUP on exactly the frozen sender
+                    # community and the prior, already certified broadcasts.
+                    if not bcp_conflict(premises,tuple(-x for x in lemma)):
+                        continue
+                    known.add(lemma);newest.append(lemma);group_count+=1
+                    cross=bool(seen_before) and not bcp_conflict(
+                        local,tuple(-x for x in lemma))
+                    causal_cross+=int(cross)
+                    ledger.append(dict(lemma=list(lemma),from_group=group_id,
+                        round=rnd,prior_shared=seen_before,bcp_verified=True,
+                        causal_cross_group=cross))
+                    if seen_before:useful_after_share+=1
+        if newest:
+            shared.extend(newest)
+            cross_received+=len(newest)*max(0,active-1)
+        if time.monotonic()>=deadline:break
     preceding=[]
     for item in ledger:
         local=groups[item["from_group"]]
         require(bcp_conflict(local+preceding[:item["prior_shared"]],
                              [-x for x in item["lemma"]]),
                 "proof-chain replay failed")
-        # Rounds are synchronous: replay sender's prior_shared snapshot.
         preceding.append(tuple(item["lemma"]))
-    return shared,dict(communities=sum(bool(g) for g in groups),
+    return shared,dict(communities=active,
         community_sizes=[len(g) for g in groups],bridge_variables=len(bridges),
         probes=total_probes,certified_lemmas=len(shared),
         broadcasts=cross_received,lemmas_after_prior_sharing=useful_after_share,
+        causal_cross_group_lemmas=causal_cross,
+        sampled_clauses=len(sample),time_bounded=True,
         proof_chain=ledger)
 
 def write_augmented(n, clauses, extras, target):
@@ -297,7 +333,7 @@ def measure(args):
                         source_id=case["gbd"],year=case["year"],
                         index_sha=manifest["index_sha256"],rep=rep,
                         mode=mode,run_id=os.environ.get("GITHUB_RUN_ID","local"),
-                        commit=os.environ.get("GITHUB_SHA","local"),
+                        commit=os.environ.get("R88_CODE_SHA",os.environ.get("GITHUB_SHA","local")),
                         prior_tested=case.get("historically_used","unknown"),
                         **features,**{k:v for k,v in telemetry.items() if k!="proof_chain"},
                         prep_s=round(prep_s,6),**result)
@@ -317,6 +353,10 @@ def selftest():
     require(bcp_conflict(clauses,()),"unsat core")
     require(not bcp_conflict([(1,2)],()),"SAT unit propagation")
     require(bcp_conflict([(1,2)],(-1,-2)),"assumption conflict")
+    conflict,trail=bcp_conflict([(-1,2),(-2,3)],(1,),collect=True)
+    require(not conflict and 3 in trail,"cross-subproblem implied literal")
+    require(bcp_conflict([(-1,2),(-2,3)],(1,-3)),
+            "source-certified guarded implication")
     require(not bcp_conflict([(1,2)],(-1,)),"compatible assumptions")
     n=3
     f=fingerprint(n,clauses)
