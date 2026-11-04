@@ -16,6 +16,7 @@ import r63_real2026_xor_prevalence_fallback as r63
 import r64_mixed_xor_implied as r64
 import r71_bcp_15sec_eight_formulas as r71
 import r80_xor_structure_only as r80
+import r67_xor_structural_diagnostics as r67
 
 PROTO="DRNAS-R81-SOURCE-DISJOINT-REAL2026-XOR-WORLD-20261104-v1"
 SALT="DRNAS-R81-BLIND-UNUSED-OFFICIAL2026-STRUCTURAL-XOR-20261104-v1"
@@ -96,6 +97,8 @@ def freeze(a):
     for row in chosen:
         ck(row["gbd"] not in seen,"prior source was reused")
         ck(digest(root/row["filename"])==row["sha256"],"source hash drift")
+        # R65 requires passive structural features; calculate before any solver timing.
+        row["r67_features"]=r67.passive_features(root/row["filename"],row)
     manifest=dict(protocol=PROTO,source="SAT Competition 2026 Main original CNFs",
         source_index=r52.URI,official_status_csv=r52.SCORES,
         official_index_sha256=hashlib.sha256(raw_index).hexdigest(),
