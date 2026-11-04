@@ -1,0 +1,177 @@
+name: DRNAS R81 fresh SAT2026 XOR vs Kissat 4 CaDiCaL 3 R28 R65 R80
+on:
+  push:
+    branches: [experiment/drnas-r81-fresh2026-xor-world-20261104]
+    paths:
+      - '.github/workflows/drnas-r81-fresh2026-xor-world.yml'
+      - 'experiments/drnas_v16/r81_fresh2026_xor_world.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r81-fresh2026-xor-world-20261104
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    name: Exclude 124+ old official 2026 sources and freeze 12 fresh structural XOR/control CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and XOR parity-prover selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r81_fresh2026_xor_world.py
+          python3 -u experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py selftest
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - name: SHA-freeze original SAT Competition 2026 sources, XOR patterns only, never solving time
+        run: |
+          set -euo pipefail
+          test -s prior/fresh/manifest.json
+          python3 -u experiments/drnas_v16/r81_fresh2026_xor_world.py freeze \
+            --prior prior/fresh --out world | tee r81-freeze.log
+          (cd world && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81-fresh-originals-structural-holdout
+          path: |
+            world/
+            r81-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  binaries:
+    name: SHA-pinned unchanged genuine Kissat 4.0.4 CaDiCaL 3.0.1 plus R28 and baseline Kissat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - name: Check original build digests and restore mode bits
+        run: |
+          set -euo pipefail
+          (cd bins && sha256sum -c binaries.sha256)
+          (cd native && sha256sum -c binary.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          sha256sum bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          lscpu > reference-machine.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r81-reference-solver-hashes
+          path: |
+            bins/*.sha256
+            native/*.sha256
+            reference-machine.txt
+
+  trial:
+    name: r81-shard-${{ matrix.shard }}
+    needs: [freeze,binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81-fresh-originals-structural-holdout
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - name: SHA check and paired random-order serial one-core 25s matched benchmark
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          (cd native && sha256sum -c binary.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          python3 -u experiments/drnas_v16/r81_fresh2026_xor_world.py measure \
+            --sources world --bins bins --native native --shard "$SHARD" --out results | tee r81-live.log
+          test -s results/r81-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r81-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: Final 144-trial SHA proof, solved count, PAR2 XOR/control and paired tables
+    needs: [freeze,binaries,trial]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81-fresh-originals-structural-holdout
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r81-shard-*
+          path: combined
+      - name: Fail closed if any missing result, SHA mismatch, or verdict disagreement
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r81_fresh2026_xor_world.py audit \
+            --sources world --combined combined --out final | tee r81-audit.log
+          cat final/r81-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R81-FRESH-SAT2026-XOR-WORLD-FINAL
+          path: |
+            final/
+            world/manifest.json
+            r81-audit.log
+          if-no-files-found: error
