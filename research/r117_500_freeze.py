@@ -7,7 +7,7 @@ root=pathlib.Path('r117');root.mkdir(exist_ok=True)
 # 2025 and 2026 are published independent official track lists, not generated CNFs.
 lists={
  '2026':'https://satcompetition.github.io/2026/downloads/track_main_2026.uri',
- '2025':'https://satcompetition.github.io/2025/downloads/track_main_2025.uri'
+ '2025':'https://benchmark-database.de/getinstances?context=cnf&query=track%3Dmain_2025'
 }
 excluded=set(x for _,x in source.PINS)
 # Also exclude R116 structural pilot cases by known fixed source IDs.
