@@ -42,10 +42,10 @@ def checkpoint(root):
         if "r88-sources" not in str(m):continue
         obj=json.loads(m.read_text())
         core.require(obj["protocol"]==IMPORT_PROTO,"source protocol mismatch")
-        core.require(0<=obj["shard"]<4 and obj["year"] in (2025,2026),"unexpected shard")
+        core.require(0<=obj["shard"]<4 and obj["year"] in (0,2025,2026),"unexpected shard")
         manifests.append((m,obj))
-    core.require(len(manifests)==8,"exactly eight real import shard manifests required")
-    core.require(len({(x["year"],x["shard"]) for _,x in manifests})==8,
+    core.require(len(manifests)==12,"exactly twelve real import shard manifests required")
+    core.require(len({(x["year"],x["shard"]) for _,x in manifests})==12,
                  "source shards missing/duplicated")
     sources={}
     for path,m in manifests:
@@ -55,7 +55,7 @@ def checkpoint(root):
                          "original source SHA mismatch")
             core.require(c["gbd"] not in sources,"GBD repeated across sources")
             sources[c["gbd"]]=c
-    core.require(len(sources)>=8,"too few real originals")
+    core.require(len(sources)>=12,"too few real originals")
     return manifests,sources
 
 def audit(args):
@@ -63,7 +63,7 @@ def audit(args):
     manifests,sources=checkpoint(root)
     result_files=sorted(p for p in root.rglob("rows.json")
                         if "r88-results" in str(p))
-    core.require(len(result_files)==8,"eight matched result shards required")
+    core.require(len(result_files)==12,"twelve matched result shards required")
     rows=[]
     for f in result_files:
         r=json.loads(f.read_text())
@@ -162,6 +162,7 @@ def audit(args):
         previous_ids=sorted(sources.keys())),indent=2)+"\n")
     md=["# DRNAS R88 audited cooperative SAT laboratory","",
        f"Real original CNFs in this run: **{len(groups)}**",
+       "Cohorts: archival 2002-2024 (year=0 marker), 2025, 2026.",
        f"Paired run trials: **{len(rows)}**",
        f"Accumulated distinct original IDs: **{total_cases}**",
        f"Accumulated observation rows: **{total_trials}**","",
