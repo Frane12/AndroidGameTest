@@ -1,0 +1,95 @@
+name: DRNAS R65x-Live V2 final repaired 72 paired SAT2025 audit only
+on:
+  push:
+    branches: [experiment/drnas-r65xl-v2-wide-budget-20261104]
+    paths:
+      - '.github/workflows/drnas-r65xlv2-final-audit-repaired.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65xlv2-final-audit-repaired-20261104
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Reuse 5 successful shards plus unit-proof repaired shard9, no retesting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Independent XOR-plus-original-unit proof negative controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65xl_v2_benchmark.py
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65xlv2-shard-*
+          run-id: 41798395080
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined
+      - name: Confirm five good shards and source SHA before repair overlay
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import pathlib,json
+          for i in (1,2,5,7,8):
+              file=pathlib.Path(f'combined/r65xlv2-shard-{i}/results/results.json')
+              data=json.loads(file.read_text())
+              assert data['shard']==i and len(data['rows'])==12,i
+          print('R65XLV2_FIVE_SUCCESSFUL_SHARDS_REUSED_AS_IS_PASS')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xlv2-shard-9-proof-repaired
+          run-id: 41799490473
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined/r65xlv2-shard-9
+      - name: Prove repaired shard 9 has all 12 paired trials
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json
+          p=pathlib.Path('combined/r65xlv2-shard-9/results/results.json')
+          d=json.loads(p.read_text())
+          assert d['shard']==9 and len(d['rows'])==12
+          assert len({r['mode'] for r in d['rows']})==6
+          assert all(r['group']=='xor_exact' for r in d['rows'])
+          print('R65XLV2_REPAIRED_SHARD9_SIX_MODES_TWO_REPS_PASS')
+          PY
+      - name: Audit all 72 SHA-pinned paired trials without rerunning solvers
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65xl_v2_benchmark.py audit \
+            --sources fresh --combined combined \
+            --json r65xlv2-final.json --md r65xlv2-final.md \
+            | tee r65xlv2-audit.log
+          grep -q '^R65XLV2_FULL_AUDIT_PASS' r65xlv2-audit.log
+          cat r65xlv2-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65XLV2-72-TRIALS-UNIT-PROOF-REPAIRED-FINAL
+          path: |
+            r65xlv2-final.json
+            r65xlv2-final.md
+            r65xlv2-audit.log
+            fresh/manifest.json
+          retention-days: 90
+          if-no-files-found: error
