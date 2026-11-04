@@ -1,0 +1,217 @@
+name: DRNAS R85 ABCD four parallel strategies on unseen official SAT2025 original CNFs
+on:
+  push:
+    branches: [experiment/drnas-r85-a-b-c-xor-reason-utility-20261104]
+    paths:
+      - '.github/workflows/drnas-r85-abcd-unseen-official-2025.yml'
+      - 'experiments/drnas_v16/patch_r85_xor_reason_utility.py'
+      - 'experiments/drnas_v16/r85_fresh_abcd.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r85-four-parallel-fresh-2025-20261104
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    name: Freeze 12 genuinely new 2025 SAT Competition source originals without speed screening
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate official unseen-source and original GF2 source proof protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r85_fresh_abcd.py experiments/drnas_v16/patch_r85_xor_reason_utility.py
+          python3 -u experiments/drnas_v16/r85_fresh_abcd.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior73
+      - name: New real 2025 official GBD index, SHA-ordered 4 exact XOR plus 8 controls, block documented previous attempts
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          test -s prior73/new/manifest.json
+          python3 -u experiments/drnas_v16/r85_fresh_abcd.py freeze \
+            --old world --r73 prior73/new --out fresh | tee r85-freeze.log
+          (cd fresh && sha256sum -c source.sha256)
+          test "$(find fresh -name '*.cnf' | wc -l)" -eq 12
+          echo R85_PRECOMMITTED_OFFICIAL_FRESH_COHORT_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          path: |
+            fresh/
+            r85-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    name: Pin upstream Kissat and compile native source GF2 reason utility with four fixed modes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          run-id: 41683024261
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Original pinned upstream baseline is bit-identical to previous validated R32u
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c baselines.sha256)
+          chmod +x compiled/clean compiled/native
+      - name: Compile original exact XOR CNF proof and new read-only 1-UIP reason-use telemetry
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r85_xor_reason_utility.py
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r85-kissat
+          git -C /tmp/r85-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r85-kissat rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r85-kissat
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r85-kissat
+          python3 -u experiments/drnas_v16/patch_r32s_native_cdcl_progress.py --kissat-root /tmp/r85-kissat
+          python3 -u experiments/drnas_v16/patch_r32u_live_xor_reasons.py --kissat-root /tmp/r85-kissat
+          python3 -u experiments/drnas_v16/patch_r84_xor_conflict_forensics.py --kissat-root /tmp/r85-kissat
+          python3 -u experiments/drnas_v16/patch_r85_xor_reason_utility.py --kissat-root /tmp/r85-kissat
+          (cd /tmp/r85-kissat && ./configure && make -j2 > /tmp/r85-compile.log 2>&1) || { tail -130 /tmp/r85-compile.log; exit 1; }
+          cp /tmp/r85-kissat/build/kissat compiled/native-r85
+          chmod +x compiled/clean compiled/native-r85
+          (cd compiled && sha256sum clean native-r85 > r85-binaries.sha256 && sha256sum -c r85-binaries.sha256)
+          test "$(compiled/clean --version)" = "$(compiled/native-r85 --version)"
+          echo R85_ABCD_PINNED_KISSAT_PATCH_COMPILE_PASS
+      - name: Check 60 real-SAT-logic synthetic source soundness controls in fixed native active and passive modes
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32u_random_original_model_test.py \
+            --clean compiled/clean --native compiled/native-r85 --out generated | tee r85-soundness.log
+          grep -q '^R32U_60_GENERATED_MIXED_SAT_UNSAT_VERDICT_PASS' r85-soundness.log
+      - name: Check C and D alternative fixed 64/128 selection do not change SAT/UNSAT conclusions
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,sys,subprocess,pathlib,re
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r32u_random_original_model_test as s
+          for i in (1,2,3,4,5,6,7,8,12,16):
+            n,clauses,unsat=s.generate(i)
+            p=pathlib.Path("generated")/("case_%02d.cnf"%i)
+            assert p.exists()
+            for cap in ("64","128"):
+              env=os.environ.copy()
+              env.update(R32B_MODE="r32u",R32U_ACTIVE="1",R85_DIVERSE="1",
+                         R85_CAP=cap,R84_SCAN_EVERY="4")
+              r=subprocess.run(["compiled/native-r85","--no-luckyearly",
+                 "--no-luckylate","--no-preprocess",str(p)],env=env,
+                 capture_output=True,text=True,timeout=3)
+              assert r.returncode==(20 if unsat else 10),(i,cap,r.returncode,r.stderr[-300:])
+              if not unsat:s.check_model(r.stdout,n,clauses)
+              assert re.search(r"^c R85_SELECTION diverse=1 ",r.stdout,re.M),(i,cap)
+          print("R85_ABCD_20_DIVERSE_SOURCE_SOUNDNESS_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: r85-fixed-native-ABCD-and-clean-pinned
+          path: |
+            compiled/clean
+            compiled/native-r85
+            compiled/r85-binaries.sha256
+            r85-soundness.log
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r85-fresh-shard-${{ matrix.shard }}
+    needs: [freeze,compile]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fixed-native-ABCD-and-clean-pinned
+          path: .
+      - name: Original CNF and unchanged binaries SHA256 check
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r85-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r85
+      - name: Six comparable solver arms per fresh original, two frozen randomized repeats
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r85_fresh_abcd.py measure \
+            --sources fresh --compiled compiled --shard "$SHARD" --out results | tee r85-live.log
+          grep -q '^R85_SHARD_PASS' r85-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r85-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r85-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R85 independent original GF2 SHA proof and paired 144 real trial final audit
+    needs: [freeze,compile,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r85-shard-*
+          path: combined
+      - name: Fail closed on replays, SAT original witness, unverifiable GF2, incomplete paired trial sets
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r85_fresh_abcd.py audit \
+             --sources fresh --combined combined --out final | tee r85-audit.log
+          cat final/r85-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R85-ABCD-UNSEEN-OFFICIAL2025-FINAL
+          path: |
+            final/
+            fresh/manifest.json
+            r85-audit.log
+          if-no-files-found: error
+          retention-days: 90
