@@ -70,12 +70,13 @@ def main():
         if sha(source)!=case["sha256"]:
             raise RuntimeError("R110_FAIL_CLOSED real source SHA mismatch")
         original=checker.cnf_clauses(source)
+        prep_started=time.perf_counter()
         analysis=bridge.inspect(source)
         dest=out/(case["name"]+".augmented.cnf")
         bridge.augmented(source,dest,analysis)
         if checker.cnf_clauses(dest)[:len(original)]!=original:
             raise RuntimeError("R110_FAIL_CLOSED original CNF changed")
-        prep=analysis["preparation_seconds"]
+        prep=time.perf_counter()-prep_started
         # Include serialization, output validation and proof replay overhead.
         # wall clock measured independently: all preprocessing work is charged.
         structural.append(dict(name=case["name"],sha256=case["sha256"],
