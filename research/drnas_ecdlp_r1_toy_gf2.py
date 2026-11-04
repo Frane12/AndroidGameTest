@@ -166,7 +166,7 @@ def verify_model(stdout,src,meta):
             clause=[int(t) for t in line.split() if t!='0']
             if clause:assert any(values[abs(t)]==(t>0) for t in clause)
     k=sum(1<<i for i,v in enumerate(meta['key_literals']) if values[v])
-    assert point(k,tuple([meta['bits']]+CURVES[meta['bits']]))==tuple(meta['public_Q'])
+    assert point(k,(meta['bits'],)+CURVES[meta['bits']])==tuple(meta['public_Q'])
     assert k==meta['self_generated_secret']
     return k
 def run(binary,mode,src,meta,cap):
