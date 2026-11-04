@@ -21,7 +21,10 @@ REPS=2
 SHARDS=4
 MAX_CNF=24*1024*1024
 MAX_COMPRESSED=18*1024*1024
-EXPECTED=14
+PRIOR_PINS=14
+TARGET=12
+MAX_ATTEMPTS=150
+SALT="R107C-WORLD-REAL2026-SHA-ORDER-NO-SCREEN-20261104"
 
 def ensure(cond,message):
     if not cond:raise RuntimeError("R107C_WORLD_AUDIT "+message)
@@ -49,8 +52,17 @@ def freeze(a):
     identifiers,labels,score_sha=official_sources()
     r32p.CNF_LIMIT=MAX_CNF
     cases=[];attempts=[]
-    ensure(len(r32p.PINS)==EXPECTED,"changed pre-registered source list")
-    for position,(i,gbd) in enumerate(r32p.PINS):
+    ensure(len(r32p.PINS)==PRIOR_PINS,"R32p exclusion registry changed")
+    excluded={gbd for _,gbd in r32p.PINS}
+    # Freeze a reproducible SHA-ranked sequence of published, officially
+    # verified 2026 problems. No XOR-positive or runtime cherry-picking.
+    ranked=sorted((gbd for gbd in identifiers if gbd not in excluded
+                   and labels[gbd] in ("sat-verified","unsat-verified")),
+                  key=lambda gbd:hashlib.sha256((SALT+"/"+gbd).encode()).hexdigest())
+    ensure(len(ranked)>=MAX_ATTEMPTS,"verified official pool unexpectedly small")
+    for position,gbd in enumerate(ranked[:MAX_ATTEMPTS]):
+        if len(cases)>=TARGET:break
+        i=identifiers.index(gbd)
         ensure(gbd in identifiers,"GBD source not in official 2026 index: "+gbd)
         label=labels[gbd]
         row=dict(index=i,gbd=gbd,official_status=label,source_url="https://benchmark-database.de/file/"+gbd)
@@ -75,12 +87,13 @@ def freeze(a):
                        reason=(type(e).__name__+": "+str(e))[:250])
         attempts.append(row)
         print("R107C_WORLD_SOURCE",json.dumps(row,sort_keys=True),flush=True)
-    ensure(len(cases)>=3,"not enough actual 2026 original CNFs available")
+    ensure(len(cases)>=6,"fewer than six eligible real 2026 official CNFs available")
     ensure(len({c["sha256"] for c in cases})==len(cases),"duplicate sources")
     manifest=dict(protocol=PROTO,source="SAT Competition 2026 Main Track, official GBD URI",
         official_score_sha256=score_sha,official_score_url="https://satcompetition.github.io/2026/downloads/scores.csv",
-        selection="Pinned R32p 14 IDs; 24MiB decoded CNF size cap; NO performance selection in R107C",
-        known_prior_exposure="These R32p candidate IDs have been used in previous DRNAS work; NOT unseen",
+        selection="Deterministic SHA-ranked 2026 verified official pool, R32p 14 IDs excluded; size only; no DRNAS speed/XOR screening",
+        selection_salt=SALT,target_cases=TARGET,max_candidate_attempts=MAX_ATTEMPTS,
+        known_prior_exposure="R32p 14 known IDs excluded; overlap with all other DRNAS history not exhaustively ruled out",
         caps=dict(seconds=CAP,repeats=REPS,max_original_cnf_bytes=MAX_CNF,raw_fetch_cap=MAX_COMPRESSED),
         attempted=attempts,cases=cases)
     dump(root/"manifest.json",manifest)
@@ -259,7 +272,7 @@ def audit(a):
         limitations=[
             "Unsanctioned retrospective mini-simulation, not submission to SAT Competition 2026",
             "2026 winner source archive built locally when available; no global ranking inferred",
-            "Precommitted 14 known R32p GBD candidate IDs (previously used), NOT new blind holdout",
+            "Deterministically SHA-ranked official 2026 candidates; known R32p IDs excluded; NOT globally certified blind holdout",
             "Input limited to 24MiB unpacked; selection excludes large/unavailable official CNFs",
             "Two serial repetitions, one CPU per shard, 30-second wall per trial (includes XOR preprocessing)",
             "Official Main 2026 used 5000s, 32GiB and different HoreKa hardware",
