@@ -1,70 +1,57 @@
-name: DRNAS R107C native fast XOR finder real 2025 paired benchmark
+name: DRNAS R108 hidden XOR from shortened and resolved CNF
 on:
   push:
-    branches: [experiment/drnas-r107c-fast-xor-20261104]
-    paths: ['.github/workflows/drnas-r102-xor-value.yml', 'research/r107c_*.py', 'research/r107c_native_xor_finder.cpp', 'research/r107b_certified_cadical.py', 'research/r106_manifest.json']
+    branches: [experiment/drnas-r108-hidden-xor-20261104]
+    paths:
+      - '.github/workflows/drnas-r102-xor-value.yml'
+      - 'research/r108_hidden_xor.py'
+      - 'research/r108_hidden_xor_benchmark.py'
+      - 'research/r106_manifest.json'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  comparison:
+  hidden-xor-audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 42
     steps:
       - uses: actions/checkout@v4
-      - name: Download pinned Kissat and CryptoMiniSat reference binaries
+      - name: Syntax check and R108 hidden-XOR proof selftests
         run: |
           set -euo pipefail
-          mkdir -p /tmp/r106/kissat /tmp/r106/cms
-          curl -fsSL --retry 3 --max-time 120 'https://github.com/arminbiere/kissat/releases/download/rel-4.0.4/kissat-4.0.4-linux-amd64.zip' -o /tmp/r106/kissat.zip
-          echo '63282e5168ca040a2018edfba0726bf893a7a6bcdb1db87feb67857e2da697a7  /tmp/r106/kissat.zip' | sha256sum --check
-          unzip -oq /tmp/r106/kissat.zip -d /tmp/r106/kissat
-          find /tmp/r106/kissat -type f -print
-          find /tmp/r106/kissat -type f -iname '*kissat*' -exec chmod +x '{}' \;
-          find /tmp/r106/kissat -type f -iname '*kissat*' -print -quit > /tmp/r106/kissat-path
-          test -s /tmp/r106/kissat-path
-          curl -fsSL --retry 3 --max-time 120 'https://github.com/msoos/cryptominisat/releases/download/release/v5.17.0/cryptominisat5-v5.17.0-linux-amd64.tar.gz' -o /tmp/r106/cms.tar.gz
-          echo '474ff5cfaf77de7438dc063dbe4ccefcbb7dcf1e17de702c34ed88f5e026eda7  /tmp/r106/cms.tar.gz' | sha256sum --check
-          tar -xzf /tmp/r106/cms.tar.gz -C /tmp/r106/cms
-          find /tmp/r106/cms -type f -print
-          find /tmp/r106/cms -type f -iname '*cryptominisat*' -exec chmod +x '{}' \;
-          find /tmp/r106/cms -type f -iname '*cryptominisat*' -print -quit > /tmp/r106/cms-path
-          test -s /tmp/r106/cms-path
-          "$(cat /tmp/r106/kissat-path)" --version
-          "$(cat /tmp/r106/cms-path)" --version
-      - name: Build pinned CaDiCaL and R107C C++ fast XOR, run strict selftests
+          python3 -m py_compile research/r108_hidden_xor.py research/r108_hidden_xor_benchmark.py
+          python3 research/r108_hidden_xor.py selftest | tee r108-selftest.txt
+          grep -q '^R108_HIDDEN_XOR_SELFTEST_PASS' r108-selftest.txt
+      - name: Build pinned CaDiCaL and frozen R107C native control
         run: |
           set -euo pipefail
-          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r106/cadical
-          cd /tmp/r106/cadical
-          git checkout rel-2.1.0
-          git rev-parse HEAD > "$GITHUB_WORKSPACE/cadical-commit.txt"
-          ./configure
-          make -j2
-          cd "$GITHUB_WORKSPACE"
-          python3 research/r105_gf2_contradiction_only.py selftest
-          python3 research/r107a_xor_finder.py selftest
-          python3 research/r107b_certified_cadical.py selftest | tee r107b-selftest.txt
-          grep -q '^R107B_CERTIFIED_SELFTEST_PASS' r107b-selftest.txt
           g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r107c_native_xor_finder.cpp -o /tmp/r107c_native_xor
           python3 research/r107c_native_selftest.py /tmp/r107c_native_xor | tee r107c-selftest.txt
           grep -q '^R107C_NATIVE_CERTIFIED_SELFTEST_PASS' r107c-selftest.txt
-      - name: Verify real 2025 original CNF hashes and precommit manifest
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r108-cadical
+          cd /tmp/r108-cadical
+          git checkout rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/cadical-r108-commit.txt"
+          ./configure
+          make -j2
+      - name: SHA verify eight real original 2025 CNF formulas
         run: |
           set -euo pipefail
-          python3 research/r106_fetch_real_cnf.py r106-results/source
-      - name: Six-way paired CaDiCaL Kissat CryptoMiniSat R105 R107B R107C
+          python3 research/r106_fetch_real_cnf.py r108-results/source
+      - name: Baseline vs compressed XOR vs two-round resolution on real and hidden controls
         run: |
           set -euo pipefail
-          python3 research/r107c_native_cross_solver_benchmark.py r106-results /tmp/r106/cadical/build/cadical "$(cat /tmp/r106/kissat-path)" "$(cat /tmp/r106/cms-path)"
-      - name: Upload per-formula raw outputs and SHA manifest
+          python3 research/r108_hidden_xor_benchmark.py r108-results /tmp/r107c_native_xor /tmp/r108-cadical/build/cadical | tee r108-benchmark.txt
+          grep -q '^R108_COMPLETE_AUDIT' r108-benchmark.txt
+      - name: Upload full inputs evidence and paired times
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: R107C-NATIVE-FAST-XOR-PROOF-PAIRED-REAL2025
+          name: R108-CERTIFIED-HIDDEN-XOR-SAT2025-PROOF-AUDIT
           path: |
-            r106-results/
-            cadical-commit.txt
-            r107b-selftest.txt
+            r108-results/
+            r108-selftest.txt
             r107c-selftest.txt
+            r108-benchmark.txt
+            cadical-r108-commit.txt
           if-no-files-found: warn
