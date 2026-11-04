@@ -1,0 +1,95 @@
+name: DRNAS R65x-Live V2 unit-aware independent parity proof and shard9 repair
+on:
+  push:
+    branches: [experiment/drnas-r65xl-v2-wide-budget-20261104]
+    paths:
+      - '.github/workflows/drnas-r65xlv2-unit-proof-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65xlv2-unit-proof-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Independently validate 64 XOR rows and repair only shard 9 benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Unit-aware source parity proof tests, including negative control
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32t_certified_short_xor.py \
+            experiments/drnas_v16/r83_live_xor_cdcl_wide.py \
+            experiments/drnas_v16/r65xl_v2_benchmark.py
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xlv2-pinned-old-v2-proof-build
+          run-id: 41798395080
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Verify untouched SAT2025 originals and both exact old/new binaries
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled/old && sha256sum -c r65xl-binaries.sha256)
+          (cd compiled/new && sha256sum -c r65xl-v2-binaries.sha256)
+          chmod +x compiled/old/clean compiled/old/native-r65xl compiled/new/native-r65xl-v2
+      - name: Independently prove 64 V2 rows from original parity and unit clauses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,sys,re,subprocess,pathlib
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r83_live_xor_cdcl_wide as r83
+          import r65xl_live_trial as x
+          root=pathlib.Path("fresh")
+          case=x.validate_manifest(root)["cases"][9]
+          src=root/case["filename"]
+          env=os.environ.copy()
+          env.update(R32B_MODE="r32u",R32U_ACTIVE="0",R65XL_POLICY="fixed",
+                     R84_SCAN_EVERY="16",R85_DIVERSE="0",R85_CAP="64")
+          q=subprocess.run(["compiled/new/native-r65xl-v2",
+             "--no-luckyearly","--no-luckylate","--no-preprocess",str(src)],
+             env=env,capture_output=True,text=True,timeout=35)
+          assert q.returncode in (10,20),(q.returncode,q.stderr[-300:])
+          emitted=[(tuple(map(int,vars.split(","))),int(rhs))
+            for rhs,vars in r83.SOURCE_ROW.findall(q.stdout)]
+          assert len(emitted)==64,len(emitted)
+          assert r83.source_prove_rows(src,emitted)==64
+          assert "c R65XLV2_SOURCE_GATE eq_capacity=4096" in q.stdout
+          print("R65XLV2_INDEPENDENT_UNIT_AWARE_SOURCE_PROOF_PASS",
+                "64/64","source",case["gbd"])
+          PY
+      - name: Re-run ONLY prior failed shard 9 with independent proof fixed
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65xl_v2_benchmark.py measure \
+            --sources fresh --compiled compiled --shard 9 --out results \
+            | tee r65xlv2-shard9-fixed.log
+          grep -q '^R65XLV2_SHARD_PASS 9 12$' r65xlv2-shard9-fixed.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: r65xlv2-shard-9-proof-repaired
+          path: |
+            results/
+            r65xlv2-shard9-fixed.log
+          retention-days: 90
+          if-no-files-found: error
