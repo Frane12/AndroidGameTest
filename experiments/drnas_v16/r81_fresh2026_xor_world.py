@@ -17,11 +17,12 @@ import r64_mixed_xor_implied as r64
 import r71_bcp_15sec_eight_formulas as r71
 import r80_xor_structure_only as r80
 import r67_xor_structural_diagnostics as r67
+import r66_r65_blind_short_holdout as r66
 
 PROTO="DRNAS-R81-SOURCE-DISJOINT-REAL2026-XOR-WORLD-20261104-v1"
 SALT="DRNAS-R81-BLIND-UNUSED-OFFICIAL2026-STRUCTURAL-XOR-20261104-v1"
-TARGET, POS_TARGET, CTRL_TARGET = 11, 4, 7
-REPS, CAP, SHARDS, MAX_FETCH = 2, 25.0, 4, 65
+TARGET, POS_TARGET, CTRL_TARGET = 10, 3, 7
+REPS, CAP, SHARDS, MAX_FETCH = 2, 25.0, 4, 170
 MODES=("kissat_base","kissat_404","cadical_301","drnas_r28","drnas_r65","drnas_r80")
 
 def ck(v, why):
@@ -34,8 +35,16 @@ def freeze(a):
     root=Path(a.out);root.mkdir(parents=True,exist_ok=True)
     old=json.loads((Path(a.prior)/"manifest.json").read_text())
     ck(old["protocol"]==r63.PROTO and len(old["cases"])==32,"R63 historical registry mismatch")
+    earlier66=json.loads((Path(a.prior66)/"manifest.json").read_text())
+    earlier67=json.loads((Path(a.prior67)/"manifest.json").read_text())
+    ck(earlier66["protocol"]==r66.PROTO and len(earlier66["cases"])==12,
+       "R66 historical original registry missing")
+    ck(earlier67["protocol"]==r67.PROTO and len(earlier67["cases"])==25,
+       "R67 historical original registry missing")
     seen=set(old["excludes_previously_seen_gbd"])|{c["gbd"] for c in old["cases"]}
-    ck(len(seen)>=124,"historical 2026 exclusions incomplete")
+    seen.update(c["gbd"] for c in earlier66["cases"])
+    seen.update(c["gbd"] for c in earlier67["cases"])
+    ck(len(seen)>=155,"R63/R66/R67 benchmarked-source exclusion incomplete")
     raw_index=r52.fetch_bytes(r52.URI,100000)
     ids=[u.rsplit("/",1)[-1] for u in raw_index.decode().strip().splitlines()]
     ck(len(ids)==400 and len(set(ids))==400,"official 2026 index differs from freeze")
@@ -104,6 +113,8 @@ def freeze(a):
         official_index_sha256=hashlib.sha256(raw_index).hexdigest(),
         official_scores_sha256=hashlib.sha256(scores).hexdigest(),
         previous_registry_manifest_sha256=digest(Path(a.prior)/"manifest.json"),
+        r66_registry_sha256=digest(Path(a.prior66)/"manifest.json"),
+        r67_registry_sha256=digest(Path(a.prior67)/"manifest.json"),
         excluded_prior_gbd_count=len(seen), excluded_prior_gbds=sorted(seen),
         selection_salt=SALT,selection_method="salted GBD order; pre-solver complete parity pattern only",
         selection_not_using_solver_runtime=True,
@@ -113,7 +124,7 @@ def freeze(a):
         candidates_inspected=len(attempts),attempts=attempts,
         cases=chosen,repetitions=REPS,cap_s=CAP,methods=MODES,shards=SHARDS,
         limitations=[
-          "New relative to R63's documented historical 2026 GBD registry, not guaranteed unseen by every developer anywhere.",
+          "Previously unbenchmarked within R63 historical registries plus R66/R67 completed cohorts; cannot prove not viewed by any other experiment.",
           "Stratified original 2026 sample by complete XOR clause patterns; non-representative of the full 400.",
           "Source selection uses no solver runtimes and includes all overhead of DRNAS preprocessing.",
           "Partial parity-shaped groups are never asserted as sound complete XOR equations.",
@@ -298,7 +309,7 @@ def main():
     parser=argparse.ArgumentParser()
     s=parser.add_subparsers(dest="cmd",required=True)
     f=s.add_parser("freeze")
-    for key in ("prior","out"): f.add_argument("--"+key,required=True)
+    for key in ("prior","prior66","prior67","out"): f.add_argument("--"+key,required=True)
     m=s.add_parser("measure")
     for key in ("sources","bins","native","out"):m.add_argument("--"+key,required=True)
     m.add_argument("--shard",required=True,type=int)
