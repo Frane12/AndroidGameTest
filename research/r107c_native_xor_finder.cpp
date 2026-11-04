@@ -96,10 +96,15 @@ static bool eliminate(const std::vector<Row>& rows,V& ancestry,size_t& rank){
   std::map<int,Row> pivots; size_t operations=0;
   for(int i=0;i<int(rows.size());++i){
     Row r=rows[i];r.ancestry={i};
+    bool saved_as_pivot=false;
     while(!r.vars.empty()){
       const int lead=r.vars.front();
       auto itr=pivots.find(lead);
-      if(itr==pivots.end()){pivots.emplace(lead,std::move(r));break;}
+      if(itr==pivots.end()){
+        pivots.emplace(lead,std::move(r));
+        saved_as_pivot=true;
+        break;
+      }
       auto &p=itr->second;
       operations+=r.vars.size()+p.vars.size()+r.ancestry.size()+p.ancestry.size();
       require(operations<=100000000,"GF2 elimination budget exceeded");
@@ -107,7 +112,7 @@ static bool eliminate(const std::vector<Row>& rows,V& ancestry,size_t& rank){
       r.rhs^=p.rhs;
       r.ancestry=xor_vectors(r.ancestry,p.ancestry);
     }
-    if(r.vars.empty()&&r.rhs==1){
+    if(!saved_as_pivot && r.vars.empty() && r.rhs==1){
       ancestry=std::move(r.ancestry);rank=pivots.size();return true;
     }
   }
