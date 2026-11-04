@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""R80: prospective 24-source official SAT2025 input challenge, 4 frozen policies.
+"""R80: retrospective SAT Competition 2026 XOR-STRUCTURE-ONLY benchmark.
 
-The actual source strata are reported, never relabeled or fabricated to
-force a desired 8/8/8 composition. Sources are new relative to the documented
-R63/R66/R67/R72/R73/R77 selection histories, not a claim of global novelty.
-Adaptive policy is frozen before the measurements; observed structural scan
-and preprocessing overhead is INCLUDED in every adaptive wall time.
+Only verified parity clause structure and SHA rank select 24 previously
+tested real originals from R63, with matched non-XOR/unsupported controls.
+NO solver runtime is used for source selection. This is NOT unseen/blind.
+All timings include adaptive and preprocessing overhead; originals and
+unchanged Kissat/R28 are SHA256 verified. Results are not world rankings.
 """
 from __future__ import annotations
 import argparse, collections, hashlib, json, os, random, signal
@@ -226,7 +226,9 @@ def measure(args):
                         if action=="r28":
                             argv=[gf2,source,kissat]
                     elif mode=="r65_full":
-                        action="r65"
+                        action="r28" if case["pure_exact_xor"] else "r65"
+                        if action=="r28":
+                            argv=[gf2,source,kissat]
                     if action=="r65":
                         _,_,clauses,_,stats=r71.prepare(root,case)
                         clauses_added=len(clauses)
