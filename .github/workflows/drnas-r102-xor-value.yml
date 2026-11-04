@@ -1,60 +1,85 @@
-name: DRNAS R109 selective C++ hidden XOR proof benchmark
+name: DRNAS R110 frozen selector four parallel real SAT2025 shards
 on:
   push:
-    branches: [experiment/drnas-r109-selective-hidden-xor-20261104]
+    branches: [experiment/drnas-r110-selector-4shard-20261104]
     paths:
       - '.github/workflows/drnas-r102-xor-value.yml'
-      - 'research/r109_native_selective_xor.cpp'
-      - 'research/r109_selective_selftest.py'
-      - 'research/r109_selective_benchmark.py'
+      - 'research/r110_native_selector.cpp'
+      - 'research/r110_selector_selftest.py'
+      - 'research/r110_four_shard_benchmark.py'
+      - 'research/r110_frozen_holdout_2025.json'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  selective-hidden-xor:
+  parallel-shard:
+    name: R110 unseen real SAT2025 shard ${{ matrix.shard }} of 4
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - name: Build R109 optimized native XOR and frozen R107C reference
+      - name: Build C++ frozen R107C R109 R110 and check selftests
         run: |
           set -euo pipefail
-          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r107c_native_xor_finder.cpp -o /tmp/r109-r107c
-          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r109_native_selective_xor.cpp -o /tmp/r109-native
-          python3 -m py_compile research/r109_selective_selftest.py research/r109_selective_benchmark.py
-      - name: Fail-closed selftests preserving original XOR and hidden parity
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r107c_native_xor_finder.cpp -o /tmp/r110-r107c
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r109_native_selective_xor.cpp -o /tmp/r110-r109
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r110_native_selector.cpp -o /tmp/r110-r110
+          python3 -m py_compile research/r110_selector_selftest.py research/r110_four_shard_benchmark.py
+          python3 research/r110_selector_selftest.py /tmp/r110-r107c /tmp/r110-r109 /tmp/r110-r110 | tee r110-selftest.txt
+          grep -q '^R110_FROZEN_SELECTOR_SELFTEST_PASS' r110-selftest.txt
+      - name: SHA pinned Kissat 4.0.4 and CryptoMiniSat 5.17.0 binaries
         run: |
           set -euo pipefail
-          python3 research/r107c_native_selftest.py /tmp/r109-r107c | tee r109-baseline-test.txt
-          python3 research/r109_selective_selftest.py /tmp/r109-native /tmp/r109-r107c | tee r109-selftest.txt
-          grep -q '^R109_NATIVE_SELECTIVE_SELFTEST_PASS' r109-selftest.txt
-      - name: Build unchanged pinned CaDiCaL rel-2.1.0
+          mkdir -p /tmp/r110/kissat /tmp/r110/cms
+          curl -fsSL --retry 3 --max-time 120 'https://github.com/arminbiere/kissat/releases/download/rel-4.0.4/kissat-4.0.4-linux-amd64.zip' -o /tmp/r110/kissat.zip
+          echo '63282e5168ca040a2018edfba0726bf893a7a6bcdb1db87feb67857e2da697a7  /tmp/r110/kissat.zip' | sha256sum --check
+          unzip -oq /tmp/r110/kissat.zip -d /tmp/r110/kissat
+          find /tmp/r110/kissat -type f -iname '*kissat*' -exec chmod +x '{}' \;
+          find /tmp/r110/kissat -type f -iname '*kissat*' -print -quit > /tmp/r110/kissat-path
+          test -s /tmp/r110/kissat-path
+          curl -fsSL --retry 3 --max-time 120 'https://github.com/msoos/cryptominisat/releases/download/release/v5.17.0/cryptominisat5-v5.17.0-linux-amd64.tar.gz' -o /tmp/r110/cms.tar.gz
+          echo '474ff5cfaf77de7438dc063dbe4ccefcbb7dcf1e17de702c34ed88f5e026eda7  /tmp/r110/cms.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r110/cms.tar.gz -C /tmp/r110/cms
+          find /tmp/r110/cms -type f -iname '*cryptominisat*' -exec chmod +x '{}' \;
+          find /tmp/r110/cms -type f -iname '*cryptominisat*' -print -quit > /tmp/r110/cms-path
+          test -s /tmp/r110/cms-path
+          "$(cat /tmp/r110/kissat-path)" --version
+          "$(cat /tmp/r110/cms-path)" --version
+      - name: Build pinned CaDiCaL rel-2.1.0
         run: |
           set -euo pipefail
-          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r109-cadical
-          cd /tmp/r109-cadical
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r110/cadical
+          cd /tmp/r110/cadical
           git checkout rel-2.1.0
-          git rev-parse HEAD > "$GITHUB_WORKSPACE/r109-cadical-commit.txt"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r110-cadical-commit.txt"
           ./configure
           make -j2
-      - name: Verify eight original SAT Competition 2025 formula hashes
+      - name: SHA-verified real formulas and six-mode paired trials
         run: |
           set -euo pipefail
-          python3 research/r106_fetch_real_cnf.py r109-results/source
-      - name: Paired R109 vs R107C on real SAT2025 and hidden-XOR controls
-        run: |
-          set -euo pipefail
-          python3 research/r109_selective_benchmark.py r109-results /tmp/r109-r107c /tmp/r109-native /tmp/r109-cadical/build/cadical | tee r109-audit.txt
-          grep -q '^R109_COMPLETE_AUDIT' r109-audit.txt
-      - name: Upload source SHA manifest proof evidence and timing
+          python3 -u research/r110_four_shard_benchmark.py \
+            --shard '${{ matrix.shard }}' \
+            --out "r110-shard-${{ matrix.shard }}" \
+            --cadical /tmp/r110/cadical/build/cadical \
+            --kissat "$(cat /tmp/r110/kissat-path)" \
+            --cms "$(cat /tmp/r110/cms-path)" \
+            --r107c /tmp/r110-r107c \
+            --r109 /tmp/r110-r109 \
+            --r110 /tmp/r110-r110 | tee "r110-shard-${{ matrix.shard }}.txt"
+          grep -q '^R110_SHARD_COMPLETE_AUDIT' "r110-shard-${{ matrix.shard }}.txt"
+      - name: Upload paired CSV and verifier evidence independently per shard
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: R109-SELECTIVE-NATIVE-HIDDEN-XOR-CERTIFIED
+          name: R110-FOUR-WAY-SAT2025-SHARD-${{ matrix.shard }}
           path: |
-            r109-results/
-            r109-baseline-test.txt
-            r109-selftest.txt
-            r109-audit.txt
-            r109-cadical-commit.txt
+            r110-shard-${{ matrix.shard }}/
+            r110-shard-${{ matrix.shard }}.txt
+            r110-selftest.txt
+            r110-cadical-commit.txt
           if-no-files-found: warn
