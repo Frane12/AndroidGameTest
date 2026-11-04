@@ -1,0 +1,59 @@
+name: DRNAS R114 real SATComp26 Kissat comparison
+on:
+  push:
+    branches: [experiment/drnas-r114-broad-comparison-20261104]
+    paths:
+      - 'research/r114_real_satcomp26_paired.py'
+      - '.github/workflows/drnas-r114-real-paired.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  real-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Freeze verified real SAT Competition 2026 formulas
+        run: |
+          set -euo pipefail
+          python3 -u research/r107c_satcomp26_world_sim.py freeze --out sources | tee freeze.log
+          (cd sources && sha256sum -c source.sha256)
+      - name: Download pinned Kissat baseline from frozen prior CI
+        uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify baseline and compile native proof checker
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG research/r107c_native_xor_finder.cpp -o /tmp/r114_native
+          python3 research/r107c_native_selftest.py /tmp/r114_native
+          python3 -m py_compile research/r114_real_satcomp26_paired.py research/r113_cheap_selector.py
+          sha256sum research/r114_real_satcomp26_paired.py research/r113_cheap_selector.py > provenance.sha256
+          lscpu > runner-cpu.txt
+      - name: Paired real formula benchmark, 20 seconds per run
+        run: |
+          set -euo pipefail
+          python3 -u research/r114_real_satcomp26_paired.py --sources sources --kissat built/bin/kissat_4_0_4 --native /tmp/r114_native --out results | tee benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R114-real-SATComp26-paired-audit
+          path: |
+            results/
+            sources/manifest.json
+            sources/source.sha256
+            freeze.log
+            benchmark.log
+            provenance.sha256
+            runner-cpu.txt
+          retention-days: 60
