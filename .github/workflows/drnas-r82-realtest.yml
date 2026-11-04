@@ -1,0 +1,164 @@
+name: DRNAS R82 RealTest official SAT2025-2026 original CNFs R81C vs budgeted R82
+on:
+  push:
+    branches: [experiment/drnas-r82-realtest-20261104]
+    paths:
+      - '.github/workflows/drnas-r82-realtest.yml'
+      - 'experiments/drnas_v16/r82_realtest.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r82-realtest-original-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: R82 RealTest source-disjoint SHA-locked 16 SAT2025 + 8 SAT2026
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: R82 syntax and exact-GF2 certificate adversarial selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r82_realtest.py
+          python3 -u experiments/drnas_v16/r81c_exact_algebra.py
+      - name: Fetch previously frozen 48 original SAT2025/2026 inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Freeze 24 by SHA rank without choosing by XOR or run time
+        run: |
+          set -euo pipefail
+          test -s world/manifest.json
+          python3 -u experiments/drnas_v16/r82_realtest.py freeze --old world --out r82world | tee r82-freeze.log
+          (cd r82world && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r82-realtest-frozen-24
+          path: |
+            r82world/
+            r82-freeze.log
+          if-no-files-found: error
+          retention-days: 90
+
+  binaries:
+    name: Verify unchanged real Kissat and CaDiCaL binary fingerprints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - name: SHA pin source binaries and record runner CPU
+        run: |
+          set -euo pipefail
+          (cd bins && sha256sum -c binaries.sha256)
+          (cd native && sha256sum -c binary.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          lscpu > solver-setup.txt
+          echo R82_REALTEST_BINARY_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r82-realtest-binaries
+          path: |
+            bins/
+            native/
+            solver-setup.txt
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r82-realtest-shard-${{ matrix.shard }}
+    needs: [freeze, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-realtest-frozen-24
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-realtest-binaries
+          path: .
+      - name: Matched 30-second end-to-end native tests, 5 methods, 2 repeats, PAR2
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd r82world && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          (cd native && sha256sum -c binary.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          python3 -u experiments/drnas_v16/r82_realtest.py measure \
+            --sources r82world --bins bins --native native --shard "$SHARD" --out results | tee r82-realtest-live.log
+          test -s results/shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r82-realtest-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r82-realtest-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R82 RealTest final 240-trial SHA, independent SAT model UNSAT certificate and PAR2 audit
+    needs: [freeze, binaries, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-realtest-frozen-24
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r82-realtest-shard-*
+          path: combined
+      - name: Fail closed on missing shard, inconsistent answers, source/binary drift or invalid proofs
+        run: |
+          set -euo pipefail
+          (cd r82world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r82_realtest.py audit \
+            --sources r82world --combined combined --out final | tee r82-realtest-audit.log
+          test -s final/report.md
+          cat final/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R82-REALTEST-240-TRIAL-VERIFIED-FINAL
+          path: |
+            final/
+            r82world/manifest.json
+            r82-realtest-audit.log
+          if-no-files-found: error
+          retention-days: 90
