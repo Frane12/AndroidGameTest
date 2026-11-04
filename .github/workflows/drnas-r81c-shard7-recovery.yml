@@ -1,0 +1,60 @@
+name: DRNAS R81C shard7 recovery only
+on:
+  push:
+    branches: [experiment/drnas-r81c-exact-algebra-20261104]
+    paths:
+      - '.github/workflows/drnas-r81c-shard7-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  shard7:
+    name: Recover ONLY r81c-shard-7, no other SAT benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify SHA256 and rerun ONLY missing shard 7
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -m py_compile experiments/drnas_v16/r81c_exact_algebra.py experiments/drnas_v16/r81c_benchmark.py
+          python3 experiments/drnas_v16/r81c_exact_algebra.py
+          python3 -u experiments/drnas_v16/r81c_benchmark.py measure \
+            --sources world --binaries bin --shard 7 --out results | tee r81c-recovery-7.log
+          test -s results/r81c-shard.json
+          python3 - <<'PY'
+          import json
+          a=json.load(open("results/r81c-shard.json"))
+          assert a["shard"]==7
+          assert len(a["rows"])==30
+          assert len({r["source_sha256"] for r in a["rows"]})==3
+          assert all(r["mode"] in ("clean_kissat","r28_gf2","r65_full","r80_adaptive","r81c_exact") for r in a["rows"])
+          print("R81C_RECOVERED_SHARD7_PASS",len(a["rows"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81c-shard-7-recovered
+          path: |
+            results/
+            r81c-recovery-7.log
+          if-no-files-found: warn
+          retention-days: 90
