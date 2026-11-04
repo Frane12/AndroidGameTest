@@ -198,7 +198,7 @@ def cooperative_learn(clauses, max_lemmas=48, rounds=3):
             seen_before=len(shared)
             group_count=0
             for assumptions in assumptions_for_round(bridges,rnd,budget=18):
-                if (len(ledger)+len(newest)>=max_lemmas or
+                if (len(ledger)>=max_lemmas or
                     group_count>=max(3,max_lemmas//max(1,active)) or
                     time.monotonic()>=deadline):break
                 total_probes+=1
@@ -216,7 +216,8 @@ def cooperative_learn(clauses, max_lemmas=48, rounds=3):
                 candidates.sort(key=lambda cl:(len(cl),-max(
                     (degrees[abs(t)] for t in cl),default=0),tuple(cl)))
                 for raw in candidates[:12]:
-                    if group_count>=max(3,max_lemmas//max(1,active)):break
+                    if (len(ledger)>=max_lemmas or
+                        group_count>=max(3,max_lemmas//max(1,active))):break
                     lemma=tuple(sorted(set(raw),key=lambda x:(abs(x),x)))
                     if lemma in known or any(-x in lemma for x in lemma):
                         continue
@@ -236,6 +237,8 @@ def cooperative_learn(clauses, max_lemmas=48, rounds=3):
             shared.extend(newest)
             cross_received+=len(newest)*max(0,active-1)
         if time.monotonic()>=deadline:break
+    require(len(shared)<=max_lemmas and len(ledger)<=max_lemmas,
+            "certified lemma hard cap violated")
     preceding=[]
     for item in ledger:
         local=groups[item["from_group"]]

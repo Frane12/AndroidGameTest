@@ -1,0 +1,76 @@
+name: DRNAS R88b certified lemma hard-cap repair 2026 replay
+on:
+  push:
+    branches: [experiment/drnas-r88b-certified-hardcap-20261104]
+    paths:
+      - '.github/workflows/drnas-r88b-lemma-budget-fix.yml'
+      - 'experiments/drnas_v16/r88_cooperative.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r88b-certified-cap
+  cancel-in-progress: false
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download original frozen R88 official SAT 2026 inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: r88-sources-2026-2
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: source
+      - name: Download pinned clean/native R87 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: r88-pinned-solvers
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Verify binary/CNF SHA and bounded RUP soundness
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r88_cooperative.py
+          python3 experiments/drnas_v16/r88_cooperative.py selftest
+          (cd source/sources && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r88_cooperative as r
+          c=[(1,2),(-1,2),(1,-2),(-1,-2),(3,4),(-3,4),(3,-4),(-3,-4)]
+          for budget in (1,2,3,8,16,48):
+              lemmas,meta=r.cooperative_learn(c,max_lemmas=budget)
+              assert len(lemmas)<=budget, (budget,len(lemmas))
+              assert all(t['bcp_verified'] for t in meta['proof_chain'])
+          print('R88B_HARDCAP_SELFTEST_PASS')
+          PY
+      - name: Paired development replay and fail-closed 48-lemma audit
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_cooperative.py measure \
+            --sources source/sources --compiled compiled --year 2026 --shard 2 --out result | tee r88b.log
+          python3 - <<'PY'
+          import json
+          rows=json.load(open('result/rows.json'))
+          assert len(rows)==40,len(rows)
+          assert all(0<=r['certified_lemmas']<=48 for r in rows)
+          assert len({(r['source_sha'],r['mode'],r['rep']) for r in rows})==40
+          print('R88B_REAL_CNF_CERTIFIED_CAP_AUDIT_PASS',len(rows))
+          PY
+      - name: Upload repaired pilot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R88B-HARDCAP-CERTIFIED-2026-DEV
+          path: |
+            result/
+            r88b.log
+          retention-days: 90
