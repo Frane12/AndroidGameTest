@@ -33,8 +33,9 @@ public:
     long notifications = 0, backtracks = 0, callbacks = 0, clauses_emitted = 0;
     long feasible_signals = 0;
     bool disabled = false;
+    bool emit_enabled = true;
 
-    DrnasBridge(vector<XorRow> in, int n): rows(std::move(in)), assigned(n+1,0) {}
+    DrnasBridge(vector<XorRow> in, int n, bool emit): rows(std::move(in)), assigned(n+1,0), emit_enabled(emit) {}
 
     void notify_assignment(const vector<int>& lits) override {
         notifications += (long)lits.size();
@@ -72,7 +73,8 @@ public:
 
     bool cb_has_external_clause(bool& is_forgettable) override {
         is_forgettable = true;
-        if (disabled || clauses_emitted >= 64 || callbacks++ >= 60000) return false;
+        ++callbacks;
+        if (!emit_enabled || disabled || clauses_emitted >= 64 || callbacks >= 60000) return false;
         if (!outgoing.empty()) return true;
         for (const XorRow& row: rows) {
             int unknown = 0, absent = 0, parity = 0;
@@ -180,17 +182,17 @@ static vector<XorRow> load_rows(const string& filename, int n) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 4 || (string(argv[1]) != "clean" && string(argv[1]) != "active")) {
-            cerr << "usage: r93_bridge clean|active input.cnf certified_rows.tsv\n";
+        if (argc != 4 || (string(argv[1]) != "clean" && string(argv[1]) != "active" && string(argv[1]) != "monitor")) {
+            cerr << "usage: r93_bridge clean|monitor|active input.cnf certified_rows.tsv\n";
             return 2;
         }
         string mode = argv[1], source = argv[2], cert = argv[3];
         CaDiCaL::Solver solver;
         int n;
         auto clauses = load_cnf(source, solver, n);
-        vector<XorRow> rows = (mode == "active") ? load_rows(cert,n) : vector<XorRow>{};
-        DrnasBridge bridge(std::move(rows), n);
-        if (mode == "active" && !bridge.rows.empty()) {
+        vector<XorRow> rows = (mode != "clean") ? load_rows(cert,n) : vector<XorRow>{};
+        DrnasBridge bridge(std::move(rows), n, mode == "active");
+        if (mode != "clean" && !bridge.rows.empty()) {
             solver.connect_external_propagator(&bridge);
             set<int> observed;
             for (const auto& row : bridge.rows)
