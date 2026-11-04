@@ -132,7 +132,7 @@ def freeze(a):
     manifest=dict(protocol=PROTO,source_indices={"2025":r73.SC2025,"2026":r52.URI},
         index_2025_sha256=hashlib.sha256(index25).hexdigest(),
         index_2026_sha256=hashlib.sha256(index26).hexdigest(),
-        2026_reference_scores_sha256=hashlib.sha256(score_bytes).hexdigest(),
+        scores_2026_reference_sha256=hashlib.sha256(score_bytes).hexdigest(),
         prior_manifests_sha256={
             "r63":digest(Path(a.prior)/"manifest.json"),
             "r66":digest(Path(a.prior66)/"manifest.json"),
