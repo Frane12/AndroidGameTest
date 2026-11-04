@@ -35,6 +35,7 @@ public:
     struct WatchRef { size_t row; unsigned generation; };
     vector<vector<WatchRef>> watch_index;
     vector<int> watch_a, watch_b;
+    vector<size_t> scan_cursor;
     struct WatchUndo { size_t row; bool slot_a; int old_var; };
     vector<WatchUndo> watch_history;
     vector<size_t> watch_history_marks;
@@ -57,7 +58,7 @@ public:
 
     DrnasBridge(vector<XorRow> in, int n, bool emit, bool gate):
         rows(std::move(in)), assigned(n+1,0), watch_index(n+1), watch_a(rows.size()), watch_b(rows.size()),
-        generation_a(rows.size(),1), generation_b(rows.size(),1), queued(rows.size(),0),
+        generation_a(rows.size(),1), generation_b(rows.size(),1), scan_cursor(rows.size(),0), queued(rows.size(),0),
         emit_enabled(emit), selective_gate(gate) {
         for (size_t i = 0; i < rows.size(); ++i) {
             if (rows[i].vars.size() < 2) throw runtime_error("XOR watch arity < 2");
@@ -123,10 +124,19 @@ public:
             ++watch_lookups;
             int other = is_a ? watch_b[idx] : watch_a[idx];
             int replacement = 0;
-            for (int v : rows[idx].vars) {
+            // R101: rotate the starting point after each successful watch
+            // relocation. We still examine the COMPLETE row if needed, so
+            // the invariant and fail-closed behavior are unchanged.
+            const auto& vars = rows[idx].vars;
+            const size_t count = vars.size();
+            for (size_t probe = 0; probe < count; ++probe) {
+                const size_t pos = (scan_cursor[idx] + probe) % count;
+                const int v = vars[pos];
                 ++watch_literal_probes;
                 if (v != other && assigned[v] == 0) {
-                    replacement = v; break;
+                    replacement = v;
+                    scan_cursor[idx] = (pos + 1) % count;
+                    break;
                 }
             }
             if (replacement != 0) {
