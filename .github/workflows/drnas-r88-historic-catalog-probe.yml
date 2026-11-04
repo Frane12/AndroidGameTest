@@ -1,0 +1,44 @@
+name: DRNAS R88 historic real SAT archive catalog provenance probe
+on:
+  push:
+    branches: [experiment/drnas-r88-cooperative-bulk-lab-20261104]
+    paths: ['.github/workflows/drnas-r88-historic-catalog-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  historic-provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Armin Biere 2002-2024 real competition GBD index, no huge corpus download
+        run: |
+          set -euo pipefail
+          mkdir -p historical
+          python3 - <<'PY'
+          import hashlib,json,urllib.request,pathlib,re
+          uri="https://zenodo.org/records/15125952/files/sc02to24-gbd-hashes-filenames.txt"
+          req=urllib.request.Request(uri,headers={"User-Agent":"DRNAS-R88-source-provenance/1.0"})
+          with urllib.request.urlopen(req,timeout=90) as f:
+              raw=f.read(1024*1024)
+          expected="36d2bc6cf223a15fba28a09a8a26a97e"
+          md5=hashlib.md5(raw).hexdigest()
+          if md5!=expected:
+              raise RuntimeError("Official Zenodo historical GBD list MD5 unexpected "+md5)
+          rows=[line for line in raw.decode().splitlines() if line.strip()]
+          print("R88_HISTORY_TOTAL_LINES",len(rows))
+          for row in rows[:15]:print("R88_HISTORY_SAMPLE",row[:220])
+          meta=dict(source=uri,zenodo_record="15125952",official_source_md5=md5,
+              downloaded_sha256=hashlib.sha256(raw).hexdigest(),lines=len(rows),
+              first_lines=rows[:15],valid_provenance=True)
+          pathlib.Path("historical/catalog-audit.json").write_text(json.dumps(meta,indent=2)+"\n")
+          pathlib.Path("historical/gbd-mapping.txt").write_bytes(raw)
+          print("R88_HISTORIC_2002_2024_CATALOG_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R88-HISTORICAL-2002-2024-REAL-GBD-CATALOG
+          path: historical/
+          retention-days: 90
