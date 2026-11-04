@@ -1,0 +1,154 @@
+name: DRNAS R81C blind SAT2025 recovery fixed runner - frozen sources
+on:
+  push:
+    branches: [experiment/drnas-r81c-blind2025-runner-fix-20261104]
+    paths:
+      - '.github/workflows/drnas-r81c-blind2025-recovery.yml'
+      - 'experiments/drnas_v16/r81c_official2025_blind.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r81c-blind2025-recovery-20261104
+  cancel-in-progress: false
+
+jobs:
+  sanity:
+    name: Verify corrected callable and exact original 16 frozen sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Python entrypoint no longer shadows measure
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r81c_official2025_blind.py experiments/drnas_v16/r81c_exact_algebra.py
+          python3 -u experiments/drnas_v16/r81c_exact_algebra.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r81c_official2025_blind as b
+          assert callable(b.measure), "measure() is not callable"
+          assert callable(b.audit), "audit() is not callable"
+          print("R81C_BLIND_MEASURE_ENTRYPOINT_FIXED_PASS")
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-frozen-sources
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-binaries
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Preserve exact source cohort and validate all SHA-256
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          python3 - <<'PY'
+          import sys, json
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r81c_official2025_blind as b
+          m=json.load(open("world/manifest.json"))
+          assert m["protocol"]==b.PROTO and m["ready"]==16
+          assert len(m["cases"])==16
+          assert len(set(c["sha256"] for c in m["cases"]))==16
+          assert m["registry"]["r78_accepted_sha_excluded"]==24
+          print("R81C_BLIND_FROZEN_16_SHA256_PASS",m["registry"]["r78_attempted_gbd_excluded"])
+          PY
+
+  benchmark:
+    name: r81c-blind-fixed-shard-${{ matrix.shard }}
+    needs: [sanity]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-frozen-sources
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-binaries
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: 16 original SAT2025 CNFs 2 repeats Kissat/R28/R65/R81C 30s each
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u experiments/drnas_v16/r81c_official2025_blind.py measure \
+            --sources world --binaries bin --shard "$SHARD" --out results | tee r81c-blind-fixed-live.log
+          test -s results/r81c-blind-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81c-blind-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r81c-blind-fixed-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Audit all 128 paired trials, original SAT witnesses GF2 UNSAT proofs
+    needs: [sanity,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-frozen-sources
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r81c-blind-shard-*
+          path: combined
+      - name: Fail closed on missing trials, paired conflicts, uncertified R81C paths
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r81c_official2025_blind.py audit \
+            --sources world --combined combined --out final
+          python3 - <<'PY'
+          import json
+          r=json.load(open("final/results.json"))
+          assert r["status"]=="PASS_UNOFFICIAL"
+          assert r["trials"]==128 and r["sources"]==16
+          print("R81C_BLIND_128_TRIAL_SHA256_SAT_UNSAT_AUDIT_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R81C-BLIND2025-FIXED-128TRIAL-FINAL
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90
