@@ -156,7 +156,7 @@ static void output_cnf(const fs::path& source,const fs::path& dest,int clause_co
 }
 static int build(const fs::path& source,const fs::path& dest,const fs::path& evidence){
   auto begin=std::chrono::steady_clock::now();
-  require(!fs::equivalent(source,dest),"overlapping source and output");
+  require(fs::absolute(source).lexically_normal()!=fs::absolute(dest).lexically_normal(),"overlapping source and output");
   Group groups;
   Parsed parsed=parse(source,[&](const V& clause){add_group(groups,clause);});
   std::vector<Row> rows; int width_count[7]={};
