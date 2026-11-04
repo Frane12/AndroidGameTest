@@ -177,9 +177,9 @@ def solve(path, case, max_budget_s=3.0):
             proof = [eq[j] for j in range(len(eq)) if (ancestors >> j) & 1]
             if not verify_unsat_certificate(path, proof):
                 raise RuntimeError("R81C_INVALID_GF2_UNSAT_CERTIFICATE")
-            return dict(route="gf2_unsat_certified", solved=True,
+            return dict(info, route="gf2_unsat_certified", solved=True,
                         answer="UNSAT", proof=proof, proof_size=len(proof),
-                        rank=len(basis), **info)
+                        rank=len(basis))
     # With highest-bit pivots, rows depend only on lower-index variables.
     # Free variables are zero. Ascending pivot back-substitution is exact.
     model = 0
@@ -194,8 +194,8 @@ def solve(path, case, max_budget_s=3.0):
     if not verify_sat_model(path, model, n):
         raise RuntimeError("R81C_GF2_MODEL_FAILED_ORIGINAL_CNF")
     # Check official known answer ONLY in benchmark; never infer from it.
-    return dict(route="gf2_sat_model_verified", solved=True, answer="SAT",
-                model=model, rank=len(basis), **info)
+    return dict(info, route="gf2_sat_model_verified", solved=True, answer="SAT",
+                model=model, rank=len(basis))
 
 def selftest():
     from tempfile import TemporaryDirectory
