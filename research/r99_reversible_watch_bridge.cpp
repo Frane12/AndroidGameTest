@@ -55,11 +55,13 @@ public:
     bool budget_off = false;
     bool emit_enabled = true;
     bool selective_gate = false;
+    int max_emit_width = 0;
+    long selective_rejected = 0;
 
-    DrnasBridge(vector<XorRow> in, int n, bool emit, bool gate):
+    DrnasBridge(vector<XorRow> in, int n, bool emit, bool gate, int width=0):
         rows(std::move(in)), assigned(n+1,0), watch_index(n+1), watch_a(rows.size()), watch_b(rows.size()),
         generation_a(rows.size(),1), generation_b(rows.size(),1), scan_cursor(rows.size(),0), queued(rows.size(),0),
-        emit_enabled(emit), selective_gate(gate) {
+        emit_enabled(emit), selective_gate(gate), max_emit_width(width) {
         for (size_t i = 0; i < rows.size(); ++i) {
             if (rows[i].vars.size() < 2) throw runtime_error("XOR watch arity < 2");
             watch_a[i] = rows[i].vars[0];
@@ -357,6 +359,10 @@ public:
             sort(clause.begin(), clause.end(), [](int a, int b) {
                 return abs(a)!=abs(b) ? abs(a)<abs(b) : a<b;
             });
+            if (max_emit_width && (int)clause.size() > max_emit_width) {
+                ++selective_rejected;
+                continue;
+            }
             if (published.insert(clause).second) {
                 outgoing = std::move(clause);
                 send_index = 0;
@@ -446,7 +452,7 @@ int main(int argc, char** argv) {
             DrnasBridge::watch_selftest();
             return 0;
         }
-        if (argc != 4 || (string(argv[1]) != "clean" && string(argv[1]) != "active" && string(argv[1]) != "monitor" && string(argv[1]) != "incremental")) {
+        if (argc != 4 || (string(argv[1]) != "clean" && string(argv[1]) != "active" && string(argv[1]) != "monitor" && string(argv[1]) != "incremental" && string(argv[1]) != "select3" && string(argv[1]) != "select4")) {
             cerr << "usage: r96_bridge clean|monitor|incremental|active input.cnf certified_rows.tsv\n";
             return 2;
         }
@@ -455,7 +461,7 @@ int main(int argc, char** argv) {
         int n;
         auto clauses = load_cnf(source, solver, n);
         vector<XorRow> rows = (mode != "clean") ? load_rows(cert,n) : vector<XorRow>{};
-        DrnasBridge bridge(std::move(rows), n, mode == "active" || mode == "incremental", mode == "active");
+        DrnasBridge bridge(std::move(rows), n, mode == "active" || mode == "incremental" || mode == "select3" || mode == "select4", mode == "active", mode == "select3" ? 3 : mode == "select4" ? 4 : 0);
         if (mode != "clean" && !bridge.rows.empty()) {
             solver.connect_external_propagator(&bridge);
             set<int> observed;
@@ -484,6 +490,7 @@ int main(int argc, char** argv) {
              << " live_callbacks=" << bridge.callbacks
              << " live_signals=" << bridge.feasible_signals
              << " clauses_emitted=" << bridge.clauses_emitted
+             << " selective_rejected=" << bridge.selective_rejected
              << " rows_scanned=" << bridge.rows_scanned
              << " rows_enqueued=" << bridge.rows_enqueued
              << " watch_lookups=" << bridge.watch_lookups
