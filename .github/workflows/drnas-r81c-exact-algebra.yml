@@ -1,0 +1,204 @@
+name: DRNAS R81C exact algebraic coverage and certified GF2 benchmark
+on:
+  push:
+    branches: [experiment/drnas-r81c-exact-algebra-20261104]
+    paths:
+      - '.github/workflows/drnas-r81c-exact-algebra.yml'
+      - 'experiments/drnas_v16/r81c_exact_algebra.py'
+      - 'experiments/drnas_v16/r81c_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r81c-exact-algebra-20261104
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    name: R81C independent SAT models, UNSAT proofs, near-XOR fallback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile check and exhaustive small-formula certification
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r81c_exact_algebra.py experiments/drnas_v16/r81c_benchmark.py
+          python3 -u experiments/drnas_v16/r81c_exact_algebra.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify frozen SAT Competition 2026 source and solver SHA256
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          test "$(python3 -c 'import json; d=json.load(open("world/manifest.json")); print(len(d["cases"]))')" = 24
+          echo R81C_SHA256_FROZEN_SOURCES_AND_BINARIES_PASS
+
+  targeted:
+    name: Two original algebraic SAT/UNSAT cases, real end-to-end native check
+    needs: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Prove exact coverage and compare to same-run pinned Kissat
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u - <<'PY' | tee r81c-targeted.log
+          import hashlib,json,sys,time
+          from pathlib import Path
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r81c_exact_algebra as r
+          import r81c_benchmark as b
+          cases=json.loads(Path("world/manifest.json").read_text())["cases"]
+          expect={"28dcc4119e1bbb5fbd3fdd8f4140f28d":"SAT",
+                  "667341ee8c1dea3db613db317e2b2c33":"UNSAT"}
+          results=[]
+          for key,status in expect.items():
+              case=next(x for x in cases if x["gbd"]==key)
+              path=Path("world")/case["filename"]
+              assert r.sha(path)==case["sha256"]
+              t0=time.monotonic()
+              result=r.solve(path,case, max_budget_s=5.0)
+              elapsed=time.monotonic()-t0
+              assert result.get("solved") and result["answer"]==status,(key,result.get("route"))
+              if status=="SAT":
+                  assert r.verify_sat_model(path,result["model"],case["variables"])
+              else:
+                  assert r.verify_unsat_certificate(path,result["proof"])
+              baseline_status,wall,timeout,route=b.run_solver(
+                  [Path("bin/kissat").resolve(),path],path,30.0)
+              baseline_par2=60.0 if timeout else wall
+              row=dict(source_id=key,source_sha256=case["sha256"],
+                  variables=case["variables"],clauses=case["clauses"],
+                  answer=result["answer"],r81c_route=result["route"],
+                  r81c_time_s=round(elapsed,6),r81c_rank=result["rank"],
+                  r81c_xor_equations=result["xor_equations"],
+                  r81c_units=result["units"],unsat_proof_rows=result.get("proof_size",0),
+                  kissat_answer=baseline_status,kissat_par2_s=round(baseline_par2,6),
+                  kissat_timeout=timeout)
+              results.append(row)
+              print("R81C_TARGETED_PASS",json.dumps(row,sort_keys=True),flush=True)
+          Path("r81c-targeted.json").write_text(json.dumps(results,indent=2)+"\n")
+          print("R81C_TARGETED_TWO_INDEPENDENT_SOURCE_MODELS_AND_CERTS_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R81C-TARGETED-CERTIFIED-SAT-UNSAT
+          path: |
+            r81c-targeted.json
+            r81c-targeted.log
+          if-no-files-found: warn
+
+  benchmark:
+    name: r81c-shard-${{ matrix.shard }}
+    needs: [selftest,targeted]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Five frozen paired modes, two repeats, 30s per attempt
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u experiments/drnas_v16/r81c_benchmark.py measure \
+            --sources world --binaries bin --shard ${{ matrix.shard }} --out results | tee r81c-live.log
+          test -s results/r81c-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81c-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r81c-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R81C 240-run independent SHA256 SAT-witness UNSAT-certificate and PAR2 audit
+    needs: [selftest,targeted,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          run-id: 41746755881
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r81c-shard-*
+          path: combined
+      - name: Fail closed on incomplete shards, bad proofs, source drift and missing comparison
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r81c_benchmark.py audit \
+            --sources world --combined combined --out final
+          cat final/r81c-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R81C-EXACT-ALGEBRA-VERIFIED-RESULTS
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90
