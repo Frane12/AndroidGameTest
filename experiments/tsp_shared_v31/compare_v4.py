@@ -41,7 +41,7 @@ def main():
                             start=time.perf_counter()
                             coords,d,nn=fast_make(n,seed)
                             r=v4_run(n,seed,d,nn,a.seconds,start=start)
-                            r['prep']=r['events'][0][0]
+                            r['prep']=r['events'][1][0]
                         status='ok'
                     except Exception as e:
                         status='error';r={'events':[],'elapsed':0,'prep':0,'steps':0,'notes':str(e)}
