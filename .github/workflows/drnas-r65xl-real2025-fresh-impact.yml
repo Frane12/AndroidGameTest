@@ -1,0 +1,195 @@
+name: DRNAS R65x-Live new official 2025 XOR impact normal Kissat paired
+on:
+  push:
+    branches: [experiment/drnas-r65xl-real2025-fresh-impact-20261104]
+    paths:
+      - '.github/workflows/drnas-r65xl-real2025-fresh-impact.yml'
+      - 'experiments/drnas_v16/r65xl_real2025_fresh_impact.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65xl-unseen-official2025-xor-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: SHA-freeze new original SAT2025 3 XOR and 3 controls before solver timings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate source protocol and original-unit linear-proof selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65xl_real2025_fresh_impact.py
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py selftest
+          python3 -u experiments/drnas_v16/r85_fresh_abcd.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior73
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior85
+      - name: Verify earlier SHA manifests and exclude documented prior attempts
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd prior85/fresh && sha256sum -c source.sha256)
+          test -s prior73/new/manifest.json
+          python3 -u experiments/drnas_v16/r65xl_real2025_fresh_impact.py freeze \
+            --old world --r73 prior73/new --r85 prior85/fresh \
+            --out fresh | tee r65xl2025-freeze.log
+          grep -q '^R65XL_REAL2025_FRESH_FROZEN_PASS' r65xl2025-freeze.log
+          (cd fresh && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65xl-real2025-xor3-control3-original-sha-freeze
+          path: |
+            fresh/
+            r65xl2025-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  pin:
+    name: Pin same upstream clean and certified native 4096-XOR binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xlv2-pinned-old-v2-proof-build
+          run-id: 41798395080
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: SHA256 verify unchanged R65XL V2 native and upstream Kissat
+        run: |
+          set -euo pipefail
+          (cd compiled/old && sha256sum -c r65xl-binaries.sha256)
+          (cd compiled/new && sha256sum -c r65xl-v2-binaries.sha256)
+          chmod +x compiled/old/clean compiled/new/native-r65xl-v2
+          test "$(compiled/old/clean --version)" = "$(compiled/new/native-r65xl-v2 --version)"
+          echo R65XL_REAL2025_PINNED_CLEAN_AND_CERTIFIED_NATIVE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r65xl-real2025-bitidentical-pinned-solvers
+          path: |
+            compiled/old/clean
+            compiled/old/r65xl-binaries.sha256
+            compiled/old/native-r65xl
+            compiled/new/native-r65xl-v2
+            compiled/new/r65xl-v2-binaries.sha256
+          retention-days: 90
+          if-no-files-found: error
+
+  benchmark:
+    name: r65xl2025-shard-${{ matrix.shard }}
+    needs: [freeze,pin]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 36
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-real2025-xor3-control3-original-sha-freeze
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-real2025-bitidentical-pinned-solvers
+          path: .
+      - name: Frozen original SAT2025 + pinned binaries must be intact
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled/old && sha256sum -c r65xl-binaries.sha256)
+          (cd compiled/new && sha256sum -c r65xl-v2-binaries.sha256)
+          chmod +x compiled/old/clean compiled/new/native-r65xl-v2
+      - name: Seven paired arms on unchanged official original formula 60-second cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65xl_real2025_fresh_impact.py measure \
+            --sources fresh --compiled compiled \
+            --shard "$SHARD" --out results | tee r65xl2025-live.log
+          grep -q '^R65XL_REAL2025_SHARD_PASS' r65xl2025-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65xl2025-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r65xl2025-live.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: 84 original SAT2025 paired trial final proof and PAR2 audit
+    needs: [freeze,pin,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65xl-real2025-xor3-control3-original-sha-freeze
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65xl2025-shard-*
+          path: combined
+      - name: 'Fail closed: all original SHA checks and unbiased paired 84 trials'
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r65xl_real2025_fresh_impact.py audit \
+            --sources fresh --combined combined --json r65xl2025-final.json \
+            --md r65xl2025-final.md | tee r65xl2025-audit.log
+          grep -q '^R65XL_REAL2025_FINAL_AUDIT_PASS' r65xl2025-audit.log
+          cat r65xl2025-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65XL-UNSEEN-REAL2025-XOR-84-PAIRED-FINAL
+          path: |
+            r65xl2025-final.json
+            r65xl2025-final.md
+            r65xl2025-audit.log
+            fresh/manifest.json
+          retention-days: 90
+          if-no-files-found: error
