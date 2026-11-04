@@ -108,6 +108,14 @@ def run_one(source,mode,clean,native,cache):
         ck(tel["last"]["first_uip_reason_uses"]==
            live["last"]["cdcl_first_uip_uses"],
            "native and live UIP counters disagree")
+    gate_match=re.search(r"^c R65XLV2_SOURCE_GATE (.+)$",stdout,re.M)
+    source_gate=None
+    if gate_match:
+        source_gate={}
+        for item in gate_match.group(1).split():
+            if "=" in item:
+                key,value=item.split("=",1)
+                source_gate[key]=int(value)
     result=dict(answer=answer if elapsed<=CAP else "TIMEOUT",
                 wall_s=round(min(elapsed,CAP),6),
                 par2_s=round(elapsed if answer!="TIMEOUT" and elapsed<=CAP
@@ -115,7 +123,8 @@ def run_one(source,mode,clean,native,cache):
                 sat_witness_checked=answer=="SAT",
                 unsat_external_proof_checked=False,
                 solver="clean" if clean_mode else "native-r65xl",
-                prep_preserved=not default,telemetry=tel,live=live)
+                prep_preserved=not default,telemetry=tel,live=live,
+                source_gate=source_gate)
     return result
 
 def measure(args):
