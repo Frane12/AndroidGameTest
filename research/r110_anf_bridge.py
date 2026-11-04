@@ -224,7 +224,7 @@ def selftest():
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         # c = a XOR b, and c = a AND b -> only a=b=c=0.
-        xor = [(1, 2, 3), (-1, -2, 3), (-1, 2, -3), (1, -2, -3)]
+        xor = [(-1, 2, 3), (1, -2, 3), (1, 2, -3), (-1, -2, -3)]
         and_ = [(-1, -2, 3), (1, -3), (2, -3)]
         original = xor + and_
         p = root/"mixed.cnf"
