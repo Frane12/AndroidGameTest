@@ -42,11 +42,14 @@ def expected_gate(case):
                 and case["complete_blocks"]>=2)
 
 def source_prove_rows(original, emitted):
-    """Independent linear-span proof using only complete ORIGINAL CNF XOR blocks."""
+    """Independent span proof from complete ORIGINAL XOR blocks and literal unit clauses."""
     if not emitted:return 0
     source,guard=cert.load_original(original)
     ck(guard is None,"native emitted XOR rows outside independent source proof scope "+str(guard))
     axioms=cert.complete_parity_axioms(source)
+    # Unit clauses are original CNF facts (x=1 or x=0), not heuristic XOR guesses.
+    # Their inclusion is essential for valid parity reductions such as x^y=c.
+    axioms.extend(source.get("original_units",[]))
     basis={}
     def insert(bits,rhs):
         while bits:
@@ -332,6 +335,16 @@ def selftest():
         try:source_prove_rows(p,[((1,4),0)])
         except RuntimeError:pass
         else:raise RuntimeError("R83_SELFTEST unsound parity row accepted")
+    with tempfile.TemporaryDirectory() as td:
+        p=Path(td)/"source-units-are-axioms.cnf"
+        cs=encode((1,2,3),0)+[(1,)]
+        p.write_text("p cnf 3 "+str(len(cs))+"\\n"+
+                     "".join(" ".join(map(str,cl))+" 0\\n" for cl in cs))
+        ck(source_prove_rows(p,[((2,3),1)])==1,
+           "direct original unit must be in proof span")
+        try:source_prove_rows(p,[((2,3),0)])
+        except RuntimeError:pass
+        else:raise RuntimeError("invalid unit-conditioned XOR row accepted")
     ck(not expected_gate(dict(supported=False,complete_blocks=0)),
        "unscannable source gate was unsafely active")
     print("R83_INDEPENDENT_GF2_SPAN_AND_GATE_SELFTEST_PASS",flush=True)
