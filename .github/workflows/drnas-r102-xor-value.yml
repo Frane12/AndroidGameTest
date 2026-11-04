@@ -1,41 +1,66 @@
-name: DRNAS R107A certified XOR finder SAT2025 audit
+name: DRNAS R107B certified XOR GF2 CaDiCaL real CNF comparison
 on:
   push:
-    branches: [experiment/drnas-r107a-xor-finder-20261104]
-    paths:
-      - '.github/workflows/drnas-r102-xor-value.yml'
-      - 'research/r107a_xor_finder.py'
-      - 'research/r107a_real_audit.py'
+    branches: [experiment/drnas-r107b-certified-cadical-20261104]
+    paths: ['.github/workflows/drnas-r102-xor-value.yml', 'research/r107b_*.py', 'research/r107a_xor_finder.py', 'research/r106_manifest.json']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  xor-finder-audit:
+  comparison:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Full 2-6 XOR pattern and independent certificate selftest
+      - name: Download pinned Kissat and CryptoMiniSat reference binaries
         run: |
           set -euo pipefail
-          python3 research/r107a_xor_finder.py selftest | tee r107a-selftest.txt
-          grep -q '^R107A_SELFTEST_PASS' r107a-selftest.txt
-      - name: Fetch eight immutable original SAT Competition 2025 formulas
+          mkdir -p /tmp/r106/kissat /tmp/r106/cms
+          curl -fsSL --retry 3 --max-time 120 'https://github.com/arminbiere/kissat/releases/download/rel-4.0.4/kissat-4.0.4-linux-amd64.zip' -o /tmp/r106/kissat.zip
+          echo '63282e5168ca040a2018edfba0726bf893a7a6bcdb1db87feb67857e2da697a7  /tmp/r106/kissat.zip' | sha256sum --check
+          unzip -oq /tmp/r106/kissat.zip -d /tmp/r106/kissat
+          find /tmp/r106/kissat -type f -print
+          find /tmp/r106/kissat -type f -iname '*kissat*' -exec chmod +x '{}' \;
+          find /tmp/r106/kissat -type f -iname '*kissat*' -print -quit > /tmp/r106/kissat-path
+          test -s /tmp/r106/kissat-path
+          curl -fsSL --retry 3 --max-time 120 'https://github.com/msoos/cryptominisat/releases/download/release/v5.17.0/cryptominisat5-v5.17.0-linux-amd64.tar.gz' -o /tmp/r106/cms.tar.gz
+          echo '474ff5cfaf77de7438dc063dbe4ccefcbb7dcf1e17de702c34ed88f5e026eda7  /tmp/r106/cms.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r106/cms.tar.gz -C /tmp/r106/cms
+          find /tmp/r106/cms -type f -print
+          find /tmp/r106/cms -type f -iname '*cryptominisat*' -exec chmod +x '{}' \;
+          find /tmp/r106/cms -type f -iname '*cryptominisat*' -print -quit > /tmp/r106/cms-path
+          test -s /tmp/r106/cms-path
+          "$(cat /tmp/r106/kissat-path)" --version
+          "$(cat /tmp/r106/cms-path)" --version
+      - name: Build pinned CaDiCaL 2.1.0 and selftest R105/R107A/R107B
         run: |
           set -euo pipefail
-          python3 research/r106_fetch_real_cnf.py r107a-results/source
-      - name: Compare frozen R105 3-XOR finder against R107A 2-6 certified decoder
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r106/cadical
+          cd /tmp/r106/cadical
+          git checkout rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/cadical-commit.txt"
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          python3 research/r105_gf2_contradiction_only.py selftest
+          python3 research/r107a_xor_finder.py selftest
+          python3 research/r107b_certified_cadical.py selftest | tee r107b-selftest.txt
+          grep -q '^R107B_CERTIFIED_SELFTEST_PASS' r107b-selftest.txt
+      - name: Verify real 2025 original CNF hashes and precommit manifest
         run: |
           set -euo pipefail
-          python3 research/r107a_real_audit.py r107a-results | tee r107a-audit.txt
-          grep -q '^R107A_COMPLETE_AUDIT' r107a-audit.txt
-      - name: Publish SHA manifest, per-formula evidence and summary
+          python3 research/r106_fetch_real_cnf.py r106-results/source
+      - name: Five-way paired CaDiCaL Kissat CryptoMiniSat R105 R107B
+        run: |
+          set -euo pipefail
+          python3 research/r107b_cross_solver_benchmark.py r106-results /tmp/r106/cadical/build/cadical "$(cat /tmp/r106/kissat-path)" "$(cat /tmp/r106/cms-path)"
+      - name: Upload per-formula raw outputs and SHA manifest
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: R107A-REAL-SAT2025-XOR-FINDER-CERTIFIED
+          name: R107B-REAL2025-CERTIFIED-GF2-CADICAL-AUDIT
           path: |
-            r107a-results/
-            r107a-selftest.txt
-            r107a-audit.txt
+            r106-results/
+            cadical-commit.txt
+            r107b-selftest.txt
           if-no-files-found: warn
