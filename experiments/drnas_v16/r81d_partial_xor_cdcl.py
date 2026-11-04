@@ -102,7 +102,9 @@ def _reduce(rows,existing,deadline):
     for pivot in sorted(basis):
         if time.monotonic()>deadline:break
         vec,rhs,proof=basis[pivot]
-        for upper in sorted(k for k in basis if k>pivot):
+        for counter,upper in enumerate(sorted(k for k in basis if k>pivot)):
+            if (counter & 31)==0 and time.monotonic()>deadline:
+                break
             high,b,ancestor=basis[upper]
             if (high>>pivot)&1:
                 basis[upper]=(high^vec,b^rhs,ancestor^proof)
