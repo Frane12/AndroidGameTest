@@ -1,0 +1,210 @@
+name: DRNAS R107C unofficial SAT Competition 2026 world-head-to-head
+on:
+  push:
+    branches: [experiment/drnas-r107c-fast-xor-20261104]
+    paths:
+      - '.github/workflows/drnas-r107c-satcomp26-world-sim.yml'
+      - 'research/r107c_satcomp26_world_sim.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r107c-world-2026
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze real official SATComp2026 original CNFs with SHA256
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate script and fetch fixed real official 2026 Main Track source IDs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r107c_satcomp26_world_sim.py
+          python3 -u research/r107c_satcomp26_world_sim.py freeze --out sources | tee freeze.log
+          (cd sources && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r107c-world26-frozen-originals
+          path: |
+            sources/
+            freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  build:
+    name: Verify pinned top solvers and compile native R107C and SATComp26 champion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Audit pinned controls; compile and selftest R107C
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/cadical_3_0_1 built/bin/kissat_4_0_4 built/bin/kissat_pinned
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic \
+            research/r107c_native_xor_finder.cpp -o built/bin/r107c_native
+          python3 -u research/r107c_native_selftest.py built/bin/r107c_native
+          sha256sum research/r107c_native_xor_finder.cpp built/bin/r107c_native > built/r107c-provenance.sha256
+          lscpu > built/runner-cpu.txt
+      - name: Obtain exact official SAT Competition 2026 overall winner source and build
+        run: |
+          set -euo pipefail
+          mkdir -p built/official
+          if ! curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/satcompetition/2026/main/downloads/solvers/anders.tar.xz \
+            --output built/anders.tar.xz; then
+            echo 'Official winner source could not be downloaded' > built/winner_unavailable.txt
+          elif [ "$(git hash-object built/anders.tar.xz)" != "5ec9be607fbf762329176beb7068d574cd528b5b" ]; then
+            echo 'Official winner source SHA mismatch; refused to run unverified archive' > built/winner_unavailable.txt
+          elif ! tar -xJf built/anders.tar.xz -C built/official; then
+            echo 'Official winner source extraction failed' > built/winner_unavailable.txt
+          else
+            python3 - <<'PY'
+          from pathlib import Path
+          root=Path("built/official")
+          choices=sorted(root.rglob("run.sh"))
+          matches=[p for p in choices if "satsuma-iter" in str(p).lower()
+                   and "kissat" in str(p).lower()
+                   and "mab" not in str(p).lower()
+                   and "ae-" not in str(p).lower()
+                   and "ae_" not in str(p).lower()]
+          if len(matches)!=1:
+              Path("built/winner_unavailable.txt").write_text(
+                  "Ambiguous official champion run.sh: "+str([str(p) for p in matches])[:400])
+          else:
+              p=matches[0]
+              Path("built/champion_run_script.txt").write_text(str(p.relative_to(root))+"\n")
+              print("R107C_WORLD_WINNER_SELECTED",p,flush=True)
+          PY
+            if test -s built/champion_run_script.txt; then
+              winner="built/official/$(cat built/champion_run_script.txt)"
+              solver_dir="$(dirname "$winner")"
+              if (cd "$solver_dir" && chmod +x build.sh run.sh && bash ./build.sh); then
+                echo "R107C_SATCOMP26_CHAMPION_BUILT $(cat built/champion_run_script.txt)"
+              else
+                echo 'Official winner build failed; no champion performance claim' > built/winner_unavailable.txt
+                rm -f built/champion_run_script.txt
+              fi
+            fi
+          fi
+          if test -f built/winner_unavailable.txt; then cat built/winner_unavailable.txt; fi
+          if test -s built/champion_run_script.txt; then
+            tar -czf built/official-built.tar.gz -C built/official .
+            rm -rf built/official
+          fi
+          rm -f built/anders.tar.xz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r107c-world26-binaries-and-champion
+          path: built/
+          retention-days: 90
+          if-no-files-found: error
+
+  benchmark:
+    name: Paired real-2026 shard-${{ matrix.shard }}
+    needs: [freeze, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r107c-world26-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r107c-world26-binaries-and-champion
+          path: built
+      - name: Validate frozen real sources and pinned solvers, reconstruct official champion
+        run: |
+          set -euo pipefail
+          test -s frozen/sources/manifest.json
+          (cd frozen/sources && sha256sum -c source.sha256)
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/cadical_3_0_1 built/bin/kissat_4_0_4 built/bin/kissat_pinned built/bin/r107c_native
+          if test -s built/champion_run_script.txt; then
+            mkdir -p built/official
+            tar -xzf built/official-built.tar.gz -C built/official
+            test -f "built/official/$(cat built/champion_run_script.txt)"
+          fi
+          python3 -u research/r107c_native_selftest.py built/bin/r107c_native
+      - name: Same CPU - original 2026 CNF - 30s end-to-end - 2 reps each solver
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/r107c_satcomp26_world_sim.py run \
+            --sources frozen/sources --built built --shard "$SHARD" --out result \
+            | tee r107c-world-shard.log
+          test -s result/shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r107c-world-shard-${{ matrix.shard }}
+          path: |
+            result/
+            r107c-world-shard.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Strict complete-pair PAR2 audit and comparisons against 2026 world winner
+    if: always()
+    needs: [freeze, build, benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r107c-world26-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r107c-world-shard-*
+          path: combined
+      - name: No cherry-picking, full trials required, produce world head-to-head
+        run: |
+          set -euo pipefail
+          (cd frozen/sources && sha256sum -c source.sha256)
+          python3 -u research/r107c_satcomp26_world_sim.py audit \
+            --sources frozen/sources --combined combined --out final \
+            | tee audit.log
+          cat final/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R107C-REAL-SATCOMP26-WORLD-HEADTOHEAD-REPORT
+          path: |
+            final/
+            audit.log
+            frozen/sources/manifest.json
+            frozen/sources/source.sha256
+          if-no-files-found: warn
+          retention-days: 90
