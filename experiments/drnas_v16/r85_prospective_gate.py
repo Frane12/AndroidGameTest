@@ -12,13 +12,13 @@ from pathlib import Path
 import r82_wide_official_2025_2026 as src
 import r83_live_xor_cdcl_wide as native
 
-PROTO="DRNAS-R85-PROSPECTIVE-SHA-DISJOINT-R83-GATE-20261104-v1"
+PROTO="DRNAS-R85-PROSPECTIVE-SHA-DISJOINT-R83-GATE-20261104-v2"
 SALT="DRNAS-R85-FROZEN-BEFORE-ANY-R85-SOLVE-20261104-v1"
 MODES=("clean_pinned","passive_native","active_native","r83_structural_gate","kissat_404")
 CAP=25.0
 REPS=2
 SHARDS=8
-TARGET={2025:12,2026:12}
+TARGET={2025:20,2026:4}
 TRIES={2025:115,2026:100}
 
 def check(ok,why):
@@ -125,7 +125,7 @@ def freeze(a):
         print("R85_YEAR_READY",year,sum(x["year"]==year for x in selected),
               "of",TARGET[year],flush=True)
     check(len(selected)==24 and len(new_sha)==24,
-          "strict freeze requires 12+12 SHA-distinct original sources")
+          "strict freeze requires 20+4 SHA-distinct original sources")
     manifest=dict(protocol=PROTO,cohort="PROSPECTIVE_TEST",
        development="R83 already examined R82 sources, NOT reused here",
        source_indices_sha256={"2025":hashlib.sha256(index25).hexdigest(),
@@ -136,7 +136,7 @@ def freeze(a):
        excluded_historical_source_sha=len(used_sha),
        selection_salt=SALT,selected_without_speed_xor_or_solver_screen=True,
        known_old_sha_overlap=0,source_attempts=attempts,
-       cases=selected,year_counts={"2025":12,"2026":12},
+       cases=selected,year_counts={"2025":20,"2026":4},
        cap_s=CAP,repetitions=REPS,methods=MODES,shards=SHARDS,
        primary_claim=dict(gate="r83_structural_gate",reference="clean_pinned",
           min_cases=24,min_relative_par2_improvement=0.05,
@@ -144,6 +144,7 @@ def freeze(a):
           no_fewer_solved=True),
        limitations=[
         "R83 gate was frozen from previously used R82 development sources.",
+        "Pre-solve availability amendment: first freeze found only four eligible 2026 sources; changed year quotas 12+12 to 20+4 before any R85 solver trial, kept selection salt and all SHA exclusions.",
         "R85 new SHA and identifiers are disjoint from six recorded historical manifest sets and R72 exclusion; unrecorded work cannot be ruled out.",
         "2025 official labels are not independently imported; UNSAT lacks independent proof.",
         "2026 correct verdicts compared against published statuses, not a new UNSAT proof.",
