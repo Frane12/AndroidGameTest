@@ -1,0 +1,61 @@
+name: DRNAS ECDLP R1 SAT toy-curve R111-versus-CaDiCaL
+on:
+  push:
+    branches:
+      - experiment/drnas-ecdlp-sat-r1-20261104
+    paths:
+      - '.github/workflows/drnas-ecdlp-sat-r1.yml'
+      - 'research/drnas_ecdlp_sat_r1.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ecdlp-r111-comparison:
+    name: ECDLP R1 prime ${{ matrix.prime }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        prime: [17, 29, 67]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned CaDiCaL and DRNAS R111 GF2 IPASIR-UP
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/ecdlp-cadical
+          cd /tmp/ecdlp-cadical
+          git checkout rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/ecdlp-cadical-sha.txt"
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -I/tmp/ecdlp-cadical/src \
+            research/r111_cdcl_gf2_bridge.cpp /tmp/ecdlp-cadical/build/libcadical.a \
+            -pthread -o /tmp/ecdlp-r111
+      - name: DRNAS R111 existing certified GF2 bridge selftest
+        run: |
+          set -euo pipefail
+          python3 -u research/r111_cdcl_gf2_selftest.py /tmp/ecdlp-r111 | tee r111-control.txt
+          grep -q '^R111_IPASIRUP_GF2_SELFTEST_PASS' r111-control.txt
+      - name: Generate nonlinear ECDLP CNF and perform paired 3-way comparison
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ecdlp_sat_r1.py \
+            --prime '${{ matrix.prime }}' \
+            --r111 /tmp/ecdlp-r111 \
+            --cadical /tmp/ecdlp-cadical/build/cadical \
+            --cap 15 --out "ecdlp-r1-p${{ matrix.prime }}" | tee "ecdlp-r1-p${{ matrix.prime }}.txt"
+          grep -q '^R1_COMPLETE' "ecdlp-r1-p${{ matrix.prime }}.txt"
+      - name: Publish CNF and SHA-locked paired timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-ECDLP-R1-PRIME-${{ matrix.prime }}
+          path: |
+            ecdlp-r1-p${{ matrix.prime }}/
+            ecdlp-r1-p${{ matrix.prime }}.txt
+            r111-control.txt
+            ecdlp-cadical-sha.txt
+          if-no-files-found: warn
