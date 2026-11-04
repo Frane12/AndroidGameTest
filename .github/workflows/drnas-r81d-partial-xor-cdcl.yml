@@ -1,0 +1,177 @@
+name: DRNAS R81D partial XOR to CDCL certificate paired mechanism benchmark
+on:
+  push:
+    branches: [experiment/drnas-r81d-partial-xor-cdcl-20261104]
+    paths:
+      - '.github/workflows/drnas-r81d-partial-xor-cdcl.yml'
+      - 'experiments/drnas_v16/r81d_partial_xor_cdcl.py'
+      - 'experiments/drnas_v16/r81d_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r81d-partial-exact-xor-cdcl-20261104
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    name: Certified partial XOR soundness, near-XOR decoy, unit propagation and CLI smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile, exhaustive semantic proof selftests, benchmark CLI
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r81d_partial_xor_cdcl.py experiments/drnas_v16/r81d_benchmark.py
+          python3 -u experiments/drnas_v16/r81d_partial_xor_cdcl.py
+          python3 -u experiments/drnas_v16/r64_mixed_xor_implied.py selftest
+          python3 -u experiments/drnas_v16/r81d_benchmark.py measure --help
+          python3 -u experiments/drnas_v16/r81d_benchmark.py audit --help
+          echo R81D_CERTIFIED_GF2_SELFTEST_AND_BENCHMARK_CLI_PASS
+
+  smoke:
+    name: Verify frozen 2025 sources, SHA-pinned controls, scan large and near XOR structures
+    needs: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-frozen-sources
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-binaries
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Original source SHA, binary SHA and chosen frozen cases
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          python3 -u - <<'PY' | tee r81d-smoke.log
+          import json,sys
+          from pathlib import Path
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r81d_benchmark as b
+          import r81d_partial_xor_cdcl as d
+          m=b.load_sources(Path("world"))
+          assert m["ready"]==16 and len(m["cases"])==16
+          assert m["registry"]["r78_accepted_sha_excluded"]==24
+          print("R81D_FROZEN16_NO_R78_SOURCE_REUSE_PASS")
+          ids=("99718c17","90bec6dc","0ae917c2")
+          chosen=[c for c in m["cases"] if c["gbd"].startswith(ids)]
+          if not chosen:chosen=m["cases"][:2]
+          for case in chosen[:3]:
+              p=Path("world")/case["filename"]
+              assert d.r81c.sha(p)==case["sha256"]
+              out=d.prepare(p,case,max_budget=3.5,verify=True)
+              print("R81D_SMOKE_SOURCE",json.dumps(dict(id=case["gbd"],
+                    n=case["variables"],m=case["clauses"],old_supported=case["supported"],
+                    exact_equations=out["equations"],rank=out["rank"],
+                    route=out["route"],derived=out["derived"],
+                    preprocessing_s=out["preprocess_s"])),flush=True)
+              # Even when no lemmas are possible, unchanged Kissat fallback is safe.
+              assert out["derived"]==len(out["certificates"])
+              if out["proven_clauses"]:
+                  assert len(out["proven_clauses"])<=24
+          print("R81D_SHA256_FROZEN_SCAN_PROOF_SMOKE_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R81D-EXACT-XOR-PARTIAL-SMOKE
+          path: r81d-smoke.log
+          if-no-files-found: warn
+
+  benchmark:
+    name: r81d-shard-${{ matrix.shard }}
+    needs: [selftest,smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 52
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-frozen-sources
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-binaries
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Paired Kissat, R28, R65, R81C and R81D active/passive at 30s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u experiments/drnas_v16/r81d_benchmark.py measure \
+            --sources world --binaries bin --shard "$SHARD" --out results | tee r81d-live.log
+          test -s results/r81d-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r81d-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r81d-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: 192 original source proofs, SAT witness, paired 95 percent bootstrap and PAR2
+    needs: [selftest,smoke,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81c-blind-frozen-sources
+          run-id: 41757799101
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r81d-shard-*
+          path: combined
+      - name: Reject missing shards, SHA mismatch, invalid GF2 lemmas or SAT/UNSAT conflict
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r81d_benchmark.py audit \
+            --sources world --combined combined --out final
+          test -s final/r81d-final.md
+          cat final/r81d-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R81D-PARTIAL-XOR-CDCL-192PAIRED-FINAL
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90
