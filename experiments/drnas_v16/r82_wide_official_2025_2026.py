@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""R81 fresh SAT Competition 2026 XOR-stratified, source-disjoint paired benchmark.
+"""R82: wide 2025+2026 official original SAT, prospective no-speed/no-XOR-screen.
 
-Official original CNFs ONLY. Exclude R63's entire historical 2026 registry
-(R32p/R32r, R52/R55b/R57/R60/R61/R63, therefore R80).
-Select by salted GBD order and pre-solve proof-pattern features, NEVER runtime.
-Two repetitions, 25s end-to-end cap, six unchanged solver policies, PAR-2.
-This is an unofficial engineering sample, not SAT Competition ranking.
+2025 avoids documented earlier R72/R73 source attempts and known old formulas.
+2026 ranks all original verified main formulas by frozen hash, explicitly marking
+any historically tested sources. Original CNF, matched solver hashes, 30s cap,
+two repeats, six competing solver configurations. Unofficial, not SAT ranking.
 """
 from __future__ import annotations
 import argparse, collections, csv, hashlib, io, json, os, random, tempfile, time
@@ -147,6 +146,8 @@ def freeze(a):
         prior_2026_benchmarked_identifiers=len(registered),
         year_counts={"2025":cases2025,"2026":cases2026},
         source_selection_attempts=attempts,
+        xor_selected=sum(c["structural_xor_positive"] for c in selected),
+        controls_selected=sum(not c["structural_xor_positive"] for c in selected),
         cases=selected,repetitions=REPS,cap_s=CAP,methods=MODES,shards=SHARDS,
         no_cherry_pick=True,
         # Primary decision fixed before trials, no changing based on results.
@@ -258,7 +259,7 @@ def measure(a):
                         sha_commit=os.environ.get("GITHUB_SHA",""),
                         run_id=os.environ.get("GITHUB_RUN_ID",""))
                     rows.append(row)
-                    print("R81_TRIAL",json.dumps(
+                    print("R82_TRIAL",json.dumps(
                         {k:row[k] for k in ("gbd","group","rep","mode","answer","route","wall_s","par2_s")}),
                         flush=True)
         writejson(out/"r82-shard.json",
@@ -266,9 +267,16 @@ def measure(a):
                 binary_sha={k:digest(p) for k,p in {**solvers,"r28":gf2}.items()},
                 cpu=Path("/proc/cpuinfo").read_text(errors="replace")[:1200],
                 rows=rows))
+    # Empty shards are allowed if source availability falls below shard count.
+    writejson(out/"r82-shard.json",
+        dict(protocol=PROTO,shard=a.shard,
+             source_manifest_sha=digest(root/"manifest.json"),
+             binary_sha={k:digest(p) for k,p in {**solvers,"r28":gf2}.items()},
+             cpu=Path("/proc/cpuinfo").read_text(errors="replace")[:1200],
+             rows=rows))
     expected=len(mf["cases"][a.shard::SHARDS])*REPS*len(MODES)
     ck(len(rows)==expected,"incomplete shard")
-    print("R81_SHARD_PASS",a.shard,len(rows),flush=True)
+    print("R82_SHARD_PASS",a.shard,len(rows),flush=True)
 
 def audit(a):
     root=Path(a.sources);mf=json.loads((root/"manifest.json").read_text())
@@ -276,7 +284,7 @@ def audit(a):
        "bad frozen source or insufficient cohort")
     allrows=[];pins=set()
     for shard in range(SHARDS):
-        p=Path(a.combined)/("r82-shard-"+str(shard))/"results"/"r81-shard.json"
+        p=Path(a.combined)/("r82-shard-"+str(shard))/"results"/"r82-shard.json"
         ck(p.is_file(),"missing shard "+str(shard))
         j=json.loads(p.read_text())
         ck(j["protocol"]==PROTO and j["shard"]==shard and
@@ -313,6 +321,57 @@ def audit(a):
                       min_s=min((r["wall_s"] for r in part if r["mode"]==m
                                  and r["answer"]!="TIMEOUT"),default=None))
                      for m in MODES}
+    # Source-paired bootstrap: repetitions belong to one formula and are
+    # NEVER counted as independent source observations.
+    cases=mf["cases"]
+    bootstrap={}
+    rng=random.Random(827031)
+    for subset, subset_cases in (
+        ("ALL",cases),("YEAR_2025",[c for c in cases if c["year"]==2025]),
+        ("YEAR_2026",[c for c in cases if c["year"]==2026]),
+        ("NEW_2026",[c for c in cases if c["year"]==2026
+                     and not c["prior_drnas_benchmarked"]])):
+        bootstrap[subset]={}
+        for reference in ("kissat_404","cadical_301"):
+            paired=[]
+            for case in subset_cases:
+                relevant=[r for r in allrows if r["sha256"]==case["sha256"]]
+                ref=sum(r["par2_s"] for r in relevant
+                        if r["mode"]==reference)/REPS
+                drnas=sum(r["par2_s"] for r in relevant
+                          if r["mode"]=="drnas_r65")/REPS
+                paired.append((ref,drnas))
+            n=len(paired)
+            if not n:
+                bootstrap[subset][reference]=dict(n=0,mean_saved_s=None,
+                    gain_pct=None,ci_95_saved_s=None)
+                continue
+            observed=sum(x-y for x,y in paired)/n
+            reference_sum=sum(x for x,_ in paired)
+            gain=100*(1-sum(y for _,y in paired)/reference_sum) if reference_sum else None
+            draws=[]
+            for _ in range(3000):
+                draws.append(sum(paired[rng.randrange(n)][0]-
+                             paired[rng.randrange(n)][1] for _ in range(n))/n)
+            # Paired resample must use the SAME index for both solvers.
+            draws=[]
+            for _ in range(3000):
+                total=0.0
+                for _ in range(n):
+                    index=rng.randrange(n);total+=paired[index][0]-paired[index][1]
+                draws.append(total/n)
+            draws.sort()
+            bootstrap[subset][reference]=dict(n=n,mean_saved_s=round(observed,6),
+                gain_pct=round(gain,5) if gain is not None else None,
+                ci_95_saved_s=[round(draws[75],6),round(draws[2924],6)])
+    rule=mf["precommitted_claim_rule"]
+    n2025=sum(x["year"]==2025 for x in cases)
+    broad=(len(cases)>=rule["min_distinct_cases"] and n2025>=rule["min_new_2025"]
+        and all(bootstrap["ALL"][ref]["gain_pct"] is not None
+           and bootstrap["ALL"][ref]["gain_pct"]>=100*rule["required_relative_par2_gain_vs_each"]
+           and bootstrap["ALL"][ref]["ci_95_saved_s"][0]>0
+           and summaries["ALL"]["drnas_r65"]["solved"]>=summaries["ALL"][ref]["solved"]
+           for ref in rule["reference_solvers"]))
     result=dict(status="PASS_UNOFFICIAL",protocol=PROTO,sources=len(mf["cases"]),
                 repeats=REPS,cap_s=CAP,trials=len(allrows),
                 solver_sha256=json.loads(next(iter(pins))),
@@ -320,6 +379,10 @@ def audit(a):
                 xor_selected=mf["xor_selected"],
                 controls_selected=mf["controls_selected"],
                 summary=summaries,rows=allrows,
+                paired_source_bootstrap=bootstrap,
+                broad_indication_precommitted=broad,
+                claim_rule=rule,
+                source_counts=mf["year_counts"],
                 limitations=mf["limitations"])
     out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
     writejson(out/"r82-final.json",result)
@@ -344,9 +407,20 @@ def audit(a):
         md.extend(["",f"### {group}","| Method | Solved | PAR-2 sum (s) |","|---|---:|---:|"])
         for m,s in summaries[group].items():
             md.append(f"| {m} | {s['solved']}/{s['trials']} | {s['par2_s']:.3f} |")
+    md+=["","## Precommitted broad-validation rule",
+        f"Broad indication: **{broad}**. Required >=24 formulas, >=12 fresh 2025,",
+        ">=5% PAR2 gain, positive lower bound on source-paired 95% bootstrap for",
+        "R65 vs BOTH reference solvers, and no fewer solved attempts.",
+        "","## Paired source bootstrap: R65 time saved vs reference",
+        "| Cohort | Reference | N formulas | Mean saved (s) | Gain (%) | 95% interval of saved seconds |",
+        "|---|---|---:|---:|---:|---|"]
+    for cohort,refs in bootstrap.items():
+        for solver,stat in refs.items():
+            md.append(f"| {cohort} | {solver} | {stat['n']} | "
+                f"{stat['mean_saved_s']} | {stat['gain_pct']} | {stat['ci_95_saved_s']} |")
     md+=["","## Limitations"]+["- "+x for x in mf["limitations"]]
     (out/"r82-final.md").write_text("\n".join(md)+"\n")
-    print("R81_FINAL_AUDIT_PASS",json.dumps(
+    print("R82_FINAL_AUDIT_PASS",json.dumps(
         {"trials":len(allrows),"sources":len(mf["cases"]),"xor":mf["xor_selected"],
          "summary":summaries["ALL"]}),flush=True)
 
