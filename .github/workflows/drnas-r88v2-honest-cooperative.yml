@@ -1,0 +1,136 @@
+name: DRNAS R88.2 cooperative cross-community lean gate true end-to-end 12s replay
+on:
+  push:
+    branches: [experiment/drnas-r88v2-honest-cooperative-20261104]
+    paths:
+      - '.github/workflows/drnas-r88v2-honest-cooperative.yml'
+      - 'experiments/drnas_v16/r88_cooperative_v2.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r88v2-original-sources-12-sec-global-development
+  cancel-in-progress: true
+jobs:
+  source:
+    name: Frozen original R88.1 60 competition CNFs, pinned clean Kissat, unbiased selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fair timeout, RUP, and source-check selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r88_cooperative_v2.py
+          python3 -u experiments/drnas_v16/r88_cooperative.py selftest
+          python3 -u experiments/drnas_v16/r88_cooperative_v2.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-pinned-solvers
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled-original
+      - name: Verify exactly the unchanged original clean baseline
+        run: |
+          set -euo pipefail
+          test -s compiled-original/compiled/r87-binaries.sha256
+          (cd compiled-original/compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled-original/compiled/clean
+          echo R88V2_LOCKED_UNCHANGED_CLEAN_BASELINE_PASS
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R88V2-UNCHANGED-R88V1-BASELINE-PINS
+          path: compiled-original/compiled/
+          retention-days: 90
+
+  replay:
+    name: r88v2-replay-${{ matrix.year }}-${{ matrix.shard }}
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        year: [0,2025,2026]
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-sources-${{ matrix.year }}-${{ matrix.shard }}
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: source
+      - uses: actions/download-artifact@v4
+        with:
+          name: R88V2-UNCHANGED-R88V1-BASELINE-PINS
+          path: compiled
+      - name: Original SHA and binary SHA
+        run: |
+          set -euo pipefail
+          (cd source/sources && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r87
+      - name: Four arms with common 12s total budget, two source-paired repetitions
+        env:
+          YEAR: ${{ matrix.year }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_cooperative_v2.py measure \
+            --sources source/sources --compiled compiled --year "$YEAR" \
+            --shard "$SHARD" --out results | tee r88v2.log
+          grep -q '^R88V2_SHARD_PASS' r88v2.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r88v2-results-${{ matrix.year }}-${{ matrix.shard }}
+          path: |
+            results/
+            r88v2.log
+          retention-days: 90
+
+  audit:
+    name: R88v2 480-trial all-source SHA, paired PAR2, bootstrap, SQLite independent audit
+    needs: [source,replay]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88v2-results-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88-sources-*
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original-sources
+      - name: Reverify 60 original SHA, pinned solver SHA, paired 480 fair-cap results
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_cooperative_v2.py audit \
+            --sources original-sources --combined combined --out final | tee r88v2-audit.log
+          grep -q '^R88V2_FULL_DEVELOPMENT_AUDIT_PASS' r88v2-audit.log
+          cat final/r88v2-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R88V2-FAIR-COOPERATIVE-480-TRIALS-DB-AND-REPORT
+          path: |
+            final/
+            r88v2-audit.log
+          retention-days: 90
+          if-no-files-found: error
