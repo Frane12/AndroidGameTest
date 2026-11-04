@@ -168,7 +168,7 @@ def main():
           verified_sat=sum(r['sat_verified'] for r in rs))
     audit=dict(protocol='R107C-NATIVE-FINDER-PROOF-CARRYING-SAT2025',
         cases=len(manifest),trials=len(records),cap_s=CAP,summary=summary,
-        notes='Not verified globally unseen nor official 2026. All original CNFs SHA checked. Each method's end-to-end preprocessing is charged (R105,R107B,R107C). R107C native certificate replay reads immutable original CNF independently and post-run Python audit additionally verifies proof (outside timed path). No external UNSAT proof checking; not project-wide blind holdout.')
+        notes='Not verified globally unseen nor official 2026. All original CNFs SHA checked. All methods have end-to-end preprocessing is charged (R105,R107B,R107C). R107C native certificate replay reads immutable original CNF independently and post-run Python audit additionally verifies proof (outside timed path). No external UNSAT proof checking; not project-wide blind holdout.')
     (out/'summary.json').write_text(json.dumps(audit,indent=2))
     print('R107C_COMPLETE_AUDIT',json.dumps(audit),flush=True)
 if __name__=='__main__':main()
