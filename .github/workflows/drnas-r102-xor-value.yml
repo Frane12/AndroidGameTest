@@ -1,4 +1,4 @@
-name: DRNAS R111 in-process GF2 CDCL IPASIR-UP integration
+name: DRNAS R111 GF2-CDCL IPASIR-UP four parallel real SAT2025 shards
 on:
   push:
     branches: [experiment/drnas-r111-cdcl-gf2-ipasirup-20261104]
@@ -6,16 +6,23 @@ on:
       - '.github/workflows/drnas-r102-xor-value.yml'
       - 'research/r111_*.cpp'
       - 'research/r111_*.py'
+      - 'research/r111_real_2025_manifest.json'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  cdcl-gf2-integration:
+  ipasirup-shards:
+    name: R111 CDCL_GF2 real SAT2025 shard ${{ matrix.shard }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - name: Build pinned CaDiCaL 2.1.0 static library
+      - name: Build frozen CaDiCaL 2.1.0 plus in-process GF2 callback bridge
         run: |
           set -euo pipefail
           git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r111-cadical
@@ -25,21 +32,51 @@ jobs:
           ./configure
           make -j2
           test -f build/libcadical.a
-      - name: Build actual R111 CaDiCaL ExternalPropagator
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -I/tmp/r111-cadical/src \
+            research/r111_cdcl_gf2_bridge.cpp /tmp/r111-cadical/build/libcadical.a \
+            -pthread -o /tmp/r111-bridge
+      - name: Proof safety and actual two-way GF2 and CDCL callback selftests
         run: |
           set -euo pipefail
-          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -I/tmp/r111-cadical/src             research/r111_cdcl_gf2_bridge.cpp /tmp/r111-cadical/build/libcadical.a             -pthread -o /tmp/r111-bridge
-      - name: Differential GF2 assignments and backtracking, known SAT-UNSAT
-        run: |
-          set -euo pipefail
+          python3 -m py_compile research/r111_real_benchmark.py research/r111_cdcl_gf2_selftest.py
           python3 -u research/r111_cdcl_gf2_selftest.py /tmp/r111-bridge | tee r111-selftest.txt
           grep -q '^R111_IPASIRUP_GF2_SELFTEST_PASS' r111-selftest.txt
-      - name: Upload R111 build and proof test audit
+      - name: Download pinned Kissat and CryptoMiniSat for reference comparisons
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r111/kissat /tmp/r111/cms
+          curl -fsSL --retry 3 --max-time 120 'https://github.com/arminbiere/kissat/releases/download/rel-4.0.4/kissat-4.0.4-linux-amd64.zip' -o /tmp/r111/kissat.zip
+          echo '63282e5168ca040a2018edfba0726bf893a7a6bcdb1db87feb67857e2da697a7  /tmp/r111/kissat.zip' | sha256sum --check
+          unzip -oq /tmp/r111/kissat.zip -d /tmp/r111/kissat
+          find /tmp/r111/kissat -type f -iname '*kissat*' -exec chmod +x '{}' \;
+          find /tmp/r111/kissat -type f -iname '*kissat*' -print -quit > /tmp/r111/kissat-path
+          test -s /tmp/r111/kissat-path
+          curl -fsSL --retry 3 --max-time 120 'https://github.com/msoos/cryptominisat/releases/download/release/v5.17.0/cryptominisat5-v5.17.0-linux-amd64.tar.gz' -o /tmp/r111/cms.tar.gz
+          echo '474ff5cfaf77de7438dc063dbe4ccefcbb7dcf1e17de702c34ed88f5e026eda7  /tmp/r111/cms.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r111/cms.tar.gz -C /tmp/r111/cms
+          find /tmp/r111/cms -type f -iname '*cryptominisat*' -exec chmod +x '{}' \;
+          find /tmp/r111/cms -type f -iname '*cryptominisat*' -print -quit > /tmp/r111/cms-path
+          test -s /tmp/r111/cms-path
+      - name: Cross-solver real 2025 source SHA verified paired trials
+        run: |
+          set -euo pipefail
+          python3 -u research/r111_real_benchmark.py \
+            --shard '${{ matrix.shard }}' \
+            --out "r111-shard-${{ matrix.shard }}" \
+            --cadical /tmp/r111-cadical/build/cadical \
+            --r111 /tmp/r111-bridge \
+            --kissat "$(cat /tmp/r111/kissat-path)" \
+            --cms "$(cat /tmp/r111/cms-path)" | tee "r111-shard-${{ matrix.shard }}.txt"
+          grep -q '^R111_SHARD_COMPLETE_AUDIT' "r111-shard-${{ matrix.shard }}.txt"
+      - name: Publish independent per-shard original manifest model checks and timings
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: R111-IPASIR-UP-GF2-PILOT-SELFTEST
+          name: R111-GF2-CDCL-IPASIRUP-SHARD-${{ matrix.shard }}
           path: |
+            r111-shard-${{ matrix.shard }}/
+            r111-shard-${{ matrix.shard }}.txt
             r111-selftest.txt
             r111-cadical-commit.txt
           if-no-files-found: warn
