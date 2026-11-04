@@ -232,7 +232,12 @@ def measure(args):
                         if action=="r28":
                             argv=[gf2,source,kissat]
                     elif mode=="r81b_gf2_learn":
-                        action="r81b"
+                        # Certified pure XOR must retain R28's native GF2
+                        # SAT/UNSAT route. CNF short-lemma learning is
+                        # experimental and only enabled for mixed CNF/XOR.
+                        action="r28" if case["pure_exact_xor"] else "r81b"
+                        if action=="r28":
+                            argv=[gf2,source,kissat]
                     proof_meta={}
                     if action=="r65":
                         _,_,clauses,_,stats=r71.prepare(root,case)
