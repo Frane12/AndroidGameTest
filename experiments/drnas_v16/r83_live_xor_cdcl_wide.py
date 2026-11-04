@@ -14,6 +14,9 @@ import r32p_real_satcomp26_benchmark as r32p
 import r63_real2026_xor_prevalence_fallback as r63
 import r32t_certified_short_xor as cert
 
+# Independent source auditor must not omit a sound native row simply because
+# its original DIMACS is >12 MiB. Keep count/vars guards as fail-closed.
+cert.CAP_BYTES=48*1024*1024
 PROTO="DRNAS-R83-NATIVE-LIVE-XOR-CDCL-R82-WIDE-CONTROL-20261104-v1"
 R82_PROTO="DRNAS-R82-WIDE-OFFICIAL-2025-2026-NOSCREEN-20261104-v1"
 CAP=35.0
@@ -314,8 +317,28 @@ def audit(a):
     (out/"r83-final.md").write_text("\n".join(lines)+"\n")
     print("R83_FINAL_AUDIT_PASS",json.dumps(summary["ALL"]),flush=True)
 
+def selftest():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p=Path(td)/"four-variable.cnf"
+        def encode(vs,rhs):
+            return [tuple(-v if mask&(1<<i) else v for i,v in enumerate(vs))
+                    for mask in range(1<<len(vs)) if mask.bit_count()%2!=rhs]
+        clauses=encode((1,2,3),0)+encode((2,3,4),1)
+        p.write_text("p cnf 4 "+str(len(clauses))+"\n"+
+            "".join(" ".join(map(str,cl))+" 0\n" for cl in clauses))
+        ck(source_prove_rows(p,[((1,4),1)])==1,
+           "independent source GF2 span proof rejected valid short row")
+        try:source_prove_rows(p,[((1,4),0)])
+        except RuntimeError:pass
+        else:raise RuntimeError("R83_SELFTEST unsound parity row accepted")
+    ck(not expected_gate(dict(supported=False,complete_blocks=0)),
+       "unscannable source gate was unsafely active")
+    print("R83_INDEPENDENT_GF2_SPAN_AND_GATE_SELFTEST_PASS",flush=True)
+
 def main():
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest="cmd",required=True)
+    sub.add_parser("selftest")
     m=sub.add_parser("measure")
     for k in ("sources","compiled","world","out"):m.add_argument("--"+k,required=True)
     m.add_argument("--shard",type=int,required=True)
@@ -323,5 +346,6 @@ def main():
     for k in ("sources","combined","out"):a.add_argument("--"+k,required=True)
     x=p.parse_args()
     if x.cmd=="measure":measure(x)
+    elif x.cmd=="selftest":selftest()
     else:audit(x)
 if __name__=="__main__":main()
