@@ -1,0 +1,198 @@
+name: DRNAS R88 cooperative bulk SAT adaptive laboratory
+on:
+  push:
+    branches: [experiment/drnas-r88-cooperative-bulk-lab-20261104]
+    paths:
+      - '.github/workflows/drnas-r88-cooperative-bulk.yml'
+      - 'experiments/drnas_v16/r88_cooperative.py'
+      - 'experiments/drnas_v16/r88_bulk_import.py'
+      - 'experiments/drnas_v16/r88_adaptive_database.py'
+  workflow_dispatch:
+  # GitHub schedules only from default branch after PR merge.
+  schedule:
+    - cron: '17 */6 * * *'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: r88-cooperative-bulk-research
+  cancel-in-progress: false
+jobs:
+  history:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load latest audited persistent database or empty first run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p history
+          last="$(gh run list --workflow drnas-r88-cooperative-bulk.yml --status success --limit 20 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)"
+          if [[ "$last" =~ ^[0-9]+$ ]]; then
+            gh run download "$last" -n DRNAS-R88-ADAPTIVE-DB -D history || echo 'R88 prior artifact absent; start genesis'
+          fi
+          if test -f history/final/drnas_r88_knowledge.sqlite; then
+            cp history/final/drnas_r88_knowledge.sqlite history/drnas_r88_knowledge.sqlite
+          fi
+          python3 - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          p=Path("history/drnas_r88_knowledge.sqlite")
+          ids=[]
+          if p.exists():
+              with sqlite3.connect(p) as c:
+                  ids=[row[0] for row in c.execute("select source_id from source_registry")]
+          Path("history/prior_ids.json").write_text(json.dumps({"previous_ids":sorted(ids)})+"\n")
+          print("R88_HISTORY",len(ids))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r88-history
+          path: history/
+          retention-days: 90
+
+  import:
+    needs: history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        year: [2025, 2026]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-history
+          path: history
+      - name: Local soundness and Python syntax checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r88_cooperative.py experiments/drnas_v16/r88_bulk_import.py experiments/drnas_v16/r88_adaptive_database.py
+          python3 experiments/drnas_v16/r88_cooperative.py selftest
+          python3 experiments/drnas_v16/r88_bulk_import.py selftest
+      - name: Import real competition formulas without performance prescreen
+        env:
+          YEAR: ${{ matrix.year }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_bulk_import.py import --year "$YEAR" --shard "$SHARD" --shards 4 --target 5 --attempts 30 --history history/prior_ids.json --out sources | tee r88-import.log
+          (cd sources && sha256sum -c source.sha256)
+          grep -q '^R88_BULK_SHARD_PASS' r88-import.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r88-sources-${{ matrix.year }}-${{ matrix.shard }}
+          path: |
+            sources/
+            r88-import.log
+          retention-days: 90
+
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-PINNED-ORIGINAL-CLEAN-AND-FOUR-SCAN-CADENCES
+          run-id: 41774156361
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Verify original clean and R87 native SHA
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r87
+          test "$(compiled/clean --version)" = "$(compiled/native-r87 --version)"
+          python3 experiments/drnas_v16/r88_cooperative.py selftest
+          echo R88_PINNED_BINARY_PROVENANCE_PASS
+          echo pinned > r88-pinned.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r88-pinned-solvers
+          path: |
+            compiled/clean
+            compiled/native-r87
+            compiled/r87-binaries.sha256
+            r88-pinned.txt
+          retention-days: 90
+
+  benchmark:
+    needs: [import, compile]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      max-parallel: 8
+      fail-fast: false
+      matrix:
+        year: [2025, 2026]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-sources-${{ matrix.year }}-${{ matrix.shard }}
+          path: source
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-pinned-solvers
+          path: .
+      - name: Source SHA and paired four-arm 12-second PAR2 incl analysis time
+        env:
+          YEAR: ${{ matrix.year }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd source/sources && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r88_cooperative.py measure --sources source/sources --compiled compiled --year "$YEAR" --shard "$SHARD" --out result | tee r88-benchmark.log
+          grep -q '^R88_MEASURE_PASS' r88-benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r88-results-${{ matrix.year }}-${{ matrix.shard }}
+          path: |
+            result/
+            r88-benchmark.log
+          retention-days: 90
+
+  audit:
+    needs: [history, import, compile, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r88-history
+          path: history
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88-sources-*
+          path: combined
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r88-results-*
+          path: combined
+      - name: Fail-closed eight-shard SHA and matched timing audit into cumulative SQL
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_adaptive_database.py --combined combined --prior history/drnas_r88_knowledge.sqlite --out final | tee r88-audit.log
+          grep -q '^R88_AUDIT_PASS' r88-audit.log
+          cat final/R88_ADAPTIVE_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R88-ADAPTIVE-DB
+          path: |
+            final/
+            r88-audit.log
+          if-no-files-found: error
+          retention-days: 90
