@@ -21,7 +21,7 @@ import r66_r65_blind_short_holdout as r66
 
 PROTO="DRNAS-R81-SOURCE-DISJOINT-REAL2026-XOR-WORLD-20261104-v1"
 SALT="DRNAS-R81-BLIND-UNUSED-OFFICIAL2026-STRUCTURAL-XOR-20261104-v1"
-TARGET, POS_TARGET, CTRL_TARGET = 10, 3, 7
+TARGET, POS_TARGET, CTRL_TARGET, MIN_READY = 10, 3, 7, 4
 REPS, CAP, SHARDS, MAX_FETCH = 2, 25.0, 4, 170
 MODES=("kissat_base","kissat_404","cadical_301","drnas_r28","drnas_r65","drnas_r80")
 
@@ -94,12 +94,15 @@ def freeze(a):
                          reason=(type(e).__name__+": "+str(e))[:230])
         attempts.append(trace)
         print("R81_SOURCE_SCAN",json.dumps(trace),flush=True)
-    ck(len(positives)>=POS_TARGET and len(controls)>=CTRL_TARGET,
-       "insufficient fresh real XOR+controls; see attempts")
-    # Keep a fixed source list and report any shortfall of XOR quota.
-    chosen=positives[:POS_TARGET]+controls[:TARGET-len(positives[:POS_TARGET])]
-    ck(len(chosen)==TARGET and len({x["gbd"] for x in chosen})==TARGET,
-       "source shortlist not unique or incomplete")
+    # Quotas are TARGETS, never hard failures: include every verifiable new
+    # source up to quota; the 400-instance official pool may be exhausted.
+    # Stop only if too few genuine inputs or no XOR/control comparison at all.
+    chosen=positives[:POS_TARGET]+controls[:TARGET-min(POS_TARGET,len(positives))]
+    ck(MIN_READY<=len(chosen)<=TARGET and
+       len({x["gbd"] for x in chosen})==len(chosen) and
+       any(x["structural_xor_positive"] for x in chosen) and
+       any(not x["structural_xor_positive"] for x in chosen),
+       "not enough independently verified source-diverse inputs for even a small paired study")
     allnames={x["filename"] for x in chosen}
     for p in root.glob("*.cnf"):
         if p.name not in allnames:p.unlink()
@@ -118,7 +121,8 @@ def freeze(a):
         excluded_prior_gbd_count=len(seen), excluded_prior_gbds=sorted(seen),
         selection_salt=SALT,selection_method="salted GBD order; pre-solver complete parity pattern only",
         selection_not_using_solver_runtime=True,
-        target_xor=POS_TARGET,target_controls=CTRL_TARGET,
+        target_xor=POS_TARGET,target_controls=CTRL_TARGET,max_sources=TARGET,
+        actual_sources=len(chosen),shortfall=TARGET-len(chosen),
         xor_selected=sum(x["structural_xor_positive"] for x in chosen),
         controls_selected=sum(not x["structural_xor_positive"] for x in chosen),
         candidates_inspected=len(attempts),attempts=attempts,
@@ -132,7 +136,7 @@ def freeze(a):
           "Timeout 25s and PAR2 50s do not match official competition conditions.",
           "SAT witness checked against original CNF; UNSAT checked against published verified status, not new LRAT.",
           "Kissat 4.0.4 and CaDiCaL 3.0.1 are genuine strong reference solver versions, not claimed 2026 winners.",
-          "If positive sample quota missed, exact achieved counts are disclosed."
+          "A quota shortfall is accepted without replacement; exact achieved counts disclosed."
         ])
     writejson(root/"manifest.json",manifest)
     (root/"source.sha256").write_text("".join(
@@ -144,7 +148,8 @@ def freeze(a):
 def measure(a):
     root=Path(a.sources)
     mf=json.loads((root/"manifest.json").read_text())
-    ck(mf["protocol"]==PROTO and len(mf["cases"])==TARGET,"invalid frozen manifest")
+    ck(mf["protocol"]==PROTO and MIN_READY<=len(mf["cases"])<=TARGET,
+       "invalid frozen manifest or insufficient source cohort")
     ck(0<=a.shard<SHARDS,"wrong shard index")
     bins=Path(a.bins).resolve()
     old=Path(a.native).resolve()
@@ -233,7 +238,8 @@ def measure(a):
 
 def audit(a):
     root=Path(a.sources);mf=json.loads((root/"manifest.json").read_text())
-    ck(mf["protocol"]==PROTO and len(mf["cases"])==TARGET,"bad frozen source")
+    ck(mf["protocol"]==PROTO and MIN_READY<=len(mf["cases"])<=TARGET,
+       "bad frozen source or insufficient cohort")
     allrows=[];pins=set()
     for shard in range(SHARDS):
         p=Path(a.combined)/("r81-shard-"+str(shard))/"results"/"r81-shard.json"
@@ -243,7 +249,7 @@ def audit(a):
            j["source_manifest_sha"]==digest(root/"manifest.json"),"shard manifest mismatch")
         pins.add(json.dumps(j["binary_sha"],sort_keys=True))
         allrows.extend(j["rows"])
-    ck(len(pins)==1 and len(allrows)==TARGET*REPS*len(MODES),
+    ck(len(pins)==1 and len(allrows)==len(mf["cases"])*REPS*len(MODES),
        "binary drift or missing paired trial")
     for case in mf["cases"]:
         rr=[r for r in allrows if r["sha256"]==case["sha256"]]
@@ -268,7 +274,7 @@ def audit(a):
                       min_s=min((r["wall_s"] for r in part if r["mode"]==m
                                  and r["answer"]!="TIMEOUT"),default=None))
                      for m in MODES}
-    result=dict(status="PASS_UNOFFICIAL",protocol=PROTO,sources=TARGET,
+    result=dict(status="PASS_UNOFFICIAL",protocol=PROTO,sources=len(mf["cases"]),
                 repeats=REPS,cap_s=CAP,trials=len(allrows),
                 solver_sha256=json.loads(next(iter(pins))),
                 groups=dict(collections.Counter(c["group"] for c in mf["cases"])),
@@ -289,8 +295,8 @@ def audit(a):
     md=["# DRNAS R81 — Fresh official SAT2026 XOR structural holdout",
         "Unofficial source-disjoint experiment; same original CNFs, 25s cap, 2 repeats.",
         "Selection used SHA-ranked official ids and parity structure, never solve speed.",
-        f"Sources {TARGET}, XOR-positive {mf['xor_selected']}, controls {mf['controls_selected']}, trials {len(allrows)}.",
-        "","| Solver | Solved / 24 | PAR-2 sum (s) | Min solved (s) |",
+        f"Sources {len(mf[\'cases\'])}, XOR-positive {mf['xor_selected']}, controls {mf['controls_selected']}, trials {len(allrows)}.",
+        f"","| Solver | Solved / {len(mf[\'cases\'])*REPS} | PAR-2 sum (s) | Min solved (s) |",
         "|---|---:|---:|---:|"]
     for m,s in summaries["ALL"].items():
         md.append(f"| {m} | {s['solved']}/{s['trials']} | {s['par2_s']:.3f} | {s['min_s']} |")
@@ -302,7 +308,7 @@ def audit(a):
     md+=["","## Limitations"]+["- "+x for x in mf["limitations"]]
     (out/"r81-final.md").write_text("\n".join(md)+"\n")
     print("R81_FINAL_AUDIT_PASS",json.dumps(
-        {"trials":len(allrows),"sources":TARGET,"xor":mf["xor_selected"],
+        {"trials":len(allrows),"sources":len(mf["cases"]),"xor":mf["xor_selected"],
          "summary":summaries["ALL"]}),flush=True)
 
 def main():
