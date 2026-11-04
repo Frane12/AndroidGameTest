@@ -24,7 +24,7 @@ struct XorEquation {
   V vars;int rhs=0;std::pair<int,int> source{-1,-1};
 };
 
-[[maybe_unused]] static int intersection_count(const V& a,const V& b){
+[[maybe_unused]] [[maybe_unused]] static int intersection_count(const V& a,const V& b){
   int c=0;size_t i=0,j=0;
   while(i<a.size()&&j<b.size()){
     if(a[i]==b[j]){++c;++i;++j;}
