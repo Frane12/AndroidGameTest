@@ -61,14 +61,14 @@ def freeze(a):
     salt72="DRNAS-R72-NEW-SHA-AND-ATTEMPT-DISJOINT-20261103-v1"
     c72=sorted((g for g in ids25 if g not in seen_old and g not in set(ids26)),
         key=lambda g:hashlib.sha256((salt72+":"+g).encode()).hexdigest())
-    excluded=set(ids26)|set(c72[:100])|
+    excluded=(set(ids26)|set(c72[:100])|
              {x["gbd"] for x in mf73["cases"]}|
-             {x["gbd"] for x in mf73["selection_attempts"]}
+             {x["gbd"] for x in mf73["selection_attempts"]})
     c25=sorted([g for g in ids25 if g not in excluded],key=shaorder)
     ck(len(c25)>10,"not enough truly new 2025 source IDs")
     r32p.CNF_LIMIT=48*1024*1024
-    knownsha={x["sha256"] for m in prior.values() for x in m["cases"]}|
-             {x["sha256"] for x in mf73["cases"]}
+    knownsha=({x["sha256"] for m in prior.values() for x in m["cases"]}|
+             {x["sha256"] for x in mf73["cases"]})
     fresh=[];attempts=[]
     for g in c25[:MAX_FETCH]:
         if len(fresh)>=N25_TARGET:break
@@ -303,6 +303,49 @@ def audit(a):
                 new2025=mf["actual_new2025"],replay2026=mf["actual_replay2026"],
                 summary=summaries,rows=allrows,
                 limitations=mf["limitations"])
+    # Primary decision was frozen BEFORE any timing. Formula-level bootstrap
+    # explicitly tests the winner against the strongest fixed reference on
+    # the prospective 2025 cohort, resampling WHOLE formulas (not repeats).
+    fcases=[c for c in mf["cases"] if c["cohort"]=="2025_FRESH"]
+    reference_modes=("kissat_base","kissat_404","cadical_301")
+    per={}
+    for case in fcases:
+        current=[r for r in allrows if r["sha256"]==case["sha256"]]
+        per[case["gbd"]]={mode:sum(r["par2_s"] for r in current if r["mode"]==mode)
+                          for mode in MODES}
+    case_values=list(per.values())
+    n=len(case_values)
+    total={mode:sum(v[mode] for v in case_values) for mode in MODES}
+    strongest=min(reference_modes,key=lambda mode:total[mode])
+    delta=total[strongest]-total["drnas_r80"]
+    wins=sum(v["drnas_r80"]+.01<min(v[m] for m in reference_modes)
+             for v in case_values)
+    losses=sum(v["drnas_r80"]>min(v[m] for m in reference_modes)+.01
+               for v in case_values)
+    informative=sum(any(v[m]<REPS*CAP*2 for m in MODES) for v in case_values)
+    rng=random.Random(820261104)
+    boot=[]
+    for _ in range(2000):
+        sampled=[case_values[rng.randrange(n)] for k in range(n)]
+        best=min(sum(v[m] for v in sampled) for m in reference_modes)
+        boot.append(best-sum(v["drnas_r80"] for v in sampled))
+    boot.sort()
+    lower,upper=boot[int(.025*len(boot))],boot[int(.975*len(boot))-1]
+    adequately_broad=(n>=30 and informative>=8)
+    strong=(adequately_broad and delta>0 and wins>=5 and lower>0)
+    result["predeclared_primary_2025_evidence"]=dict(
+        independent_new_sources=n,informative_sources=informative,
+        R80_wins_by_distinct_source=wins,R80_losses_by_distinct_source=losses,
+        fixed_best_reference=strongest,
+        reference_par2_s=round(total[strongest],3),
+        r80_par2_s=round(total["drnas_r80"],3),
+        par2_advantage_pct=round(100*delta/total[strongest],4)
+                           if total[strongest] else None,
+        paired_cluster_bootstrap_delta_CI95_s=[round(lower,3),round(upper,3)],
+        breadth_criterion_met=adequately_broad,
+        robust_general_advantage_criterion_met=strong,
+        verdict="BROAD_EVIDENCE_FOR_R80" if strong else
+                "NO_BROAD_ADVANTAGE_ESTABLISHED")
     out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
     writejson(out/"r82-final.json",result)
     with (out/"paired.csv").open("w",newline="") as f:
@@ -326,7 +369,11 @@ def audit(a):
         md.extend(["",f"### {group}","| Method | Solved | PAR-2 sum (s) |","|---|---:|---:|"])
         for m,s in summaries[group].items():
             md.append(f"| {m} | {s['solved']}/{s['trials']} | {s['par2_s']:.3f} |")
-    md+=["","## Limitations"]+["- "+x for x in mf["limitations"]]
+    md+=["","## Preregistered prospective 2025 assessment",
+         str(result["predeclared_primary_2025_evidence"]),
+         "Criterion: >=30 new formulas, >=8 informative, >=5 distinct source wins, lower bootstrap 95% CI >0",
+         "2025 UNSAT answers are provisional without published proof status.",
+         "","## Limitations"]+["- "+x for x in mf["limitations"]]
     (out/"r82-final.md").write_text("\n".join(md)+"\n")
     print("R82_FINAL_AUDIT_PASS",json.dumps(
         {"trials":len(allrows),"sources":len(mf["cases"]),"new2025":mf["actual_new2025"],
