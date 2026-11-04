@@ -1,0 +1,148 @@
+name: DRNAS R65x real SAT2025 exact-XOR four positives and eight controls
+on:
+  push:
+    branches:
+      - experiment/drnas-r65x-sat2025-xor-20261104
+    paths:
+      - '.github/workflows/drnas-r65x-sat2025-xor.yml'
+      - 'experiments/drnas_v16/r65x_sat2025_xor.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r65x-frozen-2025-xor-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Verify original 2025 XOR-positive SHA cohort and soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile Python and verify XOR implication reasoning
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65x_sat2025_xor.py
+          python3 -u experiments/drnas_v16/r65x_sat2025_xor.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Reuse unchanged R85 SAT2025 originals and verify structural XOR
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r65x_sat2025_xor.py freeze \
+            --sources fresh --out r65xspec
+          test -s r65xspec/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r65x-2025-frozen-strata
+          path: r65xspec/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r65x-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41769665589
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65x-2025-frozen-strata
+          path: r65xspec
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify bit-identical frozen sources and clean Kissat/GF2 binaries
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: R65x SHA-matched paired SAT2025 original benchmarks
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65x_sat2025_xor.py measure \
+            --sources fresh --spec r65xspec --shard "$SHARD" \
+            --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r65x-live.log
+          grep -q '^R65X_2025_SHARD_PASS' r65x-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65x-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r65x-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Audit 72 matched 2025 trials and XOR vs control PAR2
+    needs: [freeze, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65x-2025-frozen-strata
+          path: r65xspec
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65x-shard-*
+          path: combined
+      - name: Original SHA and 72 paired trials fail-closed audit
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65x_sat2025_xor.py audit \
+            --spec r65xspec --combined combined \
+            --json r65x-final.json --md r65x-final.md | tee r65x-audit.log
+          grep -q '^R65X_2025_FINAL_AUDIT_PASS' r65x-audit.log
+          cat r65x-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65X-SAT2025-XOR-72-TRIALS-FINAL
+          path: |
+            r65x-final.json
+            r65x-final.md
+            r65x-audit.log
+            r65xspec/manifest.json
+          if-no-files-found: error
+          retention-days: 90
