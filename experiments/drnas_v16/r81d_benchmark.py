@@ -209,8 +209,8 @@ def audit(args):
                 check(r81d.verified_row_witness(
                     cnf_cache[sha],cert["proof"],cert["vs"],cert["rhs"]),
                     "R81D derived clause proof invalid on ORIGINAL CNF")
-                check(tuple(cert["clause"]) in {
-                    tuple(c) for c in r81d._clauses_from_row(cert["vs"],cert["rhs"])},
+                check(tuple(sorted(cert["clause"])) in {
+                    tuple(sorted(c)) for c in r81d._clauses_from_row(cert["vs"],cert["rhs"])},
                     "R81D claimed clause does not follow from proved XOR row")
                 proof_count+=1
             if r["mode"]=="r81d_active":
