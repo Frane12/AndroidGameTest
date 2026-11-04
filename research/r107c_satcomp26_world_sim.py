@@ -172,8 +172,9 @@ def execute(a):
                             if not prepass["gf2_unsat"]:
                                 ensure(digest(source)==digest(test_source),"R107C changed input without proof")
                         else:
-                            status="UNSUPPORTED"
-                            note="R107C prepass timeout/error "+pp["stderr"][-200:]
+                            # Fail open to original CNF; failed prepass still counts against CAP.
+                            test_source=source
+                            note="FALLBACK_PREPASS_ERROR "+("timeout" if pp["timed_out"] else "exit="+str(pp["returncode"]))+" "+pp["stderr"][-160:]
                     if status=="UNKNOWN":
                         remaining=CAP-prep_s
                         if remaining<=0.02:
