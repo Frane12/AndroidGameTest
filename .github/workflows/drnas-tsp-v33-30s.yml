@@ -1,0 +1,71 @@
+name: DRNAS TSP v3.3 early advantage 30s vs LKH-3
+on:
+  push:
+    branches:
+      - experiment/drnas-tsp-v31-shared-intelligence
+    paths:
+      - .github/workflows/drnas-tsp-v33-30s.yml
+      - experiments/tsp_shared_v31/time_quality_v33.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  crossover:
+    name: LKH and DRNAS 2-4-6-8-10-15-20-25-30s
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout benchmark
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Dependencies
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Compile real LKH-3
+        run: |
+          git clone --depth 1 https://github.com/cerebis/LKH3.git
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Run paired 30 second tests with checkpoints
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/time_quality_v33.py \
+            --cities 2000 5000 --seeds 0 1 2 --seconds 30 --lkh ./LKH3/LKH \
+            --out tsp_early_advantage_v33.csv --work tsp_early_advantage_logs
+      - name: Audit complete measurement coverage and summarize
+        run: |
+          python - <<'PY'
+          import csv, collections, statistics
+          with open('tsp_early_advantage_v33.csv',newline='') as f:rows=list(csv.DictReader(f))
+          methods=('LKH-3','DRNAS route_share','DRNAS batched_lookup')
+          times=(2,4,6,8,10,15,20,25,30)
+          assert len(rows)==2*3*3*len(times), f'Unexpected result rows: {len(rows)}'
+          for city in (2000,5000):
+            for seed in range(3):
+              for method in methods:
+                rr=[r for r in rows if (int(r['cities']),int(r['seed']),r['method'])==(city,seed,method)]
+                assert sorted(int(r['checkpoint_s']) for r in rr)==list(times)
+                assert all(r['status']!='error' for r in rr),f'Error {city}/{seed}/{method}: {rr[0].get("notes")}'
+                assert rr[-1]['final_length_units'],f'Missing tour {city}/{seed}/{method}'
+          for city in (2000,5000):
+            print('\n',city,'cities:')
+            for method in methods:
+              s=[r for r in rows if int(r['cities'])==city and r['method']==method]
+              print(' ',method)
+              for t in times:
+                data=[r for r in s if int(r['checkpoint_s'])==t]
+                available=[float(r['best_length_units']) for r in data if r['best_length_units']]
+                print(f'    {t:>2}s: {statistics.mean(available):.3f}' if len(available)==3 else f'    {t:>2}s: {len(available)}/3 solutions')
+          PY
+      - name: Upload CSV and raw LKH logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-tsp-v33-30s-crossover
+          path: |
+            tsp_early_advantage_v33.csv
+            tsp_early_advantage_logs/*.log
+            tsp_early_advantage_logs/*.tour
+            tsp_early_advantage_logs/*.tsp
+          if-no-files-found: warn
