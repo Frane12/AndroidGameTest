@@ -1,0 +1,186 @@
+name: DRNAS R87 adaptive source-certified XOR utility feedback vs fixed intervals - development
+on:
+  push:
+    branches: [experiment/drnas-r87-adaptive-xor-utility-20261104]
+    paths:
+      - '.github/workflows/drnas-r87-scan-budget-replay.yml'
+      - 'experiments/drnas_v16/r87_feedback_replay.py'
+      - 'experiments/drnas_v16/patch_r86_scan_frequency.py'
+      - 'experiments/drnas_v16/patch_r87_utility_gate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r87-scan-budget-replay-20261104
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Reuse exact R85 previously observed 12 SHA-identified originals (development only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r85-fresh-original-2025-sha-freeze
+          run-id: 41770427411
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: fresh
+      - name: Python selftests and fixed prior source checksum audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r86_scan_frequency.py experiments/drnas_v16/patch_r87_utility_gate.py experiments/drnas_v16/r87_feedback_replay.py
+          python3 experiments/drnas_v16/patch_r86_scan_frequency.py --selftest
+          python3 experiments/drnas_v16/patch_r87_utility_gate.py --selftest
+          python3 experiments/drnas_v16/r87_feedback_replay.py selftest
+          (cd fresh && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r87_feedback_replay as r87
+          mf=r87.read_manifest(Path('fresh'))
+          assert len(mf['cases'])==12
+          print('R87_LOCKED_R85_DEVELOPMENT_SOURCE_ONLY_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R87-FROZEN-R85-DEVELOPMENT-SOURCES
+          path: fresh/
+          retention-days: 90
+
+  compile:
+    name: Pinned clean Kissat vs exact same certified native logic with 4/16/64/256 scan schedule
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          run-id: 41683024261
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Lock original clean Kissat and compile only R87 scan frequency extension
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c baselines.sha256)
+          chmod +x compiled/clean
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r87-kissat
+          git -C /tmp/r87-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r87-kissat rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 -u experiments/drnas_v16/patch_r32b_native_shadow.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r32n_leave_one_out.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r32s_native_cdcl_progress.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r32u_live_xor_reasons.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r84_xor_conflict_forensics.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r85_xor_reason_utility.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r86_scan_frequency.py --kissat-root /tmp/r87-kissat
+          python3 -u experiments/drnas_v16/patch_r87_utility_gate.py --kissat-root /tmp/r87-kissat
+          (cd /tmp/r87-kissat && ./configure && make -j2 >/tmp/r87-compile.log 2>&1) || { tail -130 /tmp/r87-compile.log; exit 1; }
+          cp /tmp/r87-kissat/build/kissat compiled/native-r87
+          chmod +x compiled/native-r87
+          (cd compiled && sha256sum clean native-r87 > r87-binaries.sha256 && sha256sum -c r87-binaries.sha256)
+          test "$(compiled/clean --version)" = "$(compiled/native-r87 --version)"
+          echo R87_PINNED_NATIVE_SCAN_FREQUENCY_BUILD_PASS
+      - name: Preserve previously validated 60 mixed SAT UNSAT native soundness checks
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32u_random_original_model_test.py \
+            --clean compiled/clean --native compiled/native-r87 --out generated | tee r87-soundness.log
+          grep -q '^R32U_60_GENERATED_MIXED_SAT_UNSAT_VERDICT_PASS' r87-soundness.log
+          R87_ADAPT=1 python3 -u experiments/drnas_v16/r32u_random_original_model_test.py \
+            --clean compiled/clean --native compiled/native-r87 --out generated_adaptive | tee r87-adaptive-soundness.log
+          grep -q '^R32U_60_GENERATED_MIXED_SAT_UNSAT_VERDICT_PASS' r87-adaptive-soundness.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: R87-PINNED-ORIGINAL-CLEAN-AND-FOUR-SCAN-CADENCES
+          path: |
+            compiled/clean
+            compiled/native-r87
+            compiled/r87-binaries.sha256
+            r87-soundness.log
+            r87-adaptive-soundness.log
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r87-shard-${{ matrix.shard }}
+    needs: [source,compile]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 12
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-FROZEN-R85-DEVELOPMENT-SOURCES
+          path: fresh
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-PINNED-ORIGINAL-CLEAN-AND-FOUR-SCAN-CADENCES
+          path: .
+      - name: Pinned original SHA, solver SHA and matched 35s PAR2 experiment
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c r87-binaries.sha256)
+          chmod +x compiled/clean compiled/native-r87
+          python3 -u experiments/drnas_v16/r87_feedback_replay.py measure \
+            --sources fresh --compiled compiled --shard "$SHARD" --out results | tee r87-live.log
+          grep -q '^R87_SHARD_PASS' r87-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r87-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r87-live.log
+          retention-days: 90
+
+  audit:
+    name: Verify all 144 paired development replay trials and unique formula bootstrap
+    needs: [source,compile,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R87-FROZEN-R85-DEVELOPMENT-SOURCES
+          path: fresh
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r87-shard-*
+          path: combined
+      - name: Full SHA, runner/commit, native soundness and paired PAR2 final audit
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r87_feedback_replay.py audit \
+            --sources fresh --combined combined --out final | tee r87-audit.log
+          grep -q '^R87_FINAL_REPLAY_AUDIT_PASS' r87-audit.log
+          cat final/r87-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R87-DEVELOPMENT-SCAN-BUDGET-144-TRIALS-FINAL
+          path: |
+            final/
+            fresh/manifest.json
+            r87-audit.log
+          if-no-files-found: error
+          retention-days: 90
