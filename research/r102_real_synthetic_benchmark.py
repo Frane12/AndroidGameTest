@@ -37,7 +37,7 @@ def main():
         subprocess.run(['python3','research/r93_export_verified_rows.py','export','--cnf',str(p),'--rows',str(rows),'--evidence',str(ev)],check=True,timeout=60)
         prep=time.perf_counter()-start
         for rep in range(2):
-            modes=['clean','monitor','active']
+            modes=['clean','monitor','active','select3','select4']
             random.Random(sha+str(rep)).shuffle(modes)
             for mode in modes:
                 charged=0 if mode=='clean' else prep
@@ -61,9 +61,10 @@ def main():
                     solver_s=round(elapsed,6),prep_s=round(charged,6),total_s=round(elapsed+charged,6),
                     par2_s=round(2*a.cap if status=='TIMEOUT' else elapsed+charged,6),
                     emitted=metric('clauses_emitted'),signals=metric('live_signals'),
+                    selective_rejected=metric('selective_rejected'),
                     watch_literal_probes=metric('watch_literal_probes')))
         print('R102_CASE',origin,p.name,'verified',json.loads(ev.read_text()).get('exported'),flush=True)
-    assert len(records)==len(cases)*2*3
+    assert len(records)==len(cases)*2*5
     for origin,p in cases:
         for rep in range(2):
             statuses={r['status'] for r in records if r['formula']==p.name and r['rep']==rep and r['status']!='TIMEOUT'}
@@ -72,7 +73,7 @@ def main():
         w=csv.DictWriter(f,fieldnames=list(records[0]));w.writeheader();w.writerows(records)
     summary={}
     for origin in ('real','synthetic'):
-        for mode in ('clean','monitor','active'):
+        for mode in ('clean','monitor','active','select3','select4'):
             rr=[r for r in records if r['origin']==origin and r['mode']==mode]
             summary[origin+'_'+mode]=dict(trials=len(rr),solved=sum(r['status']!='TIMEOUT' for r in rr),
                 par2_s=round(sum(r['par2_s'] for r in rr),6),emitted=sum(r['emitted'] for r in rr))
