@@ -1,0 +1,59 @@
+name: DRNAS ECDLP R2 selective GF2 nonlinear ECC benchmark
+on:
+  push:
+    branches: [experiment/drnas-ecdlp-r2-selective-gf2-20261104]
+    paths:
+      - '.github/workflows/drnas-ecdlp-r2.yml'
+      - 'research/r112_ecdlp_selective_gf2_bridge.cpp'
+      - 'research/drnas_ecdlp_r2_toy_gf2.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  r2-ecdlp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        bits: [5, 6, 7, 8]
+    name: R2 unseen toy ECC ${{ matrix.bits }} bit — clean vs R111 vs R112
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frozen CaDiCaL 2.1.0 and both audited DRNAS bridges
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/ecdlp-cadical
+          cd /tmp/ecdlp-cadical
+          git checkout rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r2-cadical-source-revision.txt"
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -I/tmp/ecdlp-cadical/src research/r111_cdcl_gf2_bridge.cpp /tmp/ecdlp-cadical/build/libcadical.a -pthread -o /tmp/r2-r111
+          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -I/tmp/ecdlp-cadical/src research/r112_ecdlp_selective_gf2_bridge.cpp /tmp/ecdlp-cadical/build/libcadical.a -pthread -o /tmp/r2-r112
+      - name: Verify frozen R111 certified GF2 ancestry/selftest
+        run: |
+          set -euo pipefail
+          python3 research/r111_cdcl_gf2_selftest.py /tmp/r2-r111 | tee r2-r111-selftest.txt
+          grep -q R111_IPASIRUP_GF2_SELFTEST_PASS r2-r111-selftest.txt
+      - name: New heldout ECDLP CNF, paired clean/R111/R112 test with exact key verification
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ecdlp_r2_toy_gf2.py --bits '${{ matrix.bits }}' \
+            --r111 /tmp/r2-r111 --r112 /tmp/r2-r112 \
+            --trials 5 --repeats 2 --cap 12 \
+            --out 'ecdlp-r2-${{ matrix.bits }}' | tee 'ecdlp-r2-${{ matrix.bits }}.log'
+          grep -q '^R2_COMPLETE' 'ecdlp-r2-${{ matrix.bits }}.log'
+      - name: Preserve CNFs, SHA256, paired timings, audit and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-ECDLP-R2-${{ matrix.bits }}bit
+          path: |
+            ecdlp-r2-${{ matrix.bits }}/
+            ecdlp-r2-${{ matrix.bits }}.log
+            r2-r111-selftest.txt
+            r2-cadical-source-revision.txt
+          if-no-files-found: warn
