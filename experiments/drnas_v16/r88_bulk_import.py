@@ -15,7 +15,10 @@ import r73_fresh_quick_unseen_2025 as r73
 import r88_cooperative as core
 
 PROTO="DRNAS-R88-BULK-OFFICIAL-CNF-20261104-v1"
-LISTS={2025:r73.SC2025,2026:r52.URI}
+ARCHIVE_INDEX="https://zenodo.org/records/15125952/files/sc02to24-gbd-hashes-filenames.txt"
+ARCHIVE_MD5="36d2bc6cf223a15fba28a09a8a26a97e"
+# year=0 is explicitly a mixed-period 2002-2024 archival cohort, not year 2000.
+LISTS={0:ARCHIVE_INDEX,2025:r73.SC2025,2026:r52.URI}
 SALT="DRNAS-R88-FROZEN-BEFORE-SOLVE-NO-SPEED-SCREEN"
 TARGET=5
 SHARDS=4
@@ -24,14 +27,42 @@ MAX_PACKED=10*1024*1024
 MAX_RAW=24*1024*1024
 
 def read_catalog(year):
-    raw=r52.fetch_bytes(LISTS[year],250000)
-    names=[line.rsplit("/",1)[-1].strip() for line in raw.decode().splitlines() if line.strip()]
-    core.require(len(names)>=250 and len(names)==len(set(names)),"official catalog malformed")
-    return names,hashlib.sha256(raw).hexdigest()
+    raw=r52.fetch_bytes(LISTS[year],1024*1024 if year==0 else 250000)
+    aliases={}
+    if year==0:
+        core.require(hashlib.md5(raw).hexdigest()==ARCHIVE_MD5,
+                     "2002-2024 published Zenodo MD5 drift")
+        names=[]
+        for line in raw.decode().splitlines():
+            if not line.strip():continue
+            parts=line.split(maxsplit=1)
+            core.require(len(parts)==2 and len(parts[0])==32 and
+                         all(x in "0123456789abcdef" for x in parts[0]),
+                         "historic GBD entry malformed")
+            names.append(parts[0]);aliases[parts[0]]=parts[1]
+        core.require(len(names)==7330,"2002-2024 archive count drift")
+    else:
+        names=[line.rsplit("/",1)[-1].strip()
+               for line in raw.decode().splitlines() if line.strip()]
+    core.require(len(names)>=250 and len(names)==len(set(names)),
+                 "official catalog malformed")
+    return names,hashlib.sha256(raw).hexdigest(),aliases
 
 def import_shard(a):
     root=Path(a.out);root.mkdir(parents=True,exist_ok=True)
-    names,index_sha=read_catalog(a.year)
+    names,index_sha,aliases=read_catalog(a.year)
+    if a.year==0:
+        # Archive is an independent 2002-2024 mixed-domain period.
+        # Remove any duplicates from the modern pools BEFORE choosing.
+        modern=set()
+        for yr in (2025,2026):
+            others,_,_=read_catalog(yr)
+            modern.update(others)
+        names=[x for x in names if x not in modern]
+        core.require(len(names)>6000,"historic archive unexpectedly depleted")
+    elif a.year==2025:
+        newer,_,_=read_catalog(2026)
+        names=[x for x in names if x not in set(newer)]
     history=set()
     if a.history and Path(a.history).exists():
         history=set(json.loads(Path(a.history).read_text()).get("previous_ids",[]))
@@ -76,6 +107,8 @@ def import_shard(a):
                    "SAT" if status=="sat-verified" else
                    "UNSAT" if status=="unsat-verified" else "UNKNOWN"),
                  historically_used="unknown_outside_R88",
+                 archival_filename=aliases.get(gbd,""),
+                 source_period="2002-2024" if a.year==0 else str(a.year),
                  selection_not_using_speed_or_structure=True,
                  **{k:v for k,v in features.items() if k not in ("variables","clauses")})
             selected.append(c)
@@ -91,6 +124,7 @@ def import_shard(a):
         target=a.target,attempted=len(attempts),accepted=len(selected),
         catalog_url=LISTS[a.year],index_sha256=index_sha,
         official_2026_score_sha256=scores_hash,rotation=epoch,
+        source_period="2002-2024" if a.year==0 else str(a.year),
         no_solver_or_XOR_prescreen=True,
         previous_r88_source_ids_excluded=len(history),
         attempts=attempts,cases=selected,
@@ -100,7 +134,8 @@ def import_shard(a):
           "2025 UNSAT answers lack independent LRAT proof; report provisional only.",
           "2026 original status comes from independently published competition verdict metadata.",
           "Time cap and hardware differ from official SAT Competition benchmarks.",
-          "Selection spans 2025/2026 Main pool, not all SAT application domains.",
+          "Archive period 2002-2024 uses year=0 as a cohort marker, not an actual year.",
+          "Source selection spans historic 2002-2024 and 2025/2026 main pools; not all SAT application domains.",
           "Classifications are structural heuristics, not certified source-domain labels."])
     (root/"manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
     (root/"source.sha256").write_text("".join(
@@ -122,7 +157,7 @@ def main():
     sub=p.add_subparsers(dest="cmd",required=True)
     sub.add_parser("selftest")
     q=sub.add_parser("import")
-    q.add_argument("--year",type=int,choices=(2025,2026),required=True)
+    q.add_argument("--year",type=int,choices=(0,2025,2026),required=True)
     q.add_argument("--shard",type=int,required=True)
     q.add_argument("--shards",type=int,default=SHARDS)
     q.add_argument("--target",type=int,default=TARGET)
