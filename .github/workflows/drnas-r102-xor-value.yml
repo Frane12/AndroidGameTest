@@ -1,57 +1,60 @@
-name: DRNAS R108 hidden XOR from shortened and resolved CNF
+name: DRNAS R109 selective C++ hidden XOR proof benchmark
 on:
   push:
-    branches: [experiment/drnas-r108-hidden-xor-20261104]
+    branches: [experiment/drnas-r109-selective-hidden-xor-20261104]
     paths:
       - '.github/workflows/drnas-r102-xor-value.yml'
-      - 'research/r108_hidden_xor.py'
-      - 'research/r108_hidden_xor_benchmark.py'
-      - 'research/r106_manifest.json'
+      - 'research/r109_native_selective_xor.cpp'
+      - 'research/r109_selective_selftest.py'
+      - 'research/r109_selective_benchmark.py'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  hidden-xor-audit:
+  selective-hidden-xor:
     runs-on: ubuntu-24.04
-    timeout-minutes: 42
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Syntax check and R108 hidden-XOR proof selftests
+      - name: Build R109 optimized native XOR and frozen R107C reference
         run: |
           set -euo pipefail
-          python3 -m py_compile research/r108_hidden_xor.py research/r108_hidden_xor_benchmark.py
-          python3 research/r108_hidden_xor.py selftest | tee r108-selftest.txt
-          grep -q '^R108_HIDDEN_XOR_SELFTEST_PASS' r108-selftest.txt
-      - name: Build pinned CaDiCaL and frozen R107C native control
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r107c_native_xor_finder.cpp -o /tmp/r109-r107c
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r109_native_selective_xor.cpp -o /tmp/r109-native
+          python3 -m py_compile research/r109_selective_selftest.py research/r109_selective_benchmark.py
+      - name: Fail-closed selftests: preserve every old XOR and prove hidden parity
         run: |
           set -euo pipefail
-          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r107c_native_xor_finder.cpp -o /tmp/r107c_native_xor
-          python3 research/r107c_native_selftest.py /tmp/r107c_native_xor | tee r107c-selftest.txt
-          grep -q '^R107C_NATIVE_CERTIFIED_SELFTEST_PASS' r107c-selftest.txt
-          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r108-cadical
-          cd /tmp/r108-cadical
+          python3 research/r107c_native_selftest.py /tmp/r109-r107c | tee r109-baseline-test.txt
+          python3 research/r109_selective_selftest.py /tmp/r109-native /tmp/r109-r107c | tee r109-selftest.txt
+          grep -q '^R109_NATIVE_SELECTIVE_SELFTEST_PASS' r109-selftest.txt
+      - name: Build unchanged pinned CaDiCaL rel-2.1.0
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r109-cadical
+          cd /tmp/r109-cadical
           git checkout rel-2.1.0
-          git rev-parse HEAD > "$GITHUB_WORKSPACE/cadical-r108-commit.txt"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r109-cadical-commit.txt"
           ./configure
           make -j2
-      - name: SHA verify eight real original 2025 CNF formulas
+      - name: Verify eight original SAT Competition 2025 formula hashes
         run: |
           set -euo pipefail
-          python3 research/r106_fetch_real_cnf.py r108-results/source
-      - name: Baseline vs compressed XOR vs two-round resolution on real and hidden controls
+          python3 research/r106_fetch_real_cnf.py r109-results/source
+      - name: Paired R109 vs R107C on real SAT2025 and hidden-XOR controls
         run: |
           set -euo pipefail
-          python3 research/r108_hidden_xor_benchmark.py r108-results /tmp/r107c_native_xor /tmp/r108-cadical/build/cadical | tee r108-benchmark.txt
-          grep -q '^R108_COMPLETE_AUDIT' r108-benchmark.txt
-      - name: Upload full inputs evidence and paired times
+          python3 research/r109_selective_benchmark.py r109-results /tmp/r109-r107c /tmp/r109-native /tmp/r109-cadical/build/cadical | tee r109-audit.txt
+          grep -q '^R109_COMPLETE_AUDIT' r109-audit.txt
+      - name: Upload source SHA manifest proof evidence and timing
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: R108-CERTIFIED-HIDDEN-XOR-SAT2025-PROOF-AUDIT
+          name: R109-SELECTIVE-NATIVE-HIDDEN-XOR-CERTIFIED
           path: |
-            r108-results/
-            r108-selftest.txt
-            r107c-selftest.txt
-            r108-benchmark.txt
-            cadical-r108-commit.txt
+            r109-results/
+            r109-baseline-test.txt
+            r109-selftest.txt
+            r109-audit.txt
+            r109-cadical-commit.txt
           if-no-files-found: warn
