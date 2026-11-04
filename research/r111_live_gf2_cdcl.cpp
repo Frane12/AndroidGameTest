@@ -40,75 +40,7 @@ static V symdiff(const V& a,const V& b) {
                                std::back_inserter(out));
   return out;
 }
-static void insert_unique(V& v,int x) {
-  auto p=std::lower_bound(v.begin(),v.end(),x);
-  if(p==v.end()||*p!=x)v.insert(p,x);
-}
-static GF2Report derive(const std::vector<Row>& source,
-                        const std::vector<signed char>& assigned,
-                        long budget) {
-  GF2Report result;
-  std::map<int,ActiveRow> pivots;
-  std::set<int> emitted_vars;
-  for(const Row& source_row:source) {
-    ActiveRow row;
-    row.rhs=source_row.rhs;
-    for(int var:source_row.vars) {
-      if(var<=0 || size_t(var)>=assigned.size())
-        throw std::runtime_error("R111_GF2_BAD_VARIABLE");
-      if(assigned[var]==0) row.unknown.push_back(var);
-      else {
-        row.why.push_back(var);
-        if(assigned[var]>0)row.rhs^=1;
-      }
-    }
-    while(!row.unknown.empty()) {
-      const int pivot=row.unknown.front();
-      auto it=pivots.find(pivot);
-      if(it==pivots.end()) {
-        pivots.emplace(pivot,std::move(row));
-        break;
-      }
-      auto& previous=it->second;
-      result.operations+=long(row.unknown.size()+previous.unknown.size()+
-                              row.why.size()+previous.why.size());
-      if(result.operations>budget)
-        throw std::runtime_error("R111_GF2_OPERATION_BUDGET");
-      row.unknown=symdiff(row.unknown,previous.unknown);
-      row.why=symdiff(row.why,previous.why);
-      row.rhs^=previous.rhs;
-    }
-    // If the pivot was stored, the moved-from row is empty but not a
-    // contradiction. Check only rows that were actually reduced to zero.
-    if(row.unknown.empty() && !row.why.empty() && row.rhs) {
-      bool moved=false;
-      // A stored pivot is in pivots even after move; however std::move
-      // empties the input vector. Track insertion explicitly instead.
-      (void)moved;
-    }
-  }
-  result.pivots=pivots.size();
-  // A pivot system in row-echelon form may encode a unit even when it has
-  // not reduced another row to zero.
-  for(const auto& [lead,row]:pivots) {
-    (void)lead;
-    if(row.unknown.size()!=1)continue;
-    const int var=row.unknown[0];
-    if(emitted_vars.count(var))continue;
-    emitted_vars.insert(var);
-    Signal s;
-    s.lit=row.rhs ? var:-var;
-    for(int why:row.why)
-      s.clause.push_back(assigned[why]>0 ? -why : why);
-    s.clause.push_back(s.lit);
-    std::sort(s.clause.begin(),s.clause.end(),
-       [](int a,int b){return std::abs(a)<std::abs(b);});
-    result.units.push_back(std::move(s));
-  }
-  return result;
-}
-// The above basic pivot-only scan is replaced below with a certified
-// reduction that records both zero rows and one-unknown rows.
+// A bounded reduction records zero rows and one-unknown rows with their complete, replayable assignment reasons.
 static GF2Report fully_reduce(const std::vector<Row>& source,
                               const std::vector<signed char>& assigned,
                               long budget) {
