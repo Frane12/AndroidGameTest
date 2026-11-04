@@ -61,7 +61,7 @@ def decide(source,native,threshold=0.15,budget_s=1.0):
             if not target.is_file():raise ValueError("missing_derived")
             original=pathlib.Path(source).read_bytes()
             derived=target.read_bytes()
-            if not derived.endswith(b"0\\n"):raise ValueError("missing_empty_clause")
+            if not derived.endswith(b"0\n"):raise ValueError("missing_empty_clause")
             if digest(source)!=result["original_sha256"]:raise ValueError("source_changed")
             result["decision"]="certified_unsat";result["reason"]="native_independent_replay"
             result["proof_length"]=len(cert["proof_row_ids"])
@@ -76,6 +76,6 @@ def main():
     p.add_argument("--out",required=True);a=p.parse_args()
     if not 0<=a.threshold<=1 or not 0<a.budget<=10:raise SystemExit("invalid bounds")
     r=decide(a.cnf,a.native,a.threshold,a.budget)
-    pathlib.Path(a.out).write_text(json.dumps(r,indent=2)+"\\n")
+    pathlib.Path(a.out).write_text(json.dumps(r,indent=2)+"\n")
     print("R111_SAFE_GATE",json.dumps(r,sort_keys=True))
 if __name__=="__main__":main()
