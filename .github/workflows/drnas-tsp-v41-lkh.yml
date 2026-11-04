@@ -1,0 +1,92 @@
+name: DRNAS TSP v4.1 stagnation restarts vs v4 and LKH-3
+on:
+  push:
+    branches:
+      - experiment/drnas-tsp-v41-stagnation-restarts
+    paths:
+      - .github/workflows/drnas-tsp-v41-lkh.yml
+      - experiments/tsp_shared_v31/drnas_v41.py
+      - experiments/tsp_shared_v31/compare_v41.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  v41:
+    name: 2k-5k paired TSP / 30-second checkpoints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout pinned experiment branch
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python numeric deps
+        run: python -m pip install --disable-pip-version-check numpy scipy numba
+      - name: Build pinned genuine LKH-3
+        run: |
+          git clone https://github.com/cerebis/LKH3.git
+          git -C LKH3 checkout --detach 9a51de3161f2746e969f7a2e33220f637da64e54
+          git -C LKH3 rev-parse HEAD | tee lkh_version.txt
+          make -C LKH3 -j2
+          test -x LKH3/LKH
+      - name: Smoke-test v4.1 restarts and route invariants
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python - <<'PY'
+          import time
+          from drnas_v4 import fast_make
+          from drnas_v41 import run,warmup
+          warmup()
+          start=time.perf_counter()
+          _,d,nn=fast_make(240,881)
+          result=run(240,881,d,nn,budget=3.2,start=start,
+                     stall_seconds=0.,restart_cooldown=0.2)
+          assert result['restart_waves']>=1,result
+          assert result['restarted_agents']>=4,result
+          assert result['final']>0 and result['events']
+          assert all(a[1]>=b[1] for a,b in zip(result['events'],result['events'][1:])),result['events']
+          print('V4.1 SMOKE PASS', {k:v for k,v in result.items() if k!='events'})
+          PY
+      - name: Run paired v4, v4.1 no-restart, v4.1 restart, genuine LKH
+        run: |
+          PYTHONPATH=experiments/tsp_shared_v31 python -u experiments/tsp_shared_v31/compare_v41.py \
+            --cities 2000 5000 --seeds 0 1 2 --seconds 30 \
+            --lkh ./LKH3/LKH --out drnas_tsp_v41_paired.csv --work drnas_tsp_v41_lkh_logs
+      - name: Audit completeness and print summary
+        run: |
+          python - <<'PY'
+          import csv,statistics
+          with open('drnas_tsp_v41_paired.csv',newline='') as f: rows=list(csv.DictReader(f))
+          methods=('LKH-3','DRNAS v4','DRNAS v4.1 no-restart','DRNAS v4.1 restart')
+          cuts=(2,4,6,8,10,15,20,25,30)
+          assert len(rows)==2*3*len(methods)*len(cuts),(len(rows),)
+          for n in (2000,5000):
+            for seed in range(3):
+              for method in methods:
+                rr=[r for r in rows if (int(r['cities']),int(r['seed']),r['method'])==(n,seed,method)]
+                assert [int(x['checkpoint_s']) for x in rr]==list(cuts)
+                assert all(x['status']!='error' for x in rr),rr[0]['notes']
+                assert rr[-1]['final_length_units'],rr[-1]
+                values=[float(x['best_length_units']) for x in rr if x['best_length_units']]
+                assert all(a>=b for a,b in zip(values,values[1:])),(n,seed,method)
+          for n in (2000,5000):
+            print(f'=== {n} CITIES ===')
+            for method in methods:
+              rr=[x for x in rows if int(x['cities'])==n and x['method']==method]
+              final=[float(x['final_length_units']) for x in rr if int(x['checkpoint_s'])==30]
+              print(method, 'end mean=',round(statistics.mean(final),3),
+                  'restarts=',[x['restart_waves'] for x in rr if int(x['checkpoint_s'])==30])
+          PY
+      - name: Upload all results and LKH logs even on failure
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-tsp-v41-stagnation-restart-lkh-comparison
+          path: |
+            drnas_tsp_v41_paired.csv
+            drnas_tsp_v41_lkh_logs/*.tsp
+            drnas_tsp_v41_lkh_logs/*.tour
+            drnas_tsp_v41_lkh_logs/*.log
+            lkh_version.txt
+          if-no-files-found: warn
