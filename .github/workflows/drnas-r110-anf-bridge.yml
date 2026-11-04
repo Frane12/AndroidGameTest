@@ -1,0 +1,98 @@
+name: DRNAS R110 ANF bridge (linear XOR + nonlinear AND) real2025 pilot
+on:
+  push:
+    branches:
+      - experiment/drnas-r110-anf-linear-nonlinear-20261104
+    paths:
+      - '.github/workflows/drnas-r110-anf-bridge.yml'
+      - 'research/r110_anf_bridge.py'
+      - 'research/r110_anf_real2025_benchmark.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soundness:
+    name: XOR-AND algebra and proof soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax + positive/negative witness tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r110_anf_bridge.py research/r110_anf_real2025_benchmark.py
+          python3 -u research/r110_anf_bridge.py selftest | tee r110-selftest.log
+          grep -q '^R110_ANF_MIXED_SELFTEST_PASS' r110-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R110-ANF-SELFTEST
+          path: r110-selftest.log
+          if-no-files-found: warn
+
+  paired-real2025:
+    name: 8 SHA-pinned real SAT2025 CNFs (previously used; dev replay)
+    needs: soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record CPU and workflow pin
+        run: |
+          set -euo pipefail
+          mkdir -p r110-results
+          git rev-parse HEAD | tee r110-results/source_commit.txt
+          grep -m1 -E '^model name|^Hardware' /proc/cpuinfo | tee r110-results/cpu.txt || true
+          echo "$GITHUB_RUN_ID" > r110-results/actions_run_id.txt
+      - name: Build pin-matched upstream CaDiCaL control
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/r110-cadical
+          cd /tmp/r110-cadical
+          git checkout rel-2.1.0
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/r110-results/cadical_source_commit.txt"
+          ./configure
+          make -j2
+          sha256sum build/cadical | tee "$GITHUB_WORKSPACE/r110-results/cadical_binary_sha256.txt"
+      - name: Fetch and verify eight original SAT Competition 2025 inputs
+        run: |
+          set -euo pipefail
+          python3 -u research/r106_fetch_real_cnf.py r110-results/source | tee r110-results/sources.log
+          test "$(find r110-results/source -maxdepth 1 -type f -name '*.cnf' | wc -l)" -eq 8
+      - name: Compare clean CaDiCaL against certified mixed XOR-AND bridge
+        run: |
+          set -euo pipefail
+          python3 -u research/r110_anf_real2025_benchmark.py \
+            --source-dir r110-results/source \
+            --manifest r110-results/manifest.json \
+            --solver /tmp/r110-cadical/build/cadical \
+            --out r110-results/paired \
+            --cap 6 --reps 2 | tee r110-results/benchmark.log
+          grep -q '^R110_REAL2025_AUDIT_PASS' r110-results/benchmark.log
+      - name: Publish concise audited summary
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          p=json.load(open('r110-results/paired/results.json'))
+          c=p['comparison']['clean_cadical']
+          r=p['comparison']['r110_mixed']
+          msg=(f"## DRNAS R110 ANF bridge — DEVELOPMENT REPLAY only\n"
+               f"Results: {p['total_trials']} paired runs; {p['cases']} previously tested SAT2025 formulas\n\n"
+               f"| Metric | Clean CaDiCaL | R110 XOR+AND |\n"
+               f"|---|---:|---:|\n"
+               f"| Solved | {c['solved']} | {r['solved']} |\n"
+               f"| PAR-2 (s) | {c['par2_s']:.4f} | {r['par2_s']:.4f} |\n\n"
+               f"R110 gain: {p['gain_pct']:+.4f}% (includes preprocessing). "
+               f"No independent proof of UNSAT, no blind holdout, no P=NP claim.\n")
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R110-ANF-REAL2025-PAIRED-AUDIT
+          path: r110-results/
+          if-no-files-found: warn
+          retention-days: 90
