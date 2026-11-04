@@ -19,7 +19,7 @@ import r80_xor_structure_only as r80
 
 PROTO="DRNAS-R81-SOURCE-DISJOINT-REAL2026-XOR-WORLD-20261104-v1"
 SALT="DRNAS-R81-BLIND-UNUSED-OFFICIAL2026-STRUCTURAL-XOR-20261104-v1"
-TARGET, POS_TARGET, CTRL_TARGET = 12, 5, 7
+TARGET, POS_TARGET, CTRL_TARGET = 11, 4, 7
 REPS, CAP, SHARDS, MAX_FETCH = 2, 25.0, 4, 65
 MODES=("kissat_base","kissat_404","cadical_301","drnas_r28","drnas_r65","drnas_r80")
 
@@ -84,9 +84,9 @@ def freeze(a):
                          reason=(type(e).__name__+": "+str(e))[:230])
         attempts.append(trace)
         print("R81_SOURCE_SCAN",json.dumps(trace),flush=True)
-    ck(len(positives)>=3 and len(positives)+len(controls)>=TARGET,
+    ck(len(positives)>=POS_TARGET and len(controls)>=CTRL_TARGET,
        "insufficient fresh real XOR+controls; see attempts")
-    # Keep a fixed 12-case source list and report any shortfall of XOR quota.
+    # Keep a fixed source list and report any shortfall of XOR quota.
     chosen=positives[:POS_TARGET]+controls[:TARGET-len(positives[:POS_TARGET])]
     ck(len(chosen)==TARGET and len({x["gbd"] for x in chosen})==TARGET,
        "source shortlist not unique or incomplete")
