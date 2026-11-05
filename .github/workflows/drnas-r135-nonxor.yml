@@ -1,0 +1,150 @@
+name: DRNAS R135 frozen non-XOR structural portfolio SHA-disjoint benchmark
+on:
+  push:
+    branches: [experiment/drnas-r135-nonxor-portfolio-blind-20261105]
+    paths: ['.github/workflows/drnas-r135-nonxor.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen Kissat vs CaDiCaL routing on synthetic controls
+        run: |
+          set -euo pipefail
+          mkdir -p r135
+          python3 -m py_compile research/r135_freeze_nonxor.py research/r135_run_nonxor.py research/r135_audit_nonxor.py
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic research/r135_nonxor_selector.cpp -o r135/r135_selector
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          for name,clause,route in [('binary','1 -2','KISSAT'),('ternary','1 2 -3','CADICAL'),('horn','1','KISSAT')]:
+              p=Path('r135')/(name+'.cnf')
+              p.write_text('p cnf 10 120\n'+(clause+' 0\n')*120)
+              r=subprocess.run(['r135/r135_selector',str(p)],capture_output=True,text=True,check=True)
+              assert 'route='+route in r.stdout,(name,r.stdout)
+              print('R135_CONTROL',name,r.stdout.strip())
+          print('R135_CONTROLS_PASS')
+          PY
+  freeze:
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+      - name: Obtain pinned R120-R132 SHA provenance ledgers (read-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          while IFS='|' read -r tag rid artifact; do
+            mkdir -p "r135/prior/$tag"
+            gh run download "$rid" --repo Frane12/AndroidGameTest --name "$artifact" --dir "r135/prior/$tag"
+          done <<'LEDGERS'
+          r120|41982252882|R120-EXTERNAL-150-PAR2-AUDIT
+          r121|41988869649|R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          r122|41999580688|R122-mixed-AND-OR-final-report
+          r123|42004032255|R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          r124|42018077150|r124-frozen-external-mixed
+          r125|42014900265|r125-prospective-frozen
+          r126|42021817607|r126-new-frozen-unmeasured-holdout
+          r127|42027856303|r127-frozen-sha-excluded-external
+          r128|42033905606|r128-frozen-prospective-external-holdout
+          r124t|42039355570|r124t-prospective-frozen
+          r130|42044400721|r130-frozen-sha-disjoint-external
+          r117500|41901781523|r117-500-frozen-candidate-manifest
+          r132|42050320220|r132-frozen-prospective-sha-excluded
+          LEDGERS
+      - name: Freeze entirely new source CNFs before any solver measurement
+        run: |
+          set -euo pipefail
+          mkdir -p r135
+          python3 -u research/r135_freeze_nonxor.py | tee r135/freeze.log
+          test -s r135/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135-frozen-sha-disjoint-real
+          path: r135/frozen/
+          retention-days: 90
+  benchmark:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          path: r135/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify pinned binaries and compile unchanged frozen R118 plus R135 detector
+        run: |
+          set -euo pipefail
+          mkdir -p r135
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r135/r118
+          g++ -std=c++17 -O3 -DNDEBUG research/r135_nonxor_selector.cpp -o r135/r135_selector
+      - name: Paired 15s PAR2 benchmark (all selector overhead inside cap)
+        run: |
+          set -euo pipefail
+          python3 -u research/r135_run_nonxor.py --shard ${{ matrix.shard }} | tee r135/shard-${{ matrix.shard }}.log
+          test -s r135/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135-shard-${{ matrix.shard }}
+          path: |
+            r135/shard-${{ matrix.shard }}.json
+            r135/shard-${{ matrix.shard }}.log
+          retention-days: 90
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          path: r135/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r135-shard-*
+          merge-multiple: true
+          path: r135
+      - name: Strict SHA SAT witness PAR2 and detector audit only
+        run: |
+          set -euo pipefail
+          test "$(find r135 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r135_audit_nonxor.py | tee r135/audit.log
+          test -s r135/report.json
+          cat r135/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R135-NONXOR-FROZEN-PAR2-AUDIT
+          path: |
+            r135/report.json
+            r135/audit.log
+            r135/paired.csv
+            r135/probes.csv
+            r135/shard-*.json
+            r135/frozen/manifest.json
+          retention-days: 90
