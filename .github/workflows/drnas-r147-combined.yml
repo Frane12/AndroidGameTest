@@ -1,0 +1,175 @@
+name: DRNAS R147 combined safe GF2 + guarded portfolio paired benchmark
+on:
+  push:
+    branches:
+      - experiment/drnas-r147-combined-safe-portfolio-20261105
+    paths:
+      - '.github/workflows/drnas-r147-combined.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r147-combined-20261105
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build frozen R147/R132/R118 native controls once
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile only new native routing and unchanged GF2 engines
+        run: |
+          set -euo pipefail
+          mkdir -p r147
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r147_combined_safe.cpp -o r147/r147
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r132_wide_xor_selector.cpp -o r147/r132
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r118_xor_proof_on_demand.cpp -o r147/r118
+          python3 -m py_compile research/r147_combined_benchmark.py research/r147_parity_smoke.py research/r146c_guarded_portfolio.py
+          printf 'p cnf 3 1\n1 2 3 0\n' > /tmp/r147-smoke.cnf
+          ./r147/r147 /tmp/r147-smoke.cnf "$(pwd)/r147/r132" "$(pwd)/r147/r118" /bin/true /bin/true --probe-only | tee r147/probe-selftest.txt
+          grep -q 'R147_ROUTE route=KISSAT' r147/probe-selftest.txt
+          sha256sum r147/r147 r147/r132 r147/r118 > r147/binaries.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r147-frozen-native-binaries
+          path: |
+            r147/r147
+            r147/r132
+            r147/r118
+            r147/binaries.sha256
+            r147/probe-selftest.txt
+          retention-days: 90
+  parity:
+    name: R147 paired 6 SATLIB parity formulas x2
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r147-frozen-native-binaries
+          path: r147
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify pinned binaries and SATLIB source hash
+        run: |
+          set -euo pipefail
+          sha256sum -c r147/binaries.sha256
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x r147/r147 r147/r132 r147/r118 built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          mkdir -p /tmp/r147-satlib
+          curl -fsSL --retry 3 --max-time 90 https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz -o /tmp/r147-satlib/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r147-satlib/parity.tar.gz' | sha256sum -c
+          tar -xzf /tmp/r147-satlib/parity.tar.gz -C /tmp/r147-satlib
+      - name: Run four-way source SAT witness-checked parity comparison
+        run: |
+          set -euo pipefail
+          python3 -u research/r147_parity_smoke.py --satlib /tmp/r147-satlib --out r147/parity | tee r147/parity/benchmark.log
+          grep -q '^R147_PARITY_FINAL' r147/parity/benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r147-parity-6-audit
+          path: r147/parity/
+          retention-days: 90
+  paired:
+    name: R147 paired real-CNF shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r147-frozen-native-binaries
+          path: r147
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify all original hashes and pinned solver binaries
+        run: |
+          set -euo pipefail
+          sha256sum -c r147/binaries.sha256
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x r147/r147 r147/r132 r147/r118 built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+      - name: Six-way frozen paired comparison; 48 SHA-selected reused real CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/r147_combined_benchmark.py run --shard ${{ matrix.shard }} | tee r147/shard-${{ matrix.shard }}.log
+          test -s r147/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r147-shard-${{ matrix.shard }}
+          path: |
+            r147/shard-${{ matrix.shard }}.json
+            r147/shard-${{ matrix.shard }}.log
+            r147/selected-48.json
+          retention-days: 90
+  audit:
+    name: Strict final 48-formula SHA PAR2 audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r147-shard-*
+          merge-multiple: true
+          path: r147
+      - name: Audit paired sources, SAT witnesses, PAR2 and timeout regressions
+        run: |
+          set -euo pipefail
+          python3 -u research/r147_combined_benchmark.py audit | tee r147/audit.log
+          grep -q '^R147_FINAL_AUDIT' r147/audit.log
+          cat r147/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R147-48-COMBINED-AUDIT
+          path: |
+            r147/report.json
+            r147/paired.csv
+            r147/selected-48.json
+            r147/audit.log
+          retention-days: 90
