@@ -24,9 +24,6 @@ def patch(src):
         '!(n_value==200 || n_value==220 || n_value==240)) {',
         '((!(n_value==200 || n_value==220 || n_value==240)) && !r16_active) ||\n'
         '        (r16_active && (n_value==0 || n_value>1000000))) {')
-    s=once(s,
-        'selected=r13_n>=220 && isfinite(score) &&',
-        'selected=(r13_n==220 || r13_n==240) && isfinite(score) &&')
     # Bound real CNF graph coefficient of variation without enabling actions.
     s=once(s,
         '!(r12_degree_cv>=0.0 && r12_degree_cv<=2.0)',
@@ -72,7 +69,7 @@ def patch(src):
                        r17_snapshot_score>(r17_guarded50?0.10:0.05) &&
                        isfinite(r17_novelty) &&
                        r17_novelty<=(r17_guarded50?2.00:2.50));
-                  selected=r13_n>=220 && isfinite(score) &&
+                  selected=(r13_n==220 || r13_n==240) && isfinite(score) &&
                       score>threshold && agreement;
                   if (selected) drnas_target=2048;''')
     s=once(s,
