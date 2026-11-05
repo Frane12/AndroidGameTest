@@ -1,0 +1,277 @@
+name: DRNAS R132 exact XOR k2-k6 frozen real-CNF paired benchmark
+on:
+  push:
+    branches: [experiment/drnas-r132-wide-xor-exact-20261105]
+    paths:
+      - 'research/r132_wide_xor_selector.cpp'
+      - 'research/r132_wide_xor_benchmark.py'
+      - '.github/workflows/drnas-r132-wide-xor-exact.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r132-frozen-wide-xor
+  cancel-in-progress: false
+
+jobs:
+  controls:
+    name: R132 synthetic k5-k6 and real R115-R117 proof-positive controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile all selectors and independently verify original four SAT formulas
+        run: |
+          set -euo pipefail
+          mkdir -p r131 r132
+          python3 -m py_compile research/r132_wide_xor_benchmark.py research/r131_xor_breakthrough_forensics.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r132_wide_xor_selector.cpp -o r132/r132_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r130_adaptive_selector.cpp -o r132/r130_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o r131/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r131/r118
+          python3 -u research/r131_xor_breakthrough_forensics.py | tee r132/historical.log
+      - name: Assert k5 historical selection recoveries, exact k6 and incomplete negative controls
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,subprocess
+          data=json.loads(pathlib.Path('r131/forensic-report.json').read_text())
+          assert len(data['cases'])==4
+          for item in data['cases']:
+              path=pathlib.Path('r131')/(item['id']+'.cnf')
+              def native(selector,policy):
+                  p=subprocess.run([selector,str(path),'r131/r118','unused-kissat',policy,'--probe-only'],text=True,capture_output=True,check=True,timeout=10)
+                  return next(x for x in p.stdout.splitlines() if x.startswith('c R132_SELECTOR' if 'r132' in selector else 'c R130_SELECTOR'))
+              r132=native('r132/r132_filter','wide_exact')
+              old=native('r132/r130_filter','adaptive')
+              assert 'route=GF2' in r132,(item['label'],r132)
+              if item['label'].startswith('R117_2026_'):
+                  assert 'route=KISSAT' in old,(item['label'],old)
+              print('R132_HISTORIC_RECOVERY',item['label'],r132,flush=True)
+          def synth(name,k,missing=0):
+              clauses=[]
+              for block in range(4):
+                  vs=[1]+[2+block*(k-1)+j for j in range(k-1)]
+                  masks=[m for m in range(1<<k) if m.bit_count()%2==0]
+                  if missing and block==3:masks=masks[:-1]
+                  for mask in masks:
+                      clauses.append([(-v if mask & (1<<i) else v) for i,v in enumerate(vs)])
+              p=pathlib.Path('r132')/(name+'.cnf')
+              p.write_text('p cnf 300 '+str(len(clauses))+'\n'+''.join(' '.join(map(str,c))+' 0\n' for c in clauses))
+              return p
+          for k in (5,6):
+              for missing in (0,1):
+                  p=synth('k'+str(k)+'-missing'+str(missing),k,missing)
+                  x=subprocess.run(['r132/r132_filter',str(p),'r131/r118','unused-kissat','wide_exact','--probe-only'],text=True,capture_output=True,check=True,timeout=10)
+                  line=next(t for t in x.stdout.splitlines() if t.startswith('c R132_SELECTOR'))
+                  expect='route=KISSAT' if missing else 'route=GF2'
+                  assert expect in line,(p.name,line)
+                  print('R132_WIDTH_CONTROL',p.name,line,flush=True)
+          print('R132_CONTROLS_PASS',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r132-historical-and-native-width-controls
+          path: |
+            r132/historical.log
+            r131/forensic-report.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  freeze:
+    name: Freeze completely NEW GBD miter cryptography XOR and random holdout
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          run-id: 42018077150
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r125
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          run-id: 42021817607
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r126
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r127
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r128
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124t-prospective-frozen
+          run-id: 42039355570
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r124t
+      - uses: actions/download-artifact@v4
+        with:
+          name: r130-frozen-sha-disjoint-external
+          run-id: 42044400721
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r130
+      - uses: actions/download-artifact@v4
+        with:
+          name: r117-500-frozen-candidate-manifest
+          run-id: 41901781523
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/prior/r117500
+      - name: SHA-exclude R120-R130, R124T and 500 prior R117 candidates before measurement
+        run: |
+          set -euo pipefail
+          mkdir -p r132
+          python3 -u research/r132_wide_xor_benchmark.py freeze | tee r132/freeze.log
+          test -s r132/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          path: r132/frozen/
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R132 fresh real-source paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          path: r132/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin original Kissat/CaDiCaL and compile unchanged R118 R130 and new R132
+        run: |
+          set -euo pipefail
+          mkdir -p r132
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r132/r118
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r130_adaptive_selector.cpp -o r132/r130_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r132_wide_xor_selector.cpp -o r132/r132_filter
+      - name: Randomly paired 2 repeats, 15s caps incl prepass, original CNF SAT-witness check
+        run: |
+          set -euo pipefail
+          python3 -u research/r132_wide_xor_benchmark.py run --shard ${{ matrix.shard }} | tee r132/shard-${{ matrix.shard }}.log
+          test -s r132/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r132-shard-${{ matrix.shard }}
+          path: |
+            r132/shard-${{ matrix.shard }}.json
+            r132/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R132 final SHA-paired PAR2 R118 R130 Kissat CaDiCaL and no-promotion audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          path: r132/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r132-shard-*
+          merge-multiple: true
+          path: r132
+      - name: Reject formula drift duplicate trials SAT disagreement or PAR2 errors
+        run: |
+          set -euo pipefail
+          python3 -u research/r132_wide_xor_benchmark.py audit | tee r132/audit.log
+          test -s r132/report.json
+          cat r132/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R132-FRESH-WIDE-EXACT-XOR-AUDIT
+          path: |
+            r132/report.json
+            r132/audit.log
+            r132/paired.csv
+            r132/probes.csv
+            r132/shard-*.json
+            r132/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
