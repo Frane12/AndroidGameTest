@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 using namespace std;
 static constexpr size_t MAX_BYTES=256*1024, MAX_CLAUSES=4096, DIM=16;
 static double safe_div(double x,double y) {return y>0?x/y:0.0;}
@@ -110,7 +111,7 @@ int main(int argc,char**argv){
      cerr<<"R151_BAD_MODEL_SCALE\n";return 6;
    }
  }
- vector<pair<double,double>> dists;
+ vector<std::pair<double,double>> dists;
  dists.reserve(ntrain);
  for(size_t j=0;j<ntrain;j++){
    double distance=0.0;
