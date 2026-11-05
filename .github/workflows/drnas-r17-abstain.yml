@@ -1,0 +1,141 @@
+name: DRNAS R17 real live risk-abstention frozen 4800 native SAT
+on:
+  push:
+    branches: [experiment/drnas-r17-confidence-abstain-20261105]
+    paths: ['.github/workflows/drnas-r17-abstain.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r17-frozen-confidence
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Pre-flight source/model/policy + compile real in-process R17 C decision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned historical R15 model, V15.3.1 and prospective R17 source ledger
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r17_abstain,r17_abstain_benchmark,r17_abstain_analysis,patch_r16_live_ridge,r16_live_benchmark,r15_trajectory_benchmark}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          test "$(git hash-object experiments/drnas_v16/r15-results/current/frozen_trained_models.json)" = d005747f177008172b49cef5f0b8a6f29c3ffc46
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r17_abstain_benchmark as b
+          from tempfile import TemporaryDirectory
+          from pathlib import Path
+          p=b.load_protocol()
+          assert len(b.SHARDS)==16 and len(b.MODES)==10 and b.REPS==3
+          history=b.history_shas()
+          assert len(history)==2254
+          with TemporaryDirectory() as temp:
+              cases=b.make_cases("n240_test0",Path(temp),history)
+              assert len(cases)==10 and len(set(x["formula_sha256"] for x in cases))==10
+          print("R17_PRECOMMITTED_PROTOCOL_AND_PROVENANCE_PASS")
+          PY
+      - name: Compile exact upstream pinned Kissat with native R17 agreement-abstention
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r17_abstain.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq r17_snapshot
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R16_DECISION
+      - name: Real R17 native C vs Python confidence/abstention smoke before any benchmark
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r17_abstain_benchmark.py --smoke
+
+  benchmark:
+    name: R17 same-binary risk-abstention ${{ matrix.category }} native 300 trials
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1,
+                   community_n220_development0, community_n220_test0,
+                   community_n240_development0, community_n240_test0]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build upstream pinned unpatched Kissat control
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Build one patched native binary shared by monitor, R16 and R17
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r17_abstain.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Compile immutable V15.3.1 baseline
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: 300 paired original CNF solves, C/Python score parity, SAT witness and restart safety
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r17_abstain_benchmark.py --category "${{ matrix.category }}"
+          test -s "drnas-r17-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r17-results/${{ matrix.category }}/manifest.json"
+          test -s "drnas-r17-results/${{ matrix.category }}/traces.jsonl"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r17-${{ matrix.category }}
+          path: drnas-r17-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+
+  aggregate:
+    name: Verify 16 complete shards, 4800 SAT solves, SHA, native parity and formula bootstrap
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r17-*
+          path: r17-download
+          merge-multiple: false
+      - name: Strict final audit; if any shard failed this MUST fail
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r17_abstain_analysis.py | tee r17-audit.log
+          test -s drnas-r17-results/aggregate/results.json
+          test -s drnas-r17-results/aggregate/paired.csv
+          test -s drnas-r17-results/aggregate/native_decisions.csv
+          cat drnas-r17-results/aggregate/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R17-NATIVE-CONFIDENCE-ABSTENTION-FINAL-AUDIT
+          path: |
+            drnas-r17-results/aggregate/
+            r17-audit.log
+          retention-days: 60
+          if-no-files-found: warn
