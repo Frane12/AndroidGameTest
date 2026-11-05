@@ -15,6 +15,7 @@ FAMILIES=("lights-out","linear-equations","xor-chain","cryptography","miter")
 TRACKS=("main_2025","main_2026","submissions_2025","submissions_2026")
 QUOTA={"xor_plus_units":12,"complete_xor":8,"mixed_residual":12,"nonxor_control":12}
 MAX_SOURCE_FETCH=240
+MIN_FREEZE_CASES=10
 RAW_CAP=28*1024*1024
 CNF_CAP=12*1024*1024
 MAX_VARIABLES=3000
@@ -105,7 +106,7 @@ def freeze():
   except Exception as e:
    skips[type(e).__name__]+=1
    print("R154_SOURCE_SKIP",c["id"],type(e).__name__,str(e)[:100],flush=True)
- need(len(selected)>=10,"less than 10 genuine source-disjoint CNFs; abort without benchmark")
+ need(len(selected)>=MIN_FREEZE_CASES,"less than "+str(MIN_FREEZE_CASES)+" genuine source-disjoint CNFs; abort without benchmark")
  need(len({z["source_sha256"] for z in selected})==len(selected),"SHA duplicates")
  m=dict(protocol=PROTO,phase="FROZEN_BEFORE_FIRST_R154_SOLVER_TIMING",
    sample_type="CONDITIONAL family-matched external originals, not random all-SAT",
