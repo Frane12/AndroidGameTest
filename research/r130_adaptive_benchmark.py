@@ -250,7 +250,7 @@ def audit():
         summary=summary,comparisons=comparisons,
         probes=dict(by_reason={f"{p}|{reason}":n for (p,reason),n in sorted(reasons.items())},
             triggered={m:sum(p["policy"]==m and p["route"]=="GF2" for p in probes) for m in ("q2_25","adaptive")},
-            median_probe_seconds={m:round(statistics.median(p["probe_s"] for p in probes if p["policy"]==m),6) for m in ("q2_25","q1_0")}),
+            median_probe_seconds={m:round(statistics.median(p["probe_s"] for p in probes if p["policy"]==m),6) for m in ("q2_25","adaptive")}),
         all_runs_hardware=[x["runner_cpu"] for x in shards],strict_no_promotion=True,
         no_independent_UNSAT_LRAT=True,
         holdout_note="R130 thresholds frozen before acquisition and excluded against R120-R128 and R124T; no contest score; no independent UNSAT LRAT.")
