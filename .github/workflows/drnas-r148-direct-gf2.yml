@@ -1,0 +1,82 @@
+name: DRNAS R148 direct certified GF2 IPASIR-UP propagation 6-mode paired audit
+on:
+  push:
+    branches:
+      - experiment/drnas-r148-direct-gf2-propagation-20261105
+    paths:
+      - '.github/workflows/drnas-r148-direct-gf2.yml'
+      - 'research/r148_direct_gf2_bridge.cpp'
+      - 'research/r148_direct_gf2_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r148-direct-gf2-20261105
+  cancel-in-progress: false
+jobs:
+  direct-gf2-6way:
+    name: R148 exact GF2 direct propagation vs CaDiCaL six-way native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight pinned exact GF2 code and benchmark dependencies
+        run: |
+          set -euo pipefail
+          for f in research/r148_direct_gf2_bridge.cpp \
+                   research/r133c_native_gf2_cdcl_bridge.cpp \
+                   research/r148_direct_gf2_benchmark.py \
+                   research/r133c_native_gf2_benchmark.py \
+                   research/r93_export_verified_rows.py; do
+            test -s "$f" || { echo "::error::Missing R148 dependency $f"; exit 1; }
+          done
+          python3 -m py_compile research/r148_direct_gf2_benchmark.py
+          PYTHONPATH=research python3 -c 'import r133c_native_gf2_benchmark as x; assert callable(x.fixture); assert callable(x.select_controls)'
+          echo R148_DEPENDENCY_PREFLIGHT_PASS
+      - name: Build pinned CaDiCaL 2.1.0 and R148 direct IPASIR-UP propagator
+        run: |
+          set -euo pipefail
+          mkdir -p r148-results
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r148-cadical
+          cd /tmp/r148-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r148-results/cadical-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src \
+            "$GITHUB_WORKSPACE/research/r148_direct_gf2_bridge.cpp" \
+            ./build/libcadical.a -o /tmp/r148-direct-native
+          sha256sum /tmp/r148-direct-native > "$GITHUB_WORKSPACE/r148-results/native-sha256.txt"
+      - name: Reversible watch selftest, GF2 closure selftest and direct reason exhaustiveness
+        run: |
+          set -euo pipefail
+          /tmp/r148-direct-native selftest | tee r148-results/selftest.txt
+          grep -q '^R99_WATCH_SELFTEST_PASS' r148-results/selftest.txt
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r148-results/selftest.txt
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r148-results/selftest.txt
+      - name: Fetch six existing SATLIB PARITY controls with pinned source SHA
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r148-parity
+          curl -fsSL --retry 3 --max-time 90 \
+            'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz' \
+            -o /tmp/r148-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r148-parity/parity.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r148-parity/parity.tar.gz -C /tmp/r148-parity
+      - name: 72 paired measurements and strict source/assignment audit
+        run: |
+          set -euo pipefail
+          mkdir -p r148-results
+          python3 -u research/r148_direct_gf2_benchmark.py \
+            --binary /tmp/r148-direct-native \
+            --satlib /tmp/r148-parity \
+            --out r148-results | tee r148-results/benchmark.log
+          grep -q '^R148_FIXTURE_PASS' r148-results/benchmark.log
+          grep -q '^R148_FINAL_AUDIT' r148-results/benchmark.log
+          cat r148-results/audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R148-DIRECT-GF2-EVIDENCE
+          path: r148-results/
+          retention-days: 90
