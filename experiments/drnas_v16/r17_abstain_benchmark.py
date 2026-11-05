@@ -106,7 +106,7 @@ def independent_decision(case,mode,row,trace):
             native_nov=max(abs((x[name[j]]-traj["mu"][j])/traj["sd"][j]) for j in keys)
             threshold,snapmin,novmax=GATES[mode]
             risk=math.isfinite(native_snap) and math.isfinite(native_nov) and native_snap>snapmin and native_nov<=novmax
-            selected=case["n"]>=220 and math.isfinite(native_score) and native_score>threshold and risk
+            selected=case["n"] in (220,240) and math.isfinite(native_score) and native_score>threshold and risk
             if event.get("r17_active")!="1":err="R17 C mode not marked active"
             elif event.get("model")!="trajectory":err="R17 model not trajectory"
             elif abs(float(event["threshold"])-threshold)>1e-10:err="R17 frozen threshold changed"
