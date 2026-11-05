@@ -1,0 +1,120 @@
+name: DRNAS R157 live IPASIR-UP GF2 CDCL original mixed source four-shard paired proof audit
+on:
+  push:
+    branches: [experiment/drnas-r157-live-xor-cdcl-20261105]
+    paths: ['.github/workflows/drnas-r157-live-gf2.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r157-original-mixed-four-IPASIR-UP
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: Native same-CaDiCaL source-certified GF2 live trail shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r157
+      - name: Verify source exporter and compile pinned CaDiCaL 2.1.0 with original R148 direct bridge
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p r157
+          python3 -m py_compile research/r157_source_certified_xor.py research/r157_live_gf2_benchmark.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r157-cadical
+          cd /tmp/r157-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r157/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r157_live_gf2_bridge.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r157/r157-native"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum r157/r157-native > r157/native-sha256.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          p=pathlib.Path("r157/r157-native")
+          obj=dict(git_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            binary_sha=hashlib.sha256(p.read_bytes()).hexdigest(),
+            cadical_commit=pathlib.Path("r157/cadical-source-commit.txt").read_text().strip(),
+            cpu=next((x for x in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if x.startswith("model name")),"unknown"))
+          pathlib.Path("r157/pin-"+os.environ["SHARD"]+".json").write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: Source reason and exact LIFO watched-trail selftest
+        run: |
+          set -euo pipefail
+          r157/r157-native selftest | tee r157/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r157/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r157/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r157/native-selftest.log
+      - name: Five original paired 15s CaDiCaL modes with source-only unit-reduced GF2 and timeout progress
+        run: |
+          set -euo pipefail
+          python3 -u research/r157_live_gf2_benchmark.py shard --shard ${{ matrix.shard }} --binary r157/r157-native | tee r157/shard-${{ matrix.shard }}.log
+          grep -q '^R157_SHARD_PASS ' r157/shard-${{ matrix.shard }}.log
+          test -s r157/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r157-live-gf2-shard-${{ matrix.shard }}
+          path: |
+            r157/shard-${{ matrix.shard }}.json
+            r157/shard-${{ matrix.shard }}.log
+            r157/pin-${{ matrix.shard }}.json
+            r157/native-selftest.log
+            r157/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Strict original SHA, 4 native matched source cases and 40 trial audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r157
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r157-live-gf2-shard-*
+          merge-multiple: true
+          path: r157
+      - name: Audit 40 original source-paired live in-process XOR propagation attempts
+        run: |
+          set -euo pipefail
+          test "$(find r157 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r157_live_gf2_benchmark.py audit | tee r157/audit.log
+          grep -q '^R157_FINAL ' r157/audit.log
+          cat r157/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R157-LIVE-IPASIR-UP-MIXED-ORIGINAL-GF2-PROOF-FINAL
+          path: |
+            r157/report.json
+            r157/audit.log
+          if-no-files-found: warn
+          retention-days: 90
