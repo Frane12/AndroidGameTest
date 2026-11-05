@@ -1,0 +1,237 @@
+name: DRNAS R28 full SATComp25-26 original CNF four real competition builds
+on:
+  push:
+    branches: [experiment/drnas-r28-full-competition-20261105]
+    paths:
+      - '.github/workflows/drnas-r28-full-competition.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r28-full-original-competition-blind-20261105
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Build genuine SC2026 competitor, freeze SHA-disjoint cross-year/multi-family originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify scripts and unchanged R28 compiler before network I/O
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r28_full_competition.py research/r28_build_official26.py research/r115_world_top_rematch.py
+          mkdir -p r28full
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o r28full/r28
+          test -x r28full/r28
+      - name: Build the genuine SAT Competition 2026 submitted Biere/Kissat SC2024 solver from official archive
+        run: |
+          set -euo pipefail
+          python3 -u research/r28_build_official26.py | tee r28full/official-build.log
+          grep -q '^R28_OFFICIAL_BUILD_PASS ' r28full/official-build.log
+          test -x r28full/sc2024-kissat
+          test -s r28full/official-build.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          run-id: 42039762548
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r115
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          run-id: 42068101730
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135s
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R148-NEW-REAL-BLIND-50-FIVEWAY-FINAL-PAR2-AUDIT
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r151
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r152
+      - name: Freeze prospective independent original CNF SHA and published historical metadata BEFORE timings
+        run: |
+          set -euo pipefail
+          python3 -u research/r28_full_competition.py freeze | tee r28full/freeze.log
+          test -s r28full/frozen/manifest.json
+          grep -q '^R28_FULL_SOURCE_FREEZE ' r28full/freeze.log
+          python3 - <<'PY'
+          import json,pathlib
+          m=json.loads(pathlib.Path('r28full/frozen/manifest.json').read_text())
+          assert 65<=m['selected_count']<=112
+          assert m['phase']=='SOURCES_FROZEN_BEFORE_FIRST_SOLVER_TIMING'
+          print('R28_FULL_PROSPECTIVE_LOCK_PASS',m['selected_count'],m['cohort_counts'],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28full-actual-official-SC2026-biere-source-and-signed-binaries
+          path: |
+            r28full/official-2026-biere.tar.xz
+            r28full/sc2024-kissat
+            r28full/official-build.json
+            r28full/official-build.log
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28full-2025-2026-multifamily-frozen-originals
+          path: |
+            r28full/frozen/
+            r28full/freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: SHA-paired 4-real-solver R28 SATComp25-26 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28full-2025-2026-multifamily-frozen-originals
+          path: r28full/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28full-actual-official-SC2026-biere-source-and-signed-binaries
+          path: r28full/official-sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify the genuine competition build and SHA-pinned original Kissat/CaDiCaL
+        run: |
+          set -euo pipefail
+          mkdir -p r28full
+          test -s r28full/frozen/manifest.json
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          python3 - <<'PY'
+          import hashlib,json,pathlib,shutil
+          d=pathlib.Path('r28full/official-sources')
+          candidates=list(d.rglob('official-build.json'))
+          assert len(candidates)==1, candidates
+          meta=json.loads(candidates[0].read_text())
+          bins=list(d.rglob('sc2024-kissat'))
+          assert len(bins)==1, bins
+          target=pathlib.Path('r28full/sc2024-kissat')
+          shutil.copyfile(bins[0],target)
+          target.chmod(0o755)
+          h=hashlib.sha256(target.read_bytes()).hexdigest()
+          assert h==meta['binary_sha256'],(h,meta['binary_sha256'])
+          print('R28_OFFICIAL_COMPETITION_BINARY_SHA_PIN',h,meta['archive_sha256'],flush=True)
+          PY
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o r28full/r28
+          chmod +x r28full/r28
+      - name: Same-shard original-CNF 20s cap randomized paired four-way runs, 2 repetitions
+        run: |
+          set -euo pipefail
+          python3 -u research/r28_full_competition.py run --shard ${{ matrix.shard }} | tee r28full/shard-${{ matrix.shard }}.log
+          test -s r28full/shard-${{ matrix.shard }}.json
+          grep -q '^R28_FULL_SHARD_PASS ' r28full/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28full-shard-${{ matrix.shard }}
+          path: |
+            r28full/shard-${{ matrix.shard }}.json
+            r28full/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Full original SHA/solver/witness/XOR-PAR2 official comparison audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28full-2025-2026-multifamily-frozen-originals
+          path: r28full/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r28full-shard-*
+          merge-multiple: true
+          path: r28full
+      - name: Reject invalid/missing original SAT witnesses or falsified UNSAT, report ALL regressions
+        run: |
+          set -euo pipefail
+          test "$(find r28full -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r28_full_competition.py audit | tee r28full/audit.log
+          grep -q '^R28_FULL_FINAL ' r28full/audit.log
+          cat r28full/audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R28-FULL-OFFICIAL-2025-2026-FOUR-BUILD-PAR2-AUDIT
+          path: |
+            r28full/audit.json
+            r28full/paired.csv
+            r28full/per_formula.csv
+            r28full/audit.log
+            r28full/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
