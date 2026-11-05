@@ -15,7 +15,7 @@ ROOT = pathlib.Path("r154mix")
 PROTO = "DRNAS-R154-MIX-SHORT-NEW-SHA-20261105-v1"
 CAP = 6.0
 SHARDS = 4
-MIN_CASES = 10
+MIN_CASES = 4  # Short prospective pilot: no claims beyond actual frozen sample
 
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -29,14 +29,28 @@ def source_module():
     m.PROTO = PROTO
     # All categories have source overlap with mixed XOR/Boolean CNFs.
     # Keep the original 2025/26 GBD catalog and provenance checks.
-    m.FAMILIES = ("cryptography", "miter", "xor-chain", "linear-equations", "lights-out")
+    m.FAMILIES = (
+        "or_randxor", "random-graph-xorsat", "xor-shifting",
+        "minimum-disagreement-parity", "random-circuits", "bitvector",
+        "cryptography", "miter", "xor-chain", "linear-equations", "lights-out",
+    )
+    # Expand actual competition source years, never reuse any prior ID/SHA.
+    m.TRACKS = (
+        "main_2023", "main_2024", "main_2025", "main_2026",
+        "submissions_2024", "submissions_2025", "submissions_2026",
+    )
+    m.MIN_FREEZE_CASES = MIN_CASES
+    m.RAW_CAP = 48 * 1024 * 1024
+    m.CNF_CAP = 24 * 1024 * 1024
+    m.MAX_VARIABLES = 25000
+    m.MAX_CLAUSES = 500000
     m.QUOTA = {
         "xor_plus_units": 0,
         "complete_xor": 0,
         "mixed_residual": 12,
         "nonxor_control": 0,
     }
-    m.MAX_SOURCE_FETCH = 450
+    m.MAX_SOURCE_FETCH = 350
     return m
 
 def benchmark_module():
