@@ -175,7 +175,6 @@ int main(int argc,char** argv){
   groups.reserve(min(size_t(32768),clauses.size()/4+1));
   vector<Equation> units;
   units.reserve(min(size_t(3000),clauses.size()/8+1));
-  int eligible=0;
   for(const auto& clause:clauses) {
     const int k=int(clause.size());
     if(k==1){
@@ -200,7 +199,6 @@ int main(int argc,char** argv){
     if(p.vars.empty())p.vars.assign(key.vars.begin(),key.vars.begin()+k);
     p.masks|=uint64_t(1)<<mask;
     p.frequency[size_t(mask)]++;
-    eligible++;
   }
   vector<Equation> eqs;
   int blocks=0;
