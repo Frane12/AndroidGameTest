@@ -1,0 +1,74 @@
+name: DRNAS R148 final audit recovery using original complete 800 measurements
+on:
+  push:
+    branches: [experiment/drnas-r148-final-audit-recovery-20261105]
+    paths: ['.github/workflows/drnas-r148-audit-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit-only:
+    name: Original R148 parity plus exact 8 saved shard audits; NO benchmark reruns
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Recover original certified R148 400-route parity at exact expected path
+        uses: actions/download-artifact@v4
+        with:
+          name: r148-exact-400-decision-parity
+          run-id: 42082912034
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r148
+      - name: Recover original eight successful R148 benchmark shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r148-paired-shard-*
+          run-id: 42082912034
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: r148
+      - name: Refuse if original frozen parity or any of 8 original shard JSONs missing
+        run: |
+          set -euo pipefail
+          test -s r148/parity.json
+          test -s r148/parity.csv
+          test "$(find r148 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 - <<'PY'
+          import json,pathlib
+          p=json.loads(pathlib.Path('r148/parity.json').read_text())
+          assert p['source_manifest_sha256']=='619665dd5f4ba6680b11200a63ac77ecc706c9897317b5452dbf22a82ef4b787'
+          assert p['status']=='PASS' and p['full_route_agreement'] and p['formulas']==400
+          print('R148_PARITY_RECOVERY_OK exactly 400 originally certified routes',flush=True)
+          PY
+      - name: Run original fail-closed Python audit WITHOUT executing any solver
+        run: |
+          set -euo pipefail
+          python3 -u research/r148_exact_fast_benchmark.py audit | tee r148/audit.log
+          grep -q '^R148_FINAL ' r148/audit.log
+          test -s r148/report.json
+          cat r148/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R148-ORIGINAL-100-PAIRED-FINAL-RECOVERED-AUDIT
+          path: |
+            r148/report.json
+            r148/paired.csv
+            r148/parity.json
+            r148/parity.csv
+            r148/audit.log
+          if-no-files-found: warn
+          retention-days: 90
