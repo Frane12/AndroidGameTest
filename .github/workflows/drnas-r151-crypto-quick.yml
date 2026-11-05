@@ -1,0 +1,104 @@
+name: DRNAS R151 real cryptography SAT 6-second quick paired replay
+on:
+  push:
+    branches: [experiment/drnas-r151-crypto-quick-20261105]
+    paths:
+      - '.github/workflows/drnas-r151-crypto-quick.yml'
+      - 'research/r151_crypto_quick.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r151-crypto-quick
+  cancel-in-progress: true
+jobs:
+  benchmark:
+    name: R151 crypto original CNF paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify original frozen binaries and compile unchanged R150 selectors
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          mkdir -p r150 r151
+          test -s r150/model.txt
+          test -s r150/holdout/manifest.json
+          python3 -m py_compile research/r151_crypto_quick.py research/r150_quality_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG research/r150_features.cpp -o r150/r150_features
+          g++ -std=c++17 -O3 -DNDEBUG research/r148_exact_fast_selector.cpp -o r150/r148_selector
+      - name: Two repeats, five modes, 6 second per-trial cap, original crypto SAT CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/r151_crypto_quick.py run --shard ${{ matrix.shard }} \
+            | tee r151/shard-${{ matrix.shard }}.log
+          grep -q '^R151_SHARD_PASS' r151/shard-${{ matrix.shard }}.log
+          test -s r151/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r151-crypto-shard-${{ matrix.shard }}
+          path: |
+            r151/shard-${{ matrix.shard }}.json
+            r151/shard-${{ matrix.shard }}.log
+          retention-days: 90
+  audit:
+    name: R151 exact SHA paired crypto PAR2 final audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r151-crypto-shard-*
+          merge-multiple: true
+          path: r151
+      - name: Strict SHA, SAT witness, six-second PAR2 and five-way result verification
+        run: |
+          set -euo pipefail
+          python3 -u research/r151_crypto_quick.py audit | tee r151/audit.log
+          grep -q '^R151_FINAL' r151/audit.log
+          cat r151/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R151-CRYPTO-QUICK-10-ORIGINAL-FINAL
+          path: |
+            r151/report.json
+            r151/audit.log
+            r151/shard-*.json
+          retention-days: 90
