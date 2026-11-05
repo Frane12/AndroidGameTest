@@ -43,6 +43,17 @@ class R158Tests(unittest.TestCase):
             path.write_text('p cnf 5 3\n1 -2 3 0\n')
             with self.assertRaises(ValueError):f.parse_dimacs(path)
 
+    def test_multiline_dimacs_and_multi_clause_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'wrapped.cnf'
+            path.write_text('c split lines\np cnf 5 3\n1 -2\n3 0 4 5 0\n0\n')
+            graph=f.parse_dimacs(path)
+            self.assertEqual(len(graph),5)
+            self.assertIn(1,graph[0])
+            self.assertIn(4,graph[3])
+            path.write_text('p cnf 5 1\n1 -2\n')
+            with self.assertRaises(ValueError):f.parse_dimacs(path)
+
     def test_real_shards_and_training_leakage(self):
         aggregate=Path(os.environ.get('R158_AGGREGATE',str(ROOT/'aggregate')))
         raw=Path(os.environ.get('R158_RAW',str(ROOT/'raw')))
