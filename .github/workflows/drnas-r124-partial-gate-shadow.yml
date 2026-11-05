@@ -1,0 +1,129 @@
+name: DRNAS R124 partial Boolean gate graph shadow on 160 R123 external formulas
+on:
+  push:
+    branches: [experiment/drnas-r124-partial-gate-shadow-20261105]
+    paths:
+      - 'research/r124_partial_gate_shadow.py'
+      - '.github/workflows/drnas-r124-partial-gate-shadow.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  control:
+    name: Verify permuted, negated and incomplete-gate controls before external analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r122-frozen-192-mixed-circuits
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/controls-r122
+      - name: Fail closed for false gate detection or lost true positives
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r124_partial_gate_shadow.py
+          python3 -u research/r124_partial_gate_shadow.py control | tee r124/control.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r124-shadow-controls
+          path: |
+            r124/control-results.json
+            r124/control.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  scan:
+    name: R124 shadow detector shard ${{ matrix.shard }}
+    needs: control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r123-frozen-external-mixed
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/source
+      - name: Record reproducibility and check original R123 SHA-256 source
+        run: |
+          set -euo pipefail
+          mkdir -p r124
+          git rev-parse HEAD > r124/commit-${{ matrix.shard }}.txt
+          lscpu > r124/cpu-${{ matrix.shard }}.txt
+          python3 -m py_compile research/r124_partial_gate_shadow.py
+      - name: Detect independently auditable local gates; no SAT solver invoked
+        run: |
+          set -euo pipefail
+          python3 -u research/r124_partial_gate_shadow.py scan --shard ${{ matrix.shard }} | tee r124/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r124-shard-${{ matrix.shard }}
+          path: |
+            r124/shard-${{ matrix.shard }}.json
+            r124/commit-${{ matrix.shard }}.txt
+            r124/cpu-${{ matrix.shard }}.txt
+            r124/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R124 complete 12 shard verified structural feature audit
+    needs: [control, scan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r123-frozen-external-mixed
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/source
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r124-shard-*
+          merge-multiple: true
+          path: r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-shadow-controls
+          path: r124
+      - name: Require 160 source identities, 12 complete shards, sound local proofs and same Git commit
+        run: |
+          set -euo pipefail
+          python3 -u research/r124_partial_gate_shadow.py aggregate | tee r124/aggregate.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R124-PARTIAL-GATE-SHADOW-160-SOURCE-AUDIT
+          path: |
+            r124/results.json
+            r124/formula_features.csv
+            r124/control-results.json
+            r124/aggregate.log
+            r124/shard-*.json
+            r124/commit-*.txt
+            r124/cpu-*.txt
+          if-no-files-found: warn
+          retention-days: 90
