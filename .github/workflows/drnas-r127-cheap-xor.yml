@@ -1,0 +1,208 @@
+name: DRNAS R127 cheap exact XOR prefilter before immutable R118 and Kissat
+on:
+  push:
+    branches: [experiment/drnas-r127-cheap-xor-prefilter-20261105]
+    paths:
+      - 'research/r127_early_xor_filter.cpp'
+      - 'research/r127_early_xor_benchmark.py'
+      - '.github/workflows/drnas-r127-cheap-xor.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze SHA-excluded external CNFs and known R115 control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          run-id: 42018077150
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r125
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          run-id: 42021817607
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r127/prior/r126
+      - name: Freeze new formulas and source SHA/URL exclusion ledger
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r127_early_xor_benchmark.py
+          python3 -u research/r127_early_xor_benchmark.py freeze | tee r127/freeze.log
+          test -s r127/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r127-frozen-sha-excluded-external
+          path: r127/frozen/
+          if-no-files-found: warn
+          retention-days: 90
+
+  controls:
+    name: Independent exact and incomplete XOR controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile prefilter and unchanged R118, test positive and negative controls
+        run: |
+          set -euo pipefail
+          mkdir -p r127
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r127_early_xor_filter.cpp -o r127/r127_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r127/r118
+          python3 -m py_compile research/r127_early_xor_benchmark.py
+          python3 -u research/r127_early_xor_benchmark.py control | tee r127/control.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r127-proof-safe-controls
+          path: |
+            r127/controls/report.json
+            r127/control.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R127 prospective paired external shard ${{ matrix.shard }}
+    needs: [freeze,controls]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          path: r127/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build binaries and pin original Kissat, R118, prefilter, commit, CPU
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r127_early_xor_filter.cpp -o r127/r127_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r127/r118
+          SHARD=${{ matrix.shard }} python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          def sha(p):
+           h=hashlib.sha256()
+           with open(p,'rb') as f:
+            for b in iter(lambda:f.read(1<<20),b''):h.update(b)
+           return h.hexdigest()
+          files=('r127/r127_filter','r127/r118','built/bin/kissat_4_0_4')
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                   binaries={f:sha(f) for f in files},
+                   cpu=next((s.strip() for s in pathlib.Path('/proc/cpuinfo').read_text().splitlines()
+                             if s.startswith('model name')),'not_found'),
+                   affinity=list(os.sched_getaffinity(0)))
+          pathlib.Path(f"r127/pin-{os.environ['SHARD']}.json").write_text(json.dumps(obj,sort_keys=True)+'\n')
+          PY
+      - name: Run 15 second paired original-CNF benchmark with SAT witness verification
+        run: |
+          set -euo pipefail
+          python3 -u research/r127_early_xor_benchmark.py benchmark --shard ${{ matrix.shard }} | tee r127/benchmark-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r127-shard-${{ matrix.shard }}
+          path: |
+            r127/shard-${{ matrix.shard }}.json
+            r127/pin-${{ matrix.shard }}.json
+            r127/benchmark-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R127 complete SHA SAT proof-tier paired PAR2 and source audit
+    needs: [freeze,controls,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          path: r127/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r127-shard-*
+          merge-multiple: true
+          path: r127
+      - name: Strict complete paired audit; R115 historical control kept separate
+        run: |
+          set -euo pipefail
+          python3 -u research/r127_early_xor_benchmark.py aggregate | tee r127/aggregate.log
+          cat r127/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R127-STRICT-CHEAP-XOR-EXTERNAL-PAR2
+          path: |
+            r127/results.json
+            r127/paired.csv
+            r127/aggregate.log
+            r127/shard-*.json
+            r127/pin-*.json
+            r127/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
