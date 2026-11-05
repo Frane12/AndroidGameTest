@@ -1,0 +1,82 @@
+name: DRNAS R17 external audit-only artifact path recovery
+on:
+  push:
+    branches: [experiment/drnas-r17-external-audit-recovery-20261105]
+    paths: ['.github/workflows/drnas-r17-external-audit-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: r17-external-audit-only-recovery-20261105
+  cancel-in-progress: false
+jobs:
+  audit_only:
+    name: Reuse original 4 completed shard artifacts - no solver runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r17-external-24-original-source-and-frozen-manifest
+          run-id: 42095960050
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r17-external-shard-*
+          run-id: 42095960050
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r17-external-download
+          merge-multiple: false
+      - name: Normalize ZIP path nesting without changing source shard contents
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil,hashlib,json
+          srcroot=Path('r17-external-download')
+          original=Path('r17-external/frozen/manifest.json')
+          assert original.is_file(), 'original frozen manifest missing'
+          for i in range(4):
+              folder=srcroot/f'r17-external-shard-{i}'
+              expected={name:folder/name for name in ('manifest.json','measurements.csv','traces.jsonl')}
+              found={}
+              for name in expected:
+                  paths=list(folder.rglob(name))
+                  assert len(paths)==1, (i,name,[str(p) for p in paths])
+                  found[name]=paths[0]
+              assert len({str(p.parent) for p in found.values()})==1, 'mismatched original shard layout'
+              for name,p in found.items():
+                  if p!=expected[name]:
+                      shutil.copyfile(p,expected[name])
+                  assert hashlib.sha256(expected[name].read_bytes()).digest()==hashlib.sha256(p.read_bytes()).digest(), 'SHA drift'
+              manifest=json.loads(expected['manifest.json'].read_text())
+              assert manifest['shard']==i,(i,manifest.get('shard'))
+              print('R17_RECOVERY_ORIGINAL_SHARD_SHA',i,{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in expected.items()},flush=True)
+          PY
+      - name: Original R17 strict audit using unchanged experimental audit source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r17_external_transfer.py
+          python3 -u experiments/drnas_v16/r17_external_transfer.py audit | tee r17-external/audit-recovery.log
+          grep -q '^R17_EXTERNAL_FINAL ' r17-external/audit-recovery.log
+          test -s r17-external/report_external.json
+          test -s r17-external/paired_external.csv
+          cat r17-external/report_external.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R17-EXTERNAL-24-ORIGINALS-REUSED-AUDIT-FINAL
+          path: |
+            r17-external/report_external.json
+            r17-external/paired_external.csv
+            r17-external/audit-recovery.log
+            r17-external/frozen/manifest.json
+          retention-days: 90
+          if-no-files-found: warn
