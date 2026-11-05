@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Strict R135 audit of immutable SHA-disjoint paired solver measurements."""
 import collections,csv,json,pathlib,statistics
-import r135_run_nonxor as b
+import r135s_run_nonxor as b
 ROOT=pathlib.Path("r135s")
 MODES=b.MODES
 REPS=b.REPS
