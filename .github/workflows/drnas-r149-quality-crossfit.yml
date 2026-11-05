@@ -1,0 +1,63 @@
+name: DRNAS R149 structural quality cross-fit - historical 400 SHA replay
+on:
+  push:
+    branches: [experiment/drnas-r149-quality-crossfit-20261105]
+    paths:
+      - .github/workflows/drnas-r149-quality-crossfit.yml
+      - research/r149_quality_crossfit.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r149-quality-crossfit
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    name: Audit original 400 SHA and 4000 trials, train 5 folds, evaluate OOF without solver execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load exact original 400 CNFs (same already-used SHA manifest)
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Load existing paired R135S/R135/Kissat/CaDiCaL evidence (NO rerun)
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          run-id: 42073257009
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r149-input
+      - name: Verify all source SHA and paired inputs; five-fold out-of-fold quality replay
+        run: |
+          set -euo pipefail
+          mkdir -p r149
+          python3 -m py_compile research/r149_quality_crossfit.py
+          python3 -u research/r149_quality_crossfit.py | tee r149/audit.log
+          test -s r149/report.json
+          test -s r149/out_of_fold_decisions.csv
+          cat r149/report.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve auditable retrospective shadow report (no promotion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R149-QUALITY-OOF-RETROSPECTIVE-SHADOW
+          path: |
+            r149/report.json
+            r149/rules.json
+            r149/out_of_fold_decisions.csv
+            r149/audit.log
+          retention-days: 90
+          if-no-files-found: warn
