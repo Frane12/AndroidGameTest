@@ -76,6 +76,13 @@ def known_sources():
   for row in csv.DictReader(f):
    for k,v in row.items():
     if "sha" in k.lower() and re.fullmatch("[0-9a-fA-F]{64}",v or ""):sha_seen.add(v.lower())
+ # Exclude new already-collected sibling cohorts, never relabel overlap as unseen.
+ for sibling in pathlib.Path("holdout-400").glob("*.json"):
+  try:
+   d=json.loads(sibling.read_text())
+   for item in d.get("formulas",[]):
+    if re.fullmatch("[0-9a-fA-F]{64}",item.get("sha256","")):sha_seen.add(item["sha256"].lower())
+  except Exception:pass
  ledgers=list(pathlib.Path("prior-ledgers").rglob("*.json"))
  if len(ledgers)<6:raise RuntimeError("INSUFFICIENT PRIOR MANIFESTS: "+str(len(ledgers)))
  for f in ledgers:
