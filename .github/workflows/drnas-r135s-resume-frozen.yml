@@ -1,0 +1,115 @@
+name: DRNAS R135S CI path fix reuse frozen 21 real CNFs without refreeze
+on:
+  push:
+    branches: [experiment/drnas-r135s-real-mini-24-20261105]
+    paths: ['.github/workflows/drnas-r135s-resume-frozen.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r135s-resume-frozen-21
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: R135S existing frozen originals paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover identical SHA-frozen 21 real CNFs from original run
+        uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          run-id: 42068101730
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r135s
+      - name: Verify frozen source manifest at correct path (CI-only fix)
+        run: |
+          set -euo pipefail
+          test -s r135s/frozen/manifest.json
+          python3 - <<'PY'
+          import json,pathlib
+          m=json.loads(pathlib.Path('r135s/frozen/manifest.json').read_text())
+          assert m['protocol']=='DRNAS-R135S-REAL-MINI-UNMEASURED-SOURCE-20261105-v1'
+          assert len(m['cases'])==21
+          print('R135S_REUSED_FROZEN_MANIFEST',len(m['cases']),flush=True)
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify pinned Kissat CaDiCaL and build unchanged R118 and R135 selector
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r135s/r118
+          g++ -std=c++17 -O3 -DNDEBUG research/r135_nonxor_selector.cpp -o r135s/r135_selector
+      - name: Paired 15s SAT witness-checked 4-way benchmark on already frozen originals
+        run: |
+          set -euo pipefail
+          python3 -u research/r135s_run_nonxor.py --shard ${{ matrix.shard }} | tee r135s/shard-${{ matrix.shard }}.log
+          test -s r135s/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135s-fix-shard-${{ matrix.shard }}
+          path: |
+            r135s/shard-${{ matrix.shard }}.json
+            r135s/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Strict SHA original source SAT/PAR2 audit ONLY
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          run-id: 42068101730
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r135s
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r135s-fix-shard-*
+          merge-multiple: true
+          path: r135s
+      - name: Strict original SHA and status audit without re-running solver
+        run: |
+          set -euo pipefail
+          test -s r135s/frozen/manifest.json
+          test "$(find r135s -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r135s_audit_nonxor.py | tee r135s/audit.log
+          test -s r135s/report.json
+          cat r135s/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R135S-FIXED-MINI-21-PAR2-AUDIT
+          path: |
+            r135s/report.json
+            r135s/audit.log
+            r135s/paired.csv
+            r135s/probes.csv
+            r135s/shard-*.json
+            r135s/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
