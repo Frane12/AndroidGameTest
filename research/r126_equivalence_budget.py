@@ -24,7 +24,7 @@ EXPERIMENTAL=("cap0","cap4","cap16","cap32","cap128")
 MODES=("kissat",*EXPERIMENTAL)
 SOURCES={
  "miter":("https://benchmark-database.de/getinstances?query=family%3Dmiter&context=cnf",25),
- "official2026":("https://satcompetition.github.io/2026/downloads/track_main_2026.uri",35),
+ "official2025":("https://raw.githubusercontent.com/satcompetition/2025/main/downloads/SC2025.uri",35),
 }
 MAX_INPUT_BYTES=8_000_000
 
@@ -189,7 +189,7 @@ def freeze():
  (dest/"manifest.json").write_text(json.dumps(m,indent=2)+"\n")
  print("R126_HOLDOUT_FROZEN",json.dumps(dict(counts=counts,cases=len(cases),
                                             excluded=len(excluded))),flush=True)
- if len(cases)<30 or counts.get("miter",0)<12 or counts.get("official2026",0)<15:
+ if len(cases)<30 or counts.get("miter",0)<12 or counts.get("official2025",0)<15:
   raise RuntimeError("R126_UNDERPOWERED_HOLDOUT_FREEZE")
 
 def timer_handler(signum,frame):
@@ -353,7 +353,7 @@ def read_complete(phase,modes):
 
 def stats(cases,rows,modes):
  out={}
- for cohort in ("miter","official2026","all"):
+ for cohort in ("miter","official2025","all"):
   identities=[c["id"] for c in cases if cohort=="all" or c["cohort"]==cohort]
   rs=[r for r in rows if cohort=="all" or r["cohort"]==cohort]
   per={}
