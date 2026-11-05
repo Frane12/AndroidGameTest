@@ -38,11 +38,16 @@ def freeze():
  print("R120_FREEZE",len(selected),"excluded",len(excluded),flush=True)
  assert len(selected)>=100,"FAIL_CLOSED: fewer than 100 external instances"
 def solve(cmd,cnf):
+ # R28 ABI: r28 INPUT.cnf KISSAT_BIN; Kissat ABI: kissat INPUT.cnf.
+ # Do not accidentally pass the Kissat path as the CNF input.
+ argv=([cmd[0],str(cnf),cmd[1]] if len(cmd)==2 else [cmd[0],str(cnf)])
  t=time.perf_counter()
  try:
-  p=subprocess.run(cmd+[str(cnf)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=CAP)
+  p=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=CAP)
   elapsed=time.perf_counter()-t
   status="SAT" if p.returncode==10 else "UNSAT" if p.returncode==20 else "ERROR"
+  if status=="ERROR":
+   print("R120_SOLVER_ERROR",json.dumps({"binary":cmd[0],"cnf":str(cnf),"returncode":p.returncode,"stdout_tail":p.stdout[-1200:].decode(errors="replace"),"stderr_tail":p.stderr[-1200:].decode(errors="replace")}),flush=True)
   return status,elapsed,p.stdout
  except subprocess.TimeoutExpired:return "TIMEOUT",CAP,b""
 def bench(shard):
