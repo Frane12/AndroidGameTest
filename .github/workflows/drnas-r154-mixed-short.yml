@@ -1,0 +1,201 @@
+name: DRNAS R154 MIX prospective unseen real mixed XOR CNF 6s R153 paired
+on:
+  push:
+    branches: [experiment/drnas-r154-certified-gf2-unseen-transfer-20261105]
+    paths: ['.github/workflows/drnas-r154-mixed-short.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r154-mix-new-source-short-20261105
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-only SHA freeze fresh 2025-26 mixed original XOR-CNF before timings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate unchanged R153 and separate short mixed benchmark
+        run: |
+          set -euo pipefail
+          mkdir -p r154mix
+          python3 -m py_compile research/r154_mixed_short.py research/r154_unseen_freeze.py research/r154_unseen_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o /tmp/r154mix-preflight
+      - name: Download historical source ID and content SHA exclusions
+        run: mkdir -p prior
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          run-id: 42039762548
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r115
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r152
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r151
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R154-SHA-FRESH-R153-15S-PAR2-FINAL
+          run-id: 42107642696
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r154
+      - name: Preregister and freeze only new real mixed CNFs; no solver timings
+        run: |
+          set -euo pipefail
+          python3 -u research/r154_mixed_short.py freeze | tee r154mix/freeze.log
+          grep -q '^R154_MIX_FROZEN ' r154mix/freeze.log
+          test -s r154mix/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r154-mix-short-new-source-frozen
+          path: |
+            r154mix/frozen/
+            r154mix/freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: Strict R153 R28 Kissat CaDiCaL mixed 6s paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          path: r154mix
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pinned reference binaries and native R28 R153 strict build
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r154mix/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r154mix/r153
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          fs=['r154mix/r28','r154mix/r153','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1']
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            binaries={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+            cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),'unknown'))
+          pathlib.Path('r154mix/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: 6s strict paired original-SHA SAT model and independent GF2 UNSAT verification
+        run: |
+          set -euo pipefail
+          python3 -u research/r154_mixed_short.py shard --shard ${{ matrix.shard }} | tee r154mix/shard-${{ matrix.shard }}.log
+          grep -q '^R154_MIX_SHARD_PASS ' r154mix/shard-${{ matrix.shard }}.log
+          test -s r154mix/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r154-mix-short-shard-${{ matrix.shard }}
+          path: |
+            r154mix/shard-${{ matrix.shard }}.json
+            r154mix/pin-${{ matrix.shard }}.json
+            r154mix/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: benchmark
+    name: Audit all four shards fresh SHA, correctness, full paired PAR2 and regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          path: r154mix
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r154-mix-short-shard-*
+          merge-multiple: true
+          path: r154mix
+      - name: Reject incomplete or mismatched original CNFs and incorrect certificates
+        run: |
+          set -euo pipefail
+          test "$(find r154mix -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r154_mixed_short.py audit | tee r154mix/audit.log
+          grep -q '^R154_MIX_FINAL ' r154mix/audit.log
+          test -s r154mix/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R154-MIX-SHORT-NEW-SHA-R153-COMPETITORS-FINAL
+          path: |
+            r154mix/report.json
+            r154mix/paired.csv
+            r154mix/audit.log
+            r154mix/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
