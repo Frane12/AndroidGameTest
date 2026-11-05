@@ -1,0 +1,73 @@
+name: DRNAS R147 parity artifact recovery audit (no benchmark rerun)
+on:
+  push:
+    branches:
+      - experiment/drnas-r147-combined-safe-portfolio-20261105
+    paths:
+      - '.github/workflows/drnas-r147-parity-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  parity-recovery-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r147-parity-6-audit
+          run-id: 42070578367
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r147/parity
+      - name: Verify original R147 paired data, no rerun and no adjusted timings
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,json,pathlib,collections,math
+          root=pathlib.Path("r147/parity")
+          a=json.loads((root/"audit.json").read_text())
+          rows=list(csv.DictReader((root/"paired.csv").open()))
+          assert a["protocol"]=="R147-REUSED-SATLIB-PARITY-6x2x4-v1"
+          assert a["formulas"]==6 and a["measurements"]==len(rows)==48
+          assert a["blinded"] is False and a["independent_unsat_proof"] is False
+          modes={"kissat","cadical","r118","r147"}
+          assert set(r["mode"] for r in rows)==modes
+          ids={(r["sha256"],r["rep"],r["mode"]) for r in rows}
+          assert len(ids)==48
+          cases=set(r["sha256"] for r in rows)
+          assert len(cases)==6
+          for sha in cases:
+              for rep in ("0","1"):
+                  sel=[r for r in rows if r["sha256"]==sha and r["rep"]==rep]
+                  assert {r["mode"] for r in sel}==modes
+                  assert len({r["status"] for r in sel}-{"TIMEOUT"})<=1
+          for mode in modes:
+              r=[x for x in rows if x["mode"]==mode]
+              assert len(r)==12
+              total=sum(float(x["par2"]) for x in r)
+              reported=a["summary"][mode]
+              assert math.isclose(total,float(reported["par2_s"]),abs_tol=0.000002)
+              assert sum(x["status"]!="TIMEOUT" for x in r)==reported["solved"]
+              for x in r:
+                  assert x["status"] in ("SAT","UNSAT","TIMEOUT")
+                  if x["status"]=="TIMEOUT":assert float(x["par2"])==20.0
+          print("R147_PARITY_RECOVERY_AUDIT_PASS",json.dumps(a,sort_keys=True))
+          with open("/tmp/r147-summary.txt","w") as o:
+              o.write("R147 PARITY original measurements independently checked (no rerun)\n\n")
+              for m in sorted(modes):
+                  o.write(f"{m}: {a['summary'][m]['par2_s']} PAR2 seconds, solved {a['summary'][m]['solved']}/12\n")
+          PY
+          cat /tmp/r147-summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R147-PARITY-RECOVERED-AUDIT
+          path: |
+            r147/parity/audit.json
+            r147/parity/paired.csv
+          retention-days: 90
