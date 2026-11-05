@@ -22,7 +22,7 @@ def patch(src):
     # outside the 220/240 training domain; preserve all R13/R14 limits.
     s=once(s,
         '!(n_value==200 || n_value==220 || n_value==240)) {',
-        '((!(n_value==200 || n_value==220 || n_value==240)) && !r16_active) ||\\n'
+        '((!(n_value==200 || n_value==220 || n_value==240)) && !r16_active) ||\n'
         '        (r16_active && (n_value==0 || n_value>1000000))) {')
     s=once(s,
         'selected=r13_n>=220 && isfinite(score) &&',
