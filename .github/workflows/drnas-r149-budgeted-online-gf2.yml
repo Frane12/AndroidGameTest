@@ -1,0 +1,208 @@
+name: DRNAS R149 budgeted online GF2 paired SATLIB plus 24 real CNFs
+on:
+  push:
+    branches: [experiment/drnas-r149-budgeted-online-gf2-20261105]
+    paths:
+      - '.github/workflows/drnas-r149-budgeted-online-gf2.yml'
+      - 'research/r149_budgeted_online_gf2.cpp'
+      - 'research/r149_budgeted_benchmark.py'
+      - 'research/r149_strict_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r149-online-20261105
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Pin CaDiCaL 2.1.0 and prove R149 certified lazy XOR invariants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight all source and benchmark dependencies
+        run: |
+          set -euo pipefail
+          for f in research/r133c_native_gf2_cdcl_bridge.cpp \
+                   research/r148_direct_gf2_bridge.cpp \
+                   research/r149_budgeted_online_gf2.cpp \
+                   research/r149_budgeted_benchmark.py \
+                   research/r149_strict_audit.py \
+                   research/r93_export_verified_rows.py; do
+            test -s "$f" || { echo "::error::Missing R149 file $f"; exit 1; }
+          done
+          python3 -m py_compile research/r149_budgeted_benchmark.py research/r149_strict_audit.py
+          PYTHONPATH=research python3 -c 'import r133c_native_gf2_benchmark as x; assert callable(x.select_controls)'
+          echo R149_DEPENDENCIES_OK
+      - name: Build pinned native CaDiCaL with direct and incremental GF2
+        run: |
+          set -euo pipefail
+          mkdir -p r149
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r149-cadical
+          cd /tmp/r149-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r149/cadical-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src \
+            "$GITHUB_WORKSPACE/research/r149_budgeted_online_gf2.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/r149/r149"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum r149/r149 > r149/binaries.sha256
+      - name: Check original R148 proofs and R149 incremental activation
+        run: |
+          set -euo pipefail
+          ./r149/r149 selftest | tee r149/native-selftest.txt
+          grep -q '^R99_WATCH_SELFTEST_PASS' r149/native-selftest.txt
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r149/native-selftest.txt
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r149/native-selftest.txt
+          grep -q '^R149_LAZY_SELFTEST_PASS' r149/native-selftest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r149-pinned-native
+          path: |
+            r149/r149
+            r149/binaries.sha256
+            r149/cadical-commit.txt
+            r149/native-selftest.txt
+          retention-days: 90
+  satlib:
+    name: R149 six-mode paired known SATLIB with CryptoMiniSat
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r149-pinned-native
+          path: r149
+      - name: Pin native binary and installed CryptoMiniSat version
+        run: |
+          set -euo pipefail
+          sha256sum -c r149/binaries.sha256
+          chmod +x r149/r149
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | tee r149/cms-package.txt
+          command -v cryptominisat5
+          sha256sum /usr/bin/cryptominisat5 > r149/cms-sha256.txt
+      - name: Fetch immutable SATLIB archive SHA
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r149-parity
+          curl -fsSL --retry 3 --max-time 90 \
+            https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz \
+            -o /tmp/r149-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r149-parity/parity.tar.gz' | sha256sum -c
+          tar -xzf /tmp/r149-parity/parity.tar.gz -C /tmp/r149-parity
+      - name: SHA checked 72 SATLIB development trials
+        run: |
+          set -euo pipefail
+          mkdir -p r149/satlib
+          python3 -u research/r149_budgeted_benchmark.py \
+            --dataset satlib --satlib /tmp/r149-parity \
+            --binary r149/r149 --cms /usr/bin/cryptominisat5 \
+            --out r149/satlib | tee r149/satlib/benchmark.log
+          grep -q '^R149_FINAL_AUDIT' r149/satlib/benchmark.log
+          cat r149/satlib/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r149-satlib-evidence
+          path: |
+            r149/satlib/report.json
+            r149/satlib/paired.csv
+            r149/satlib/sources.json
+            r149/satlib/benchmark.log
+            r149/cms-package.txt
+            r149/cms-sha256.txt
+          retention-days: 90
+  real:
+    name: R149 24 original real CNF SHA-paired shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r149-pinned-native
+          path: r149
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Verify binaries and install recorded CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sha256sum -c r149/binaries.sha256
+          chmod +x r149/r149
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          mkdir -p r149/real-${{ matrix.shard }}
+          dpkg-query -W cryptominisat > r149/real-${{ matrix.shard }}/cms-package.txt
+      - name: Six mode paired original CNF comparison, charge screening and proof costs
+        run: |
+          set -euo pipefail
+          mkdir -p r149/real-${{ matrix.shard }}
+          python3 -u research/r149_budgeted_benchmark.py \
+            --dataset real --holdout holdout-400 \
+            --shard ${{ matrix.shard }} --shards 4 \
+            --binary r149/r149 --cms /usr/bin/cryptominisat5 \
+            --out r149/real-${{ matrix.shard }} | tee r149/real-${{ matrix.shard }}/benchmark.log
+          grep -q '^R149_FINAL_AUDIT' r149/real-${{ matrix.shard }}/benchmark.log
+          cat r149/real-${{ matrix.shard }}/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r149-real-shard-${{ matrix.shard }}
+          path: |
+            r149/real-${{ matrix.shard }}/report.json
+            r149/real-${{ matrix.shard }}/paired.csv
+            r149/real-${{ matrix.shard }}/sources.json
+            r149/real-${{ matrix.shard }}/benchmark.log
+            r149/real-${{ matrix.shard }}/cms-package.txt
+          retention-days: 90
+  audit:
+    name: Strict final original SHA, full pairs, PAR2 and solver comparison
+    needs: [satlib,real]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r149-real-shard-*
+          path: r149-aggregate
+      - name: Strict reproducible cross-shard proof and PAR2 audit
+        run: |
+          set -euo pipefail
+          mkdir -p r149-final
+          python3 -u research/r149_strict_audit.py \
+            --root r149-aggregate --out r149-final | tee r149-final/audit.log
+          grep -q '^R149_STRICT_FINAL' r149-final/audit.log
+          cat r149-final/strict_report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R149-24-CNF-STRICT-FINAL
+          path: r149-final/
+          retention-days: 90
