@@ -1,0 +1,150 @@
+name: DRNAS R122 mixed AND OR gate ANF head-to-head
+on:
+  push:
+    branches: [experiment/drnas-r122-mixed-gate-anf-20261105]
+    paths:
+      - 'research/r122_mixed_gate_anf.cpp'
+      - 'research/r122_mixed_paired.py'
+      - 'research/r122_mixed_aggregate.py'
+      - '.github/workflows/drnas-r122-mixed-anf.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze 96 seen plus 96 new mixed gate CNFs with proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r119-frozen-192-circuits
+          run-id: 41908991380
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r119-original
+      - name: Independent exhaustive truth tables and source SHA freeze
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r122_mixed_paired.py research/r122_mixed_aggregate.py
+          python3 -u research/r122_mixed_paired.py freeze | tee freeze.log
+          (cd r122 && sha256sum -c source.sha256)
+          sha256sum research/r122_mixed_gate_anf.cpp research/r122_mixed_paired.py > r122/implementation.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r122-frozen-192-mixed-circuits
+          path: |
+            r122/
+            freeze.log
+          retention-days: 90
+
+  benchmark:
+    name: Mixed gates shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r122-frozen-192-mixed-circuits
+          path: r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Install xor-aware CryptoMiniSat and build reproducible baseline
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cms="$(command -v cryptominisat5 || command -v cryptominisat)"
+          test -x "$cms"
+          echo "CRYPTOMINISAT_BIN=$cms" >> "$GITHUB_ENV"
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r122/r118
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r122_mixed_gate_anf.cpp -o r122/r122
+          (cd r122 && sha256sum -c source.sha256)
+          lscpu > r122/cpu.txt
+          sha256sum r122/r122 r122/r118 built/bin/kissat_4_0_4 "$cms" > r122/binary_sha256.txt
+          git rev-parse HEAD > r122/commit.txt
+      - name: Fail-closed equivalence and counterexample smoke tests
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          for id,expected,route in (
+            ('seen-mixed_equiv-000',20,'certified_gate_anf_equivalent'),
+            ('new-mixed_inequiv-001',10,'certified_gate_anf_counterexample')):
+            p=Path('r122/cnf')/(id+'.cnf')
+            s=subprocess.run(['r122/r122',str(p),'built/bin/kissat_4_0_4'],capture_output=True,text=True,timeout=10)
+            assert s.returncode==expected and route in s.stdout,(id,s.returncode,s.stdout[-500:],s.stderr)
+          print('R122_SMOKE_PASS')
+          PY
+      - name: Original-clause SAT witness and independent UNSAT truth audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r122_mixed_paired.py run --shard ${{ matrix.shard }} | tee r122/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r122-mixed-shard-${{ matrix.shard }}
+          path: |
+            r122/shard-*/
+            r122/shard-${{ matrix.shard }}.log
+            r122/cpu.txt
+            r122/binary_sha256.txt
+            r122/commit.txt
+          retention-days: 90
+  aggregate:
+    name: Strict complete mixed AND OR paired PAR2 audit
+    needs: [freeze,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r122-frozen-192-mixed-circuits
+          path: r122
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r122-mixed-shard-*
+          merge-multiple: false
+          path: r122/collected
+      - name: Verify all 1,536 attempts, SHA, no duplicates and paired statistics
+        run: |
+          set -euo pipefail
+          python3 -u research/r122_mixed_aggregate.py | tee r122/aggregate.log
+          cat r122/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R122-mixed-AND-OR-final-report
+          path: |
+            r122/manifest.json
+            r122/source.sha256
+            r122/aggregate.json
+            r122/scatter_pairs.csv
+            r122/report.md
+            r122/aggregate.log
+          retention-days: 90
