@@ -1,0 +1,99 @@
+name: DRNAS R120 external SAT 2025 150 blind paired benchmark
+on:
+  push:
+    branches: [experiment/drnas-r120-external-150-20261105]
+    paths:
+      - 'research/r120_external_150.py'
+      - '.github/workflows/drnas-r120-external-150.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze external 2025 URLs, provenance, SHA256, and exclusion ledger
+        run: |
+          set -euo pipefail
+          python3 -u research/r120_external_150.py freeze
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r120-frozen-external-150
+          path: r120/
+          retention-days: 30
+          if-no-files-found: error
+  benchmark:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r120-frozen-external-150
+          path: r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Compile frozen R28 and pin solver binaries
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r120/r28
+          sha256sum r120/r28 built/bin/kissat_4_0_4 > r120/solvers-sha256.txt
+          lscpu > r120/cpu.txt
+          git rev-parse HEAD > r120/commit.txt
+      - name: Paired blind external benchmark
+        run: python3 -u research/r120_external_150.py bench ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r120-shard-${{ matrix.shard }}
+          path: |
+            r120/shard-${{ matrix.shard }}.json
+            r120/solvers-sha256.txt
+            r120/cpu.txt
+            r120/commit.txt
+          retention-days: 30
+  aggregate:
+    needs: [freeze,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r120-frozen-external-150
+          path: r120
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r120-shard-*
+          merge-multiple: true
+          path: r120
+      - name: Fail closed on missing pairs or SAT/UNSAT disagreement
+        run: python3 -u research/r120_external_150.py aggregate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          path: |
+            r120/manifest.json
+            r120/results.json
+            r120/candidate_urls.sha256
+            r120/shard-*.json
+            r120/solvers-sha256.txt
+            r120/cpu.txt
+            r120/commit.txt
+          retention-days: 90
