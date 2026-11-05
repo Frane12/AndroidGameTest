@@ -116,9 +116,11 @@ def getcases():
 
 def run_one(case,rep,mode,runner):
     # r11 executor uses original CNF and re-checks SAT witness against all clauses.
-    old={k:os.environ.get(k) for k in ("DRNAS_R16_GINI","DRNAS_R16_POLARITY")}
+    old={k:os.environ.get(k) for k in ("DRNAS_R16_GINI","DRNAS_R16_POLARITY","DRNAS_R13_N","DRNAS_R12_DEGREE_CV")}
     os.environ["DRNAS_R16_GINI"]=format(case["metadata"]["features"]["degree_gini"],".17g")
     os.environ["DRNAS_R16_POLARITY"]=format(case["metadata"]["features"]["polarity_imbalance"],".17g")
+    os.environ["DRNAS_R13_N"]=str(case["n"])
+    os.environ["DRNAS_R12_DEGREE_CV"]=format(case["metadata"]["features"]["degree_cv"],".17g")
     try:row,trace=execute(case,rep,mode,runner)
     finally:
         for k,v in old.items():
