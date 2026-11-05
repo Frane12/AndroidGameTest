@@ -1,0 +1,170 @@
+name: DRNAS R124 R115 controlled hidden XOR discovery and external fallback audit
+on:
+  push:
+    branches: [experiment/drnas-r124-hidden-xor-r115-transfer-20261105]
+    paths:
+      - 'research/r124_external_xor_benchmark.py'
+      - 'research/r124_hidden_xor_probe.cpp'
+      - '.github/workflows/drnas-r124-external-mixed.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze new external CNFs and R115 historical control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load R120 previously measured external SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/prior-r120
+      - name: Load R121 previously measured external SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/prior-r121
+      - name: Load R122 generated formula SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/prior-r122
+      - name: Load R123 earlier-seen external formula SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r124/prior-r123
+      - name: Freeze randomized URL order and audit external SHA exclusions
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r124_external_xor_benchmark.py
+          python3 -u research/r124_external_xor_benchmark.py freeze | tee r124/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r124-frozen-external-mixed
+          path: r124/
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R124 external mixed SAT shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          path: r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Install CryptoMiniSat reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cms="$(command -v cryptominisat5 || command -v cryptominisat)"
+          test -x "$cms"
+          echo "CRYPTOMINISAT_BIN=$cms" >> "$GITHUB_ENV"
+      - name: Compile R124 resolution probe and verify unchanged R118 baseline
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r124_hidden_xor_probe.cpp -o r124/r124_probe
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r124/r118
+          sha256sum r124/r124_probe r124/r118 built/bin/kissat_4_0_4 "$CRYPTOMINISAT_BIN" > r124/solver-sha256-${{ matrix.shard }}.txt
+          git rev-parse HEAD > r124/commit-${{ matrix.shard }}.txt
+          lscpu > r124/cpu-${{ matrix.shard }}.txt
+          dpkg-query -W cryptominisat > r124/cms-version-${{ matrix.shard }}.txt
+      - name: Verify R115 official SHA and exact XOR SAT witness control
+        run: |
+          set -euo pipefail
+          python3 -u research/r124_external_xor_benchmark.py smoke
+      - name: Run paired external SAT measurements, independent source checks, and checkpoints
+        run: |
+          set -euo pipefail
+          python3 -u research/r124_external_xor_benchmark.py benchmark --shard ${{ matrix.shard }} | tee r124/benchmark-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r124-shard-${{ matrix.shard }}
+          path: |
+            r124/shard-${{ matrix.shard }}.json
+            r124/solver-sha256-${{ matrix.shard }}.txt
+            r124/commit-${{ matrix.shard }}.txt
+            r124/cpu-${{ matrix.shard }}.txt
+            r124/cms-version-${{ matrix.shard }}.txt
+            r124/benchmark-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R124 strict 8 shard PAR2 and certified XOR discovery audit
+    needs: [freeze,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          path: r124
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r124-shard-*
+          merge-multiple: true
+          path: r124
+      - name: Reject incomplete shards, mismatched SHA, solver disagreements and incorrect SAT models
+        run: |
+          set -euo pipefail
+          python3 -u research/r124_external_xor_benchmark.py aggregate | tee r124/aggregate.log
+          cat r124/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R124-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          path: |
+            r124/manifest.json
+            r124/results.json
+            r124/scatter_pairs.csv
+            r124/aggregate.log
+            r124/shard-*.json
+            r124/solver-sha256-*.txt
+            r124/commit-*.txt
+            r124/cpu-*.txt
+          if-no-files-found: warn
+          retention-days: 90
