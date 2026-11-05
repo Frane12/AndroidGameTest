@@ -135,7 +135,7 @@ static Result probe(const string&input,int min_eq,int min_cover_pct) {
 }
 int main(int argc,char**argv){
   if(argc!=5 && !(argc==6&&string(argv[5])=="--probe-only")){
-    cerr<<"Usage: r128_filter SOURCE.cnf R118_BIN KISSAT_BIN POLICY [--probe-only]\n";
+    cerr<<"Usage: r130_filter SOURCE.cnf R118_BIN KISSAT_BIN POLICY [--probe-only]\n";
     return 2;
   }
   string policy=argv[4];
@@ -162,6 +162,10 @@ int main(int argc,char**argv){
       <<" clauses="<<s.clauses<<" xor_equations="<<s.exact_xor
       <<" covered_clauses="<<s.covered<<" connected_equations="<<s.connected_equations<<" patterns="<<s.patterns
       <<" parsed="<<(s.parsed?1:0)<<"\n"<<flush;
+  // Compatibility with the frozen R128 benchmark wrapper's output parser.
+  // This telemetry is not a correctness proof and does not change routing.
+  cout<<"c R128_PREFILTER policy="<<policy<<" route="<<(s.trigger?"GF2":"KISSAT")
+      <<" reason="<<s.reason<<"\n"<<flush;
   if(argc==6)return 0;
   if(s.trigger){
     char*args[]={argv[2],argv[1],argv[3],nullptr};
