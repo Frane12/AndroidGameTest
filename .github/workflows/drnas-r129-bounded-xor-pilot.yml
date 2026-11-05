@@ -1,0 +1,135 @@
+name: DRNAS R129 bounded XOR exploratory pilot (reused R128 formulas)
+on:
+  push:
+    branches: [experiment/drnas-r129-bounded-xor-pilot-20261105]
+    paths: ['research/r129_bounded_xor_filter.cpp', 'research/r129_bounded_xor_pilot.py', '.github/workflows/drnas-r129-bounded-xor-pilot.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r129-bounded-xor-pilot
+  cancel-in-progress: false
+jobs:
+  controls:
+    name: Verify bounded scanner on complete/incomplete XOR with long clauses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile scanner and run positive/negative probes without SAT solving
+        run: |
+          set -euo pipefail
+          mkdir -p r129
+          python3 -m py_compile research/r129_bounded_xor_pilot.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r129_bounded_xor_filter.cpp -o r129/r129_filter
+          python3 - <<'PY'
+          import pathlib,subprocess
+          eq=[]
+          for k in range(8):
+              v=[3*k+i+1 for i in range(3)]
+              for mask in (0,3,5,6):
+                  eq.append([(-x if mask & (1<<i) else x) for i,x in enumerate(v)])
+          long1=list(range(31,40));long2=[-x for x in range(40,49)]
+          def make(name,clauses):
+              p=pathlib.Path('r129/'+name)
+              p.write_text('p cnf 100 '+str(len(clauses))+'\n'+''.join(' '.join(map(str,c))+' 0\n' for c in clauses)+'c '+('x'*300000)+'\n')
+              return p
+          pos=make('complete.cnf',eq+[long1,long2])
+          missing=make('incomplete.cnf',eq[:-1]+[long1,long2])
+          negative=make('nonxor.cnf',[long1,long2])
+          def probe(p,policy):
+              r=subprocess.run(['r129/r129_filter',str(p),'unused-r118','unused-kissat',policy,'--probe-only'],capture_output=True,text=True,timeout=8,check=True)
+              print('R129_CONTROL',p.name,r.stdout.strip(),flush=True)
+              return 'route=GF2' in r.stdout
+          assert pos.stat().st_size>262144
+          assert probe(pos,'q8_90'),'complete XOR missed'
+          assert not probe(missing,'q8_90'),'incomplete pattern accepted'
+          assert not probe(negative,'q1_0'),'spurious XOR'
+          print('R129_CONTROLS_PASS')
+          PY
+  benchmark:
+    name: Paired reused R128 formula shard ${{ matrix.shard }}
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Validate pinned Kissat and CaDiCaL, compile unchanged R118 and new filter
+        run: |
+          set -euo pipefail
+          mkdir -p r129
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r129_bounded_xor_filter.cpp -o r129/r129_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r129/r118
+      - name: Paired 15s true runtime including scanner overhead and original-CNF SAT check
+        run: |
+          set -euo pipefail
+          python3 -u research/r129_bounded_xor_pilot.py run --shard ${{ matrix.shard }} | tee r129/run-${{ matrix.shard }}.log
+          test -s r129/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r129-pilot-shard-${{ matrix.shard }}
+          path: |
+            r129/shard-${{ matrix.shard }}.json
+            r129/run-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Strict paired PAR2 audit, NON-BLIND development - no promotion
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r129-pilot-shard-*
+          merge-multiple: true
+          path: r129
+      - name: Verify all originals SHA and 260 paired solver records
+        run: |
+          set -euo pipefail
+          python3 -u research/r129_bounded_xor_pilot.py audit | tee r129/audit.log
+          test -s r129/report.json
+          cat r129/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R129-BOUNDED-XOR-REUSED-R128-EXPLORATORY
+          path: |
+            r129/report.json
+            r129/paired.csv
+            r129/probes.csv
+            r129/audit.log
+            r129/shard-*.json
+          if-no-files-found: warn
+          retention-days: 90
