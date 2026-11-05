@@ -34,7 +34,7 @@ def probe(src):
     st=time.perf_counter()
     p=subprocess.run([str(FILTER.resolve()),str(src)],text=True,capture_output=True,timeout=2)
     need(p.returncode==0,"R135S selector failure "+p.stderr[-300:])
-    line=next((v for v in p.stdout.splitlines() if v.startswith("c R135S_SELECTOR ")),None)
+    line=next((v for v in p.stdout.splitlines() if v.startswith("c R135_SELECTOR ")),None)
     need(line is not None,"missing R135 selector telemetry")
     fields=dict(re.findall(r"([a-z_]+)=([^\s]+)",line))
     need(fields.get("route") in ("CADICAL","KISSAT"),"invalid selector route")
