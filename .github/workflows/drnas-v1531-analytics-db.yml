@@ -16,6 +16,7 @@ on:
       - 'research/tseitin-replay/v1531_ingest_r18.py'
       - 'research/tseitin-replay/v1531_ingest_r19_r20.py'
       - 'research/tseitin-replay/v1531_ingest_r21.py'
+      - 'research/tseitin-replay/v1531_ingest_r124.py'
       - 'research/tseitin-replay/README_V1531_ANALYTICS.md'
       - '.github/workflows/drnas-v1531-analytics-db.yml'
   workflow_dispatch:
@@ -48,7 +49,8 @@ jobs:
             research/tseitin-replay/v1531_ingest_r17.py \
             research/tseitin-replay/v1531_ingest_r18.py \
             research/tseitin-replay/v1531_ingest_r19_r20.py \
-            research/tseitin-replay/v1531_ingest_r21.py
+            research/tseitin-replay/v1531_ingest_r21.py \
+            research/tseitin-replay/v1531_ingest_r124.py
 
       - name: Restore cumulative database without discarding historical sources
         env:
@@ -885,6 +887,87 @@ jobs:
           db.close()
           PY
 
+
+      - name: Detect new R124 frozen external XOR evidence without touching older measurement tables
+        id: detect_r124
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sqlite3
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          base=tuple(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))
+          assert base==(231,2979,53330),base
+          present=db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='r124_sources'").fetchone()[0]
+          if present:
+           old=db.execute("SELECT COUNT(*) FROM r124_sources WHERE source_run='42018077150'").fetchone()[0]
+           assert old==1,(old,'R124 source table exists but pinned run missing')
+          print('new_data='+str(not present).lower())
+          db.close()
+          PY
+
+      - name: Download immutable successful R124 full source, eight shard raw logs and frozen formulas
+        if: steps.detect_r124.outputs.new_data == 'true'
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new-input/r124/{aggregate,frozen,shards}
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/42018077150" --jq '.status+" "+.conclusion' | grep -Fx 'completed success'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/42018077150" --jq '.head_sha' | grep -Fx 849b4543eec29b14c0a1a15243714b435fde0e0e
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/42018077150/artifacts" --paginate --jq '.artifacts[] | [.name, (.id|tostring), (.expired|tostring), .digest] | @tsv' > new-input/r124/artifact_index.tsv
+          test "$(wc -l < new-input/r124/artifact_index.tsv)" -eq 10
+          gh run download 42018077150 --repo "$GITHUB_REPOSITORY" \
+            --name R124-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT --dir new-input/r124/aggregate
+          gh run download 42018077150 --repo "$GITHUB_REPOSITORY" \
+            --name r124-frozen-external-mixed --dir new-input/r124/frozen
+          for i in 0 1 2 3 4 5 6 7; do
+            mkdir -p "new-input/r124/shards/$i"
+            gh run download 42018077150 --repo "$GITHUB_REPOSITORY" \
+              --name "r124-shard-$i" --dir "new-input/r124/shards/$i"
+            for f in "shard-$i.json" "cpu-$i.txt" "commit-$i.txt" "solver-sha256-$i.txt"; do
+              test -s "new-input/r124/shards/$i/$f"
+            done
+          done
+          test -s new-input/r124/frozen/manifest.json
+          test -s new-input/r124/aggregate/results.json
+
+      - name: Append R124 shadow XOR paired source evidence with SHA-dedup and honest proof tiers
+        if: steps.detect_r124.outputs.new_data == 'true'
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r124.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --input new-input/r124
+          test -s sat-analysis/r124_ingest_audit.json
+          test -s sat-analysis/r124_source_audit.csv
+          test -s sat-analysis/r124_attempts.csv
+          test -s sat-analysis/r124_paired.csv
+          for cohort in miter official2026 r115_control; do
+            test -s "sat-analysis/scatter_r124_$cohort.png"
+          done
+          python3 - <<'PY'
+          import json,sqlite3
+          a=json.load(open('sat-analysis/r124_ingest_audit.json'))
+          assert a['source_formulas']==91 and a['measurement_rows']==728 and a['paired_cases']==182
+          assert a['no_live_speedup_claim'] and a['no_changes_to_core_dataset_formula_attempt_tables']
+          db=sqlite3.connect('sat-analysis/sat_analytics.sqlite')
+          assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          assert tuple(db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('datasets','formulas','attempts'))==(231,2979,53330)
+          db.close()
+          PY
+
+      - name: Verify idempotent R124 supplemental evidence without re-downloading sources
+        if: steps.detect_r124.outputs.new_data != 'true'
+        run: |
+          set -euo pipefail
+          .analytics-venv/bin/python research/tseitin-replay/v1531_ingest_r124.py \
+            --db sat-analysis/sat_analytics.sqlite --out sat-analysis --verify-existing
+          for f in r124_ingest_audit.json r124_source_audit.csv r124_attempts.csv r124_paired.csv; do
+            test -s "sat-analysis/$f"
+          done
+          for cohort in miter official2026 r115_control; do
+            test -s "sat-analysis/scatter_r124_$cohort.png"
+          done
+
       - name: Publish cumulative SQLite, CSV, source lineage and scatterplots
         if: always()
         uses: actions/upload-artifact@v4
@@ -926,6 +1009,10 @@ jobs:
                    r20_native_local_decisions.csv \
                    r21_ingest_audit.json r21_source_audit.csv r21_paired.csv \
                    r21_formula_features.csv r21_native_decisions.csv \
+                   r124_ingest_audit.json r124_source_audit.csv \
+                   r124_attempts.csv r124_paired.csv \
+                   scatter_r124_miter.png scatter_r124_official2026.png \
+                   scatter_r124_r115_control.png \
                    scatter_r21_random3_development.png scatter_r21_random3_test.png \
                    scatter_r21_community3_development.png scatter_r21_community3_test.png \
                    scatter_r19_random3_development.png scatter_r19_random3_test.png \
