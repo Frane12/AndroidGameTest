@@ -1,0 +1,61 @@
+name: DRNAS R133c native CaDiCaL GF2 cross-equation CDCL bridge
+on:
+  push:
+    branches:
+      - experiment/drnas-r133c-native-gf2-cdcl-20261105
+    paths:
+      - 'research/r133c_native_gf2_cdcl_bridge.cpp'
+      - 'research/r133c_native_gf2_benchmark.py'
+      - '.github/workflows/drnas-r133c-native-gf2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-cdcl-communication:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independently audit source parity extraction
+        run: |
+          set -euo pipefail
+          python3 research/r92_verified_xor_bridge.py selftest
+          python3 research/r93_export_verified_rows.py selftest
+      - name: Build actual CaDiCaL 2.1.0 CDCL with native GF2 callback
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/cadical
+          cd /tmp/cadical
+          git checkout -q rel-2.1.0
+          mkdir -p "$GITHUB_WORKSPACE/r133c-results"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r133c-results/cadical_commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src             "$GITHUB_WORKSPACE/research/r133c_native_gf2_cdcl_bridge.cpp"             ./build/libcadical.a -o /tmp/r133c-native
+      - name: Verify reversible watch journal and exact GF2 closure
+        run: |
+          set -euo pipefail
+          /tmp/r133c-native selftest | tee r133c-results/watch-selftest.txt
+          grep -q '^R99_WATCH_SELFTEST_PASS' r133c-results/watch-selftest.txt
+          /tmp/r133c-native gf2selftest | tee r133c-results/gf2-selftest.txt
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r133c-results/gf2-selftest.txt
+      - name: Download pinned existing SATLIB PARITY external originals
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r133c-parity
+          curl --fail --location --retry 3 --max-time 90             'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz'             -o /tmp/r133c-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r133c-parity/parity.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r133c-parity/parity.tar.gz -C /tmp/r133c-parity
+      - name: Paired clean CDCL vs live XOR vs R133c GF2 communication
+        run: |
+          set -euo pipefail
+          python3 -u research/r133c_native_gf2_benchmark.py             --binary /tmp/r133c-native --satlib /tmp/r133c-parity             --out r133c-results | tee r133c-results/benchmark.log
+          grep -q '^R133C_NATIVE_FIXTURE_PASS' r133c-results/benchmark.log
+          grep -q '^R133C_NATIVE_AUDIT' r133c-results/benchmark.log
+      - name: Preserve all source manifests and raw paired evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r133c-native-cdcl-gf2-audit
+          path: r133c-results/
+          retention-days: 90
