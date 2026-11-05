@@ -3,7 +3,7 @@
 Precommitted BEFORE any timings on independent 400-CNF corpus. Pure original
 CNF; solver selection only. All costs included. No promotion without proof.
 """
-import argparse,collections,csv,hashlib,json,os,pathlib,random,statistics,subprocess,sys,time
+import argparse,collections,csv,gzip,hashlib,json,os,pathlib,random,statistics,subprocess,sys,time
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent))
 import r134_nonxor_shadow as shadow
 import r127_early_xor_benchmark as witness
@@ -25,40 +25,30 @@ def digest(p):return shadow.digest(p)
 def write(p,x):
     p=pathlib.Path(p);p.parent.mkdir(parents=True,exist_ok=True)
     p.write_text(json.dumps(x,sort_keys=True,indent=2)+"\n")
-def locate():
-    mpath=SOURCE/"manifest.json"
-    if not mpath.exists():
-        matches=list(SOURCE.glob("*manifest*.json"))
-        need(len(matches)==1,"expected one manifest; found "+str(matches))
-        mpath=matches[0]
-    m=json.loads(mpath.read_text())
-    print("R135_MANIFEST_KEYS",sorted(m),flush=True)
-    cases=m.get("cases") or m.get("selected") or m.get("formulas")
-    need(isinstance(cases,list) and len(cases)==400,"expected 400 independently frozen formulas")
-    return mpath,m,cases
-def resolve(c):
-    names=[c.get(k) for k in ("id","filename","path","relative_path","file","name") if isinstance(c.get(k),str)]
-    paths=[]
-    for n in names:
-        p=pathlib.Path(n)
-        if p.is_absolute():continue
-        paths += [SOURCE/p,SOURCE/"raw"/p,SOURCE/"cnf"/p,SOURCE/"formulas"/p]
-    for p in paths:
-        if p.is_file():return p
-    raise RuntimeError("R135_REFUSED cannot locate frozen CNF "+str(names))
 def read_sources():
-    mpath,m,cases=locate()
-    resolved=[];seen=set()
-    for c in cases:
-        p=resolve(c)
-        sha=c.get("sha256") or c.get("sha")
-        need(isinstance(sha,str) and len(sha)==64,"missing original SHA "+str(p))
-        need(digest(p)==sha,"source SHA drift "+str(p))
-        need(sha not in seen,"duplicate source SHA")
+    mpath=SOURCE/"manifest-400.json"
+    need(mpath.is_file(),"missing 400 master manifest")
+    m=json.loads(mpath.read_text())
+    need(m.get("protocol")=="DRNAS-400-PROSPECTIVE-20261105-v1" and m.get("status")=="COMPLETE","wrong 400 freeze protocol")
+    cases=m.get("formulas")
+    need(isinstance(cases,list) and len(cases)==400,"expected exactly 400 frozen formulas")
+    seen=set();resolved=[]
+    for i,c in enumerate(cases):
+        sha=c.get("sha256")
+        need(isinstance(sha,str) and len(sha)==64 and sha not in seen,"missing or duplicate original SHA")
         seen.add(sha)
-        resolved.append(dict(id=str(p.relative_to(SOURCE)),sha256=sha,cohort=c.get("cohort") or c.get("family") or c.get("category") or "unknown"))
-    need(len(resolved)==400,"400 expected")
+        compressed=pathlib.Path(c["compressed_file"])
+        need(not compressed.is_absolute() and ".." not in compressed.parts,"unsafe original CNF path")
+        cp=compressed if compressed.is_file() else SOURCE/compressed
+        need(cp.is_file(),"missing frozen compressed CNF "+str(cp))
+        raw=gzip.open(cp,"rb").read(8_000_001)
+        need(len(raw)<=8_000_000 and hashlib.sha256(raw).hexdigest()==sha,"original SHA mismatch "+str(cp))
+        dest=ROOT/"unpacked"/(sha+".cnf")
+        dest.parent.mkdir(parents=True,exist_ok=True)
+        if not dest.exists() or digest(dest)!=sha:dest.write_bytes(raw)
+        resolved.append(dict(id=str(dest),sha256=sha,cohort=c.get("category","unknown")))
     return digest(mpath),resolved
+
 def choose(src):
     st=time.perf_counter()
     f=shadow.scan(src)
@@ -107,7 +97,7 @@ def run(shard):
     rows=[]
     for i,c in enumerate(cases):
         if i%SHARDS!=shard:continue
-        src=SOURCE/c["id"]
+        src=pathlib.Path(c["id"])
         for rep in range(REPS):
             modes=list(MODES);random.Random(PROTO+c["sha256"]+str(rep)).shuffle(modes)
             votes=set()
