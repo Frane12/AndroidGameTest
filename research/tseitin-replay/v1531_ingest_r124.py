@@ -162,7 +162,7 @@ def main():
             rows=readjson(raw)
             check(isinstance(rows,list) and len(rows)==len(manifest["cases"][shard::SHARDS])*REPS*len(MODES),"shard incomplete "+str(shard))
             artifact=artifacts["r124-shard-"+str(shard)]
-            db.execute("INSERT INTO r124_shard_lineage VALUES(?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO r124_shard_lineage VALUES(?,?,?,?,?,?,?,?)",
               (RUN,shard,artifact[0],artifact[1],sha(raw),commit,hardware,hashlib.sha256(binary_pin.encode()).hexdigest()))
             keys=set()
             for row in rows:
@@ -189,7 +189,7 @@ def main():
                 if mode!="r124":
                     check(row.get("xor_exact") is None,"baseline has probe telemetry")
                 raw_json=json.dumps(row,sort_keys=True,separators=(",",":"))
-                db.execute("INSERT INTO r124_attempt_evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT INTO r124_attempt_evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (RUN,h,mode,rep,status,seconds,par2,route,proof,verified,sat,unsat,
                     row.get("xor_exact"),row.get("xor_resolved"),row.get("xor_partial_hypotheses"),
                     row.get("probe_skipped"),"github-hosted-ubuntu-24.04",hardware,commit,
