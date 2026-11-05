@@ -127,14 +127,14 @@ def freeze():
         # executed or outcome inspected during acquisition.
         attempts=0;n=0
         for url in sources:
-            if n>=QUOTAS[cohort] or attempts>=260:break
+            if n>=QUOTAS[cohort] or attempts>=180:break
             ident=re.search(r"(?i)[0-9a-f]{32}",url)
             gbd=ident.group(0).lower() if ident else None
             if url in oldurls or (gbd and gbd in oldids):
                 rejects[cohort+"_prior_url_or_id"]+=1;continue
             attempts+=1
             try:
-                packed=urlget(url,SAMPLE_LIMIT,26)
+                packed=urlget(url,SAMPLE_LIMIT,20)
                 plain=expand(packed)
                 nv,nc=dimacs(plain)
                 digest=sha(plain)
