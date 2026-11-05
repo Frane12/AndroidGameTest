@@ -1,0 +1,186 @@
+name: DRNAS 400 source acquisition ONLY - no SAT solver
+on:
+  push:
+    branches: [experiment/drnas-five-step-world-validation-20261105]
+    paths: [.github/workflows/drnas-400-source-acquisition-only.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-400-acquisition-only
+  cancel-in-progress: false
+
+jobs:
+  exclusion-ledgers:
+    name: Download historic source manifests ONLY
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          repository: Frane12/AndroidGameTest
+          run-id: 41982252882
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          repository: Frane12/AndroidGameTest
+          run-id: 41988869649
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          repository: Frane12/AndroidGameTest
+          run-id: 41999580688
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          repository: Frane12/AndroidGameTest
+          run-id: 42004032255
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          repository: Frane12/AndroidGameTest
+          run-id: 42018077150
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          repository: Frane12/AndroidGameTest
+          run-id: 42014900265
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r125
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          repository: Frane12/AndroidGameTest
+          run-id: 42021817607
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r126
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          repository: Frane12/AndroidGameTest
+          run-id: 42027856303
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r127
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          repository: Frane12/AndroidGameTest
+          run-id: 42033905606
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r128
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124t-prospective-frozen
+          repository: Frane12/AndroidGameTest
+          run-id: 42039355570
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r124t
+      - uses: actions/download-artifact@v4
+        with:
+          name: r130-frozen-sha-disjoint-external
+          repository: Frane12/AndroidGameTest
+          run-id: 42044400721
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r130
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          repository: Frane12/AndroidGameTest
+          run-id: 42050320220
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r117-500-frozen-candidate-manifest
+          repository: Frane12/AndroidGameTest
+          run-id: 41901781523
+          github-token: ${{ github.token }}
+          path: prior-ledgers/r117500
+      - name: Audit available prior SHA manifests
+        run: |
+          set -euo pipefail
+          count=$(find prior-ledgers -type f -name '*.json' | wc -l)
+          test "$count" -ge 10
+          echo "EXCLUSION_LEDGER_JSON_FILES=$count" >> "$GITHUB_STEP_SUMMARY"
+          find prior-ledgers -type f -name '*.json' -print | sort
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-400-exclusion-ledgers
+          path: prior-ledgers/**/*.json
+          retention-days: 30
+          if-no-files-found: error
+
+  acquire:
+    name: Collect and independently SHA audit ${{ matrix.group }}
+    needs: exclusion-ledgers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 175
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        group: [official, external_application, external_xor, external_nonxor]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-exclusion-ledgers
+          path: prior-ledgers
+      - name: Verify source scripts compile and collect CNFs - never run solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/acquire_400_only.py research/tseitin-replay/audit_400_only.py
+          python3 -u research/tseitin-replay/acquire_400_only.py "${{ matrix.group }}" | tee acquisition-${{ matrix.group }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-400-${{ matrix.group }}
+          path: |
+            holdout-400/
+            acquisition-${{ matrix.group }}.log
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 0
+
+  audit:
+    name: Strict 400 distinct SHA verification - no benchmarking
+    needs: acquire
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-400-*
+          merge-multiple: true
+          path: holdout-400
+      - name: Reject incomplete download and preserve honest status
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/audit_400_only.py | tee holdout-400/final-audit.log
+          cat holdout-400/audit.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-SOURCE-MANIFEST
+          path: |
+            holdout-400/manifest-400.json
+            holdout-400/manifest-400.sha256
+            holdout-400/audit.txt
+            holdout-400/final-audit.log
+          retention-days: 30
+          if-no-files-found: warn
