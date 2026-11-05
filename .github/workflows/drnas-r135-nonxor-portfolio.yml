@@ -1,0 +1,101 @@
+name: DRNAS R135 frozen non-XOR BIG Horn 400 blind 4-way paired portfolio
+on:
+  push:
+    branches: [experiment/drnas-r135-nonxor-portfolio-blind-20261105]
+    paths:
+      - '.github/workflows/drnas-r135-nonxor-portfolio.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r135-nonxor-frozen-400
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: R135 new 400 SHA-frozen CNF shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify pinned binaries and build unchanged R118 reference
+        run: |
+          set -euo pipefail
+          mkdir -p r135
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r135/r118
+          python3 -m py_compile research/r135_nonxor_portfolio.py research/r134_nonxor_shadow.py
+      - name: SHA check all 400 then paired clean Kissat CaDiCaL R118 and R135
+        run: |
+          set -euo pipefail
+          python3 -u research/r135_nonxor_portfolio.py run --shard ${{ matrix.shard }} | tee r135/shard-${{ matrix.shard }}.log
+          test -s r135/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135-shard-${{ matrix.shard }}
+          path: |
+            r135/shard-${{ matrix.shard }}.json
+            r135/shard-${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    name: R135 independent final paired SHA/PAR2 regression audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r135-shard-*
+          merge-multiple: true
+          path: r135
+      - name: Validate source SHA, pairs, SAT witnesses and PAR-2
+        run: |
+          set -euo pipefail
+          python3 -u research/r135_nonxor_portfolio.py audit | tee r135/audit.log
+          test -s r135/report.json
+          cat r135/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R135-400-NONXOR-BLIND-FINAL-AUDIT
+          path: |
+            r135/report.json
+            r135/paired.csv
+            r135/audit.log
+            r135/shard-*.json
+          retention-days: 90
+          if-no-files-found: warn
