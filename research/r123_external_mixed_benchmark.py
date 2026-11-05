@@ -7,7 +7,7 @@ generated smoke cases. Report gate activations and fallback overhead, not just
 total score. Any direct UNSAT statement needs an independent source-level audit.
 """
 from __future__ import annotations
-import argparse,bz2,gzip,hashlib,io,json,lzma,os,pathlib,random,subprocess,time,urllib.request
+import argparse,bz2,gzip,hashlib,io,json,lzma,os,pathlib,random,re,subprocess,time,urllib.request
 from collections import Counter,defaultdict
 
 ROOT=pathlib.Path("r123")
@@ -188,11 +188,10 @@ def verify_result(mode,cnf,x):
   check_sat_model(x["stdout"],n,clauses)
   if x["route"]=="certified_gate_anf_counterexample":
    from r122_mixed_paired import full_gate_proof
-   # The original Python proof is exhaustive up to 12 primary input variables.
-   if n<=4096:
-    try:full_gate_proof(cnf.read_bytes(),"SAT")
-    except AssertionError as e:
-     if "MISSING_MITER" not in str(e):raise
+   match=re.search(rb"^c R122_ROUTE certified_gate_anf_counterexample inputs=(\\d+)",x["stdout"],re.M)
+   assert match,"R122 direct SAT did not report input count"
+   if int(match.group(1))<=12:
+    assert full_gate_proof(cnf.read_bytes(),"SAT")["equivalent"] is False
   return "source_SAT_witness_verified"
  if x["route"]=="certified_xor_contradiction":
   n,clauses=parse_cnf(cnf.read_bytes())
@@ -202,15 +201,14 @@ def verify_result(mode,cnf,x):
   from r118_xor_paired_real import parse_cnf
   from r122_mixed_paired import full_gate_proof
   n,clauses=parse_cnf(cnf.read_bytes())
-  # The independent checker does exhaustive 2^inputs; for large direct
-  # gates, leave it explicitly unverified rather than claim a proof.
-  try:
-   proof=full_gate_proof(cnf.read_bytes(),"UNSAT")
-   assert proof["equivalent"]
-   return "independent_source_gate_truth_table_verified"
-  except AssertionError as e:
-   if "too many" in str(e).lower() or "inputs" in str(e).lower():return "UNVERIFIED_gate_gt12_inputs"
-   raise
+  # The independent checker exhaustively enumerates up to 12 primary inputs.
+  # Larger recognized netlists remain labelled UNVERIFIED, never "certified".
+  match=re.search(rb"^c R122_ROUTE certified_gate_anf_equivalent inputs=(\\d+)",x["stdout"],re.M)
+  assert match,"R122 direct UNSAT did not report input count"
+  if int(match.group(1))>12:return "UNVERIFIED_gate_gt12_inputs"
+  proof=full_gate_proof(cnf.read_bytes(),"UNSAT")
+  assert proof["equivalent"]
+  return "independent_source_gate_truth_table_verified"
  return "UNSAT_not_independently_verified"
 
 def benchmark(shard):
