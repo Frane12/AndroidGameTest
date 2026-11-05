@@ -52,7 +52,20 @@ def main():
   for m in members:
    p=pathlib.PurePosixPath(m.name)
    need(not p.is_absolute() and ".." not in p.parts,"path traversal in source archive")
-  tar.extractall(unpack,filter="data")
+  safe=[]
+  skipped=[]
+  for member in members:
+   # Official author package contains an absolute symlink
+   # biere/kissat/src/src/makefile. Never extract an absolute/outside link.
+   # Preserve the archive's original SHA, and never change regular source files.
+   if member.issym() or member.islnk():
+    link=pathlib.PurePosixPath(member.linkname)
+    if link.is_absolute():
+     skipped.append((member.name,member.linkname))
+     continue
+   safe.append(member)
+  tar.extractall(unpack,members=safe,filter="data")
+  print("R28_OFFICIAL_SKIPPED_UNSAFE_LINKS",repr(skipped),flush=True)
  print("R28_OFFICIAL_ARCHIVE",ARCHIVE_URL,sourcehash,"entries",len(members),flush=True)
  paths=list(unpack.rglob("configure"))
  candidates=[p.parent for p in paths if p.is_file() and "kissat" in str(p.parent).lower()]
