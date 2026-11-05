@@ -188,7 +188,7 @@ def verify_result(mode,cnf,x):
   check_sat_model(x["stdout"],n,clauses)
   if x["route"]=="certified_gate_anf_counterexample":
    from r122_mixed_paired import full_gate_proof
-   match=re.search(rb"^c R122_ROUTE certified_gate_anf_counterexample inputs=(\\d+)",x["stdout"],re.M)
+   match=re.search(rb"^c R122_ROUTE certified_gate_anf_counterexample inputs=(\d+)",x["stdout"],re.M)
    assert match,"R122 direct SAT did not report input count"
    if int(match.group(1))<=12:
     assert full_gate_proof(cnf.read_bytes(),"SAT")["equivalent"] is False
@@ -203,7 +203,7 @@ def verify_result(mode,cnf,x):
   n,clauses=parse_cnf(cnf.read_bytes())
   # The independent checker exhaustively enumerates up to 12 primary inputs.
   # Larger recognized netlists remain labelled UNVERIFIED, never "certified".
-  match=re.search(rb"^c R122_ROUTE certified_gate_anf_equivalent inputs=(\\d+)",x["stdout"],re.M)
+  match=re.search(rb"^c R122_ROUTE certified_gate_anf_equivalent inputs=(\d+)",x["stdout"],re.M)
   assert match,"R122 direct UNSAT did not report input count"
   if int(match.group(1))>12:return "UNVERIFIED_gate_gt12_inputs"
   proof=full_gate_proof(cnf.read_bytes(),"UNSAT")
