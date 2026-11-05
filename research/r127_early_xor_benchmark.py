@@ -194,7 +194,7 @@ def benchmark(shard):
 
 def aggregate():
  m=json.loads((ROOT/"frozen"/"manifest.json").read_text())
- need(m["protocol"]==PROTO and m["modes"]==MODES,"protocol/modes mismatch")
+ need(m["protocol"]==PROTO and tuple(m["modes"])==MODES,"protocol/modes mismatch")
  cases=m["cases"];need(len({c["sha256"] for c in cases})==len(cases),"SHA duplicates")
  seen=set();runs=[];cpus=set();commits=set();bins=set()
  for i in range(SHARDS):
