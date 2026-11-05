@@ -103,6 +103,32 @@ def make_cert(source,out):
     check(isinstance(obj.get("exported"),int),"cert count missing")
     return rows,obj,round(cost,6)
 
+def compatible_original(raw):
+    """Precommitted parsing/size scope, never based on SAT outcomes or timings."""
+    if len(raw)>8_000_000:return False,"bytes"
+    header=None
+    literals=0
+    for line in raw.splitlines():
+        s=line.strip()
+        if not s or s.startswith(b"c"):continue
+        if s.startswith(b"%"):break
+        if s.startswith(b"p "):
+            items=s.split()
+            if header is not None or len(items)!=4 or items[1]!=b"cnf":
+                return False,"header"
+            try:n,m=map(int,items[2:])
+            except ValueError:return False,"header"
+            if n<1 or n>150000 or m<0 or m>160000:
+                return False,"n_or_m_cap"
+            header=(n,m)
+            continue
+        if header is None:return False,"missing_header"
+        for token in s.split():
+            if token!=b"0":
+                literals+=1
+                if literals>950000:return False,"literal_cap"
+    return (header is not None),"valid" if header is not None else "missing_header"
+
 def choose_real(manifest_root,out):
     manifest=manifest_root/"manifest-400.json"
     check(manifest.is_file(),"missing R135 manifest-400.json")
@@ -112,30 +138,39 @@ def choose_real(manifest_root,out):
     rows=obj.get("formulas") or []
     check(len(rows)==400,"expected frozen 400")
     check(len({c["sha256"] for c in rows})==400,"duplicate CNF SHA")
-    frozen=[]
-    for category in CATEGORIES:
-        matching=sorted((c for c in rows if c.get("category")==category),key=lambda x:x["sha256"])
-        check(len(matching)>=PER_CATEGORY,"category missing "+category)
-        # Fixed SHA order, with no solver-speed- or solution-informed exclusion.
-        subset=matching[:PER_CATEGORY]
-        frozen.extend((category,x) for x in subset)
     dest=out/"original-cnf"
     dest.mkdir(parents=True,exist_ok=True)
-    res=[]
-    for category,c in frozen:
-        cp=Path(c["compressed_file"])
-        check(not cp.is_absolute() and ".." not in cp.parts,"unsafe source path")
-        source=cp if cp.is_file() else manifest_root/cp
-        check(source.is_file(),"missing compressed source "+str(source))
-        with gzip.open(source,"rb") as stream:
-            raw=stream.read(8_000_001)
-        check(len(raw)<=8_000_000 and digest_bytes(raw)==c["sha256"],
-              "source decompression or SHA mismatch")
-        target=dest/(c["sha256"]+".cnf")
-        target.write_bytes(raw)
-        res.append(dict(path=target,sha256=c["sha256"],category=category,
-                        source_manifest_sha256=digest(manifest),bytes=len(raw)))
-    return res
+    chosen,excluded=[],[]
+    for category in CATEGORIES:
+        matching=sorted((c for c in rows if c.get("category")==category),
+                        key=lambda x:x["sha256"])
+        check(len(matching)>=PER_CATEGORY,"missing category "+category)
+        counter=0
+        for c in matching:
+            cp=Path(c["compressed_file"])
+            check(not cp.is_absolute() and ".." not in cp.parts,"unsafe source path")
+            source=cp if cp.is_file() else manifest_root/cp
+            check(source.is_file(),"compressed source missing "+str(source))
+            with gzip.open(source,"rb") as stream:raw=stream.read(8_000_001)
+            check(digest_bytes(raw)==c["sha256"] or len(raw)>8_000_000,
+                  "original CNF SHA mismatch")
+            ok,reason=compatible_original(raw)
+            if not ok:
+                excluded.append(dict(sha256=c["sha256"],category=category,
+                                     reason="PRECOMMITTED_PARSER_CAP_"+reason))
+                continue
+            check(digest_bytes(raw)==c["sha256"],"compatible original SHA mismatch")
+            target=dest/(c["sha256"]+".cnf")
+            target.write_bytes(raw)
+            chosen.append(dict(path=target,sha256=c["sha256"],category=category,
+                               source_manifest_sha256=digest(manifest),
+                               bytes=len(raw)))
+            counter+=1
+            if counter==PER_CATEGORY:break
+        check(counter==PER_CATEGORY,"not enough source-parser-compatible "+category)
+    (out/"selection_exclusions.json").write_text(
+        json.dumps(excluded,indent=2,sort_keys=True)+"\n")
+    return chosen
 
 def controls(args):
     if args.dataset=="satlib":
@@ -146,6 +181,23 @@ def controls(args):
                      bytes=p.stat().st_size) for p in sources]
     return choose_real(args.holdout,args.out)
 
+def make_cms_compatible(source,out):
+    """Write a validated, logically identical DIMACS file for strict CMS.
+
+    Unlike CaDiCaL, Ubuntu CryptoMiniSat 5.11 cannot parse some SATLIB
+    multiline/nonstandard DIMACS. Charge the copy+verification to CMS.
+    """
+    t=time.perf_counter()
+    import r93_export_verified_rows as exporter
+    n,clauses=exporter.r88.read_cnf(source)
+    target=out/(digest(source)[:16]+".cms.cnf")
+    with target.open("w",encoding="ascii") as f:
+        f.write("p cnf %d %d\n"%(n,len(clauses)))
+        for c in clauses:f.write(" ".join(map(str,c))+" 0\n")
+    n2,clauses2=exporter.r88.read_cnf(target)
+    check(n2==n and clauses2==clauses,"CMS normalized CNF changed clauses")
+    return target,round(time.perf_counter()-t,6)
+
 def parse_native(out,mode):
     line=next((x for x in out.splitlines() if x.startswith("R149_RESULT ")),None)
     check(line is not None,"native mode missing output "+mode)
@@ -154,14 +206,15 @@ def parse_native(out,mode):
     check(fields.get("disabled")=="0","native propagator fail closed")
     return fields
 
-def execute(source,mode,binary,cms,cert,prep,screen):
+def execute(source,mode,binary,cms,cert,prep,screen,cms_source,cms_prep):
     trigger=screen["trigger"]
     routed=mode
     scan_s=screen["scan_s"] if mode=="screen" else 0.0
     if mode=="screen":routed="lazy" if trigger else "clean"
     certify=prep if routed not in ("clean","cryptominisat") else 0.0
+    if routed=="cryptominisat":certify=cms_prep
     upfront=scan_s+certify
-    if routed=="cryptominisat":cmd=[str(cms),"--verb","0",str(source.resolve())]
+    if routed=="cryptominisat":cmd=[str(cms),"--verb","0",str(cms_source.resolve())]
     else:cmd=[str(binary.resolve()),routed,str(source.resolve()),str(cert.resolve())]
     if upfront>=CAP:
         return dict(status="TIMEOUT",par2_s=2*CAP,total_s=CAP,
@@ -267,15 +320,19 @@ def main():
         check(digest(source)==c["sha256"],"original SHA mismatch")
         screened=screen_xor_prefix(source)
         cert,ev,prep=make_cert(source,args.out)
+        cms_source,cms_prep=make_cms_compatible(source,args.out)
         ledger.append({k:v for k,v in c.items() if k!="path"} |
                       dict(name=source.name,screen=screened,
-                           certified_rows=ev["exported"],prep_s=prep))
+                           certified_rows=ev["exported"],prep_s=prep,
+                           cms_compatible_sha256=digest(cms_source),
+                           cms_copy_s=cms_prep))
         for repeat in range(REPS):
             order=list(MODES)
             random.Random(PROTO+c["sha256"]+str(repeat)).shuffle(order)
             answers=set()
             for mode in order:
-                res=execute(source,mode,args.binary,args.cms,cert,prep,screened)
+                res=execute(source,mode,args.binary,args.cms,cert,prep,screened,
+                            cms_source,cms_prep)
                 rec=dict(source=c["sha256"],category=c["category"],rep=repeat,
                          mode=mode,**res)
                 records.append(rec)
