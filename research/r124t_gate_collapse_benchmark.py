@@ -7,18 +7,19 @@ clauses replace the removed 3/4 original clauses.
 All changes are independently reconstructed from the original source and
 16-assignment Boolean proofs before original Kissat is run. SAT models are
 checked against the unchanged original input. Timeout includes preprocessing.
-New external holdout excludes all R120/R121/R122/R123/R125 source identities.
+New external GBD miter holdout excludes all R120/R121/R122/R123/R125 source identities.
+SAT2026 official list is unavailable under prior 8MiB collection constraints;
+this experiment only claims new real GBD miter inputs, not official SAT2026.
 """
 from __future__ import annotations
-import argparse,csv,json,pathlib,re,subprocess
+import argparse,csv,json,pathlib,re,subprocess,random
 import r125_native_gate_benchmark as core
 
 core.ROOT=pathlib.Path("r124t")
 core.PROTO="DRNAS-R124T-PROVEN-GATE-COLLAPSE-20261105-v1"
 core.NATIVE=pathlib.Path("r124t/r124t_native").resolve()
 core.SOURCES={
- "miter":(core.SOURCES["miter"][0],30),
- "official2026":(core.SOURCES["official2026"][0],60),
+ "miter":(core.SOURCES["miter"][0],84),
 }
 _original_prior=core.prior
 
@@ -38,6 +39,60 @@ def prior():
  report["r125"]=core.sha_file(path)
  return seen,ids,report
 core.prior=prior
+
+def freeze():
+ """Strict prospective external holdout: GBD miter only.
+ The original R125 freeze hard-required >=45 SAT2026 instances despite zero
+ passing its size/identity filters; never weaken identity rules to hide this.
+ Here the full predeclared cohort is a genuine new GBD miter population.
+ """
+ used,ids,ledger=prior()
+ dest=core.ROOT/"prospective";dest.mkdir(parents=True,exist_ok=True)
+ cohort="miter"
+ index,target=core.SOURCES[cohort]
+ urls=core.source_list(index)
+ ordered=sorted(set(urls))
+ list_sha=core.sha("\n".join(ordered).encode())
+ random.Random(core.PROTO+cohort).shuffle(ordered)
+ cases=[];excluded=[];observed=set()
+ for url in ordered:
+  if len(cases)>=target:break
+  gbd=url.rsplit("/",1)[-1].split("?")[0]
+  if gbd in ids:
+   excluded.append(dict(cohort=cohort,gbd=gbd,reason="previously measured GBD identity"))
+   continue
+  try:
+   data=core.decode(core.fetch(url,core.MAX_INPUT_BYTES))
+   if len(data)>core.MAX_INPUT_BYTES:raise ValueError("decompressed input exceeds fixed 8MiB cap")
+   digest=core.sha(data)
+   if digest in used or digest in observed:raise ValueError("previous SHA or selected duplicate")
+   header=[x.split() for x in data.splitlines() if x.startswith(b"p cnf ")]
+   if len(header)!=1 or len(header[0])!=4:raise ValueError("invalid DIMACS header")
+   n,m=map(int,header[0][2:])
+   if n<=0 or m<=0:raise ValueError("invalid dimensions")
+   name=f"{cohort}-{len(cases):03d}.cnf"
+   (dest/name).write_bytes(data)
+   cases.append(dict(id=name,cohort=cohort,url=url,gbd=gbd,
+      sha256=digest,bytes=len(data),variables=n,clauses=m))
+   observed.add(digest);ids.add(gbd)
+   print("R124T_FREEZE_CASE",len(cases),name,gbd,flush=True)
+  except Exception as e:
+   excluded.append(dict(cohort=cohort,gbd=gbd,
+     reason=(type(e).__name__+": "+str(e))[:160]))
+  if len(excluded)>2500:break
+ counts={"miter":len(cases),"official2026":0}
+ manifest=dict(protocol=core.PROTO,
+   source_lists={"miter":dict(index=index,sha256=list_sha,count=len(ordered),target=target)},
+   prior_sha256=ledger,cases=cases,counts=counts,exclusions=excluded,
+   cap_seconds=core.CAP,reps=core.REPS,shards=core.SHARDS,
+   sampling="frozen randomized external GBD miter URL order; no benchmark-timing selection",
+   limitation="Only GBD miter, NOT SAT Competition 2026. Sources limited to <=8MiB; excludes R120/R121/R122/R123/R125 manifest SHA and GBD ids.")
+ (dest/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+ print("R124T_FREEZE_SUMMARY",json.dumps(dict(counts=counts,
+  exclusions=len(excluded),index_count=len(ordered),
+  accepted=len(cases),required_min=70)),flush=True)
+ if len(cases)<70:raise RuntimeError("R124T_INSUFFICIENT_NEW_GBD_MITER_HOLDOUT")
+core.freeze=freeze
 
 def native(source,out="-",proof="-",timeout=6):
  core.get_binary()
@@ -123,7 +178,7 @@ def main():
  ap.add_argument("--shard",type=int,default=0)
  a=ap.parse_args()
  if a.command=="control":core.control()
- elif a.command=="freeze":core.freeze()
+ elif a.command=="freeze":freeze()
  elif a.command=="monitor":core.monitor(a.shard)
  elif a.command=="benchmark":core.benchmark(a.shard)
  else:aggregate()
