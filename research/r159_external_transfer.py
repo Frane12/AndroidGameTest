@@ -49,8 +49,12 @@ def rows(path):
 def writecsv(path,data):
     need(bool(data),"no CSV rows")
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    # Modes have different diagnostic columns. Preserve the complete,
+    # deterministic UNION instead of losing keys absent from the first trial.
+    fields=list(dict.fromkeys(k for record in data for k in record))
+    need(len(fields)==len(set(fields)) and bool(fields),"invalid heterogeneous CSV schema")
     with path.open("w",newline="") as f:
-        w=csv.DictWriter(f,fieldnames=list(data[0]))
+        w=csv.DictWriter(f,fieldnames=fields,extrasaction="raise")
         w.writeheader();w.writerows(data)
 def check_frozen():
     data=json.loads((SOURCE/"manifest.json").read_text())
