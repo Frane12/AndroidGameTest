@@ -1,0 +1,117 @@
+name: DRNAS R135S versus original R135 exact 400 CNF five-way paired replication
+on:
+  push:
+    branches: [experiment/drnas-r135s-400-same-source-20261105]
+    paths: ['.github/workflows/drnas-r135s-400-exact-paired.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r135s-original-400-fiveway
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: R135S vs R135 exact original 400 SHA shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 190
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download EXACT original frozen R135-400 CNFs, not reselecting any sources
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Download original SHA-pinned reference solvers
+        uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Preflight original binaries and unchanged original R135S 128KiB C++ selector
+        run: |
+          set -euo pipefail
+          mkdir -p r135s400
+          python3 -m py_compile research/r135s_400_paired.py research/r135s_400_audit.py research/r135_nonxor_portfolio.py research/r135s_run_nonxor.py
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r135s400/r118
+          g++ -std=c++17 -O3 -DNDEBUG research/r135_nonxor_selector.cpp -o r135s400/r135_selector
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import r135s_400_paired as b
+          import r135s_run_nonxor as mini
+          sha,cases=b.setup()
+          assert len(cases)==400 and sha==b.SOURCE_SHA
+          mini.FILTER=b.FILTER
+          x=mini.probe(__import__("pathlib").Path(cases[0]["id"]))
+          assert x['route'] in ('KISSAT','CADICAL')
+          print('R135S400_PRECHECK_SOURCE_SHA',sha,'count',len(cases),'selector',x,flush=True)
+          PY
+      - name: End-to-end 15s each, 2 repeats, original source, RANDOMIZED 5-way paired
+        run: |
+          set -euo pipefail
+          python3 -u research/r135s_400_paired.py --shard ${{ matrix.shard }} | tee r135s400/shard-${{ matrix.shard }}.log
+          test -s r135s400/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135s400-shard-${{ matrix.shard }}
+          path: |
+            r135s400/shard-${{ matrix.shard }}.json
+            r135s400/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: R135S vs R135 400 exact paired SHA/PAR2 and regression audit only
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r135s400-shard-*
+          merge-multiple: true
+          path: r135s400
+      - name: Audit existing complete shard JSONs only; no solver rebuild or rerun
+        run: |
+          set -euo pipefail
+          test "$(find r135s400 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r135s_400_audit.py | tee r135s400/audit.log
+          test -s r135s400/report.json
+          cat r135s400/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          path: |
+            r135s400/report.json
+            r135s400/audit.log
+            r135s400/paired.csv
+            r135s400/per_formula.csv
+            r135s400/shard-*.json
+          if-no-files-found: warn
+          retention-days: 90
