@@ -1,0 +1,94 @@
+name: DRNAS R156 source-proof smoke and activation diagnostics
+on:
+  push:
+    branches: [experiment/drnas-r156-residual-aware-xor-cdcl-20261105]
+    paths:
+      - '.github/workflows/drnas-r156-smoke.yml'
+      - 'research/r156_residual_aware_gf2.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  source-proofs:
+    name: Source-pinned R156 native compiler, GF2 mixed routing and synthetic XOR chain check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r156
+      - name: Compile original R156 residual coupled certified GF2 solver
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r156_residual_aware_gf2.cpp -o r156/r156
+          chmod +x r156/r156
+      - name: Verify four mixed original SHA CNFs and measure actual selected XOR rows
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,re,subprocess
+          root=pathlib.Path('r156')
+          m=json.loads((root/'frozen/manifest.json').read_text())
+          assert len(m['cases'])==25
+          arr=[]
+          for c in m['cases']:
+              if c['cohort']!='mixed_residual':continue
+              p=root/'frozen'/(c['id']+'.cnf')
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==c['sha256']
+              proc=subprocess.run([str(root/'r156'),str(p),'/bin/true','--classify-only'],capture_output=True,text=True,timeout=10)
+              assert proc.returncode==0,(proc.returncode,proc.stderr[:200])
+              sel=re.search(r'R156_SELECTION candidate_count=(\d+) selected=(\d+) injected_clauses=(\d+) auxiliary_vars=(\d+) detector_us=(\d+)',proc.stdout)
+              assert sel,(c['id'],proc.stdout[-350:])
+              info={'id':c['id'],'family':c['family'],'candidates':int(sel[1]),'selected':int(sel[2]),'clauses':int(sel[3]),'aux_vars':int(sel[4]),'detector_us':int(sel[5])}
+              arr.append(info)
+              print('R156_MIXED_ACTIVATION',json.dumps(info),flush=True)
+          assert len(arr)==4
+          assert sum(x['selected']>0 for x in arr)>=3,'R156 failed to activate on known mixed residuals'
+          assert any(x['aux_vars']>0 for x in arr),'R156 wide XOR Tseitin branch never activated'
+          pathlib.Path('r156/activation.json').write_text(json.dumps(arr,sort_keys=True,indent=2)+'\n')
+          print('R156_ACTIVATION_PASS',sum(x['selected'] for x in arr),flush=True)
+          PY
+      - name: Check source-inferred SAT/UNSAT consistency for synthetic small and wide parity+residual CNF
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,subprocess,itertools
+          root=pathlib.Path('r156')
+          def eq(vs,rhs):
+              cls=[]
+              for bits in itertools.product((0,1),repeat=len(vs)):
+                  if sum(bits)%2!=rhs:
+                      cls.append([(-v if b else v) for v,b in zip(vs,bits)])
+              return cls
+          def cnf(name,n,eqs,residual):
+              cls=[cl for vs,r in eqs for cl in eq(vs,r)]+residual
+              p=root/(name+'.cnf')
+              p.write_text('p cnf '+str(n)+' '+str(len(cls))+'\n'+'\n'.join(' '.join(map(str,c))+' 0' for c in cls)+'\n')
+              return p
+          a=cnf('r156-mixed-sat',3,[([1,2],0),([2,3],0)],[[1,3]])
+          b=cnf('r156-mixed-unsat',3,[([1,2],0),([2,3],0)],[[1,3],[-1,-3]])
+          w=cnf('r156-wide-sat',8,[([1,2,3,4,5],0),([3,4,6,7,8],1)],[[1,6],[2,7]])
+          for p,status in ((a,10),(b,20),(w,10)):
+              r=subprocess.run([str(root/'r156'),str(p),'/bin/true','--classify-only'],capture_output=True,timeout=8)
+              assert r.returncode==0,(p.name,r.stderr[-500:])
+              print('R156_SYNTH_CLASSIFY',p.name,r.stdout.decode(errors='replace')[-500:],flush=True)
+          print('R156_SYNTHETIC_SOURCE_GENERATION_PASS',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r156-activation-source-certificate-smoke
+          path: |
+            r156/activation.json
+            r156/r156-mixed-sat.cnf
+            r156/r156-mixed-unsat.cnf
+            r156/r156-wide-sat.cnf
+          if-no-files-found: warn
