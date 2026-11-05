@@ -1,0 +1,75 @@
+name: DRNAS R158 fractal entropy dynamics OFFLINE evidence audit
+on:
+  push:
+    branches:
+      - experiment/drnas-r158-fractal-entropy-dynamics-20261106
+    paths:
+      - 'research/r158_*.py'
+      - '.github/workflows/drnas-r158-fed.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r158-frozen-evidence
+  cancel-in-progress: false
+jobs:
+  r158:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce frozen V15.3.1 and compile independent offline feature code
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/r158_features.py research/r158_experiment.py research/test_r158.py
+      - name: Download exactly the pinned successful R17 aggregate
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R17-NATIVE-CONFIDENCE-ABSTENTION-FINAL-AUDIT
+          run-id: 42094261835
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: source-aggregate
+      - name: Download 16 immutable R17 raw shards (no hindsight reruns)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r17-*
+          run-id: 42094261835
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: false
+          path: source-shards
+      - name: Verify raw provenance, calibrate 4 models, test leakage, export scatterplots
+        run: |
+          set -euo pipefail
+          python3 research/r158_experiment.py \
+            --aggregate source-aggregate/drnas-r17-results/aggregate \
+            --shards source-shards --out r158-evidence | tee r158.log
+          grep -q '^R158_FED_AUDIT_PASS ' r158.log
+          R158_AGGREGATE=source-aggregate/drnas-r17-results/aggregate \
+          R158_RAW=source-shards python3 -m unittest discover -s research -p test_r158.py -v
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path('r158-evidence/r158_audit.json').read_text())
+          m=json.loads(Path('r158-evidence/r158_models.json').read_text())
+          assert a['source_shards_verified']==16 and a['source_attempts_reused']==4800
+          assert a['test_label_leakage_metamorphic_check']=='PASS'
+          assert a['new_SAT_attempts']==0 and a['V15_3_1_changed'] is False
+          assert m['train_formulas']==80 and m['heldout_formulas']==80
+          assert m['safe_action']=='MONITOR_ABSTAIN'
+          assert set(m['models'])=={'A','B','C','D'}
+          assert all(not p['promotion_allowed'] for p in m['models'].values())
+          print('R158_FROZEN_OFFLINE_PROTOCOL_AUDIT_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R158-FED-STRICT-OFFLINE-FEATURES-MODELS
+          path: |
+            r158-evidence/
+            r158.log
+          retention-days: 90
+          if-no-files-found: error
