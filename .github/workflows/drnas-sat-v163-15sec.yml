@@ -1,0 +1,82 @@
+name: DRNAS SAT v16.3 calibrated 15s hard CNF benchmark
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v16-adaptive-general-20261101'
+    paths:
+      - 'experiments/drnas_v16/calibrate_v163_hard.py'
+      - '.github/workflows/drnas-sat-v163-15sec.yml'
+jobs:
+  hard-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned upstream Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Calibrate deterministic CNFs to ~15 seconds
+        run: |
+          python3 experiments/drnas_v16/calibrate_v163_hard.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --out-dir drnas_v163_hard --target 15 \
+            --min-seconds 10 --max-seconds 20 \
+            --timeout 24 --attempts 18 --select 3
+      - name: Benchmark selected hard instances (3 modes, 3 repetitions)
+        run: |
+          if find drnas_v163_hard/selected -name '*.cnf' | grep -q .; then
+            python3 experiments/drnas_v16/benchmark_v161.py \
+              --cnf-dir drnas_v163_hard/selected \
+              --solver /tmp/kissat-upstream/build/kissat \
+              --timeout 30 --repeats 3 \
+              --out drnas_v163_hard/benchmark.csv
+          else
+            echo "No 10-20s solved instances found; calibration.csv records outcomes."
+          fi
+      - name: Summarize matched paired runs, check solver statuses
+        run: |
+          python3 - <<'PY'
+          import csv
+          from collections import defaultdict
+          from pathlib import Path
+          root=Path("drnas_v163_hard")
+          bench=root/"benchmark.csv"
+          if not bench.exists():
+              print("No qualifying 10-20s instance; cannot claim 15s benchmark.")
+          else:
+              with bench.open(newline="") as f: rows=list(csv.DictReader(f))
+              pairs=defaultdict(dict)
+              for r in rows:
+                  if r["result"]=="ERROR": raise SystemExit(f"Solver ERROR: {r}")
+                  assert r["experimental_gate"]=="False"
+                  pairs[(r["file"],r["repeat"])][r["mode"]]=r
+              for k,m in pairs.items():
+                  if set(m)!={"baseline","control","adaptive"}:
+                      raise SystemExit(f"Incomplete modes {k}")
+                  answers={v["result"] for v in m.values() if v["result"] in ("SAT","UNSAT")}
+                  if len(answers)>1: raise SystemExit(f"SAT/UNSAT disagreement {k}")
+              with (root/"summary.txt").open("w") as out:
+                  for mode in ("baseline","control","adaptive"):
+                      data=[float(r["total_sec"]) for r in rows if r["mode"]==mode]
+                      med=__import__("statistics").median(data)
+                      solved=sum(r["result"] in ("SAT","UNSAT") for r in rows if r["mode"]==mode)
+                      print(mode,"median sec",round(med,6),"solved",solved,"/",len(data))
+                      out.write(f"{mode}: median seconds={med:.6f}; solved={solved}/{len(data)}\n")
+                  out.write("Adaptive gate remains OFF. This measures classification overhead, not speedup.\n")
+          PY
+      - name: Upload calibration and benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v163-calibrated-15sec
+          path: |
+            drnas_v163_hard/calibration.csv
+            drnas_v163_hard/benchmark.csv
+            drnas_v163_hard/summary.txt
+          if-no-files-found: warn

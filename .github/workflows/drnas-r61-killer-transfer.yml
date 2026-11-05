@@ -1,0 +1,176 @@
+name: DRNAS R61 Killer real2026 R55 transfer zero-regression pilot
+on:
+  push:
+    branches: [experiment/drnas-r61-killer-transfer-20261103]
+    paths:
+      - '.github/workflows/drnas-r61-killer-transfer.yml'
+      - 'experiments/drnas_v16/r61_killer_transfer.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r61-killer-transfer-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze truly source-disjoint SAT2026 originals without R55 clause/result peeking
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python source and proof selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r61_killer_transfer.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old52
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          run-id: 41691243486
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old55
+      - uses: actions/download-artifact@v4
+        with:
+          name: r57-new-source-and-precommitted-structural-gate
+          run-id: 41694594541
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old57
+      - uses: actions/download-artifact@v4
+        with:
+          name: r60-frozen-new-2026-originals-and-clause-visits
+          run-id: 41698075753
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old60
+      - name: Verify historical source SHA before excluding all previously measured originals
+        run: |
+          set -euo pipefail
+          (cd old52/originals && sha256sum -c source.sha256)
+          (cd old55/fresh && sha256sum -c source.sha256)
+          (cd old57/new && sha256sum -c source.sha256)
+          (cd old60/new && sha256sum -c source.sha256)
+      - name: Freeze 8-to-16 fresh SATComp2026 CNFs by public score strata only
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r61_killer_transfer.py freeze \
+            --prior52 old52/originals --prior55 old55/fresh \
+            --prior57 old57/new --prior60 old60/new \
+            --out fresh | tee r61-freeze.log
+          (cd fresh && sha256sum -c source.sha256)
+          test -s fresh/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r61-killer-source-disjoint-official2026-frozen
+          path: |
+            fresh/
+            r61-freeze.log
+          if-no-files-found: warn
+
+  measurements:
+    name: r61-killer-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 36
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r61-killer-source-disjoint-official2026-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: binaries
+      - name: Strict original and solver binary SHA checks
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd binaries && sha256sum -c binaries.sha256)
+          chmod +x binaries/kissat_pinned binaries/cadical_3_0_1
+      - name: Independent two-core race abstention selftest on tiny SAT original
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/drnas_v16 python3 - <<'PY'
+          import os, tempfile
+          from pathlib import Path
+          import r61_killer_transfer as r
+          cores=sorted(os.sched_getaffinity(0))
+          assert len(cores)>=2, "Requires two CPU cores for resource-labeled portfolio"
+          with tempfile.TemporaryDirectory() as td:
+              case=Path(td)/"tiny.cnf"
+              case.write_text("p cnf 3 2\n1 2 0\n1 3 0\n")
+              out=r.race_trial(case,Path("binaries/kissat_pinned").resolve(),cores)
+              assert out["status"]=="SAT" and out["added"]==0 and out["winner"]=="baseline",out
+              print("R61_TWO_CORE_ABSTENTION_SELFTEST_PASS",out,flush=True)
+          PY
+      - name: Randomized paired strict 40s six-method benchmark (one/two-core separated)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r61_killer_transfer.py measure \
+            --sources fresh --shard "$SHARD" \
+            --kissat binaries/kissat_pinned --cadical binaries/cadical_3_0_1 \
+            --out results | tee r61-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r61-killer-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r61-live.log
+          if-no-files-found: warn
+
+  audit:
+    name: R61 Killer complete official SHA-disjoint transfer and zero-regression audit
+    needs: [freeze, measurements]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r61-killer-source-disjoint-official2026-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r61-killer-shard-*
+          path: combined
+      - name: Fail closed on incomplete cases, mixed SHA, invalid SAT models or regression in promotion
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r61_killer_transfer.py audit \
+            --sources fresh --combined combined \
+            --json r61-killer-final.json --md r61-killer-final.md
+          cat r61-killer-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R61-KILLER-TRANSFER-REAL2026-FINAL
+          path: |
+            r61-killer-final.json
+            r61-killer-final.md
+            fresh/manifest.json
+          if-no-files-found: error

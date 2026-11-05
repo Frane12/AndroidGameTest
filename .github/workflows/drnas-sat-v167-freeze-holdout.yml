@@ -1,0 +1,145 @@
+name: DRNAS SAT v16.7 early conflict frozen blind holdout
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v167-early-conflict-freeze-20261101'
+    paths:
+      - 'experiments/drnas_v16/early_conflict_v167.py'
+      - 'experiments/drnas_v16/v167_divergence.py'
+      - '.github/workflows/drnas-sat-v167-freeze-holdout.yml'
+
+jobs:
+  replay-calibration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax check and experimental contract
+        run: |
+          python3 -m py_compile experiments/drnas_v16/early_conflict_v167.py
+          python3 -m py_compile experiments/drnas_v16/v167_divergence.py
+      - name: Compile pinned upstream Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Preflight all phase and restart profiles
+        run: python3 experiments/drnas_v16/v164_preflight.py --solver /tmp/kissat-upstream/build/kissat
+      - name: Calibrate only known training seeds and FREEZE policy
+        run: |
+          python3 -u experiments/drnas_v16/early_conflict_v167.py calibrate \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --root drnas_v167 \
+            --timeout 25 --probe-timeout 4 --repeats 1
+      - name: Identify first conflict checkpoint showing replay divergence
+        run: |
+          python3 experiments/drnas_v16/v167_divergence.py \
+            --input drnas_v167/calibration/early-probes.csv \
+            --out drnas_v167/calibration
+      - name: Verify frozen classifier and no holdout seed leakage
+        run: |
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path("drnas_v167")
+          assert not (root/"cnf"/"holdout").exists()
+          b=(root/"frozen-policy.json").read_bytes()
+          digest=hashlib.sha256(b).hexdigest()
+          assert digest==(root/"frozen-policy.sha256").read_text().strip()
+          p=json.loads(b)
+          assert len(p["examples"])==5,len(p["examples"])
+          assert {r["seed"] for r in p["examples"]}=={165000,165001,163007,163016,165005}
+          assert p["checkpoint_conflicts"]==[1000,5000,10000]
+          assert (root/"calibration"/"divergence.csv").exists()
+          print("CALIBRATION_FROZEN_BEFORE_HOLDOUT",digest)
+          PY
+      - name: Upload immutable policy and calibration diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v167-frozen-calibration
+          path: drnas_v167/
+          if-no-files-found: error
+
+  unseen-holdout:
+    needs: replay-calibration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact frozen replay policy from earlier independent job
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-v167-frozen-calibration
+          path: drnas_v167
+      - name: Check SHA256 of frozen policy and ensure unseen CNFs absent
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          root=Path("drnas_v167")
+          data=(root/"frozen-policy.json").read_bytes()
+          sha=hashlib.sha256(data).hexdigest()
+          assert sha==(root/"frozen-policy.sha256").read_text().strip()
+          p=json.loads(data)
+          assert p["Kissat"]=="8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert not (root/"cnf"/"holdout").exists()
+          print("POLICY_FROZEN_SHA256",sha)
+          print("HOLDOUT_NOT_GENERATED_UNTIL_AFTER_FREEZE")
+          PY
+      - name: Build identical pinned Kissat binary
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Run six unseen seeds with fair 25-second TOTAL adaptive budget
+        run: |
+          python3 -u experiments/drnas_v16/early_conflict_v167.py holdout \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --root drnas_v167 \
+            --timeout 25 --probe-timeout 4 --repeats 2
+      - name: Audit 60 solver outcomes, six distinct unknown seeds and frozen SHA
+        run: |
+          python3 - <<'PY'
+          import csv,hashlib
+          from collections import defaultdict
+          from pathlib import Path
+          root=Path("drnas_v167")
+          with (root/"evaluation"/"results.csv").open(newline="") as f: rows=list(csv.DictReader(f))
+          with (root/"evaluation"/"identities.csv").open(newline="") as f: ident=list(csv.DictReader(f))
+          assert len(rows)==6*2*5,len(rows)
+          assert len(ident)==6
+          assert {int(r["seed"]) for r in ident}==set(range(167000,167006))
+          assert all(r["result"] in ("SAT","UNSAT","TIMEOUT") for r in rows)
+          pairs=defaultdict(dict)
+          for r in rows:
+              pairs[(r["seed"],r["rep"])][r["mode"]]=r
+              if r["mode"]=="adaptive":
+                  assert float(r["probe_seconds"])>0
+                  assert r["used_profile"] in ("baseline","restart-only","target-only","sat-both")
+          assert len(pairs)==12
+          for key,modes in pairs.items():
+              assert set(modes)=={"baseline","target-only","restart-only","sat-both","adaptive"}
+              answers={r["result"] for r in modes.values() if r["result"] in ("SAT","UNSAT")}
+              assert len(answers)<=1,(key,answers)
+          digest=hashlib.sha256((root/"frozen-policy.json").read_bytes()).hexdigest()
+          assert digest==(root/"frozen-policy.sha256").read_text().strip()
+          assert (root/"evaluation"/"summary.txt").exists()
+          print("BLIND_HOLDOUT_VALIDATED",len(rows),"runs; frozen",digest)
+          PY
+      - name: Upload holdout statistics and calibration policy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v167-frozen-blind-evaluation
+          path: |
+            drnas_v167/frozen-policy.json
+            drnas_v167/frozen-policy.sha256
+            drnas_v167/evaluation/
+          if-no-files-found: warn

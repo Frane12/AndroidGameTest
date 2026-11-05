@@ -1,0 +1,137 @@
+name: DRNAS V13.7 vs V7.6 - Same Frozen 48 XOR CNFs Matched
+on:
+  push:
+    branches: [experiment/drnas-v137-v76-same48-xor-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v137-v76-xor.yml'
+      - 'research/drnas-sat-v7-8/v137_vs_v76_xor.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact original V13.7 and all 48 mathematical XOR structures
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v137_fastpath.py)" = e4f44436ef53682a514fbb852e876c5c0d0a2ee3
+          test "$(git hash-object research/drnas-sat-v7-8/v136_symbolic.py)" = 78289e250d0188b53eee1bbefd92a6b2ae18a77e
+          python3 -m py_compile research/drnas-sat-v7-8/v137_vs_v76_xor.py
+          python3 research/drnas-sat-v7-8/v137_vs_v76_xor.py selftest
+      - name: Retrieve exact V7.6.1 original frozen 48 XOR manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V761-49-exact-and-new-CNF-manifest
+          run-id: 41259920685
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original
+      - name: Bytewise identical V7.6.1 manifest, not a new sample
+        run: |
+          set -euo pipefail
+          (cd original && sha256sum -c v761_manifest.sha256)
+          mkdir -p frozen
+          python3 -u research/drnas-sat-v7-8/v137_vs_v76_xor.py freeze \
+            --prior original/v761_manifest.json --out frozen/v761_manifest.json
+          cp original/v761_manifest.sha256 frozen/v761_manifest.sha256
+          cmp original/v761_manifest.json frozen/v761_manifest.json
+          (cd frozen && sha256sum -c v761_manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V137V76-original-V761-48-XOR-manifest
+          path: frozen/
+          if-no-files-found: error
+
+  benchmark:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: v137v76-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V137V76-original-V761-48-XOR-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V76V134-byte-pinned-three-binaries
+          run-id: 41258686315
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bin
+      - name: Verify original exact V13.7, V7.6, Legacy, Kissat and same frozen manifest
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v761_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          test "$(git hash-object research/drnas-sat-v7-8/v137_fastpath.py)" = e4f44436ef53682a514fbb852e876c5c0d0a2ee3
+          test "$(git hash-object research/drnas-sat-v7-8/v136_symbolic.py)" = 78289e250d0188b53eee1bbefd92a6b2ae18a77e
+          chmod +x bin/v76_solver bin/legacy_solver bin/kissat_solver
+      - name: Same input, four paired solvers, two repetitions, 30s and 3GiB
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v137_vs_v76_xor.py run \
+            --manifest frozen/v761_manifest.json --shard "$SHARD" \
+            --v76 bin/v76_solver --legacy bin/legacy_solver \
+            --kissat bin/kissat_solver \
+            --source_sha e4f44436ef53682a514fbb852e876c5c0d0a2ee3 \
+            --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v137v76-shard-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  audit:
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V137V76-original-V761-48-XOR-manifest
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v137v76-shard-*
+          path: combined
+      - name: Audit all 384 trials, 48 original CNF hashes, GF(2) proofs
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v761_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v137_vs_v76_xor.py audit \
+            --manifest frozen/v761_manifest.json \
+            --combined combined --out v137_v76_48xor_report.json \
+            --md v137_v76_48xor_report.md
+          cat v137_v76_48xor_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V137-vs-V76-48-XOR-paired-final-audit
+          path: |
+            frozen/
+            combined/
+            v137_v76_48xor_report.json
+            v137_v76_48xor_report.md
+          if-no-files-found: warn

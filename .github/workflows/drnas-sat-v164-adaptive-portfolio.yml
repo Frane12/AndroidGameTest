@@ -1,0 +1,91 @@
+name: DRNAS SAT v16.4.1 real Kissat adaptive portfolio preflight
+on:
+  push:
+    branches:
+      - 'experiment/drnas-v164-adaptive-portfolio-20261101'
+    paths:
+      - 'experiments/drnas_v16/portfolio_v164.py'
+      - 'experiments/drnas_v16/generate_v164_suite.py'
+      - 'experiments/drnas_v16/v164_preflight.py'
+      - '.github/workflows/drnas-sat-v164-adaptive-portfolio.yml'
+  workflow_dispatch:
+jobs:
+  real-kissat-portfolio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile fixed Kissat v4.0.4 baseline and config variants
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+          ./build/kissat --help > /tmp/drnas-kissat-help.txt
+          grep -E '(^| )--sat|(^| )--unsat' /tmp/drnas-kissat-help.txt || true
+      - name: Fail-fast SAT and UNSAT configuration preflight
+        run: python3 experiments/drnas_v16/v164_preflight.py --solver /tmp/kissat-upstream/build/kissat
+      - name: Generate 2 replay, 2 holdout, 2 structural formulas
+        run: python3 experiments/drnas_v16/generate_v164_suite.py drnas_v164_suite
+      - name: Check deterministic structural routing and suite split
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          p=Path("experiments/drnas_v16/portfolio_v164.py")
+          spec=importlib.util.spec_from_file_location("portfolio",p)
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          cases=list(Path("drnas_v164_suite").rglob("*.cnf"))
+          assert len(cases)==6
+          by_group={}
+          for c in cases:
+              by_group[c.parent.name]=by_group.get(c.parent.name,0)+1
+          assert by_group=={"replay":2,"holdout":2,"structural":2},by_group
+          assert module.choose(module.features(Path("drnas_v164_suite/structural/random3_low_density_seed164002.cnf")))==("--sat",)
+          assert module.choose(module.features(Path("drnas_v164_suite/structural/random3_high_density_seed164003.cnf")))==("--unsat",)
+          for c in Path("drnas_v164_suite/holdout").glob("*.cnf"):
+              assert module.choose(module.features(c))==()
+          print("ROUTING: low-density => SAT, high-density => UNSAT, holdout => baseline")
+          PY
+      - name: Run real Kissat baseline, two fixed profiles, structural adaptive policy
+        run: |
+          python3 experiments/drnas_v16/portfolio_v164.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --cnf-dir drnas_v164_suite \
+            --timeout 25 --repeats 2 \
+            --output drnas_v164_results.csv
+      - name: Verify completeness, SAT/UNSAT parity, and policy activation
+        run: |
+          python3 - <<'PY'
+          import csv
+          from collections import defaultdict
+          from pathlib import Path
+          with Path("drnas_v164_results.csv").open(newline="") as f:
+              rows=list(csv.DictReader(f))
+          assert len(rows)==6*4*2,len(rows)
+          grouped=defaultdict(dict)
+          for r in rows:
+              assert r["result"] in ("SAT","UNSAT","TIMEOUT"),r
+              grouped[(r["file"],r["repeat"])][r["mode"]]=r
+          for key,values in grouped.items():
+              assert set(values)=={"baseline","sat-profile","unsat-profile","adaptive"},key
+              answers={x["result"] for x in values.values() if x["result"] in ("SAT","UNSAT")}
+              assert len(answers)<=1,(key,answers)
+          structural=[r for r in rows if r["group"]=="structural" and r["mode"]=="adaptive"]
+          assert {r["profile"] for r in structural}=={"--sat","--unsat"}
+          holdout=[r for r in rows if r["group"]=="holdout" and r["mode"]=="adaptive"]
+          assert all(r["profile"]=="default" for r in holdout)
+          print("VALIDATED",len(rows),"runs; policy changes real Kissat args on structural controls")
+          PY
+      - name: Upload full CSV and group summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v164-real-kissat-portfolio
+          path: |
+            drnas_v164_results.csv
+            drnas_v164_results.summary.txt
+          if-no-files-found: warn

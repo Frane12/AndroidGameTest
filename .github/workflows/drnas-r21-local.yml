@@ -1,0 +1,171 @@
+name: DRNAS R21 true clause-age LBD implication roles native 3840 SAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-r21-lbd-age-reason-20261102]
+    paths:
+      - '.github/workflows/drnas-r21-local.yml'
+      - 'experiments/drnas_v16/patch_r21_age_lbd_reason.py'
+      - 'experiments/drnas_v16/r21_frozen_protocol.json'
+      - 'experiments/drnas_v16/r21_native_benchmark.py'
+      - 'experiments/drnas_v16/r21_native_analysis.py'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-r21-clause-age-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: R21 source pin, clause struct age ABI, native C/Python reason-role and SAT audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check frozen protocol and R16/R19/R20 SHA-provenance
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r21_age_lbd_reason,r21_native_benchmark,r21_native_analysis}.py
+          test "$(git hash-object experiments/drnas_v16/r20-results/current/results.json)" = 9e6480d17962aa58ae747df08cfe3c9d8cc83621
+          test "$(git hash-object experiments/drnas_v16/r20-results/current/formula_features.csv)" = 830aa1993a7a5a10fc8bb0e880bac3267b324821
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 - <<'PY'
+          import tempfile,sys
+          from pathlib import Path
+          sys.path.insert(0,'experiments/drnas_v16')
+          import patch_r21_age_lbd_reason as patch
+          import r21_native_benchmark as b
+          c=b.cfg()
+          assert patch.config()==c
+          assert len(b.SHARDS)==16 and len(b.MODES)==8
+          assert len(b.history())==2894
+          with tempfile.TemporaryDirectory() as d:
+            t=b.make_cases('n240_development0',Path(d),b.history())
+            assert len(t)==10 and len({x['formula_sha256'] for x in t})==10
+          print('R21_ALL_FROZEN_CNF_SHA_SEEDS_SAT_PIN_AUDITED')
+          PY
+      - name: Clone pinned upstream Kissat and inject true clause birth+role hooks
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r21_age_lbd_reason.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R21_TRACE
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R21_DECISION
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R20_DECISION
+      - name: SAT and UNSAT smoke including new clause layout and native policy
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/r21-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r21-unsat.cnf
+          for mode in r5_monitor r11_2048_50 r16_live50 r20_local50 r21_mature_low50 r21_inverse50; do
+            set +e
+            DRNAS_R12_DEGREE_CV=.28 DRNAS_R13_N=240 DRNAS_R16_GINI=.16 DRNAS_R16_POLARITY=.22 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r21-sat.cnf >/tmp/r21-sat.log 2>&1
+            sat=$?
+            DRNAS_R12_DEGREE_CV=.28 DRNAS_R13_N=240 DRNAS_R16_GINI=.16 DRNAS_R16_POLARITY=.22 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r21-unsat.cnf >/tmp/r21-unsat.log 2>&1
+            unsat=$?
+            set -e
+            if [ "$sat" -ne 10 ] || [ "$unsat" -ne 20 ]; then
+              echo "R21 SAT/UNSAT FAILED mode=$mode sat=$sat unsat=$unsat"
+              cat /tmp/r21-sat.log /tmp/r21-unsat.log
+              exit 1
+            fi
+          done
+      - name: 'Native hard-CNF smoke: actual clause age, implication roles and independently checked gate'
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r21_native_benchmark.py --smoke
+
+  benchmark:
+    name: R21 same CPU, all eight native strategies / ${{ matrix.category }}
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1,
+                   community_n220_development0, community_n220_test0,
+                   community_n240_development0, community_n240_test0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile upstream original Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Compile single identical native binary for monitor/forced/R16/R20/R21
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r21_age_lbd_reason.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Build untouched frozen V15.3.1 reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Actual 240 SAT runs per shard (three repeats each), same runner/core
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r21_native_benchmark.py --category '${{ matrix.category }}'
+          test -s 'drnas-r21-results/${{ matrix.category }}/measurements.csv'
+          test -s 'drnas-r21-results/${{ matrix.category }}/traces.jsonl'
+          test -s 'drnas-r21-results/${{ matrix.category }}/manifest.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r21-${{ matrix.category }}
+          path: drnas-r21-results/${{ matrix.category }}/
+          retention-days: 90
+          if-no-files-found: warn
+
+  aggregate:
+    name: R21 strict 3840 native attempts, LBD age role parity, PAR2 and bootstrap
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r21-*
+          path: r21-download
+          merge-multiple: false
+      - name: Verify complete 3840 real runs and generate formula-stratified paired report
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r21_native_analysis.py
+          test -s drnas-r21-results/aggregate/results.json
+          test -s drnas-r21-results/aggregate/paired.csv
+          test -s drnas-r21-results/aggregate/native_decisions.csv
+          test -s drnas-r21-results/aggregate/formula_features.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R21-True-Clause-Age-LBD-Implication-Native-Analysis
+          path: drnas-r21-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Archive ONLY audited R21 result, no changes to stable branch
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'experiment/drnas-r21-lbd-age-reason-20261102'
+          mkdir -p experiments/drnas_v16/r21-results/current/
+          cp -a drnas-r21-results/aggregate/. experiments/drnas_v16/r21-results/current/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/drnas_v16/r21-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m 'data: verified R21 native SAT clause-age LBD implication-role benchmark [skip ci]'
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

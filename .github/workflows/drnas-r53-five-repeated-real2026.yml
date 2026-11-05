@@ -1,0 +1,128 @@
+name: DRNAS R53 five paired repeats R52 breakthrough and negative control
+on:
+  push:
+    branches: [experiment/drnas-r53-five-paired-repeats-20261103]
+    paths:
+      - '.github/workflows/drnas-r53-five-repeated-real2026.yml'
+      - 'experiments/drnas_v16/r53_five_repeated_real2026.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r53-five-paired-repeats-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze SHA original 2026 sources and positive/negative R52 cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate unchanged mathematical gate, source hashes and R53 syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r53_five_repeated_real2026.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Independently verify R52 original SHA and preregister two outcomes
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r53_five_repeated_real2026.py freeze \
+            --sources originals --output r53-design.json
+          test -s r53-design.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r53-frozen-originals-and-design
+          path: |
+            originals/
+            r53-design.json
+          if-no-files-found: error
+  repeats:
+    name: r53-case-${{ matrix.case }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r53-frozen-originals-and-design
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Reverify all SHA and frozen binaries before each same runner paired sequence
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned bins/cadical_3_0_1
+          sha256sum r53-design.json
+      - name: Five randomized paired 40s repeats on one fixed CPU core per formula
+        env:
+          CASE_INDEX: ${{ matrix.case }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r53_five_repeated_real2026.py measure \
+            --sources originals --design r53-design.json \
+            --kissat bins/kissat_pinned --cadical bins/cadical_3_0_1 \
+            --case-index "$CASE_INDEX" --out results | tee r53-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r53-case-${{ matrix.case }}
+          path: |
+            results/
+            r53-live.log
+          if-no-files-found: warn
+  audit:
+    name: Verify all 30 paired original CNF attempts and report medians
+    needs: [freeze, repeats]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r53-frozen-originals-and-design
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r53-case-*
+          path: combined
+      - name: Fail-closed audit and final summary with seconds by repetition
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r53_five_repeated_real2026.py audit \
+            --design r53-design.json --combined combined \
+            --json r53-report.json --md r53-report.md
+          cat r53-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R53-FIVE-PAIRED-REPEATS-VERIFIED
+          path: |
+            r53-report.json
+            r53-report.md
+            r53-design.json
+          if-no-files-found: error

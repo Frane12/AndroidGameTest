@@ -1,0 +1,90 @@
+name: DRNAS V18.3 recover hardware-logic measurements without rebenchmark
+on:
+  push:
+    branches:
+      - experiment/drnas-v183-hardware-logic-20261101
+    paths:
+      - ".github/workflows/drnas-sat-v183-recovery.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover:
+    name: Recover 32 preserved samples and calculate Psi audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download original shard 0 and shard 1 preserved CSV artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v183_shard_*
+          run-id: 41316436067
+          github-token: "${{ github.token }}"
+          path: /tmp/v183-recovery
+      - name: Recover exact measured CPU metrics and derived features
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          root=Path("drnas-v183-hardware-logic")
+          root.mkdir(parents=True,exist_ok=True)
+          for i in range(2):
+              origin=Path(f"/tmp/v183-recovery/v183_shard_{i}")
+              assert (origin/"events.csv").exists(),origin
+              assert (origin/"measurements.csv").exists(),origin
+              shutil.copytree(origin,root/f"shard_{i}")
+          print("V183_RECOVERY_SOURCE_ARTIFACTS_VERIFIED",flush=True)
+          PY
+          python3 -m py_compile experiments/drnas_v16/{official_hardware_v183,aggregate_hardware_v183}.py
+          PYTHONPATH=experiments/drnas_v16 python3 - <<'PY'
+          import collections,csv,json,statistics
+          from pathlib import Path
+          import official_hardware_v183 as v
+          import aggregate_hardware_v183 as agg
+          root=Path("drnas-v183-hardware-logic")
+          total=0
+          for shard in (0,1):
+              directory=root/f"shard_{shard}"
+              with (directory/"events.csv").open(newline="") as f:
+                  events=list(csv.DictReader(f))
+              with (directory/"measurements.csv").open(newline="") as f:
+                  rows=list(csv.DictReader(f))
+              assert len(rows)==16 and events
+              assert sum(e["stream"]=="preprocess" for e in events)>0
+              assert sum(e["stream"]=="search" for e in events)>0
+              assert all(x["mode"]=="baseline" or int(x["search_samples"])>0
+                         for x in rows)
+              features=v.analyze(events)
+              assert any(x["third_diff_available"] for x in features
+                         if x["stage"]=="search")
+              (directory/"derived_signals.json").write_text(
+                  json.dumps(features,indent=2))
+              summary=dict(
+                  shard=shard,measurements=len(rows),
+                  recovered_from_run=41316436067,
+                  raw_measurements_changed=False,
+                  processed_preprocess_events=sum(e["stream"]=="preprocess" for e in events),
+                  processed_search_events=sum(e["stream"]=="search" for e in events),
+                  third_difference_groups=sum(x["third_diff_available"] for x in features),
+                  note="Recovered pre-existing benchmark, NOT new blind test")
+              (directory/"summary.json").write_text(json.dumps(summary,indent=2))
+              total+=len(rows)
+              print("V183_RECOVERED_SHARD",json.dumps(summary),flush=True)
+          assert total==32
+          agg.main()
+          result=json.loads((root/"aggregate"/"summary.json").read_text())
+          assert result["measurement_count"]==32
+          assert result["third_derivative_available_groups"]>0
+          print("V183_RECOVERY_PASS",json.dumps(result),flush=True)
+          PY
+      - name: Publish recovered CPU, preprocessing and conflict telemetry
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V183-Hardware-Logic-Recovered
+          path: drnas-v183-hardware-logic/
+          retention-days: 60
+          if-no-files-found: warn

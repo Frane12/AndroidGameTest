@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""R32k: single-process causal ablation of original-CNF certified GF2 units in Kissat.
+
+Run patch_r32b_native_shadow.py FIRST. R32c changes only parse-time behavior:
+when explicitly selected by R32B_MODE=active, inject up to twelve mathematically
+entailed GF(2) ROOT UNIT clauses before Kissat preprocesses/searches. Every
+candidate must be a consequence of complete source-CNF parity clause blocks
+or sound binary-parent resolvents and independently reproduced root BCP.
+An UNSAT parity subsystem is NOT a unit source. All uncertain cases abstain.
+No restart, phase, learned-clause, heuristic, or decision policy modification.
+"""
+import argparse
+from pathlib import Path
+
+def replace_once(s, old, new, label):
+    count = s.count(old)
+    if count != 1:
+        raise RuntimeError(f"R32C_ANCHOR_ERROR {label} count={count}")
+    return s.replace(old, new, 1)
+
+INJECTION = r'''  // R32c: computed from the original DIMACS capture ONLY. No learned CNF.
+  if (!res && !solver->inconsistent) {
+    const char *mode = getenv("R32B_MODE");
+    const int selective = mode && !strcmp(mode, "selective");
+    const int hidden_aware = mode && !strcmp(mode, "r32e");
+    const int causal = mode && !strcmp(mode, "r32k");
+    if (mode && (!strcmp(mode, "active") || selective || hidden_aware || causal)) {
+      r32b_discover();
+      if (r32b_guard) {
+        printf("c R32C_ACTIVE signal=INPUT_GUARD injected=0 certified=0\n");
+      } else {
+        r32b_gap gap = r32b_compute(NULL, 0);
+        const int admissible = !gap.contradiction &&
+          gap.extra > 0 && gap.extra <= 12 && gap.nsample == gap.extra;
+        // Frozen, purely structural development-set policy. Does not inspect
+        // family names, labels, timings, truth assignment or holdout IDs.
+        const int r32d_gate = !r32b_nresolved && r32b_neq >= 16 &&
+          gap.extra >= 8;
+        // R32e: recognize both direct and binary-resolvent-reconstructed XOR.
+        // Frozen before the new holdout. Guard budgets deliberately restrict
+        // heavy GF2 subsystems; never activate on inconsistent equations.
+        const int r32e_gate = gap.extra >= 8 && r32b_neq >= 16 &&
+          r32b_neq <= 96 &&
+          (!r32b_nresolved || r32b_nresolved >= 2*gap.extra);
+        const int selected = hidden_aware ? r32e_gate :
+          selective ? r32d_gate : 1;
+        if (hidden_aware) {
+          printf("c R32E_SELECT policy=hidden_resolvent_v1 equations=%u resolved=%u extra=%u selected=%d\n",
+                 r32b_neq, r32b_nresolved,
+                 gap.contradiction ? 0 : gap.extra, admissible && selected);
+        }
+        if (selective) {
+          printf("c R32D_SELECT policy=direct_gap_v1 equations=%u resolved=%u extra=%u selected=%d\n",
+                 r32b_neq, r32b_nresolved, gap.contradiction ? 0 : gap.extra,
+                 admissible && selected);
+        }
+        if (admissible && selected) {
+          // R32k: select a deterministic subset of exactly the same
+          // independently proved root units, in ONE Kissat process.
+          const char *kind = causal ? getenv("R32K_VARIANT") : NULL;
+          const int last4 = kind && !strcmp(kind, "last4");
+          unsigned count = gap.nsample;
+          if (kind && !strcmp(kind,"first4")) count = count < 4 ? count : 4;
+          if (kind && !strcmp(kind,"first8")) count = count < 8 ? count : 8;
+          if (last4) count = count < 4 ? count : 4;
+          unsigned begin = last4 ? gap.nsample - count : 0;
+          for (unsigned i=begin; i<begin+count; i++) {
+            kissat_add(solver, gap.sample[i]);
+            kissat_add(solver, 0);
+          }
+          if (causal) {
+            printf("c R32K_ABLATION variant=%s available=%u injected=%u equations=%u resolved=%u\n",
+                   kind ? kind:"full",gap.extra,count,r32b_neq,r32b_nresolved);
+          }
+          printf("c R32C_ACTIVE signal=APPLIED injected=%u certified=%u\n",
+                 count, gap.extra);
+          printf("c R32C_INJECTED_LITS count=%u lits=", count);
+          for (unsigned i=begin;i<begin+count;i++)
+            printf("%s%d",i==begin?"":",",gap.sample[i]);
+          putchar('\n');
+        } else {
+          if (causal) {
+            const char *kind=getenv("R32K_VARIANT");
+            printf("c R32K_ABLATION variant=%s available=%u injected=0 equations=%u resolved=%u\n",
+                   kind ? kind:"full",gap.contradiction?0:gap.extra,r32b_neq,r32b_nresolved);
+          }
+          printf("c R32C_ACTIVE signal=%s injected=0 certified=%u\n",
+                 gap.contradiction ? "CONTRADICTION_ABSTAIN" :
+                 (admissible && !selected) ? "SELECTOR_ABSTAIN" :
+                 gap.extra ? "UNIT_CAP_ABSTAIN" : "NO_GAP",
+                 gap.contradiction ? 0 : gap.extra);
+        }
+      }
+      fflush(stdout);
+    }
+  }
+'''
+
+def main():
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--kissat-root", type=Path, required=True)
+    args=ap.parse_args()
+    src=args.kissat_root/"src"
+    header=src/"r32b_shadow_core.h"
+    parse=src/"parse.c"
+    h=header.read_text()
+    h=replace_once(h,
+      'r32b_active=(mode && !strcmp(mode,"shadow")) ? 1 : 0;',
+      'r32b_active=(mode && (!strcmp(mode,"shadow") || !strcmp(mode,"active") || !strcmp(mode,"selective") || !strcmp(mode,"r32e") || !strcmp(mode,"r32k"))) ? 1 : 0;',
+      "enable_active_capture")
+    s=parse.read_text()
+    s=replace_once(s,
+      '  res = parse_dimacs (solver, file, strict, lineno_ptr, max_var_ptr);\n  if (!solver->inconsistent)',
+      '  res = parse_dimacs (solver, file, strict, lineno_ptr, max_var_ptr);\n'+INJECTION+
+      '  if (!solver->inconsistent)',
+      "parse_before_defrag")
+    header.write_text(h)
+    parse.write_text(s)
+    print("R32K_SINGLE_PROCESS_GF2_ABLATION_PATCH_OK",flush=True)
+
+if __name__=="__main__":
+    main()

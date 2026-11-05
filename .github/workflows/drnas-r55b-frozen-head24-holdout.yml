@@ -1,0 +1,127 @@
+name: DRNAS R55b frozen head24 SATComp2026 external holdout
+on:
+  push:
+    branches: [experiment/drnas-r55-clause-interactions-20261103]
+    paths:
+      - '.github/workflows/drnas-r55b-frozen-head24-holdout.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r55b-frozen-head24-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze prospective 2026 SHA-disjoint source list and head24 gate policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove policy code and original SAT mathematical rewrite before downloads
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r55b_prospective_head24_holdout.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Freeze new official 2026 original set WITHOUT any DRNAS R55 timing
+        run: |
+          set -euo pipefail
+          (cd prior/originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r55b_prospective_head24_holdout.py freeze \
+            --previous prior/originals --out fresh | tee r55b-freeze.log
+          (cd fresh && sha256sum -c source.sha256)
+          test -s fresh/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r55b-prospectively-frozen-real2026
+          path: |
+            fresh/
+            r55b-freeze.log
+          if-no-files-found: warn
+  holdout:
+    name: r55b-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Strict original and binary SHA verification before every comparison
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned bins/cadical_3_0_1
+      - name: Same-core randomized 40s comparisons with two repeats per official original
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55b_prospective_head24_holdout.py measure \
+            --sources fresh --shard "$SHARD" \
+            --kissat bins/kissat_pinned --cadical bins/cadical_3_0_1 \
+            --out results | tee r55b-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r55b-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r55b-live.log
+          if-no-files-found: warn
+  audit:
+    name: Audit disjoint SATComp2026 R55b new-formula PAR2 and solve counts
+    needs: [freeze, holdout]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r55b-shard-*
+          path: combined
+      - name: Reject incomplete or cross-solver comparisons, report all sources
+        run: |
+          set -euo pipefail
+          (cd fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r55b_prospective_head24_holdout.py audit \
+            --sources fresh --combined combined \
+            --json r55b-final.json --md r55b-final.md
+          cat r55b-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R55B-FRESH-2026-HEAD24-HOLDOUT-FINAL
+          path: |
+            r55b-final.json
+            r55b-final.md
+            fresh/manifest.json
+          if-no-files-found: error

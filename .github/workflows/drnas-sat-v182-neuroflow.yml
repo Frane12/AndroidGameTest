@@ -1,0 +1,149 @@
+name: DRNAS SAT V18.2 NeuroFlow regression guard official blind holdout
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-v182-neuroflow-guard-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v182-neuroflow.yml'
+      - 'experiments/drnas_v16/patch_neuroflow_v182.py'
+      - 'experiments/drnas_v16/official_neuroflow_v182.py'
+      - 'experiments/drnas_v16/aggregate_neuroflow_v182.py'
+      - 'experiments/drnas_v16/v182_frozen_official_cases.json'
+permissions:
+  contents: read
+concurrency:
+  group: drnas-v182-${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: Exact pinned Kissat, CPU-guard compilation and control validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Python code and frozen rules
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_neuroflow_v182,official_neuroflow_v182,aggregate_neuroflow_v182,official_parallel_v180}.py
+          python3 - <<'PY'
+          import json
+          x=json.load(open('experiments/drnas_v16/v182_frozen_official_cases.json'))
+          assert len(x['shards'])==4 and all(len(g)==5 for g in x['shards'])
+          assert len({z['gbd_hash'] for g in x['shards'] for z in g})==20
+          assert len(x['policies'])==8 and x['monitor_windows_conflicts']==256
+          assert x['monitor_budget_fraction']==0.005
+          assert x['bad_streak_to_fallback']==3
+          print("V182_FROZEN_PROTOCOL_PASS")
+          PY
+      - name: Compile unmodified pinned Kissat original
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v182-original
+          git -C /tmp/kissat-v182-original checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v182-original rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-v182-original && ./configure && make -j2)
+      - name: Compile same commit with lightweight NeuroFlow monitor
+        run: |
+          set -euo pipefail
+          cp -a /tmp/kissat-v182-original /tmp/kissat-v182-instrumented
+          python3 experiments/drnas_v16/patch_neuroflow_v182.py --kissat-root /tmp/kissat-v182-instrumented
+          (cd /tmp/kissat-v182-instrumented && make -j2)
+          /tmp/kissat-v182-instrumented/build/kissat --version
+      - name: Independent SAT and UNSAT smoke
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/v182_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/v182_unsat.cnf
+          for solver in /tmp/kissat-v182-original/build/kissat /tmp/kissat-v182-instrumented/build/kissat; do
+            set +e
+            "$solver" -s /tmp/v182_sat.cnf > /tmp/sat.txt
+            sat=$?
+            "$solver" -s /tmp/v182_unsat.cnf > /tmp/unsat.txt
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          echo V182_SMOKE_PASS
+  shard:
+    name: Official new 2026 CNFs shard ${{ matrix.shard }} eight policies
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile real original pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v182-original
+          git -C /tmp/kissat-v182-original checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v182-original rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-v182-original && ./configure && make -j2)
+      - name: Compile instrumented copy from exact same source
+        run: |
+          set -euo pipefail
+          cp -a /tmp/kissat-v182-original /tmp/kissat-v182-instrumented
+          python3 experiments/drnas_v16/patch_neuroflow_v182.py --kissat-root /tmp/kissat-v182-instrumented
+          (cd /tmp/kissat-v182-instrumented && make -j2)
+      - name: Run frozen randomized paired blind tests
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_neuroflow_v182.py --shard "${{ matrix.shard }}"
+      - name: Always preserve partial and final benchmark data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v182_shard_${{ matrix.shard }}
+          path: |
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/manifest.json
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/official_track_sha256.txt
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/measurements.partial.csv
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/measurements.csv
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/snapshots.csv
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/overhead.csv
+            drnas-v182-neuroflow-results/shard_${{ matrix.shard }}/summary.json
+          retention-days: 30
+          if-no-files-found: warn
+  aggregate:
+    name: Validate paired PAR-2 plus measured half-percent budget and fallback
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all four shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v182_shard_*
+          path: /tmp/v182-artifacts
+      - name: Independently combine all frozen formula comparisons
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          dest=Path('drnas-v182-neuroflow-results')
+          dest.mkdir(exist_ok=True)
+          artifacts=sorted(Path('/tmp/v182-artifacts').glob('v182_shard_*'))
+          assert len(artifacts)==4,artifacts
+          for a in artifacts:
+              output=dest/a.name.removeprefix('v182_')
+              shutil.copytree(a,output)
+              assert (output/'measurements.csv').exists(),output
+          print("V182_FOUR_SHARDS_READY")
+          PY
+          PYTHONPATH=experiments/drnas_v16 python3 -u experiments/drnas_v16/aggregate_neuroflow_v182.py
+      - name: Publish final heldout benchmark including CPU budget audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V182-NeuroFlow-Final
+          path: drnas-v182-neuroflow-results/aggregate/
+          retention-days: 60
+          if-no-files-found: warn

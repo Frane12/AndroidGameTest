@@ -1,0 +1,125 @@
+name: DRNAS SAT V7.3 — Risk Aware Phases vs CaDiCaL
+on:
+  push:
+    branches:
+      - research/drnas-sat-risk-v7-3
+    paths:
+      - research/drnas-sat-v7-3/**
+      - .github/workflows/drnas-sat-risk-v73.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-v73-risk-benchmarks
+  cancel-in-progress: false
+jobs:
+  official-cadical-risk:
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: [regression, prospective]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build identical official CaDiCaL v3.0.1 C++ library
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-3/risk_single.cpp cadical-src/build/libcadical.a \
+            -o risk_single -pthread -ldl -lz
+      - name: SHA-256 verify frozen original competition CNFs
+        env:
+          SCOPE: ${{ matrix.scope }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$SCOPE" = "regression" ]; then
+            MANIFEST=research/drnas-sat-v7-3/regression_sources.json
+          else
+            MANIFEST=research/drnas-sat-v7-3/prospective_sources.json
+          fi
+          python -u research/drnas-sat-real-2025/fetch_benchmarks.py \
+            --manifest "$MANIFEST" \
+            --outdir "$GITHUB_WORKSPACE/v73_inputs"
+      - name: Previous known problem regression — NOT independent
+        if: matrix.scope == 'regression'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-3/run_risk.py \
+            --binary "$GITHUB_WORKSPACE/risk_single" \
+            --verification "$GITHUB_WORKSPACE/v73_inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/v73_results" \
+            --timeout 6 --repeats 2
+      - name: Fresh external pilot — 4 unseen instances
+        if: matrix.scope == 'prospective'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-3/run_risk.py \
+            --binary "$GITHUB_WORKSPACE/risk_single" \
+            --verification "$GITHUB_WORKSPACE/v73_inputs/source-verification.json" \
+            --group pilot --outdir "$GITHUB_WORKSPACE/v73_pilot" \
+            --timeout 6 --repeats 2
+      - name: FROZEN prospective holdout — 14 untouched external CNFs
+        if: matrix.scope == 'prospective'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-3/run_risk.py \
+            --binary "$GITHUB_WORKSPACE/risk_single" \
+            --verification "$GITHUB_WORKSPACE/v73_inputs/source-verification.json" \
+            --group holdout --outdir "$GITHUB_WORKSPACE/v73_results" \
+            --timeout 6 --repeats 2
+      - name: Present including all timeout penalties and selection decisions
+        if: success()
+        env:
+          SCOPE: ${{ matrix.scope }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path("v73_results/summary.json").read_text())
+          lines=[
+            f"## DRNAS SAT V7.3 — {os.environ['SCOPE']}",
+            f"{s['cases']} original public SAT Competition 2025 formulas, SHA256 verified, "
+            f"{s['repetitions']} repeats, {s['timeout_per_process_seconds']}s timeout, PAR-2 includes timeouts.",
+            '',
+            '| Solver mode | PAR2 score (s) | Ratio vs plain | Solved runs |',
+            '|---|---:|---:|---:|',
+          ]
+          for m in ["plain","majority","confidence","risk_guard","risk_strong"]:
+            r=s["methods"][m]
+            lines.append(f"| {m} | {r['par2_score_s']:.5f} | {r['speed_ratio_plain_over_method']:.3f}x | {r['solved_runs']}/{r['total_runs']} |")
+          lines.extend([
+            '',
+            f"Previous confidence gate selected: {s['selected_by_confidence']}/{s['cases']}.",
+            f"New V7.3 gate selected: {s['selected_by_risk_guard']}/{s['cases']}.",
+            '',
+            "No variable is frozen, no CNF change. Phase hints are only suggestions.",
+            "This is an external benchmark; previous regression examples are DEV ONLY.",
+            "Do not claim general speedup without sufficient solved diverse instances.",
+          ])
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fp:
+            fp.write("\n".join(lines)+"\n")
+          PY
+      - name: Preserve raw timings, source verification, and exhaustive summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v73-${{ matrix.scope }}-competition-results
+          path: |
+            cadical-source-commit.txt
+            v73_inputs/source-verification.json
+            v73_pilot/
+            v73_results/
+          if-no-files-found: warn

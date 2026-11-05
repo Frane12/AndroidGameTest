@@ -1,0 +1,137 @@
+name: DRNAS R58 binary implication graph and bounded propagation audit
+on:
+  push:
+    branches: [experiment/drnas-r58-binary-implication-propagation-20261103]
+    paths:
+      - '.github/workflows/drnas-r58-implication-graph-audit.yml'
+      - 'experiments/drnas_v16/r58_implication_graph_propagation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r58-graph-forensic-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Validate graph maths and load SHA-locked R52 and R55b sources and outcomes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate graph inference (only true binary arcs) and bounded UP
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r58_implication_graph_propagation.py
+          python3 -u experiments/drnas_v16/r58_implication_graph_propagation.py selftest
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r52-originals
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          run-id: 41691243486
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r55b-originals
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R52-FRESH-SATCOMP2026-MATCHED-REFERENCE-FINAL
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r52-report
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R55B-FRESH-2026-HEAD24-HOLDOUT-FINAL
+          run-id: 41691243486
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r55b-report
+      - name: Verify unchanged original SHA, archived report protocol, and source count
+        run: |
+          set -euo pipefail
+          (cd r52-originals/originals && sha256sum -c source.sha256)
+          (cd r55b-originals/fresh && sha256sum -c source.sha256)
+          test -s r52-report/r52-final.json
+          test -s r55b-report/r55b-final.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r58-frozen-22-sources-and-timings
+          path: |
+            r52-originals/
+            r55b-originals/
+            r52-report/
+            r55b-report/
+          if-no-files-found: error
+  graph:
+    name: r58-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r58-frozen-22-sources-and-timings
+          path: .
+      - name: Reverify all source SHA before graph extraction
+        run: |
+          set -euo pipefail
+          (cd r52-originals/originals && sha256sum -c source.sha256)
+          (cd r55b-originals/fresh && sha256sum -c source.sha256)
+      - name: Build original binary implication graph, measure new arcs and conditional unit propagation
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r58_implication_graph_propagation.py measure \
+            --r52sources r52-originals/originals \
+            --r55sources r55b-originals/fresh \
+            --r52report r52-report/r52-final.json \
+            --r55report r55b-report/r55b-final.json \
+            --shard "$SHARD" --out results | tee r58-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r58-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r58-live.log
+          if-no-files-found: warn
+  audit:
+    name: R58 complete structural graph/UP audit on 22 real SAT2026 originals
+    needs: [freeze, graph]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r58-shard-*
+          path: combined
+      - name: Verify all results, report graph features vs historical SAT timing
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r58_implication_graph_propagation.py audit \
+            --combined combined --json r58-final.json --md r58-final.md
+          cat r58-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R58-REAL2026-22-SOURCE-BINARY-GRAPH-PROPAGATION-FINAL
+          path: |
+            r58-final.json
+            r58-final.md
+          if-no-files-found: error

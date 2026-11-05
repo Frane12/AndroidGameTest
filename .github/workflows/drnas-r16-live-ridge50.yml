@@ -1,0 +1,198 @@
+name: DRNAS SAT R16 real native frozen ridge50 prospective 4800 runs
+on:
+  push:
+    branches: [experiment/drnas-r16-live-frozen-ridge50-20261102]
+    paths:
+      - '.github/workflows/drnas-r16-live-ridge50.yml'
+      - 'experiments/drnas_v16/patch_r16_live_ridge.py'
+      - 'experiments/drnas_v16/r16_live_benchmark.py'
+      - 'experiments/drnas_v16/r16_live_analysis.py'
+      - 'experiments/drnas_v16/r16_historical_sha256.txt'
+      - 'experiments/drnas_v16/r16_frozen_live_protocol.json'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-r16-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Frozen model, native C patch compile and C/Python parity smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit historic source SHA, frozen model and new generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r16_live_ridge,r16_live_benchmark,r16_live_analysis,r15_trajectory_benchmark,r14_dual_benchmark,patch_r14_dual,r13_rescue_benchmark,patch_r13_rescue,r12_structure_dynamic_benchmark,patch_r12_hybrid,r11_restart_timing,patch_r11_restart_sweep,r7_large,patch_r6_trace,patch_r5_multisignal,patch_r4_restart_gate,predict_conflict_patch_v177}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          test "$(git hash-object experiments/drnas_v16/r15-results/current/frozen_trained_models.json)" = d005747f177008172b49cef5f0b8a6f29c3ffc46
+          test "$(git hash-object experiments/drnas_v16/patch_r14_dual.py)" = a0df241053bd93e3f2af11fc95957e5db1a74735
+          test "$(git hash-object experiments/drnas_v16/r15-results/current/formula_features.csv)" = f5951bfe0d7b3021d5818d1de7ad929e9c66e090
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r16_live_benchmark as b
+          import patch_r16_live_ridge as p
+          cfg,model=b.load_config()
+          cc,mm=p.load()
+          assert cfg==cc
+          assert len(b.SHARDS)==16 and len(b.MODES)==10 and b.REPEATS==3
+          assert cfg["safety_design"]["allowed_thresholds"]=={"r16_live50":0.25,"r16_live50_strict":0.4,"r16_snapshot50":0.25}
+          assert len(mm["models"]["trajectory"]["r11_2048_50"]["feature_names"])==25
+          assert len(mm["models"]["snapshot"]["r11_2048_50"]["feature_names"])==10
+          registry={s for s in b.REGISTRY.read_text().split() if len(s)==64}
+          assert len(registry)==2094
+          with TemporaryDirectory() as tmp:
+            cases=b.make_cases("community_n240_test0",Path(tmp),registry)
+            assert len(cases)==10 and len({x["formula_sha256"] for x in cases})==10
+          print("R16_FROZEN_NATIVE_MODEL_AND_SEED_AUDIT_PASS")
+          PY
+      - name: Compile exact pinned Kissat with real R16 in-process ridge predictor
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r16_live_ridge.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R16_DECISION
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq DRNAS_V177_SWITCH
+      - name: Known SAT and UNSAT correctness in all native solver modes
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/r16-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r16-unsat.cnf
+          for mode in r5_monitor r11_2048_50 r11_2048_25 r13_rescue50 r14_dual50 r16_live50 r16_live50_strict r16_snapshot50; do
+            set +e
+            DRNAS_R12_DEGREE_CV=.28 DRNAS_R13_N=220 DRNAS_R16_GINI=.16 DRNAS_R16_POLARITY=.22 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r16-sat.cnf >/tmp/r16-sat.log 2>&1
+            sat=$?
+            DRNAS_R12_DEGREE_CV=.28 DRNAS_R13_N=220 DRNAS_R16_GINI=.16 DRNAS_R16_POLARITY=.22 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r16-unsat.cnf >/tmp/r16-unsat.log 2>&1
+            unsat=$?
+            set -e
+            if [ "$sat" -ne 10 ] || [ "$unsat" -ne 20 ]; then
+              echo "R16_NATIVE_SAT_UNSAT_SMOKE_FAILED mode=$mode SAT=$sat UNSAT=$unsat"
+              cat /tmp/r16-sat.log /tmp/r16-unsat.log
+              exit 1
+            fi
+          done
+          echo R16_KNOWN_SAT_UNSAT_SMOKE_PASS
+      - name: Verify actual 1024-conflict native model and independent Python numeric agreement
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r16_live_benchmark.py --smoke-native
+
+  benchmark:
+    name: R16 native live ${{ matrix.category }}
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1,
+                   community_n220_development0, community_n220_test0,
+                   community_n240_development0, community_n240_test0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile original upstream pinned Kissat reference
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Compile same native Kissat with R16 live model, monitor and frozen controls
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r16_live_ridge.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Build frozen unchanged V15.3.1 source reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Run 300 real SAT attempts with audited live C/Python model decisions
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r16_live_benchmark.py --category "${{ matrix.category }}"
+          test -s "drnas-r16-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r16-results/${{ matrix.category }}/manifest.json"
+          test -s "drnas-r16-results/${{ matrix.category }}/traces.jsonl"
+      - name: Upload complete or partial raw evidence and independent score checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r16-${{ matrix.category }}
+          path: drnas-r16-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+
+  aggregate:
+    name: R16 full 4800-run native PAR2, model parity, bootstrap and scatter
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r16-*
+          path: r16-download
+          merge-multiple: false
+      - name: Verify every live model decision and calculate prospective holdout metrics
+        run: |
+          set -euo pipefail
+          python3 -m venv .r16venv
+          .r16venv/bin/pip -q install matplotlib
+          .r16venv/bin/python experiments/drnas_v16/r16_live_analysis.py
+          test -s drnas-r16-results/aggregate/results.json
+          test -s drnas-r16-results/aggregate/formula_features.csv
+          test -s drnas-r16-results/aggregate/paired.csv
+          test -s drnas-r16-results/aggregate/native_decisions.csv
+          for fold in random3_development random3_test community3_development community3_test; do
+            test -s "drnas-r16-results/aggregate/r16_live_score_scatter_$fold.png"
+          done
+      - name: Upload scientific analysis and raw audit output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R16-Verified-Native-Live-Model-Analysis
+          path: drnas-r16-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Archive ONLY completed verified R16 outputs on isolated experiment branch
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/drnas-r16-live-frozen-ridge50-20261102"
+          mkdir -p experiments/drnas_v16/r16-results/current
+          for file in results.json paired.csv formula_features.csv native_decisions.csv; do
+            test -s "drnas-r16-results/aggregate/$file"
+            cp "drnas-r16-results/aggregate/$file" "experiments/drnas_v16/r16-results/current/$file"
+          done
+          for fold in random3_development random3_test community3_development community3_test; do
+            file="r16_live_score_scatter_$fold.png"
+            test -s "drnas-r16-results/aggregate/$file"
+            cp "drnas-r16-results/aggregate/$file" "experiments/drnas_v16/r16-results/current/$file"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/drnas_v16/r16-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: R16 verified true in-process frozen ridge50 model [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

@@ -1,0 +1,173 @@
+name: DRNAS R20 true native local clause-reuse gate 3360 prospective SAT solves
+on:
+  push:
+    branches: [experiment/drnas-r20-local-clause-utility-20261102]
+    paths:
+      - '.github/workflows/drnas-r20-local.yml'
+      - 'experiments/drnas_v16/patch_r20_local_utility.py'
+      - 'experiments/drnas_v16/r20_frozen_protocol.json'
+      - 'experiments/drnas_v16/r20_local_benchmark.py'
+      - 'experiments/drnas_v16/r20_local_analysis.py'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-r20-native-local-fixed-landmark-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  audit:
+    name: Verify frozen local-gate source, SAT witnesses, C/Python clause reuse parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify no altered historic CNFs, no source pin drift, new SHA seeds
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{r20_local_benchmark,r20_local_analysis,patch_r20_local_utility,patch_r16_live_ridge,r16_live_benchmark}.py
+          test "$(git hash-object experiments/drnas_v16/r19-results/current/predictions.csv)" = 2e960455a5f722b0373e33925d2fdea3a37fe588
+          test "$(git hash-object experiments/drnas_v16/r16_historical_sha256.txt)" = d6e7e3eeef2032c8d9fb07af07df292b17991588
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 - <<'PY'
+          import sys, tempfile, json
+          from pathlib import Path
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r20_local_benchmark as b
+          import patch_r20_local_utility as p
+          c=b.cfg();used=b.history()
+          assert len(used)==2734 and len(b.SHARDS)==16
+          assert c['dataset']['attempts']==3360 and len(b.MODES)==7
+          assert p.load()==c
+          with tempfile.TemporaryDirectory() as tmp:
+            cases=b.make_cases('n240_test0',Path(tmp),used)
+            assert len(cases)==10
+            assert not {x['formula_sha256'] for x in cases}&used
+          print('R20_FROZEN_SOURCE_HASH_SEEDS_AND_PROTOCOL_VALID')
+          PY
+      - name: Build pinned Kissat with LOCAL learned-clause-useful intervention
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r20_local_utility.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R20_DECISION
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R20_TRACE
+      - name: Real native SAT and UNSAT correctness for monitor/local/inverse
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/r20-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r20-unsat.cnf
+          for mode in r5_monitor r11_2048_50 r16_live50 r20_local50 r20_inverse50; do
+            set +e
+            DRNAS_R12_DEGREE_CV=.28 DRNAS_R13_N=240 DRNAS_R16_GINI=.16 DRNAS_R16_POLARITY=.22 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r20-sat.cnf >/tmp/r20-sat.log 2>&1
+            sat=$?
+            DRNAS_R12_DEGREE_CV=.28 DRNAS_R13_N=240 DRNAS_R16_GINI=.16 DRNAS_R16_POLARITY=.22 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r20-unsat.cnf >/tmp/r20-unsat.log 2>&1
+            unsat=$?
+            set -e
+            if [ "$sat" -ne 10 ] || [ "$unsat" -ne 20 ]; then
+              echo "R20 SAT/UNSAT ERROR mode=$mode SAT=$sat UNSAT=$unsat"
+              cat /tmp/r20-sat.log /tmp/r20-unsat.log
+              exit 1
+            fi
+          done
+      - name: Validate C vs Python learned-clause-usefulness score on real hard CNF
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r20_local_benchmark.py --smoke
+
+  benchmark:
+    name: R20 pinned same-core real SAT / ${{ matrix.category }}
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1,
+                   community_n220_development0, community_n220_test0,
+                   community_n240_development0, community_n240_test0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build original upstream pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Build same native binary for monitor forced R16 and R20 local/inverse
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r20_local_utility.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Build unmodified frozen stable V15.3.1 reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Execute 210 actual native SAT attempts and Python validation per case
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r20_local_benchmark.py --category '${{ matrix.category }}'
+          test -s 'drnas-r20-results/${{ matrix.category }}/measurements.csv'
+          test -s 'drnas-r20-results/${{ matrix.category }}/traces.jsonl'
+          test -s 'drnas-r20-results/${{ matrix.category }}/manifest.json'
+      - name: Archive full raw or partial failed shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r20-${{ matrix.category }}
+          path: drnas-r20-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R20 exact 3360 native solves and frozen local gate PAR2 bootstrap audit
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r20-*
+          path: r20-download
+          merge-multiple: false
+      - name: Audit complete raw, SAME runner, SAT truth, SHA, 1024 prefix and gate
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r20_local_analysis.py
+          test -s drnas-r20-results/aggregate/results.json
+          test -s drnas-r20-results/aggregate/paired.csv
+          test -s drnas-r20-results/aggregate/native_local_decisions.csv
+          test -s drnas-r20-results/aggregate/formula_features.csv
+      - name: Upload only verified aggregate or failure artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R20-Local-Clause-Utility-Real-Native-Analysis
+          path: drnas-r20-results/aggregate/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Commit validated R20 results into isolated branch only
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'experiment/drnas-r20-local-clause-utility-20261102'
+          mkdir -p experiments/drnas_v16/r20-results/current/
+          cp -a drnas-r20-results/aggregate/. experiments/drnas_v16/r20-results/current/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/drnas_v16/r20-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m 'data: R20 verified local learned-clause reuse native SAT benchmark [skip ci]'
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

@@ -1,0 +1,150 @@
+name: DRNAS R65 real SAT2026 bidirectional CNF XOR feedback and probing
+on:
+  push:
+    branches: [experiment/drnas-r65-xor-cnf-feedback-20261103]
+    paths:
+      - '.github/workflows/drnas-r65-xor-cnf-feedback.yml'
+      - 'experiments/drnas_v16/r65_xor_cnf_feedback.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r65-xor-cnf-feedback-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Validate sound XOR CNF feedback and SHA-freeze R63 R64 cohort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check semantics on complete XOR and partial XOR decoy truth tables
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65_xor_cnf_feedback.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r64-frozen-stratum-spec
+          run-id: 41711695189
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r64spec
+      - name: Verify originals and preserve R64 strata before R65 timing
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py freeze \
+            --sources sources/fresh --r64spec r64spec --out r65spec
+          test -s r65spec/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r65-source-sha-frozen-cohort
+          path: r65spec/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r65-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65-source-sha-frozen-cohort
+          path: r65spec
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify original SHA and pinned identical solver binaries
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Paired 40s baseline Kissat R28 and R65 CNF XOR interactions
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py measure \
+            --sources sources/fresh --spec r65spec \
+            --shard "$SHARD" --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r65-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r65-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r65-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R65 final matched end-to-end performance and validity audit
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r65-source-sha-frozen-cohort
+          path: r65spec
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r65-shard-*
+          path: combined
+      - name: Fail closed on missing formulas paired runs or binary SHA drift
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py audit \
+            --spec r65spec --combined combined \
+            --json r65-final.json --md r65-final.md
+          cat r65-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R65-XOR-CNF-FEEDBACK-FINAL
+          path: |
+            r65-final.json
+            r65-final.md
+            r65spec/manifest.json
+          if-no-files-found: error
+          retention-days: 90

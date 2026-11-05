@@ -1,0 +1,143 @@
+name: DRNAS R64 real SAT2026 mixed XOR implied clauses vs pinned Kissat
+on:
+  push:
+    branches: [experiment/drnas-r64-mixed-xor-implied-20261103]
+    paths:
+      - '.github/workflows/drnas-r64-mixed-xor-implied.yml'
+      - 'experiments/drnas_v16/r64_mixed_xor_implied.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r64-mixed-xor-implied-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze R64 structural strata from previously frozen R63 official 2026 originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Selftest XOR soundness and partial parity decoys
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r64_mixed_xor_implied.py
+          python3 -u experiments/drnas_v16/r64_mixed_xor_implied.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - name: Verify every source SHA and predeclare structural strata before new timings
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r64_mixed_xor_implied.py freeze \
+            --sources sources/fresh --out r64-spec
+          test -s r64-spec/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r64-frozen-stratum-spec
+          path: r64-spec/
+          if-no-files-found: error
+          retention-days: 90
+
+  bench:
+    name: r64-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r64-frozen-stratum-spec
+          path: r64-spec
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Validate original CNFs, unchanged binaries and manifest
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Matched three-mode 40s end-to-end comparison with original SAT witness verification
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r64_mixed_xor_implied.py measure \
+            --sources sources/fresh --spec r64-spec --shard "$SHARD" \
+            --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r64-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r64-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r64-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R64 final paired mixed exact XOR and negative-control regression audit
+    needs: [freeze,bench]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r64-frozen-stratum-spec
+          path: r64-spec
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r64-shard-*
+          path: combined
+      - name: Fail closed on incomplete paired trials or binary drift
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r64_mixed_xor_implied.py audit \
+            --spec r64-spec --combined combined \
+            --json r64-final.json --md r64-final.md
+          cat r64-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R64-MIXED-XOR-IMPLIED-CLAUSES-FINAL
+          path: |
+            r64-final.json
+            r64-final.md
+            r64-spec/manifest.json
+          if-no-files-found: error
+          retention-days: 90

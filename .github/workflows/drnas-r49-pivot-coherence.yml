@@ -1,0 +1,149 @@
+name: DRNAS R49 certified pivot-coherence gate on eight prior SATComp26 CNFs
+on:
+  push:
+    branches: [experiment/drnas-r49-pivot-coherence-gate-20261103]
+    paths:
+      - '.github/workflows/drnas-r49-pivot-coherence.yml'
+      - 'experiments/drnas_v16/r49_pivot_coherence_gate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r49-pivot-coherence-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Pin 8 original source SHA and independently certify all clauses before timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and mathematical self-test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r49_pivot_coherence_gate.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-frozen-source
+          run-id: 41669951007
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-pinned-binary
+          run-id: 41669951007
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify pinned source CNFs and unmodified solver binaries
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Freeze all eight SHA-pinned structural rule decisions without benchmark outcomes
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py freeze \
+            --frozen frozen --output r49-frozen-design.json
+          test -s r49-frozen-design.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-frozen-originals
+          path: frozen/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-pinned-clean-binary
+          path: compiled/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r49-frozen-preregistered-design
+          path: r49-frozen-design.json
+          if-no-files-found: error
+  paired:
+    name: r49-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 34
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-pinned-clean-binary
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-preregistered-design
+          path: design
+      - name: Reverify immutable source and pinned unchanged Kissat
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Six-policies randomized paired time trials, same runner and single CPU core
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py measure \
+            --frozen frozen --design design/r49-frozen-design.json \
+            --clean compiled/clean --shard "$SHARD" --out results | tee r49-live.log
+          test -s results/meta.json
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r49-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r49-live.log
+          if-no-files-found: warn
+  audit:
+    name: Rebuild 96 real raw measurements, SHA/proof/dedup audit, PAR2 and cohort separation
+    needs: [freeze, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-preregistered-design
+          path: design
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r49-shard-*
+          path: combined
+      - name: Publish report only when ALL four raw shards actually pass
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py aggregate \
+            --design design/r49-frozen-design.json \
+            --combined combined --output r49-results.json --report r49-results.md
+          test -s r49-results.json
+          test -s r49-results.md
+          cat r49-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R49-PIVOT-COHERENCE-FULL-96
+          path: |
+            r49-results.json
+            r49-results.md
+            design/r49-frozen-design.json
+          if-no-files-found: error

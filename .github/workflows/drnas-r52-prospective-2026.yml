@@ -1,0 +1,171 @@
+name: DRNAS R52 prospective official SAT2026 vs Kissat and CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-r52-fresh2026-toprefs-20261103]
+    paths:
+      - '.github/workflows/drnas-r52-prospective-2026.yml'
+      - 'experiments/drnas_v16/r52_prospective_2026_toprefs.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r52-prospective-2026-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Precommit unseen-to-R32p-R32r official 2026 original hashes and balanced cohort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight Python, full prior exclusion registry and fixed algorithm
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r52_prospective_2026_toprefs.py
+          python3 -m py_compile experiments/drnas_v16/r32t_certified_short_xor.py
+          python3 -m py_compile experiments/drnas_v16/r49_pivot_coherence_gate.py
+          test "$(git hash-object experiments/drnas_v16/r32t_certified_short_xor.py)" = 18bdc239f1b76dc8835f25e66779a9f98feaaf9b
+      - name: Independently freeze source files from official Main Track URI and public CaDiCaL strata
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r52_prospective_2026_toprefs.py freeze \
+            --out originals | tee r52-freeze.log
+          (cd originals && sha256sum -c source.sha256)
+          test -s originals/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r52-frozen-official-originals
+          path: |
+            originals/
+            r52-freeze.log
+          if-no-files-found: warn
+  binaries:
+    name: Build and pin exact 2026 reference lineages and R51 baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-pinned-clean-binary
+          run-id: 41676249421
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: pinned
+      - name: Pin immutable R49 / R51 clean Kissat
+        run: |
+          set -euo pipefail
+          (cd pinned && sha256sum -c binaries.sha256)
+          chmod +x pinned/clean
+          mkdir -p bins
+          cp pinned/clean bins/kissat_pinned
+      - name: Build reference Kissat 4.0.4 at audited pinned commit
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          test "$(git -C kissat-src rev-parse --short=7 HEAD)" = 8af8e56
+          (cd kissat-src && ./configure && make -j2 > /tmp/r52-kissat.log 2>&1) || { tail -100 /tmp/r52-kissat.log; exit 1; }
+          test -x kissat-src/build/kissat
+          cp kissat-src/build/kissat bins/kissat_4_0_4
+      - name: Build CaDiCaL 3.0.1 at audited pinned commit
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2 > /tmp/r52-cadical.log 2>&1) || { tail -100 /tmp/r52-cadical.log; exit 1; }
+          test -x cadical-src/build/cadical
+          cp cadical-src/build/cadical bins/cadical_3_0_1
+      - name: Log binary source and machine provenance
+        run: |
+          set -euo pipefail
+          chmod +x bins/*
+          (cd bins && sha256sum * > binaries.sha256)
+          lscpu > bins/runner-cpu.txt
+          git -C kissat-src rev-parse HEAD > bins/kissat-commit.txt
+          git -C cadical-src rev-parse HEAD > bins/cadical-commit.txt
+          echo R52_REFERENCE_PIN_PASS
+          cat bins/binaries.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          path: bins/
+          if-no-files-found: error
+  paired:
+    name: r52-shard-${{ matrix.shard }}
+    needs: [freeze, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          path: bins
+      - name: Audit all original SATComp26 SHA and unchanged native binaries before measuring
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1
+          (cd bins && sha256sum -c binaries.sha256)
+      - name: Randomized serial single-core 40s measurements, DRNAS R49 R32t and strong reference solvers
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r52_prospective_2026_toprefs.py measure \
+            --sources originals --shard "$SHARD" --out results \
+            --kissat_pinned bins/kissat_pinned \
+            --kissat_4_0_4 bins/kissat_4_0_4 \
+            --cadical_3_0_1 bins/cadical_3_0_1 | tee r52-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r52-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r52-live.log
+          if-no-files-found: warn
+  audit:
+    name: Rebuild SHA, answer, PAR2 and per-formula full world-reference comparison
+    needs: [freeze, binaries, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r52-shard-*
+          path: combined
+      - name: Independently fail closed unless all sources and 5 policies completed
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r52_prospective_2026_toprefs.py audit \
+            --sources originals --combined combined \
+            --out r52-final.json --markdown r52-final.md
+          cat r52-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R52-FRESH-SATCOMP2026-MATCHED-REFERENCE-FINAL
+          path: |
+            r52-final.md
+            r52-final.json
+            originals/manifest.json
+          if-no-files-found: error

@@ -1,0 +1,135 @@
+name: DRNAS R57 prospective frozen binary ratio structure selector
+on:
+  push:
+    branches: [experiment/drnas-r57-frozen-binary-ratio-gate-20261103]
+    paths:
+      - '.github/workflows/drnas-r57-frozen-binary-signal.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r57-binary-ratio-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze untouched 2026 originals and R56 threshold before looking at timings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight soundness proof and syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r57_frozen_binary_structure_gate.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old52
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          run-id: 41691243486
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old55
+      - name: Download SHA-disjoint 2026 official formulas from public score strata; freeze their features
+        run: |
+          set -euo pipefail
+          (cd old52/originals && sha256sum -c source.sha256)
+          (cd old55/fresh && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r57_frozen_binary_structure_gate.py freeze \
+            --r52-sources old52/originals --r55b-sources old55/fresh --out new | tee r57-freeze.log
+          (cd new && sha256sum -c source.sha256)
+          test -s new/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r57-new-source-and-precommitted-structural-gate
+          path: |
+            new/
+            r57-freeze.log
+          if-no-files-found: warn
+  trial:
+    name: r57-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r57-new-source-and-precommitted-structural-gate
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: binaries
+      - name: Recheck source and binary SHA before any new timing
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          (cd binaries && sha256sum -c binaries.sha256)
+          chmod +x binaries/kissat_pinned binaries/cadical_3_0_1
+      - name: Two repeated clean versus full40 versus frozen structural gate and CaDiCaL
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r57_frozen_binary_structure_gate.py measure \
+            --sources new --shard "$SHARD" \
+            --kissat binaries/kissat_pinned --cadical binaries/cadical_3_0_1 \
+            --out results | tee r57-trials.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r57-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r57-trials.log
+          if-no-files-found: warn
+  audit:
+    name: R57 final prospective structural gate audit on source-disjoint 2026 originals
+    needs: [freeze, trial]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r57-new-source-and-precommitted-structural-gate
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r57-shard-*
+          path: combined
+      - name: Verify 4-way pairing, 40s PAR2, identical binaries, no hidden result selection
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r57_frozen_binary_structure_gate.py audit \
+            --sources new --combined combined \
+            --json r57-final.json --md r57-final.md
+          cat r57-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R57-PRECOMMITTED-BINARY-GATE-FRESH2026-FINAL
+          path: |
+            r57-final.json
+            r57-final.md
+            new/manifest.json
+          if-no-files-found: error

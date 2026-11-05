@@ -1,0 +1,143 @@
+name: DRNAS SAT V9.9 - Identical 256-Conflict Prefix / Late Phase Causality
+on:
+  push:
+    branches: [experiment/drnas-sat-v99-identical-prefix-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-v99-identical-prefix.yml'
+      - 'research/drnas-sat-v7-8/v99_identical_prefix.py'
+      - 'research/drnas-sat-v7-8/v99_identical_prefix_probe.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v96-frozen-causal-input-manifest
+          run-id: 41239481557
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-v96
+      - uses: actions/download-artifact@v4
+        with:
+          name: v98-frozen-inputs
+          run-id: 41243419636
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-v98
+      - name: Validate old SHA256 manifests and freeze the new trial matrix
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v99_identical_prefix.py
+          (cd old-v96 && sha256sum -c v96_manifest.sha256)
+          (cd old-v98 && sha256sum -c v98_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v99_identical_prefix.py freeze \
+            --v96 old-v96/v96_manifest.json \
+            --v98 old-v98/v98_manifest.json --out v99_manifest.json
+          sha256sum v99_manifest.json > v99_manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v99-frozen-protocol-and-cases
+          path: |
+            v99_manifest.json
+            v99_manifest.sha256
+          if-no-files-found: warn
+  replay:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    name: v99-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v99-frozen-protocol-and-cases
+          path: frozen
+      - name: Build frozen CaDiCaL 3.0.1 with isolated V9.9 diagnostic modes
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v99_manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert s.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(s.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/v99-build.log 2>&1) \
+            || { tail -120 /tmp/v99-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v99_identical_prefix_probe.cpp \
+            cadical-src/build/libcadical.a -o v99_causal_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Run six seeded matched arms for each case, two repetitions
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v99_identical_prefix.py run \
+            --manifest frozen/v99_manifest.json --exe ./v99_causal_probe \
+            --shard "$SHARD" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v99-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    needs: [freeze,replay]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v99-frozen-protocol-and-cases
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v99-shard-*
+          path: combined
+      - name: Fail closed for 144 unique runs and identical 256-conflict telemetry
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v99_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v99_identical_prefix.py audit \
+            --manifest frozen/v99_manifest.json --combined combined \
+            --out v99_report.json --md v99_report.md
+          cat v99_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V99-144-Causal-Phase-Audit
+          path: |
+            frozen/
+            combined/
+            v99_report.json
+            v99_report.md
+          if-no-files-found: warn

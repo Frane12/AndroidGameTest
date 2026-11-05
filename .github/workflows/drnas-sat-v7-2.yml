@@ -1,0 +1,119 @@
+name: DRNAS SAT v7.2 Selective Phase Intelligence
+on:
+  push:
+    branches:
+      - research/drnas-sat-selective-v7-2
+    paths:
+      - research/drnas-sat-v7-2/**
+      - .github/workflows/drnas-sat-v7-2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-v7-2
+  cancel-in-progress: false
+jobs:
+  test-selectivity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build pinned official CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+      - name: Compile V7.2 selector using unmodified C++ CaDiCaL API
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            -I cadical-src/src \
+            research/drnas-sat-v7-2/selective_bench.cpp \
+            cadical-src/build/libcadical.a \
+            -o selective_bench -pthread -ldl -lz
+      - name: Pilot 24 cases x 3 repeats x 4 methods
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-2/generate_v72.py \
+            --outdir "$GITHUB_WORKSPACE/v72_pilot" \
+            --seed 20261121 --each 2
+          ./selective_bench \
+            "$GITHUB_WORKSPACE/v72_pilot/manifest.csv" \
+            "$GITHUB_WORKSPACE/v72_pilot/measurements.csv" \
+            3 20261121
+          python research/drnas-sat-v7-2/summarize_v72.py \
+            --csv "$GITHUB_WORKSPACE/v72_pilot/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v72_pilot/summary.json" \
+            > v72_pilot/summary_console.txt
+      - name: Independent holdout 204 CNFs x 3 repeats x 4 methods
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-2/generate_v72.py \
+            --outdir "$GITHUB_WORKSPACE/v72_holdout" \
+            --seed 20261122 --each 17
+          ./selective_bench \
+            "$GITHUB_WORKSPACE/v72_holdout/manifest.csv" \
+            "$GITHUB_WORKSPACE/v72_holdout/measurements.csv" \
+            3 20261122
+          python research/drnas-sat-v7-2/summarize_v72.py \
+            --csv "$GITHUB_WORKSPACE/v72_holdout/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v72_holdout/summary.json" \
+            > v72_holdout/summary_console.txt
+      - name: Publish speed and selector accuracy on ALL cases
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v72_holdout/summary.json').read_text())
+          rows=[
+            '## DRNAS-SAT v7.2: selective majority-phase gate',
+            f"New synthetic holdout: {s['instances']} CNFs, {s['repetitions']} repetitions, 12 distinct families",
+            f"Correct SAT/UNSAT: **{s['verified_sat_unsat']}/{s['instances']}**",
+            '',
+            '| Method | Sum of instance medians (ms) | Speedup vs CaDiCaL | Faster cases |',
+            '|---|---:|---:|---:|'
+          ]
+          for key,name in [
+            ('plain','CaDiCaL 3.0.1 plain'),
+            ('majority','Always majority phase'),
+            ('selective','DRNAS selective majority phase'),
+            ('gated_random','Same gate + random sign control')
+          ]:
+            m=s['timings'][key]
+            rows.append(f"| {name} | {m['sum_medians_ms']:.3f} | {m['speedup_plain_over_method']:.4f}x | {m['faster_cases']} |")
+          q=s['gate_accuracy_5pct_gain_target']
+          cost=s['selectivity_cost']
+          rows.extend([
+            '',
+            f"Selected: {s['selected_cases']}/{s['instances']}, rejected: {s['rejected_cases']}/{s['instances']}.",
+            f"Mean gate + majority-computation time: {cost['mean_gate_and_hint_us']:.2f} microseconds",
+            f"Mean rejected-case gate cost: {cost['mean_gate_only_us_for_rejected']:.2f} microseconds",
+            f"Exploratory selection precision for >=5% majority benefit: {q['precision']:.3f}; recall: {q['recall']:.3f}",
+            '',
+            "Gate uses only nvars, clauses/nvars, and 64 sampled clause widths. No solver feedback or family labels.",
+            "No CNF modification. Models checked. All processing time included. Detailed per-family outcomes and raw data in artifact.",
+            "Synthetic tests; results require independent public benchmark validation."
+          ])
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(rows)+'\n')
+          PY
+      - name: Preserve DIMACS, timings, summary and fixed source version
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v7-2-selectivity-benchmark
+          path: |
+            cadical-source-commit.txt
+            v72_pilot/
+            v72_holdout/
+          if-no-files-found: warn

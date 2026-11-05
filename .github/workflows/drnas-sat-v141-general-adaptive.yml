@@ -1,0 +1,260 @@
+name: DRNAS V14.1 - General Adaptive SAT vs Kissat, V7.6, V14.0
+on:
+  push:
+    branches: [experiment/drnas-v141-general-adaptive-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v141-general-adaptive.yml'
+      - 'research/drnas-sat-v7-8/v141_general_adaptive.cpp'
+      - 'research/drnas-sat-v7-8/v141_general_eval.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check 24 new non-XOR CNFs, independently proven status
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v141_general_eval.py
+          python3 -u research/drnas-sat-v7-8/v141_general_eval.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V139-new-SC2024-12-frozen-verified-CNFs
+          run-id: 41261415700
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Freeze the 12 actual previously-locked SAT Competition CNFs and 24 new synthetic
+        run: |
+          set -euo pipefail
+          (cd prior && sha256sum -c v139_manifest.sha256 && sha256sum -c v139_selector.sha256)
+          mkdir -p frozen
+          python3 -u research/drnas-sat-v7-8/v141_general_eval.py freeze \
+            --real prior/v139_manifest.json --out frozen/v141_manifest.json
+          (cd frozen && sha256sum v141_manifest.json > v141_manifest.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V141-36-SHA-pinned-new-and-real-CNFs
+          path: frozen/
+          if-no-files-found: error
+
+  build:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V140-Native-PHP-and-pinned-baselines
+          run-id: 41262816286
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original
+      - name: Compile original V14.0 plus new policy, pin all baseline binaries
+        run: |
+          set -euo pipefail
+          (cd original && sha256sum -c binaries.sha256)
+          mkdir -p output
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic \
+            research/drnas-sat-v7-8/v141_general_adaptive.cpp -o output/v141_general
+          cp original/v140_native output/v140_native
+          cp original/v76_solver output/v76_solver
+          cp original/legacy_solver output/legacy_solver
+          cp original/kissat_solver output/kissat_solver
+          chmod +x output/v141_general output/v140_native output/v76_solver \
+            output/legacy_solver output/kissat_solver
+          (cd output && sha256sum v141_general v140_native v76_solver legacy_solver kissat_solver > binaries.sha256)
+      - name: Smoke test SAT, UNSAT, exact PHP and label-blind policy
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          sys.path.insert(0,"research/drnas-sat-v7-8")
+          import v141_general_eval as suite
+          import v140_evaluate as php
+          import v761_xor_holdout as xor
+          import v137_fastpath as independently_verified
+          B=Path("output").resolve()
+          cmd=lambda p:[str(B/"v141_general"),str(p),str(B/"v140_native"),
+                        str(B/"v76_solver"),str(B/"kissat_solver"),"1412026"]
+          for index in (0,4,7):
+              m,raw=php.php(index)
+              p=Path("/tmp/v141_smoke.cnf");p.write_bytes(raw)
+              r=subprocess.run(cmd(p),text=True,capture_output=True,timeout=10)
+              assert r.returncode==0,(r.stdout,r.stderr)
+              line=next(s for s in r.stdout.splitlines() if s.startswith("DRNAS_HYBRID_RESULT\t"))
+              z=json.loads(line.split("\t",1)[1])
+              assert z["path"]=="pigeonhole_exact" and z["status"]=="UNSAT"
+              n,cl=independently_verified.read_dimacs(raw)
+              assert independently_verified.verify(n,cl,z)
+          for index in (0,5,32,47):
+              m,raw=xor.make(index)
+              p=Path("/tmp/v141_smoke.cnf");p.write_bytes(raw)
+              r=subprocess.run(cmd(p),text=True,capture_output=True,timeout=10)
+              assert r.returncode==0,(r.stdout,r.stderr)
+              line=next(s for s in r.stdout.splitlines() if s.startswith("DRNAS_HYBRID_RESULT\t"))
+              z=json.loads(line.split("\t",1)[1])
+              assert z["path"]=="affine_exact" and z["status"]==m["official_label"]
+              n,cl=independently_verified.read_dimacs(raw)
+              assert independently_verified.verify(n,cl,z)
+          for family in suite.FAMILIES:
+              m,raw=suite.synthetic(family,0)
+              p=Path("/tmp/v141_general.cnf");p.write_bytes(raw)
+              r=subprocess.run(cmd(p)+["--classify-only"],text=True,capture_output=True,timeout=10)
+              assert r.returncode==0 and "DRNAS_GENERAL_CLASSIFY\t" in r.stdout,(family,r.stdout,r.stderr)
+              # A general SAT solution must not rely on family metadata.
+              r=subprocess.run(cmd(p),text=True,capture_output=True,timeout=10)
+              isquick="DRNAS_GENERAL_RESULT\t" in r.stdout
+              iskissat="DRNAS_GENERAL_ROUTE\tkissat" in r.stdout
+              assert isquick or iskissat,(family,r.stdout,r.stderr)
+              if isquick:
+                  z=json.loads(next(s.split("\t",1)[1] for s in r.stdout.splitlines()
+                         if s.startswith("DRNAS_GENERAL_RESULT\t")))
+                  assert z["status"]==m["official_label"] and r.returncode==0
+              else:
+                  assert r.returncode==(10 if m["official_label"]=="SAT" else 20),(family,r.stdout,r.stderr)
+          print("V141_GENERAL_SELFTEST_PASS 3 PHP 4 XOR 3 non-XOR and independent SAT/UNSAT labels")
+          PY
+          (cd output && sha256sum -c binaries.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V141-General-Adaptive-and-pinned-baselines
+          path: output/
+          if-no-files-found: error
+
+  synthetic:
+    needs: [freeze,build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    name: v141-synthetic-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V141-36-SHA-pinned-new-and-real-CNFs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V141-General-Adaptive-and-pinned-baselines
+          path: bin
+      - name: Verify SHA-pinned files and run four methods, fixed 20s cutoff
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v141_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/v141_general bin/v140_native bin/v76_solver bin/legacy_solver bin/kissat_solver
+          python3 -u research/drnas-sat-v7-8/v141_general_eval.py synthetic \
+            --manifest frozen/v141_manifest.json --shard "$SHARD" \
+            --v141 bin/v141_general --v140 bin/v140_native \
+            --v76 bin/v76_solver --legacy bin/legacy_solver \
+            --kissat bin/kissat_solver --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v141-synthetic-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  real:
+    needs: [freeze,build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 34
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    name: v141-real-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V141-36-SHA-pinned-new-and-real-CNFs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V141-General-Adaptive-and-pinned-baselines
+          path: bin
+      - name: Verify historical real CNFs and compare four methods at 20s
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v141_manifest.sha256)
+          (cd bin && sha256sum -c binaries.sha256)
+          chmod +x bin/v141_general bin/v140_native bin/v76_solver bin/legacy_solver bin/kissat_solver
+          python3 -u research/drnas-sat-v7-8/v141_general_eval.py real \
+            --manifest frozen/v141_manifest.json --shard "$SHARD" \
+            --v141 bin/v141_general --v140 bin/v140_native \
+            --v76 bin/v76_solver --legacy bin/legacy_solver \
+            --kissat bin/kissat_solver --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v141-real-${{ matrix.shard }}
+          path: results/
+          if-no-files-found: warn
+
+  audit:
+    needs: [freeze,build,synthetic,real]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V141-36-SHA-pinned-new-and-real-CNFs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v141-synthetic-*
+          path: synthetic
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v141-real-*
+          path: real
+      - name: Strict paired 288-trial audit, separate real and synthetic cohorts
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v141_manifest.sha256)
+          mkdir -p combined
+          mv synthetic/v141-synthetic-* combined/
+          mv real/v141-real-* combined/
+          python3 -u research/drnas-sat-v7-8/v141_general_eval.py audit \
+            --manifest frozen/v141_manifest.json --combined combined \
+            --out v141_general_audit.json --md v141_general_audit.md
+          cat v141_general_audit.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V141-General-36-CNF-adaptive-final-audit
+          path: |
+            frozen/
+            combined/
+            v141_general_audit.json
+            v141_general_audit.md
+          if-no-files-found: warn

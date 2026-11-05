@@ -1,0 +1,128 @@
+name: DRNAS R27 universal-claim fresh six-family holdout
+on:
+  push:
+    branches: [experiment/drnas-r27-restart-universal-blind-20261103]
+    paths:
+      - '.github/workflows/drnas-r27-universal-holdout.yml'
+      - 'experiments/drnas_v16/patch_r27_cautious_gate.py'
+      - 'experiments/drnas_v16/r27_universal_fresh_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r27-universal-holdout
+  cancel-in-progress: false
+jobs:
+  freeze_build:
+    name: Freeze 72 fresh CNFs and compile SHA-pinned native Kissat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify scripts
+        run: python3 -m py_compile experiments/drnas_v16/patch_r27_cautious_gate.py experiments/drnas_v16/r27_universal_fresh_benchmark.py
+      - name: Compile SHA-pinned Kissat with R27 frozen policy
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r27kissat
+          git -C /tmp/r27kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r27kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r24_dynamics.py --kissat-root /tmp/r27kissat
+          python3 experiments/drnas_v16/r26_restart_regression_ablation.py patch --kissat-root /tmp/r27kissat
+          python3 experiments/drnas_v16/patch_r27_cautious_gate.py --kissat-root /tmp/r27kissat
+          (cd /tmp/r27kissat && ./configure && make -j2 >/tmp/r27-build.log)
+          mkdir -p compiled
+          cp /tmp/r27kissat/build/kissat compiled/kissat
+          chmod +x compiled/kissat
+          (cd compiled && sha256sum kissat > binary.sha256 && sha256sum -c binary.sha256)
+          compiled/kissat --version
+      - name: Freeze fresh SHA-stamped formula manifest
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r27_universal_fresh_benchmark.py prepare --outdir fresh-inputs
+          test "$(python3 -c 'import json;print(len(json.load(open("fresh-inputs/manifest.json"))["cases"]))')" = 72
+          (cd fresh-inputs && sha256sum *.cnf > cnf.sha256 && sha256sum -c cnf.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r27-identical-binary
+          path: compiled/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r27-72-frozen-cnfs
+          path: fresh-inputs/
+          if-no-files-found: error
+  holdout:
+    needs: freeze_build
+    name: r27-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r27-identical-binary
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: r27-72-frozen-cnfs
+          path: fresh-inputs
+      - name: Verify identical binaries and frozen inputs
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat
+          (cd compiled && sha256sum -c binary.sha256)
+          (cd fresh-inputs && sha256sum -c cnf.sha256)
+      - name: Paired native R27 holdout
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r27_universal_fresh_benchmark.py measure --inputs fresh-inputs --binary compiled/kissat --outdir results --shard "$SHARD" | tee r27-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r27-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r27-live.log
+          if-no-files-found: warn
+  final_audit:
+    needs: [freeze_build, holdout]
+    if: always()
+    name: Audit 720 paired measurements per family
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r27-72-frozen-cnfs
+          path: fresh-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r27-shard-*
+          path: combined
+      - name: Abort on missing shard or incorrect identities
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r27_universal_fresh_benchmark.py aggregate --inputs fresh-inputs --combined combined --output r27-results.json --md r27-results.md --csv r27-results.csv
+          cat r27-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R27-UNIVERSAL-FRESH-HOLDOUT-FINAL
+          path: |
+            r27-results.json
+            r27-results.md
+            r27-results.csv
+            fresh-inputs/manifest.json
+          if-no-files-found: warn

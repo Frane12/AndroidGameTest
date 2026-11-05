@@ -1,0 +1,109 @@
+name: DRNAS SAT V17.1 frozen target restart cascade filter
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v171-target-restart-filter-20261101'
+    paths:
+      - 'experiments/drnas_v16/shock_filter_v171.py'
+      - '.github/workflows/drnas-sat-v171-target-restart-filter.yml'
+
+jobs:
+  target-restart-filter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen filter before generating 171xxx CNFs
+        run: |
+          python3 -m py_compile experiments/drnas_v16/shock_filter_v171.py
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "experiments/drnas_v16")
+          import shock_filter_v171 as m
+          assert m.PINNED == "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert m.CAP == 6.0 and m.REPEATS == 2
+          assert m.TARGET_BUDGET == 0.80
+          assert m.RESTART_BUDGET == 1.20
+          assert m.RELATION_THRESHOLD == 16.45
+          assert m.HOLDOUT == tuple(range(171000, 171030))
+          assert m.CONTROLS == tuple(range(171030, 171036))
+          assert set(m.MODES) == {
+              "baseline", "target-only", "restart-only",
+              "cascade-trb", "cascade-rtb", "relation-filter",
+          }
+          assert m.ORDERS["trb"] == ("target-only", "restart-only", "baseline")
+          assert m.ORDERS["rtb"] == ("restart-only", "target-only", "baseline")
+          assert not Path("drnas-v171-results/cnf").exists()
+          print("V171_SOURCE_FILTER_FROZEN_BEFORE_HOLDOUT")
+          PY
+      - name: Compile exact pinned Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v171
+          cd /tmp/kissat-v171
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Run 30 unseen formulas and 6 density controls across six modes
+        run: |
+          python3 -u experiments/drnas_v16/shock_filter_v171.py \
+            --solver /tmp/kissat-v171/build/kissat \
+            --root drnas-v171-results --timeout 6 --repeats 2
+      - name: Audit identities pairs routes stage budgets and wall caps
+        run: |
+          python3 - <<'PY'
+          import csv, json
+          from collections import defaultdict
+          from pathlib import Path
+          root = Path("drnas-v171-results")
+          with (root / "measurements.csv").open(newline="") as source:
+              rows = list(csv.DictReader(source))
+          with (root / "identities.csv").open(newline="") as source:
+              identities = list(csv.DictReader(source))
+          manifest = json.loads((root / "manifest.json").read_text())
+          summary = json.loads((root / "summary.json").read_text())
+          assert len(rows) == 36 * 6 * 2 == 432
+          assert len(identities) == len(manifest["cases"]) == 36
+          assert manifest["target_probe_seconds"] == 0.8
+          assert manifest["restart_probe_seconds"] == 1.2
+          assert manifest["frozen_relation_threshold"] == 16.45
+          assert {int(row["seed"]) for row in identities} == set(range(171000, 171036))
+          paired = defaultdict(dict)
+          for row in rows:
+              assert row["status"] in ("SAT", "UNSAT", "TIMEOUT")
+              assert float(row["total_seconds"]) <= 6.25
+              trace = json.loads(row["stage_trace"])
+              assert trace
+              if row["mode"] in ("baseline", "target-only", "restart-only"):
+                  assert len(trace) == 1
+                  assert trace[0]["budget"] == 6.0
+              for stage in trace:
+                  if stage["stage"] == "target-only" and len(trace) > 1:
+                      assert stage["budget"] <= 0.801
+                  if stage["stage"] == "restart-only" and len(trace) > 1:
+                      assert stage["budget"] <= 1.201
+              paired[(row["seed"], row["repeat"])][row["mode"]] = row
+              if row["mode"] == "relation-filter":
+                  if row["group"] == "control":
+                      assert row["route"] == "baseline-only"
+                  else:
+                      expected = "trb" if float(row["mean_core"]) <= 16.45 else "rtb"
+                      assert row["route"] == expected, row
+          assert len(paired) == 72
+          assert all(len(modes) == 6 for modes in paired.values())
+          assert summary["pin"] == "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          print("V171_INDEPENDENT_AUDIT_PASS", len(rows), "paired measurements")
+          PY
+      - name: Upload filtered cascade results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V171-frozen-target-restart-filter
+          path: |
+            drnas-v171-results/manifest.json
+            drnas-v171-results/identities.csv
+            drnas-v171-results/measurements.csv
+            drnas-v171-results/summary.json
+          if-no-files-found: warn

@@ -1,0 +1,175 @@
+name: DRNAS R80 SAT2026 Structurally Selected XOR - No Speed-Based Selection
+on:
+  push:
+    branches: [experiment/drnas-r80-sat2026-xor-structure-only-20261104]
+    paths:
+      - '.github/workflows/drnas-r80-sat2026-xor-structure-only.yml'
+      - 'experiments/drnas_v16/r80_xor_structure_only.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r80-sat-xor-structural-20261104
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    name: Verify 2026 originals and freeze 24 XOR-structure cohort WITHOUT speed screening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile check and inherited R65 semantic selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r80_xor_structure_only.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: sources
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify immutable SHA256 and select by XOR proof pattern only
+        run: |
+          set -euo pipefail
+          (cd sources/fresh && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat
+          python3 -u experiments/drnas_v16/r80_xor_structure_only.py freeze \
+            --sources sources/fresh --kissat compiled/kissat --out world | tee r80-freeze.log
+          (cd world && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r80-structurally-selected-original-sources
+          path: |
+            world/
+            r80-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  prepare:
+    name: Pin unchanged Kissat and unchanged R28 exact GF2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: SHA verify and restore executable permissions
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+          mkdir -p bin
+          cp compiled/kissat compiled/r28_gf2 bin/
+          chmod +x bin/kissat bin/r28_gf2
+          (cd bin && sha256sum kissat r28_gf2 > binary.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          lscpu > bin/runner_cpu.txt
+          echo "R80_PINNED_BINARIES_PASS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r80-verified-binaries
+          path: bin/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r80-shard-${{ matrix.shard }}
+    needs: [freeze,prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 43
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-verified-binaries
+          path: bin
+      - name: 3 paired repeats per input, 4 methods, real end-to-end 30s caps
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u experiments/drnas_v16/r80_xor_structure_only.py measure \
+            --sources world --binaries bin --shard "$SHARD" --out results | tee r80-live.log
+          test -s results/r80-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r80-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r80-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R80 final official-status, SHA256, PAR2, paired scatter XOR structural audit
+    needs: [freeze,prepare,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r80-structurally-selected-original-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r80-shard-*
+          path: combined
+      - name: Fail closed on missing measurements, pinned hashes, or verdict conflict
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r80_xor_structure_only.py audit \
+            --sources world --combined combined --out final
+          cat final/r80-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R80-XOR-STRUCTURE-NO-SPEED-SELECTION-FINAL
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90

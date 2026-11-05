@@ -1,0 +1,94 @@
+name: DRNAS SAT V17.6 conflict-window 20+20 paired A/B
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v176-20x20-conflict-window-20261101'
+    paths:
+      - '.github/workflows/drnas-sat-v176-conflict-window.yml'
+      - 'experiments/drnas_v16/conflict_window_v176.py'
+jobs:
+  dev:
+    name: Conflict threshold A/B - 20 development formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze policy and compile Python
+        run: |
+          python3 -m py_compile experiments/drnas_v16/conflict_window_v176.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import conflict_window_v176 as x
+          assert x.CAP==2.5 and len(x.MODES)==7 and len(x.DEV)==20
+          assert x.HOLDOUT==tuple(range(176100,176120))
+          assert x.PINNED=="8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          assert set(x.DEV).isdisjoint(x.HOLDOUT)
+          print("V176_FROZEN_PROTOCOL_PASS")
+          PY
+      - name: Build exact Kissat 4.0.4 + conflict switch instrument
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v176
+          git -C /tmp/kissat-v176 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/conflict_window_v176.py --kissat-root /tmp/kissat-v176
+          cd /tmp/kissat-v176
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Paired development conflicts - 20 formulas times seven interventions
+        run: |
+          python3 -u experiments/drnas_v16/conflict_window_v176.py \
+            --solver /tmp/kissat-v176/build/kissat \
+            --stage dev --root drnas-v176-dev
+      - name: Publish development measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V176-conflict-dev
+          path: |
+            drnas-v176-dev/manifest.json
+            drnas-v176-dev/measurements.partial.csv
+            drnas-v176-dev/snapshots.partial.csv
+            drnas-v176-dev/measurements.csv
+            drnas-v176-dev/snapshots.csv
+            drnas-v176-dev/ranking.csv
+            drnas-v176-dev/summary.json
+          if-no-files-found: warn
+  holdout:
+    name: Independent frozen conflict test - 20 unseen formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze prospective unknown seeds
+        run: |
+          python3 -m py_compile experiments/drnas_v16/conflict_window_v176.py
+          grep -q 'HOLDOUT=tuple(range(176100,176120))' experiments/drnas_v16/conflict_window_v176.py
+      - name: Build identical exact pinned Kissat
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v176
+          git -C /tmp/kissat-v176 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/conflict_window_v176.py --kissat-root /tmp/kissat-v176
+          cd /tmp/kissat-v176
+          ./configure
+          make -j2
+      - name: Run seven frozen policies on 20 untouched 1761xx formulas
+        run: |
+          python3 -u experiments/drnas_v16/conflict_window_v176.py \
+            --solver /tmp/kissat-v176/build/kissat \
+            --stage holdout --root drnas-v176-holdout
+      - name: Publish untouched prospective comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V176-conflict-holdout
+          path: |
+            drnas-v176-holdout/manifest.json
+            drnas-v176-holdout/measurements.partial.csv
+            drnas-v176-holdout/snapshots.partial.csv
+            drnas-v176-holdout/measurements.csv
+            drnas-v176-holdout/snapshots.csv
+            drnas-v176-holdout/ranking.csv
+            drnas-v176-holdout/summary.json
+          if-no-files-found: warn

@@ -1,0 +1,197 @@
+name: DRNAS SAT V17.3 short paired A-B successive halving
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v173-short-ab-race-20261101'
+    paths:
+      - 'experiments/drnas_v16/short_ab_race_v173.py'
+      - '.github/workflows/drnas-sat-v173-short-ab-race.yml'
+
+concurrency:
+  group: drnas-v173-short-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    name: 'A/B phase 1 - quick screen (6 formulas)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate source and pinned plan
+        run: |
+          python3 -m py_compile experiments/drnas_v16/short_ab_race_v173.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'experiments/drnas_v16')
+          import short_ab_race_v173 as x
+          assert x.PINNED=='8af8e56f174b778aef3aa45af9f739b2a5f492c2'
+          assert x.CAPS == {'screen':1.5,'refine':2.5,'holdout':3.0}
+          assert x.REPEATS == {'screen':1,'refine':1,'holdout':2}
+          assert not set(x.SEEDS['holdout']) & (set(x.SEEDS['screen']) | set(x.SEEDS['refine']))
+          assert len(x.MODES)==6
+          print('V173_FROZEN_PROTOCOL_PASS')
+          PY
+      - name: Build pinned baseline Kissat 4.0.4
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v173
+          git -C /tmp/kissat-v173 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cd /tmp/kissat-v173
+          ./configure
+          make -j2
+      - name: Screen six strategies on matched development formulas
+        run: |
+          python3 -u experiments/drnas_v16/short_ab_race_v173.py \
+            --solver /tmp/kissat-v173/build/kissat \
+            --stage screen --root drnas-v173-screen
+      - name: Upload compact phase-one ledger and elimination shortlist
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V173-screen
+          path: |
+            drnas-v173-screen/manifest.json
+            drnas-v173-screen/measurements.partial.csv
+            drnas-v173-screen/leaderboard.partial.csv
+            drnas-v173-screen/measurements.csv
+            drnas-v173-screen/leaderboard.csv
+            drnas-v173-screen/decision.json
+          if-no-files-found: warn
+
+  refine:
+    name: 'A/B phase 2 - survivors only (5 fresh dev formulas)'
+    needs: screen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      promote: ${{ steps.gate.outputs.promote }}
+      winner: ${{ steps.gate.outputs.winner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V173-screen
+          path: input
+      - name: Build identical pinned Kissat
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v173
+          git -C /tmp/kissat-v173 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cd /tmp/kissat-v173
+          ./configure
+          make -j2
+      - name: Refine using new development seeds and freeze winner
+        run: |
+          python3 -u experiments/drnas_v16/short_ab_race_v173.py \
+            --solver /tmp/kissat-v173/build/kissat \
+            --stage refine --root drnas-v173-refine --previous input/decision.json
+      - name: Conditional promotion gate - avoid worst-case regressions
+        id: gate
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv, json, os
+          from pathlib import Path
+          root=Path("drnas-v173-refine")
+          decision=json.loads((root/"decision.json").read_text())
+          with (root/"measurements.csv").open(newline="") as f:
+              measured=list(csv.DictReader(f))
+          board=decision["leaderboard"]
+          winner=board[0]
+          controls={r["mode"]:r for r in board if r["mode"] in ("baseline","restart50")}
+          assert len(controls)==2
+          paired={}
+          for r in measured:
+              paired.setdefault((r["seed"],r["repeat"]),{})[r["mode"]]=r
+          assert len(paired)==5
+          regressions=sum(
+              x["baseline"]["status"] in ("SAT","UNSAT") and
+              x[winner["mode"]]["status"]=="TIMEOUT"
+              for x in paired.values()
+          )
+          rescues=sum(
+              x["baseline"]["status"]=="TIMEOUT" and
+              x[winner["mode"]]["status"] in ("SAT","UNSAT")
+              for x in paired.values()
+          )
+          control_par2=min(x["PAR2_seconds"] for x in controls.values())
+          control_solved=max(x["solved"] for x in controls.values())
+          relative_gain=(control_par2-winner["PAR2_seconds"])/max(control_par2,1e-12)
+          promote=(
+              winner["mode"] not in controls and
+              relative_gain>=0.03 and
+              winner["solved"]>=control_solved and
+              regressions==0
+          )
+          reason=("challenger beats both controls on guarded development checks"
+                  if promote else
+                  "no challenger safely beats the best control; do not spend blind holdout budget")
+          decision["promotion_gate"]={
+              "promote":promote,"reason":reason,"baseline_regressions":regressions,
+              "baseline_rescues":rescues,"gain_vs_best_control_percent":round(100*relative_gain,3),
+              "min_gain_percent":3.0,"winner":winner["mode"]
+          }
+          (root/"decision.json").write_text(json.dumps(decision,indent=2)+"\n")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as out:
+              out.write("promote="+("true" if promote else "false")+"\n")
+              out.write("winner="+winner["mode"]+"\n")
+          print("V173_CONDITIONAL_GATE",json.dumps(decision["promotion_gate"],sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as summary:
+              summary.write("## DRNAS V17.3 paired A/B ranking\n")
+              summary.write("| Mode | Solved | PAR-2 (s) |\n|---|---:|---:|\n")
+              for r in board:
+                  summary.write(f'| {r["mode"]} | {r["solved"]}/{r["attempts"]} | {r["PAR2_seconds"]:.4f} |\n')
+              summary.write(f'\n**Winner:** {winner["mode"]}. **Promote to blind:** {promote}. '
+                            f'{reason}. Baseline regressions: {regressions}.\n')
+          PY
+      - name: Upload phase-two ranking and frozen policy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V173-refine
+          path: |
+            drnas-v173-refine/manifest.json
+            drnas-v173-refine/measurements.partial.csv
+            drnas-v173-refine/leaderboard.partial.csv
+            drnas-v173-refine/measurements.csv
+            drnas-v173-refine/leaderboard.csv
+            drnas-v173-refine/decision.json
+          if-no-files-found: warn
+
+  holdout:
+    name: 'A/B phase 3 - frozen blind paired confirmation (5 formulas x 2)'
+    needs: refine
+    if: needs.refine.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V173-refine
+          path: input
+      - name: Build identical pinned Kissat
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v173
+          git -C /tmp/kissat-v173 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cd /tmp/kissat-v173
+          ./configure
+          make -j2
+      - name: Confirm frozen winner without holdout-driven changes
+        run: |
+          python3 -u experiments/drnas_v16/short_ab_race_v173.py \
+            --solver /tmp/kissat-v173/build/kissat \
+            --stage holdout --root drnas-v173-holdout --previous input/decision.json
+      - name: Upload independent confirmation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V173-holdout
+          path: |
+            drnas-v173-holdout/manifest.json
+            drnas-v173-holdout/measurements.partial.csv
+            drnas-v173-holdout/leaderboard.partial.csv
+            drnas-v173-holdout/measurements.csv
+            drnas-v173-holdout/leaderboard.csv
+            drnas-v173-holdout/decision.json
+          if-no-files-found: warn

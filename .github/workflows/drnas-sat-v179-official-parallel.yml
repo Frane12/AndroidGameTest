@@ -1,0 +1,90 @@
+name: DRNAS SAT V17.9 Official 2026 parallel paired strategies
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-v179-official-cadical-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v179-official-parallel.yml'
+      - 'experiments/drnas_v16/official_parallel_v179.py'
+permissions:
+  contents: read
+jobs:
+  official_batch:
+    name: 2026 Main official CNFs shard ${{ matrix.batch }} paired policies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        batch: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen experiment and pinned source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/official_parallel_v179.py
+          python3 -m py_compile experiments/drnas_v16/predict_conflict_patch_v177.py
+          test -s research/drnas-sat-v7-8/v1531_nohang.cpp
+      - name: Compile stable V15.3.1 No-Hang reference
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+      - name: Compile exact pinned Kissat with frozen in-process V17.7 instrument
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v179
+          git -C /tmp/kissat-v179 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v179 rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v179
+          (cd /tmp/kissat-v179 && ./configure && make -j2)
+          /tmp/kissat-v179/build/kissat --version
+      - name: Build external CaDiCaL 3.0.1 (pinned upstream; not an exact competition submission)
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/cadical-v179
+          git -C /tmp/cadical-v179 checkout --detach c60730422e758ef1cebe7aeddf2dda31c996bf04
+          test "$(git -C /tmp/cadical-v179 rev-parse HEAD)" = "c60730422e758ef1cebe7aeddf2dda31c996bf04"
+          (cd /tmp/cadical-v179 && ./configure && make -j2)
+          /tmp/cadical-v179/build/cadical --version
+      - name: Fetch untouched official 2026 CNFs and test five frozen strategies on same runner
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_parallel_v179.py --batch "${{ matrix.batch }}"
+      - name: Publish hashes, sources and complete or partial timing data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch_${{ matrix.batch }}
+          path: |
+            drnas-v179-official-results/batch_${{ matrix.batch }}/manifest.json
+            drnas-v179-official-results/batch_${{ matrix.batch }}/official_track_uri_sha256.txt
+            drnas-v179-official-results/batch_${{ matrix.batch }}/frozen_v177_rule.txt
+            drnas-v179-official-results/batch_${{ matrix.batch }}/measurements.partial.csv
+            drnas-v179-official-results/batch_${{ matrix.batch }}/measurements.csv
+            drnas-v179-official-results/batch_${{ matrix.batch }}/summary.json
+          if-no-files-found: warn
+  aggregate:
+    name: Combined official-instance PAR-2 and formula-cluster uncertainty
+    needs: official_batch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all four parallel shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batch_*
+          path: drnas-v179-official-results
+      - name: Independently consolidate paired official results
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_parallel_v179.py --aggregate
+      - name: Publish combined summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V179-Official-2026-Combined
+          path: drnas-v179-official-results/aggregate.json
+          if-no-files-found: warn

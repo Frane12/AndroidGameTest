@@ -1,0 +1,159 @@
+name: DRNAS R28 exact GF2 native 240-formula holdout
+on:
+  push:
+    branches: [experiment/drnas-r28-exact-gf2-proof-multifamily-20261103]
+    paths:
+      - '.github/workflows/drnas-r28-exact-gf2.yml'
+      - 'experiments/drnas_v16/r28_exact_gf2.cpp'
+      - 'experiments/drnas_v16/r28_exact_gf2_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r28-gf2-validated-dimacs-v2
+  cancel-in-progress: true
+jobs:
+  freeze_and_build:
+    name: Build original Kissat and R28; replay the known R27 XOR regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax and compiler version
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r28_exact_gf2_benchmark.py
+          g++ --version | head -1
+      - name: Build SHA-pinned original Kissat and separate R28 proof front end
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r28-kissat-clean
+          git -C /tmp/r28-kissat-clean checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r28-kissat-clean rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/r28-kissat-clean && ./configure && make -j2 >/tmp/r28-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/r28-kissat-clean/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 -Wall -Wextra -pedantic experiments/drnas_v16/r28_exact_gf2.cpp -o compiled/r28_gf2
+          chmod +x compiled/r28_gf2 compiled/kissat
+          (cd compiled && sha256sum r28_gf2 kissat > binary.sha256 && sha256sum -c binary.sha256)
+      - name: Freeze 240 unused SHA-distinct cases
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_exact_gf2_benchmark.py prepare --outdir frozen
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Replay previously problematic Tseitin XOR CNF, verify SAT/UNSAT proof
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_exact_gf2_benchmark.py known \
+            --binary compiled/r28_gf2 --kissat compiled/kissat --outdir diagnostic \
+            | tee r28-known.log
+          test -s diagnostic/known_replay.json
+          python3 - <<'PY'
+          import json
+          j=json.load(open('diagnostic/known_replay.json'))
+          assert len(j['R28_exact_gf2'])==3
+          assert all(x['status']=='UNSAT' and x['proof']=='GF2_independently_verified'
+                     for x in j['R28_exact_gf2']), j
+          print('R28_KNOWN_INDEPENDENT_PROOF_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r28-identical-binaries
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r28-240-frozen-inputs
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28-known-case-proof
+          path: |
+            diagnostic/known_replay.json
+            r28-known.log
+          if-no-files-found: warn
+          retention-days: 90
+  holdout:
+    needs: freeze_and_build
+    name: R28 fresh shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          path: compiled
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-240-frozen-inputs
+          path: frozen
+      - name: Check immutable binary and input hashes
+        run: |
+          set -euo pipefail
+          chmod +x compiled/r28_gf2 compiled/kissat
+          (cd compiled && sha256sum -c binary.sha256)
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Run SHA-matched clean Kissat vs R28 native GF2
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_exact_gf2_benchmark.py measure \
+            --inputs frozen --binary compiled/r28_gf2 --kissat compiled/kissat \
+            --outdir results --shard "$SHARD" | tee r28-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r28-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  final_audit:
+    needs: [freeze_and_build, holdout]
+    if: always()
+    name: Aggregate 960 paired attempts and independently checked proof counts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-240-frozen-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r28-shard-*
+          path: combined
+      - name: Abort if any trial, proof, shard or binary identity fails
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r28_exact_gf2_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r28-results.json \
+            --report r28-report.md --csv r28-results.csv
+          cat r28-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R28-FINAL-PROOF-AND-BENCHMARK
+          path: |
+            r28-results.json
+            r28-results.csv
+            r28-report.md
+            frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
