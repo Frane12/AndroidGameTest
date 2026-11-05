@@ -201,9 +201,9 @@ def freeze():
     manifest["r151_no_solver_timed_before_freeze"]=True
     manifest["r151_selection_uninformed_by_runtime"]=True
     write(SOURCE/"manifest.json",manifest)
-    print("R151_FREEZE_FINAL",json.dumps(dict(count=len(selected),cohorts=manifest["counts"],
-       exclusions=prior_hashes,rejections=dict(rejects),manifest_sha256=sha(SOURCE/"manifest.json")),
-       flush=True,sort_keys=True)
+    payload=dict(count=len(selected),cohorts=manifest["counts"],
+        exclusions=prior_hashes,rejections=dict(rejects),manifest_sha256=sha(SOURCE/"manifest.json"))
+    print("R151_FREEZE_FINAL",json.dumps(payload,sort_keys=True),flush=True)
 def cases():
     base_config()
     cs=b.cases()
