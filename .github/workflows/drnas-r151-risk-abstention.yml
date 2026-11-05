@@ -1,0 +1,182 @@
+name: DRNAS R151 symmetric risk-aware abstention prospective SAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-r151-risk-abstention-20261105]
+    paths: ['.github/workflows/drnas-r151-risk-abstention.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r151-frozen-prospective-20261105
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Frozen risk-model training and strictly disjoint independent source acquisition
+    runs-on: ubuntu-24.04
+    timeout-minutes: 140
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and lint before any expensive acquisitions
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r151_risk_benchmark.py research/r150_quality_benchmark.py
+          mkdir -p r151
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r150_features.cpp -o r151/features
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r151_risk_selector.cpp -o r151/selector
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          run-id: 42073257009
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r151-history
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150-prior-r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r151-prior-r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          run-id: 42068101730
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r151-prior-r135s
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R148-NEW-REAL-BLIND-50-FIVEWAY-FINAL-PAR2-AUDIT
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r151-prior-r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r151-prior-r150
+      - name: Train only from historical 400 then freeze untouched, SHA-disjoint real CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/r151_risk_benchmark.py train | tee r151/training.log
+          test -s r151/model.txt
+          python3 -u research/r151_risk_benchmark.py freeze | tee r151/freezing.log
+          test -s r151/holdout/manifest.json
+          grep -q '^R151_FREEZE_FINAL ' r151/freezing.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          path: |
+            r151/model.txt
+            r151/training.json
+            r151/training.log
+            r151/freezing.log
+            r151/holdout/
+          retention-days: 90
+  benchmark:
+    name: R151 paired pristine SHA CNF shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          path: r151
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify pinned solver binaries and build read-only native selectors
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r151_risk_selector.cpp -o r151/selector
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/r148_exact_fast_selector.cpp -o r151/r148_selector
+      - name: Fixed 15s randomized paired Kissat CaDiCaL R148 R151_05 R151_15 SAT benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/r151_risk_benchmark.py run --shard ${{ matrix.shard }} | tee r151/shard-${{ matrix.shard }}.log
+          test -s r151/shard-${{ matrix.shard }}.json
+          grep -q '^R151_SHARD_PASS ' r151/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r151-shard-${{ matrix.shard }}
+          path: |
+            r151/shard-${{ matrix.shard }}.json
+            r151/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: SHA strict correctness PAR2 regression detector and confidence audit, no reruns
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          path: r151
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r151-shard-*
+          merge-multiple: true
+          path: r151
+      - name: Audit complete 5-way pairs, original CNF SAT models, SHA, timing and error risk
+        run: |
+          set -euo pipefail
+          test "$(find r151 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r151_risk_benchmark.py audit | tee r151/audit.log
+          grep -q '^R151_FINAL ' r151/audit.log
+          cat r151/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          path: |
+            r151/report.json
+            r151/paired.csv
+            r151/per_formula.csv
+            r151/audit.log
+            r151/training.json
+            r151/model.txt
+            r151/holdout/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
