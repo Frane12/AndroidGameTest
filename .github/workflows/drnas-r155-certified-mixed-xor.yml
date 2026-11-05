@@ -1,0 +1,169 @@
+name: DRNAS R155 certified partial XOR to mixed CNF six-way proof and PAR2
+on:
+  push:
+    branches: [experiment/drnas-r155-certified-mixed-xor-closure-20261105]
+    paths:
+      - '.github/workflows/drnas-r155-certified-mixed-xor.yml'
+      - 'research/r155_mixed_xor_closure.cpp'
+      - 'research/r155_mixed_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r155-exact-original-mixed-XOR-development-20261105
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Compile certified GF2, pin original CNFs and 4 independent proof smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile checked native R155 R153 R28 and Python scripts before measuring
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r155_mixed_benchmark.py research/r154_unseen_benchmark.py research/r115_world_top_rematch.py
+          mkdir -p r155
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r155_mixed_xor_closure.cpp -o r155/r155
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r155/r153
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r155/r28
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          run-id: 42107642696
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r155
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Run strict four mathematical smoke cases before 300 timed attempts
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | tee r155/cryptominisat-package.txt
+          python3 -u research/r155_mixed_benchmark.py smoke | tee r155/smoke.log
+          test "$(grep -c '^R155_SELFTEST_PASS ' r155/smoke.log)" -eq 4
+          sha256sum r155/r155 r155/r153 r155/r28 > r155/native-binaries.sha256
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          m=json.loads(pathlib.Path('r155/frozen/manifest.json').read_text())
+          assert len(m['cases'])==25
+          for c in m['cases']:
+            f=pathlib.Path('r155/frozen')/(c['id']+'.cnf')
+            assert f.is_file()
+            assert hashlib.sha256(f.read_bytes()).hexdigest()==c['sha256']
+          print('R155_PINNED_ORIGINAL_25_WITH_VALIDATED_SHORT_GF2_PROOFS_PASS',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          path: |
+            r155/frozen/
+            r155/r155
+            r155/r153
+            r155/r28
+            r155/native-binaries.sha256
+            r155/cryptominisat-package.txt
+            r155/smoke.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R155 source-certified GF2 mixed six-competitor shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          path: r155
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify frozen binaries, original sources, CryptoMiniSat package
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          chmod +x r155/r155 r155/r153 r155/r28
+          sha256sum -c r155/native-binaries.sha256
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | cmp - r155/cryptominisat-package.txt
+      - name: Paired original-CNF 15s 2 repetitions R155 vs R153 R28 Kissat CaDiCaL CryptoMiniSat
+        run: |
+          set -euo pipefail
+          python3 -u research/r155_mixed_benchmark.py run --shard ${{ matrix.shard }} | tee r155/shard-${{ matrix.shard }}.log
+          grep -q '^R155_SHARD_PASS ' r155/shard-${{ matrix.shard }}.log
+          test -s r155/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r155-shard-${{ matrix.shard }}
+          path: |
+            r155/shard-${{ matrix.shard }}.json
+            r155/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Validate full 300 paired SHA and independent GF2 entailment with PAR2 regression audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          path: r155
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r155-shard-*
+          merge-multiple: true
+          path: r155
+      - name: Strict original SHA pairs, source-entailment, verified SAT, GF2 UNSAT and regressions
+        run: |
+          set -euo pipefail
+          test "$(find r155 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r155_mixed_benchmark.py audit | tee r155/audit.log
+          grep -q '^R155_FINAL ' r155/audit.log
+          cat r155/audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R155-25-MIXED-ORIGINALS-6WAY-CERTIFIED-GF2-PAR2-FINAL
+          path: |
+            r155/audit.json
+            r155/per_formula.csv
+            r155/paired.csv
+            r155/audit.log
+            r155/native-binaries.sha256
+            r155/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
