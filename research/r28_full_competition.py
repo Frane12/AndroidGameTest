@@ -195,6 +195,25 @@ def cases():
     need(65<=len(cs)<=sum(QUOTAS.values()) and len({c["sha256"] for c in cs})==len(cs),
          "source count or uniqueness invalid")
     return cs,m
+def verify_original_sat(src,output):
+    # A satisfying partial assignment is sufficient if EVERY original clause
+    # already contains a signed literal assigned true. Reject contradictions.
+    n,clauses=witness.parse_clauses(src)
+    truth={}
+    for line in output.decode(errors="replace").splitlines():
+        if not line.startswith("v "):continue
+        for token in line[2:].split():
+            lit=int(token)
+            if not lit:continue
+            need(0<abs(lit)<=n,"SAT model literal outside original DIMACS")
+            val=(lit>0)
+            if abs(lit) in truth:need(truth[abs(lit)]==val,"contradictory model assignment")
+            truth[abs(lit)]=val
+    need(bool(truth),"SAT witness missing")
+    need(all(any(truth.get(abs(v))==(v>0) for v in cl) for cl in clauses),
+         "SAT witness fails original CNF clause")
+    return True
+
 def trial(c,mode,rep):
     src=(INPUT/c["id"]).resolve()
     need(fsha(src)==c["sha256"],"original source SHA mismatch")
@@ -213,7 +232,7 @@ def trial(c,mode,rep):
                "gf2_unsat" if b"c R28_ROUTE certified_xor_contradiction" in output else
                "fallback" if mode=="r28" else "native")
         if status=="SAT":
-            witness.sat_model_check(src,output)
+            verify_original_sat(src,output)
             proof="original_CNF_SAT_witness_validated"
         elif mode=="r28" and route=="gf2_unsat":
             witness.xor_unsat_check(src,output)
