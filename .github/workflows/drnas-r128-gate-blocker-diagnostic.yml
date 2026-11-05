@@ -1,0 +1,95 @@
+name: DRNAS R128 gate blocker diagnosis only - no solver run
+on:
+  push:
+    branches: [experiment/drnas-r128-gate-blocker-diagnostic-20261105]
+    paths: ['.github/workflows/drnas-r128-gate-blocker-diagnostic.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnostics:
+    name: Explain R128 zero gate activations on immutable development and holdout CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/development
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-development-selection
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128
+      - name: Compile unchanged R128 filter and run diagnostic probes only
+        run: |
+          set -euo pipefail
+          mkdir -p r128/diagnostics
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r128_xor_threshold_filter.cpp -o r128/diagnostics/r128_filter
+          python3 - <<'PY' | tee r128/diagnostics/diagnostic.log
+          import collections,csv,hashlib,json,pathlib,re,subprocess
+          from statistics import median
+          root=pathlib.Path('r128')
+          out=root/'diagnostics'
+          policies=('q8_90','q4_60','q2_25','q1_0')
+          pick=json.loads((root/'selection.json').read_text())
+          assert pick['selected_policy']=='q8_90','selected policy changed'
+          assert hashlib.sha256((root/'development'/'manifest.json').read_bytes()).hexdigest()==pick['development_source_sha256'],'development source SHA mismatch'
+          rows=[]; sources={}
+          for phase in ('development','holdout'):
+              folder=root/phase
+              manifest=folder/'manifest.json'
+              meta=json.loads(manifest.read_text())
+              sources[phase]=hashlib.sha256(manifest.read_bytes()).hexdigest()
+              for c in meta['cases']:
+                  src=folder/c['id']
+                  assert src.is_file(),f'missing original {src}'
+                  assert hashlib.sha256(src.read_bytes()).hexdigest()==c['sha256'],f'SHA mismatch {src}'
+                  reports={}
+                  for policy in policies:
+                      run=subprocess.run(['r128/diagnostics/r128_filter',str(src),'/unused/r118','/unused/kissat',policy,'--probe-only'],text=True,capture_output=True,timeout=8,check=True)
+                      match=re.search(r'c R128_PREFILTER policy=(\S+) route=(\S+) reason=(\S+) bytes=(\d+) clauses=(\d+) xor_equations=(\d+) covered_clauses=(\d+) patterns=(\d+) parsed=(\d+)',run.stdout)
+                      assert match and match.group(1)==policy,(policy,src,run.stdout,run.stderr)
+                      reports[policy]=dict(zip(('policy','route','reason','bytes','clauses','xor_equations','covered_clauses','patterns','parsed'),match.groups()))
+                  assert len({reports[p]['reason'] for p in policies})<=2,'inconsistent parsing reason'
+                  q=reports['q8_90']
+                  row=dict(phase=phase,cohort=c.get('cohort',''),formula=c['id'],sha256=c['sha256'],bytes=int(q['bytes']),header_variables=c.get('variables'),header_clauses=c.get('clauses'),parsed=int(q['parsed']),reason=q['reason'],clauses=int(q['clauses']),xor_equations=int(q['xor_equations']),covered_clauses=int(q['covered_clauses']),patterns=int(q['patterns']),coverage_pct=round(100*int(q['covered_clauses'])/int(q['clauses']),3) if int(q['clauses']) else 0)
+                      row.update({'trigger_'+p:int(reports[p]['route']=='GF2') for p in policies})
+                  rows.append(row)
+          assert len(rows)==53 and len({(r['phase'],r['sha256']) for r in rows})==53,'unexpected source count or duplicate'
+          with (out/'per-formula.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+          result={'protocol':'DRNAS-R128-GATE-DIAGNOSIS-ONLY-20261105','original_run':42033905606,'frozen_selected_policy':pick['selected_policy'],'phase_manifests_sha256':sources,'filter_cpp_sha256':hashlib.sha256(pathlib.Path('research/r128_xor_threshold_filter.cpp').read_bytes()).hexdigest(),'note':'No SAT solver executed; diagnostic only, holdout must NOT guide threshold optimization or promotion','phases':{},'examples':{}}
+          for phase in ('development','holdout'):
+              sub=[r for r in rows if r['phase']==phase]
+              result['phases'][phase]={'formulas':len(sub),'reason_counts':dict(collections.Counter(r['reason'] for r in sub)),'over_256KiB':sum(r['bytes']>262144 for r in sub),'median_bytes':median(r['bytes'] for r in sub),'trigger_counts':{p:sum(r['trigger_'+p] for r in sub) for p in policies},'parsed':sum(r['parsed'] for r in sub),'parsed_with_complete_xor':sum(r['parsed'] and r['xor_equations'] for r in sub),'total_exact_equations_on_parsed':sum(r['xor_equations'] for r in sub),'cohorts':dict(collections.Counter(r['cohort'] for r in sub))}
+              result['examples'][phase]=[{'formula':r['formula'],'reason':r['reason'],'bytes':r['bytes'],'xor_equations':r['xor_equations'],'coverage_pct':r['coverage_pct']} for r in sorted(sub,key=lambda x:(x['reason']!='file_size_budget',-x['bytes']))[:8]]
+          (out/'report.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('R128_GATE_BLOCKER_DIAGNOSIS',json.dumps(result,sort_keys=True),flush=True)
+          PY
+          test -s r128/diagnostics/report.json
+          test -s r128/diagnostics/per-formula.csv
+          cat r128/diagnostics/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R128-GATE-BLOCKER-READONLY-DIAGNOSTIC
+          path: r128/diagnostics/
+          if-no-files-found: warn
+          retention-days: 90
