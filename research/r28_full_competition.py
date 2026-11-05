@@ -158,9 +158,23 @@ def freeze():
          counts.get("official2026",0)+counts.get("official2025",0)>=28,
          "insufficient independent mixed SAT competition sources "+repr(counts))
     need(len({c["sha256"] for c in accepted})==len(accepted),"duplicate frozen CNF")
+    # This OFFICIAL score download occurs only AFTER candidates have been chosen
+    # by URL seed and validated source bytes. It cannot affect selection.
+    published_info={"available":False,"not_used_to_select_cases":True}
+    try:
+        official,official_sha,score_rows=witness.score_source()
+        for c in accepted:
+            if c["cohort"]=="official2026" and c.get("gbd_id") in official:
+                c["published_2026_context"]=official[c["gbd_id"]]
+        published_info=dict(available=True,score_file_sha256=official_sha,
+            rows=score_rows,matched_cases=sum("published_2026_context" in x for x in accepted),
+            not_used_to_select_cases=True,comparison="different hardware; never rank same runner")
+    except Exception as exc:
+        published_info["error"]=str(exc)[:250]
     manifest=dict(protocol=PROTO,phase="SOURCES_FROZEN_BEFORE_FIRST_SOLVER_TIMING",
         selected_count=len(accepted),precommitted_quotas=QUOTAS,cohort_counts=counts,
         source_indexes=sourcemeta,source_rejections=dict(rejects),
+        published_2026_context=published_info,
         strict_prior_manifest_sha256=prior,excluded_prior_content_sha256=len(oldsha),
         excluded_prior_32hex_ids=len(oldids),excluded_prior_urls=len(oldurls),
         source_size_bound_bytes=SAMPLE_LIMIT,repeats=REPS,shards=SHARDS,
@@ -302,6 +316,8 @@ def audit():
     for c in cs:
         h=c["sha256"]
         per.append(dict(id=c["id"],cohort=c["cohort"],sha256=h,
+           published_best_2026_s=(c.get("published_2026_context") or {}).get("best_verified",{}).get("seconds"),
+           published_best_2026_solver=(c.get("published_2026_context") or {}).get("best_verified",{}).get("solver"),
            **{mode:sum(lookup[h,rep,mode]["par2"] for rep in range(REPS)) for mode in MODES},
            **{mode+"_solved":sum(lookup[h,rep,mode]["status"]!="TIMEOUT" for rep in range(REPS)) for mode in MODES}))
     comparisons={}
@@ -322,6 +338,7 @@ def audit():
     report=dict(protocol=PROTO,verdict="EXPERIMENT_NO_WORLD_RECORD_CLAIM",
         formulas=len(cs),measurements=len(rows),cap_s=CAP,repeats=REPS,
         frozen_manifest_sha256=sourcepin,source_hashes_verified=True,
+        published_2026_cross_hardware_context=m.get("published_2026_context"),
         original_CNF_unchanged=True,reference_competitor="official SAT Competition 2026 author biere.tar.xz kissat-sc2024",
         pinned=shards[0]["pinned"],CPU_by_shard=[s["cpu"] for s in shards],
         summary=summary,comparisons=comparisons,by_cohort=cohorts,
