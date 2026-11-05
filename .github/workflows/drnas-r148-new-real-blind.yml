@@ -1,0 +1,158 @@
+name: DRNAS R148 new real SAT prospective blind 50 SHA-disjoint five-way paired benchmark
+on:
+  push:
+    branches: [experiment/drnas-r148-new-real-blind-50-20261105]
+    paths: ['.github/workflows/drnas-r148-new-real-blind.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r148-new-real-blind-50-fixed
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: PRECOMMIT real CNFs and exclude all SHA URL GBD from R132 R135 R135S 400 before solver trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify frozen benchmark and audit scripts compile
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r148_new_real_blind_freeze.py research/r148_new_real_blind_benchmark.py research/r148_new_real_blind_audit.py research/r148_exact_fast_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          run-id: 42068101730
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135s
+      - name: Freeze unmeasured real CNFs strictly BEFORE any performance data
+        run: |
+          set -euo pipefail
+          mkdir -p r148blind
+          python3 -u research/r148_new_real_blind_freeze.py | tee r148blind/freeze.log
+          test -s r148blind/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          path: r148blind/frozen/
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R148 new unseen real SAT five-way paired SHA shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          path: r148blind/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify frozen source, pinned reference binaries and compile unchanged selector
+        run: |
+          set -euo pipefail
+          mkdir -p r148blind
+          test -s r148blind/frozen/manifest.json
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror -pedantic research/r148_exact_fast_selector.cpp -o r148blind/r148_selector
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r148blind/r118
+          python3 - <<'PY'
+          import json,pathlib
+          m=json.loads(pathlib.Path('r148blind/frozen/manifest.json').read_text())
+          assert m['phase']=='FROZEN_BEFORE_FIRST_SOLVER_TIMING'
+          assert 36<=len(m['cases'])<=50
+          print('R148_BLIND_ORIGINAL_SHA_FREEZE',len(m['cases']),m['cohort_counts'],flush=True)
+          PY
+      - name: Exact R148 / R135 route parity then 15s randomized 5-way paired trial on each original CNF
+        run: |
+          set -euo pipefail
+          python3 -u research/r148_new_real_blind_benchmark.py --shard ${{ matrix.shard }} | tee r148blind/shard-${{ matrix.shard }}.log
+          test -s r148blind/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r148blind-shard-${{ matrix.shard }}
+          path: |
+            r148blind/shard-${{ matrix.shard }}.json
+            r148blind/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: R148 prospective independent SHA SAT witness PAR2 five-way audit NO reruns
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          path: r148blind/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r148blind-shard-*
+          merge-multiple: true
+          path: r148blind
+      - name: Fail-closed audit frozen original SHA all 5 modes and fixed 15s PAR2
+        run: |
+          set -euo pipefail
+          test "$(find r148blind -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r148_new_real_blind_audit.py | tee r148blind/audit.log
+          grep -q '^R148_NEW_REAL_BLIND_FINAL ' r148blind/audit.log
+          cat r148blind/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R148-NEW-REAL-BLIND-50-FIVEWAY-FINAL-PAR2-AUDIT
+          path: |
+            r148blind/report.json
+            r148blind/audit.log
+            r148blind/paired.csv
+            r148blind/per_formula.csv
+            r148blind/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
