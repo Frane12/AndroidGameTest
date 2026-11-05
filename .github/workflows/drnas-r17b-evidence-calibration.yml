@@ -1,0 +1,78 @@
+name: DRNAS R17b development-only evidence model (no solver writes)
+on:
+  push:
+    branches:
+      - experiment/drnas-r17b-evidence-calibration-20261105
+    paths:
+      - research/r17b_evidence_calibration.py
+      - .github/workflows/drnas-r17b-evidence-calibration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r17b-evidence-only
+  cancel-in-progress: false
+
+jobs:
+  model:
+    name: Pin completed 4800-attempt source, calibrate only development evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Guard historical frozen V15.3.1 source
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/r17b_evidence_calibration.py
+
+      - name: Retrieve immutable successful R17 aggregate only
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R17-NATIVE-CONFIDENCE-ABSTENTION-FINAL-AUDIT
+          run-id: 42094261835
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r17b-pinned-input
+
+      - name: Refuse source SHA mismatch; train on development only
+        run: |
+          set -euo pipefail
+          test -s r17b-pinned-input/drnas-r17-results/aggregate/results.json
+          test -s r17b-pinned-input/drnas-r17-results/aggregate/native_decisions.csv
+          python3 -u research/r17b_evidence_calibration.py --source r17b-pinned-input/drnas-r17-results/aggregate --out r17b-calibration | tee r17b-calibration.log
+          test -s r17b-calibration/r17b_evidence_model.json
+          test -s r17b-calibration/r17b_development_calibration.csv
+          test -s r17b-calibration/audit.json
+          grep -q '^R17B_CALIBRATION_PASS ' r17b-calibration.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('r17b-calibration/r17b_evidence_model.json').read_text())
+          a=json.loads(Path('r17b-calibration/audit.json').read_text())
+          assert m['training']['development_formulas']==80
+          assert m['training']['test_formulas_excluded']==80
+          assert m['training']['test_labels_used'] is False
+          assert m['safety']['default']=='MONITOR_ABSTAIN'
+          assert m['safety']['v1531_modified'] is False
+          assert m['safety']['not_a_live_speedup'] is True
+          assert a['test_leakage_metamorphic_check']=='PASS'
+          print('R17B_PROVENANCE_ABSTENTION_AND_LEAKAGE_PASS')
+          PY
+          sha256sum r17b-calibration/*
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R17B-DEV-ONLY-EVIDENCE-MODEL
+          path: |
+            r17b-calibration/
+            r17b-calibration.log
+          retention-days: 90
+          if-no-files-found: error
