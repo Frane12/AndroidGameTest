@@ -112,8 +112,12 @@ def trial(c,mode,rep):
    replay_xor_unsat(cnf,payload)
    proof="independently_replayed_original_XOR_unit_UNSAT"
   else:proof="UNSAT_without_independent_LRAT"
-  official=c["official"]["best_verified"]
-  need(official["status"].startswith(result.lower()),"official verified SAT/UNSAT mismatch")
+  # 2025/26 GBD instances have no common cross-year official score CSV.
+  # Rely on independently checked original SAT witnesses / GF2 UNSAT source
+  # contradictions; do not treat GBD metadata as an independent proof.
+  official=(c.get("official") or {}).get("best_verified")
+  if official:
+   need(official["status"].startswith(result.lower()),"official verified SAT/UNSAT mismatch")
  except subprocess.TimeoutExpired:
   result="TIMEOUT";seconds=CAP;route="timeout";proof="timeout"
  return dict(id=c["id"],cohort=c["cohort"],family=c["family"],sha256=c["sha256"],
@@ -139,7 +143,7 @@ def shard(i):
  print("R154_SHARD_PASS",i,len(rows),flush=True)
 def summary(rows,cases):
  out={}
- for cohort in ["all","complete_xor","partial_xor","nonxor_control"]:
+ for cohort in ["all","xor_plus_units","complete_xor","mixed_residual","nonxor_control"]:
   z=[r for r in rows if cohort=="all" or r["cohort"]==cohort]
   out[cohort]={}
   for mode in MODES:
