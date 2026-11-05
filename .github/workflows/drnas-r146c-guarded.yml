@@ -1,0 +1,97 @@
+name: DRNAS R146c guarded selector 400 paired diagnostic
+on:
+  push:
+    branches: [experiment/drnas-r146c-selector-cost-guard]
+    paths:
+      - '.github/workflows/drnas-r146c-guarded.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r146c-400-guarded
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: R146c paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify binaries and compile unchanged R118
+        run: |
+          set -euo pipefail
+          mkdir -p r146c
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r146c/r118
+          python3 -m py_compile research/r146c_guarded_portfolio.py research/r135_nonxor_portfolio.py
+      - name: Five-way paired 15s PAR2 (reused R135 cohort; not blind)
+        run: |
+          set -euo pipefail
+          python3 -u research/r146c_guarded_portfolio.py run --shard ${{ matrix.shard }} | tee r146c/shard-${{ matrix.shard }}.log
+          test -s r146c/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r146c-shard-${{ matrix.shard }}
+          path: |
+            r146c/shard-${{ matrix.shard }}.json
+            r146c/shard-${{ matrix.shard }}.log
+          retention-days: 90
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r146c-shard-*
+          merge-multiple: true
+          path: r146c
+      - name: Strict SHA and paired PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r146c_guarded_portfolio.py audit | tee r146c/audit.log
+          test -s r146c/report.json
+          cat r146c/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R146C-400-DIAGNOSTIC-AUDIT
+          path: |
+            r146c/report.json
+            r146c/paired.csv
+            r146c/audit.log
+          retention-days: 90
