@@ -2,7 +2,7 @@
 """R120 external SAT Competition 2025 smoke benchmark; no cherry-picked performance results."""
 import csv,hashlib,json,lzma,os,pathlib,random,subprocess,time,urllib.request
 ROOT=pathlib.Path("r120"); ROOT.mkdir(exist_ok=True)
-INDEX="https://benchmark-database.de/getinstances?context=cnf&query=track%3Dmain_2025"
+INDEX="https://benchmark-database.de/getinstances?query=track%3Dmain_2025&context=cnf"
 SEED=12020261105
 CAP=15
 def fetch(url,limit=8_000_000):
