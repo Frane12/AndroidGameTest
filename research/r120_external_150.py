@@ -12,8 +12,10 @@ def fetch(url,limit=8_000_000):
   if len(b)>limit:raise ValueError("download exceeds size cap")
   return b
 def freeze():
- links=[x.strip() for x in fetch(INDEX,2_000_000).decode().splitlines() if x.strip() and not x.startswith("#")]
- links=[x for x in links if x.startswith("https://")]
+ body=fetch(INDEX,8_000_000).decode("utf-8")
+ print("R120_URI_LIST",repr(body[:300]),"bytes",len(body),flush=True)
+ links=[x.strip() for x in body.splitlines() if x.strip() and not x.startswith("#")]
+ links=[x for x in links if x.startswith(("https://","http://"))]
  assert len(links)>=150,("insufficient official URLs",len(links))
  random.Random(SEED).shuffle(links)
  (ROOT/"candidate_urls.sha256").write_text(hashlib.sha256("\n".join(links).encode()).hexdigest()+"\n")
