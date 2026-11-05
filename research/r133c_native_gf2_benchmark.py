@@ -31,9 +31,14 @@ def parity_cnf(variables, rhs):
 
 
 def fixture(out):
-    clauses = parity_cnf((1, 2, 3), 0) + parity_cnf((1, 2, 4), 0) + [(3,)]
+    # Two independent XOR cancellations generate 3^4=0 and 5^6=0;
+    # R133c then combines these two certified derived rows into 3^4^5^6=0.
+    clauses = (parity_cnf((1, 2, 3), 0) +
+               parity_cnf((1, 2, 4), 0) +
+               parity_cnf((2, 3, 5), 0) +
+               parity_cnf((2, 3, 6), 0) + [(3,)])
     path = out / "fixture.cnf"
-    text = "p cnf 4 %d\n" % len(clauses)
+    text = "p cnf 6 %d\n" % len(clauses)
     text += "".join(" ".join(map(str, c)) + " 0\n" for c in clauses)
     path.write_text(text)
     return path
