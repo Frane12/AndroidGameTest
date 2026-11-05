@@ -1,0 +1,115 @@
+name: DRNAS R156 residual-aware XOR CNF + timeout-visible GF2 evidence, paired SAT audit
+on:
+  push:
+    branches: [experiment/drnas-r156-residual-aware-xor-cdcl-20261105]
+    paths:
+      - '.github/workflows/drnas-r156-mixed-benchmark.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r156-paired-source-10-development-mixed
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: R156 source-certified residual GF2 versus R155 R153 Kissat CryptoMiniSat shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r156
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify native builds, source SHA pins and compile R156 residual-aware GF2
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r156_mixed_benchmark.py research/r155_mixed_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r156_residual_aware_gf2.cpp -o r156/r156
+          (cd built/bin && sha256sum -c binaries.sha256)
+          (cd r156 && sha256sum -c native-binaries.sha256)
+          chmod +x r156/r156 r156/r155 r156/r153 built/bin/kissat_4_0_4
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | cmp - r156/cryptominisat-package.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          files=['r156/r156','r156/r155','r156/r153','built/bin/kissat_4_0_4','/usr/bin/cryptominisat5']
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            binaries={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in files},
+            cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),'unknown'))
+          pathlib.Path('r156/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: Four independent original-GF2-entailment source checks, 5-solver same-runner 15s paired 2-reps
+        run: |
+          set -euo pipefail
+          python3 -u research/r156_mixed_benchmark.py shard --shard ${{ matrix.shard }} | tee r156/shard-${{ matrix.shard }}.log
+          grep -q '^R156_SHARD_PASS ' r156/shard-${{ matrix.shard }}.log
+          test -s r156/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r156-development-mixed-shard-${{ matrix.shard }}
+          path: |
+            r156/shard-${{ matrix.shard }}.json
+            r156/shard-${{ matrix.shard }}.log
+            r156/pin-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Full original CNF SAT witness GF2 span and 4 shard 100-run PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r156
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r156-development-mixed-shard-*
+          merge-multiple: true
+          path: r156
+      - name: Final independent audit of source SHA, proof, metadata and paired PAR2
+        run: |
+          set -euo pipefail
+          test "$(find r156 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r156_mixed_benchmark.py audit | tee r156/audit.log
+          grep -q '^R156_FINAL ' r156/audit.log
+          cat r156/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R156-RESIDUAL-AWARE-PROOF-AND-15S-PAR2-FINAL
+          path: |
+            r156/report.json
+            r156/audit.log
+          if-no-files-found: warn
+          retention-days: 90
