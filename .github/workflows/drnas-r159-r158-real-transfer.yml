@@ -1,0 +1,182 @@
+name: DRNAS R159 original real CNF R158 shadow transfer five-way
+on:
+  push:
+    branches: [experiment/drnas-r159-r158-real-cnf-transfer-20261106]
+    paths:
+      - research/r159_external_transfer.py
+      - .github/workflows/drnas-r159-r158-real-transfer.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r159-external-20261106
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze 16 R151 original external CNFs outside frozen R158 training
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check immutable V15.3.1 and scripts
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/r159_external_transfer.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r151-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R158-FED-STRICT-OFFLINE-FEATURES-MODELS
+          run-id: 42130768112
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r158-model
+      - name: Verify original CNF SHA and freeze source before solver timing
+        run: |
+          set -euo pipefail
+          python3 -u research/r159_external_transfer.py freeze | tee r159-freeze.log
+          grep -q '^R159_FROZEN_SOURCE_PASS ' r159-freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r159-frozen-16-real-original-SHA-precommitted
+          path: |
+            r159/frozen/manifest.json
+            r159-freeze.log
+          retention-days: 90
+
+  benchmark:
+    name: R159 native paired 5-policy original CNF shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r151-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R158-FED-STRICT-OFFLINE-FEATURES-MODELS
+          run-id: 42130768112
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r158-model
+      - uses: actions/download-artifact@v4
+        with:
+          name: r159-frozen-16-real-original-SHA-precommitted
+          path: r159-source-download
+      - name: Restore SHA manifest
+        run: |
+          mkdir -p r159/frozen
+          cp r159-source-download/r159/frozen/manifest.json r159/frozen/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify CaDiCaL pin and build original/native R17 and immutable V15.3.1
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/cadical_3_0_1
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r17_abstain.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Run 60 native paired tests with 8 second cap and three repeats
+        run: |
+          set -euo pipefail
+          python3 -u research/r159_external_transfer.py run --shard ${{ matrix.shard }} | tee r159-run-${{ matrix.shard }}.log
+          grep -q '^R159_SHARD_PASS ' r159-run-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r159-shard-${{ matrix.shard }}
+          path: |
+            r159/shard-${{ matrix.shard }}/
+            r159-run-${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: Verify 240 real paired solves + SHA + R158 A B C D frozen shadow
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r151-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R158-FED-STRICT-OFFLINE-FEATURES-MODELS
+          run-id: 42130768112
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r158-model
+      - uses: actions/download-artifact@v4
+        with:
+          name: r159-frozen-16-real-original-SHA-precommitted
+          path: r159-source-download
+      - name: Restore source manifest
+        run: |
+          mkdir -p r159/frozen
+          cp r159-source-download/r159/frozen/manifest.json r159/frozen/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r159-shard-*
+          merge-multiple: false
+          path: r159-download
+      - name: Fail-closed witness, timed PAR-2, formula SHA, native prefix, shadow model audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r159_external_transfer.py audit | tee r159-audit.log
+          grep -q '^R159_FINAL ' r159-audit.log
+          test -s r159/report/report.json
+          cat r159/report/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R159-REAL-R158-SHADOW-PAR2-AUDIT
+          path: |
+            r159/report/
+            r159-audit.log
+            r159/frozen/manifest.json
+          retention-days: 90
+          if-no-files-found: warn
