@@ -164,6 +164,8 @@ def aggregate():
  report=json.loads(target.read_text())
  report["protocol"]=core.PROTO
  report["experiment_type"]="source-proven local redundant XOR/AND/OR gate definition collapse: remove 3-4 certified clauses; add 2 signed equivalence clauses"
+ report["prospective_source"]="84 target: genuinely unmeasured external GBD miter instances, SHA and ID excluded against R120/R121/R122/R123/R125; not official 2026"
+ report["sampling_scope"]="No claimed SAT2026 cohort; prior source size cap prevented that cohort. Only results on new external GBD miter cases."
  report["original_formula_unchanged"]=False
  report["original_source_preserved_separately_for_audit"]=True
  report["source_proof"]="independent 16-assignment proof per replacement, exact source CNF diff and retained leader witnesses"
