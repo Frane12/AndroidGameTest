@@ -1,0 +1,200 @@
+name: DRNAS R154 SHA unseen original 2026 Lights-Out XOR unit bridge 15s paired
+on:
+  push:
+    branches: [experiment/drnas-r154-certified-gf2-unseen-transfer-20261105]
+    paths:
+      - '.github/workflows/drnas-r154-unseen-gf2-validation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r154-sha-excluded-family-originals
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze new original SAT2026 family CNFs with prior ID SHA exclusions before all timings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and validate freeze and audit scripts before external sources
+        run: |
+          set -euo pipefail
+          mkdir -p r154
+          python3 -m py_compile research/r115_world_top_rematch.py research/r152_lightsout_unseen.py research/r154_unseen_freeze.py research/r154_unseen_benchmark.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          run-id: 42039762548
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r115
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r152
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r151
+      - name: Freeze prospective original SHA source-only with zero solver attempts
+        run: |
+          set -euo pipefail
+          python3 -u research/r154_unseen_freeze.py | tee r154/freeze.log
+          test -s r154/frozen/manifest.json
+          grep -q '^R154_SOURCE_FROZEN ' r154/freeze.log
+          python3 - <<'PY'
+          import json,pathlib
+          m=json.loads(pathlib.Path('r154/frozen/manifest.json').read_text())
+          assert m['protocol']=='DRNAS-R154-UNSEEN-LIGHTSOUT-XOR-UNIT-TRANSFER-20261105-v1'
+          assert len(m['cases'])>=8
+          assert any('prior/r152/' in f for f in m['exclusion_files'])
+          print('R154_SOURCE_SHA_FROZEN',len(m['cases']),m['cohort_counts'],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          path: |
+            r154/frozen/
+            r154/freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R154 exact original R28 R153 Kissat CaDiCaL SHA paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          path: r154
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build original frozen R28 and unchanged R153 and pin CPU and reference binary hashes
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r154/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r154/r153
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          fs=['r154/r28','r154/r153','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1']
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            binaries={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+            cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),'unknown'))
+          pathlib.Path('r154/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: Native selftests and shuffled 4 solver 2 repeat 15s original CNF attempts
+        run: |
+          set -euo pipefail
+          python3 -u research/r154_unseen_benchmark.py shard --shard ${{ matrix.shard }} | tee r154/shard-${{ matrix.shard }}.log
+          grep -q '^R154_SHARD_PASS ' r154/shard-${{ matrix.shard }}.log
+          test -s r154/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r154-unseen-shard-${{ matrix.shard }}
+          path: |
+            r154/shard-${{ matrix.shard }}.json
+            r154/pin-${{ matrix.shard }}.json
+            r154/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: benchmark
+    name: Strict SHA and 8-shard PAR2 certified SAT and UNSAT with bootstrap no reruns
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          path: r154
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r154-unseen-shard-*
+          merge-multiple: true
+          path: r154
+      - name: Full paired freeze provenance original source SAT witness XOR and source implied unit UNSAT verification
+        run: |
+          set -euo pipefail
+          test "$(find r154 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r154_unseen_benchmark.py audit | tee r154/audit.log
+          grep -q '^R154_FINAL ' r154/audit.log
+          cat r154/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R154-SHA-FRESH-R153-15S-PAR2-FINAL
+          path: |
+            r154/report.json
+            r154/paired.csv
+            r154/audit.log
+            r154/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
