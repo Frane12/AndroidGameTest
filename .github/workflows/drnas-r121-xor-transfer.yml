@@ -1,0 +1,186 @@
+name: DRNAS R121 prospective external XOR transfer and source proof
+on:
+  push:
+    branches: [experiment/drnas-r121-xor-transfer-20261105]
+    paths:
+      - "research/r121_transfer_holdout.py"
+      - ".github/workflows/drnas-r121-xor-transfer.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze new 2026 official and external miter CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch previous R120 manifest for SHA and identity exclusion
+        uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: \${{ github.token }}
+          path: r121/prior-r120
+      - name: Pre-freeze source URLs, SHA256 and all exclusions
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r121_transfer_holdout.py
+          python3 -u research/r121_transfer_holdout.py freeze | tee r121/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r121-frozen-prospective
+          path: r121/
+          retention-days: 90
+          if-no-files-found: error
+
+  control:
+    name: Retrospective R117/R118/R120 033 independent XOR UNSAT certificate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: \${{ github.token }}
+          path: built/bin
+      - name: Compile verified source-pinned proof solvers
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r121/r28
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r121/r118
+          sha256sum r121/r28 r121/r118 built/bin/kissat_4_0_4 > r121/control-binaries.sha256
+          git rev-parse HEAD > r121/control-commit.txt
+          lscpu > r121/control-cpu.txt
+      - name: Independently verify UNSAT source clauses; compare with 90s Kissat
+        run: |
+          set -euo pipefail
+          python3 -u research/r121_transfer_holdout.py control | tee r121/control.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r121-retrospective-033-proof
+          path: |
+            r121/control-033.json
+            r121/control.log
+            r121/control-binaries.sha256
+            r121/control-commit.txt
+            r121/control-cpu.txt
+          retention-days: 90
+          if-no-files-found: warn
+
+  benchmark:
+    name: New external SAT cohort shard \${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r121-frozen-prospective
+          path: r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: \${{ github.token }}
+          path: built/bin
+      - name: Install CryptoMiniSat XOR-capable reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cms="$(command -v cryptominisat5 || command -v cryptominisat)"
+          test -x "$cms"
+          echo "CRYPTOMINISAT_BIN=$cms" >> "$GITHUB_ENV"
+      - name: Build exact R28 R118 and save SHA/CPU pin
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r121/r28
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r121/r118
+          sha256sum r121/r28 r121/r118 built/bin/kissat_4_0_4 "$CRYPTOMINISAT_BIN" > r121/solver-sha256-\${{ matrix.shard }}.txt
+          lscpu > r121/cpu-\${{ matrix.shard }}.txt
+          git rev-parse HEAD > r121/commit-\${{ matrix.shard }}.txt
+          dpkg-query -W cryptominisat > r121/cryptominisat-\${{ matrix.shard }}.txt
+      - name: Paired external benchmark and check source-proven SAT and XOR UNSAT
+        run: |
+          set -euo pipefail
+          python3 -u research/r121_transfer_holdout.py benchmark --shard \${{ matrix.shard }} | tee r121/benchmark-\${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r121-shard-\${{ matrix.shard }}
+          path: |
+            r121/shard-\${{ matrix.shard }}.json
+            r121/solver-sha256-\${{ matrix.shard }}.txt
+            r121/cpu-\${{ matrix.shard }}.txt
+            r121/commit-\${{ matrix.shard }}.txt
+            r121/cryptominisat-\${{ matrix.shard }}.txt
+            r121/benchmark-\${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  aggregate:
+    name: R121 formula-bootstrap and separate cohort final audit
+    needs: [freeze, benchmark, control]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r121-frozen-prospective
+          path: r121
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r121-shard-*
+          merge-multiple: true
+          path: r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: r121-retrospective-033-proof
+          path: r121
+      - name: Fail closed on missing results, wrong answers and source/CPU mismatch
+        run: |
+          set -euo pipefail
+          python3 -u research/r121_transfer_holdout.py aggregate | tee r121/aggregate.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          path: |
+            r121/manifest.json
+            r121/results.json
+            r121/control-033.json
+            r121/aggregate.log
+            r121/shard-*.json
+            r121/solver-sha256-*.txt
+            r121/cpu-*.txt
+            r121/commit-*.txt
+          retention-days: 90
+          if-no-files-found: warn
