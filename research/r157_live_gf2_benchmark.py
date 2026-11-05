@@ -109,7 +109,8 @@ def audit():
    need(abs(x["par2"]-(2*CAP if x["status"]=="TIMEOUT" else x["time_s"]))<1e-5,"PAR2 wrong")
    if x["mode"]!="clean":need(x["source_rows"]>0,"no certified rows")
   allrows.extend(data)
- need(len(allrows)==4*REPS*len(MODES) and len(binary_hash)==1,"missing run or binary drift")
+ need(len(allrows)==4*REPS*len(MODES),f"missing run: got {len(allrows)} expected {4*REPS*len(MODES)}")
+ need(len(binary_hash)==1,f"binary drift across shards: {sorted(binary_hash)}")
  for c in cs:
   q=[x for x in allrows if x["id"]==c["id"]]
   need(len(q)==REPS*len(MODES),"incomplete matched source")
