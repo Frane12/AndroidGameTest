@@ -49,6 +49,10 @@ def solve(n, clauses, eqs, bridge=True):
                     missing = [v for v in vs if v not in a]
                     parity = sum(a[v] for v in vs if v in a) & 1
                     if len(missing) <= 1:
+                        # Emit an explanation only for a real implication or conflict.
+                        # A satisfied fully assigned XOR has no entailed conflict clause.
+                        if not missing and parity == rhs:
+                            continue
                         reason = [(-v if a[v] else v) for v in vs if v in a]
                         if missing:
                             v = missing[0]
@@ -57,13 +61,11 @@ def solve(n, clauses, eqs, bridge=True):
                         assert reason_valid(eq, reason), ("invalid XOR reason", eq, reason)
                         metrics["reason_checks"] += 1
                         if not missing:
-                            if parity != rhs:
-                                metrics["xor_conflicts"] += 1
-                                return False
-                        else:
-                            a[v] = value
-                            metrics["xor_units"] += 1
-                            changed = True
+                            metrics["xor_conflicts"] += 1
+                            return False
+                        a[v] = value
+                        metrics["xor_units"] += 1
+                        changed = True
             if not changed:
                 return True
     def search(a):
