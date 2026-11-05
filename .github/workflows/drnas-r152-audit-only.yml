@@ -1,0 +1,85 @@
+name: DRNAS R152 audit-only recovery original 78 SAT trial results
+on:
+  push:
+    branches: [experiment/drnas-r152-lightsout-unseen-20261105]
+    paths: ['.github/workflows/drnas-r152-audit-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r152-13-originals-final-audit-only
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: Preserve original frozen SHA, reuse 4 complete shards, fix manifest key alias
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r152-shard-*
+          merge-multiple: true
+          run-id: 42102443956
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152
+      - name: Restore legacy manifest score SHA field only in audit workspace, never modify original artifact
+        run: |
+          set -euo pipefail
+          test "$(find r152 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path('r152/frozen/manifest.json')
+          raw=p.read_bytes()
+          m=json.loads(raw)
+          assert m['protocol']=='DRNAS-R152-NEW-LIGHTSOUT-FAMILY-XOR-20261105-v1'
+          assert len(m['cases'])==13 and all(x['known'] is False for x in m['cases'])
+          assert sorted(m['cohort_counts'].values())==[2,3,8]
+          assert 'official_csv_sha256' not in m and len(m['official_score_sha256'])==64
+          receipt={'unaltered_frozen_manifest_sha256':hashlib.sha256(raw).hexdigest(),
+                   'source_run_id':42102227483,'source_artifact':'r152-new-lightsout-frozen-originals-and-provenance',
+                   'benchmark_run_id':42102443956,'change':'audit-local compatibility alias only; original CNFs and results unmodified'}
+          pathlib.Path('r152/audit-source-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          m['official_csv_sha256']=m['official_score_sha256']
+          p.write_text(json.dumps(m,sort_keys=True,indent=2)+'\n')
+          print('R152_AUDIT_SOURCE_PIN',json.dumps(receipt,sort_keys=True),flush=True)
+          PY
+      - name: Audit full native same-host pairs without rerunning solvers
+        run: |
+          set -euo pipefail
+          python3 -u research/r152_lightsout_unseen.py audit | tee r152/audit-recovery.log
+          grep -q '^R152_FINAL ' r152/audit-recovery.log
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path('r152/results.json')
+          r=json.loads(p.read_text())
+          receipt=json.loads(pathlib.Path('r152/audit-source-receipt.json').read_text())
+          assert len(r['by_formula'])==13
+          assert all(r['summary'][m]['trials']==26 for m in ('r28','kissat','cadical'))
+          r['immutable_frozen_source_receipt']=receipt
+          p.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n')
+          print('R152_AUDIT_ONLY_PASS',json.dumps(r['summary'],sort_keys=True),flush=True)
+          PY
+          cat r152/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R152-13-UNSEEN-LIGHTSOUT-AUDIT-ONLY-FINAL
+          path: |
+            r152/results.json
+            r152/comparison.csv
+            r152/audit-recovery.log
+            r152/audit-source-receipt.json
+          if-no-files-found: warn
+          retention-days: 90
