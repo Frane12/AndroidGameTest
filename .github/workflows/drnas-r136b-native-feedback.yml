@@ -1,0 +1,71 @@
+name: DRNAS R136B native GF2 online feedback and conservative guard
+on:
+  push:
+    branches:
+      - experiment/drnas-r136b-online-gf2-feedback-20261105
+    paths:
+      - '.github/workflows/drnas-r136b-native-feedback.yml'
+      - 'research/r136b_online_feedback_bridge.cpp'
+      - 'research/r136b_online_feedback_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-cdcl-feedback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independently verify certified CNF parity equation exporter
+        run: |
+          set -euo pipefail
+          python3 research/r92_verified_xor_bridge.py selftest
+          python3 research/r93_export_verified_rows.py selftest
+          python3 -m py_compile research/r136b_online_feedback_benchmark.py
+      - name: Build pinned CaDiCaL 2.1.0 with real live IPASIR-UP feedback callbacks
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/cadical
+          cd /tmp/cadical
+          git checkout -q rel-2.1.0
+          mkdir -p "$GITHUB_WORKSPACE/r136b-results"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r136b-results/cadical_commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src \
+            "$GITHUB_WORKSPACE/research/r136b_online_feedback_bridge.cpp" \
+            ./build/libcadical.a -o /tmp/r136b-native
+          sha256sum /tmp/r136b-native > "$GITHUB_WORKSPACE/r136b-results/native_binary.sha256"
+      - name: Test exact GF2, reversible watches and callback feedback semantics
+        run: |
+          set -euo pipefail
+          /tmp/r136b-native selftest | tee r136b-results/watch-selftest.txt
+          grep -q '^R99_WATCH_SELFTEST_PASS' r136b-results/watch-selftest.txt
+          /tmp/r136b-native gf2selftest | tee r136b-results/gf2-selftest.txt
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r136b-results/gf2-selftest.txt
+          /tmp/r136b-native feedback-selftest | tee r136b-results/feedback-selftest.txt
+          grep -q '^R136B_FEEDBACK_SELFTEST_PASS' r136b-results/feedback-selftest.txt
+      - name: Fetch known SATLIB PARITY control formulas and verify pinned archive SHA
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r136b-parity
+          curl -fsSL --retry 3 --max-time 90 \
+            'https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/DIMACS/PARITY/parity.tar.gz' \
+            -o /tmp/r136b-parity/parity.tar.gz
+          echo 'd18ef13699ec3aafe0e70861fc1b9316205a6264c818cf2f69ebf3478534ba4f  /tmp/r136b-parity/parity.tar.gz' | sha256sum --check
+          tar -xzf /tmp/r136b-parity/parity.tar.gz -C /tmp/r136b-parity
+      - name: Paired 5-mode actual native CaDiCaL CDCL feedback benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/r136b_online_feedback_benchmark.py \
+            --binary /tmp/r136b-native --satlib /tmp/r136b-parity \
+            --out r136b-results | tee r136b-results/benchmark.log
+          grep -q '^R136B_FIXTURE_PASS' r136b-results/benchmark.log
+          grep -q '^R136B_NATIVE_FEEDBACK_AUDIT' r136b-results/benchmark.log
+          cat r136b-results/audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R136B-NATIVE-FEEDBACK-EVIDENCE
+          path: r136b-results/
+          retention-days: 90
