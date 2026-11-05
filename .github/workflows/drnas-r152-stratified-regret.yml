@@ -1,0 +1,198 @@
+name: DRNAS R152 multi-window SAT regret abstention blind paired
+on:
+  push:
+    branches: [experiment/drnas-r152-stratified-regret-20261105]
+    paths: ['.github/workflows/drnas-r152-stratified-regret.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r152-independent-multisource-20261105
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Compile then train historical 400 and freeze new SHA-disjoint six-cohort originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile native 24-feature and frozen 16-feature baselines; check Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r152_stratified_regret.py research/r151_risk_benchmark.py research/r150_quality_benchmark.py
+          mkdir -p r152
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r152_stratified_selector.cpp -o r152/stratified_features
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r150_features.cpp -o r152/legacy_features
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r151_risk_selector.cpp -o r152/r151_selector
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          run-id: 42073257009
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152-history
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150-prior-r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152-prior-r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          run-id: 42068101730
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152-prior-r135s
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R148-NEW-REAL-BLIND-50-FIVEWAY-FINAL-PAR2-AUDIT
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152-prior-r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152-prior-r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r152-prior-r151
+      - name: Pin original R151 model, train 24-feature model on historical 400, then freeze sources
+        run: |
+          set -euo pipefail
+          test -s r152-prior-r151/model.txt
+          cp r152-prior-r151/model.txt r152/prior-r151-model.txt
+          echo '802d945cbfa02a07634a85f07e01a03142c02eedeb2a663f56c7b45f4fdbdf8f  r152/prior-r151-model.txt' | sha256sum -c -
+          python3 -u research/r152_stratified_regret.py train | tee r152/train.log
+          test -s r152/model24.txt
+          grep -q '^R152_TRAIN_FROZEN ' r152/train.log
+          python3 -u research/r152_stratified_regret.py freeze | tee r152/freeze.log
+          test -s r152/holdout/manifest.json
+          grep -q '^R152_FREEZE_FINAL ' r152/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r152-frozen-new-six-cohort-model-and-CNFs
+          path: |
+            r152/model24.txt
+            r152/prior-r151-model.txt
+            r152/train-report.json
+            r152/train.log
+            r152/freeze.log
+            r152/holdout/
+          retention-days: 90
+          if-no-files-found: warn
+  benchmark:
+    name: R152 six-arm paired native SAT shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-frozen-new-six-cohort-model-and-CNFs
+          path: r152
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify original solver pin, rebuild native selectors without touching original CNFs
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r152_stratified_selector.cpp -o r152/stratified_features
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r151_risk_selector.cpp -o r152/r151_selector
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r148_exact_fast_selector.cpp -o r152/r148_selector
+      - name: Fixed cap 15s and two randomized paired repetitions all six modes
+        run: |
+          set -euo pipefail
+          python3 -u research/r152_stratified_regret.py run --shard ${{ matrix.shard }} | tee r152/shard-${{ matrix.shard }}.log
+          test -s r152/shard-${{ matrix.shard }}.json
+          grep -q '^R152_SHARD_PASS ' r152/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r152-shard-${{ matrix.shard }}
+          path: |
+            r152/shard-${{ matrix.shard }}.json
+            r152/shard-${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    name: R152 immutable SHA 6-way PAR2 witness correctness regression and detector audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-frozen-new-six-cohort-model-and-CNFs
+          path: r152
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r152-shard-*
+          merge-multiple: true
+          path: r152
+      - name: Verify all original CNFs, SHA, paired results, PAR2, medians, confidence and >2x regressions
+        run: |
+          set -euo pipefail
+          test "$(find r152 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r152_stratified_regret.py audit | tee r152/audit.log
+          grep -q '^R152_FINAL ' r152/audit.log
+          cat r152/audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R152-NEW-SHA-DISJOINT-SIX-ARM-PAR2-AUDIT
+          path: |
+            r152/audit.json
+            r152/paired.csv
+            r152/per_formula.csv
+            r152/audit.log
+            r152/model24.txt
+            r152/prior-r151-model.txt
+            r152/train-report.json
+            r152/holdout/manifest.json
+          retention-days: 90
+          if-no-files-found: warn
