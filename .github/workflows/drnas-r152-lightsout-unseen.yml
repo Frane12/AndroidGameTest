@@ -1,0 +1,186 @@
+name: DRNAS R152 unseen SAT2026 Lights-Out XOR family paired R28 transfer
+on:
+  push:
+    branches: [experiment/drnas-r152-lightsout-unseen-20261105]
+    paths:
+      - '.github/workflows/drnas-r152-lightsout-unseen.yml'
+      - 'research/r152_lightsout_unseen.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r152-new-official-family-sha-locked-20261105
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-only official GBD family freeze with historical ID/SHA exclusion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify research script before external acquisition
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r115_world_top_rematch.py research/r152_lightsout_unseen.py
+          mkdir -p r152
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          run-id: 42039762548
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r115
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r151
+      - name: Freeze SHA-disjoint sources and purely syntactic XOR coverage BEFORE timing
+        run: |
+          set -euo pipefail
+          python3 -u research/r152_lightsout_unseen.py freeze | tee r152/freeze.log
+          test -s r152/frozen/manifest.json
+          grep -q '^R152_FREEZE_PASS ' r152/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          path: |
+            r152/frozen/
+            r152/freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R152 original unchanged R28 paired Lights-Out shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          path: r152/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin unmodified native R28 and identical Kissat/CaDiCaL binaries
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p r152
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r152/r28
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          fs=["r152/r28","built/bin/kissat_4_0_4","built/bin/cadical_3_0_1"]
+          x={"commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+             "binaries":{f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+             "cpu":next((x for x in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if x.startswith("model name")),"unknown")}
+          pathlib.Path("r152/pin-"+os.environ["SHARD"]+".json").write_text(json.dumps(x))
+          PY
+      - name: Paired randomized 5s trials on original SHA-verified 2026 family CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/r152_lightsout_unseen.py shard --shard ${{ matrix.shard }} | tee r152/shard-${{ matrix.shard }}.log
+          test -s r152/shard-${{ matrix.shard }}.json
+          grep -q '^R115_WORLD_SHARD_PASS ' r152/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r152-shard-${{ matrix.shard }}
+          path: |
+            r152/shard-${{ matrix.shard }}.json
+            r152/pin-${{ matrix.shard }}.json
+            r152/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Strict 4-shard source SHA, SAT witness, XOR UNSAT trace and five-second PAR2 audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          path: r152/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r152-shard-*
+          merge-multiple: true
+          path: r152
+      - name: Source, status, pairing, parity proof and total PAR2 verification
+        run: |
+          set -euo pipefail
+          test "$(find r152 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r152_lightsout_unseen.py audit | tee r152/audit.log
+          grep -q '^R152_FINAL ' r152/audit.log
+          cat r152/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R152-NEW-LIGHTSOUT-2026-R28-PAIRED-PAR2-FINAL
+          path: |
+            r152/results.json
+            r152/comparison.csv
+            r152/audit.log
+            r152/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
