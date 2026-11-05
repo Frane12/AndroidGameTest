@@ -1,0 +1,143 @@
+name: DRNAS R148 fast exact R135 decisions - 400 parity plus 100 paired diagnostic
+on:
+  push:
+    branches: [experiment/drnas-r148-r135-exact-fast-20261105]
+    paths: ['.github/workflows/drnas-r148-exact-fast.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r148-exact-r135-fast
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    name: Certify native R148 matches ALL 400 frozen R135 decisions, no SAT solver
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Compile isolated fast selector and test all unchanged source decisions
+        run: |
+          set -euo pipefail
+          mkdir -p r148
+          python3 -m py_compile research/r148_exact_fast_benchmark.py research/r135_nonxor_portfolio.py research/r134_nonxor_shadow.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror -pedantic research/r148_exact_fast_selector.cpp -o r148/r148_selector
+          python3 -u research/r148_exact_fast_benchmark.py parity | tee r148/parity.log
+          test -s r148/parity.json
+          cat r148/parity.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r148-exact-400-decision-parity
+          path: |
+            r148/parity.json
+            r148/parity.csv
+            r148/parity.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  benchmark:
+    name: R148 frozen SAME-route 100-CNF paired shard ${{ matrix.shard }}
+    needs: parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Check exact Kissat and CaDiCaL binaries, compile new selector only
+        run: |
+          set -euo pipefail
+          mkdir -p r148
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror -pedantic research/r148_exact_fast_selector.cpp -o r148/r148_selector
+          python3 -m py_compile research/r148_exact_fast_benchmark.py
+      - name: Four-way paired fixed 100/400 SHA-stratified, 2 repeats, 15s total caps
+        run: |
+          set -euo pipefail
+          python3 -u research/r148_exact_fast_benchmark.py run --shard ${{ matrix.shard }} | tee r148/shard-${{ matrix.shard }}.log
+          test -s r148/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r148-paired-shard-${{ matrix.shard }}
+          path: |
+            r148/shard-${{ matrix.shard }}.json
+            r148/shard-${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: No duplicates, SAT witness, UNSAT tier, R135 decisions, PAR-2 final audit
+    needs: [parity,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148-exact-400-decision-parity
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r148-paired-shard-*
+          merge-multiple: true
+          path: r148
+      - name: Fail-closed 800-row original-source paired PAR2 audit
+        run: |
+          set -euo pipefail
+          test "$(find r148 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r148_exact_fast_benchmark.py audit | tee r148/audit.log
+          cat r148/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R148-EXACT-R135-FAST-PAIRED-DIAGNOSTIC
+          path: |
+            r148/report.json
+            r148/paired.csv
+            r148/parity.json
+            r148/parity.csv
+            r148/audit.log
+          retention-days: 90
+          if-no-files-found: warn
