@@ -1,0 +1,133 @@
+name: DRNAS R17 external real CNF transfer - 24 originals 7 policies
+on:
+  push:
+    branches: [experiment/drnas-r17-confidence-abstain-20261105]
+    paths: ['.github/workflows/drnas-r17-external-transfer.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r17-real-external-transfer
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze R150 provenance 24 original official-catalog and cryptographic CNFs (REUSED, not blind)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150
+      - name: Validate original 55 SHA then fixed first six per external source cohort, exclude R7-R16
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r17_external_transfer.py
+          python3 -u experiments/drnas_v16/r17_external_transfer.py freeze | tee r17-external/freeze.log
+          test -s r17-external/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r17-external-24-original-source-and-frozen-manifest
+          path: |
+            r150/holdout/
+            r17-external/frozen/
+            r17-external/freeze.log
+          retention-days: 60
+          if-no-files-found: warn
+
+  benchmark:
+    name: R17 actual original external CNFs paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r17-external-24-original-source-and-frozen-manifest
+          path: .
+      - name: Compile upstream original Kissat reference
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Compile R17 patched Kissat, same native binary for monitor, R16, R17
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r17_abstain.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Compile frozen immutable V15.3.1
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Native R17 and 6 control policies on original unmodified CNFs with 15s cap
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r17_external_transfer.py run --shard ${{ matrix.shard }} | tee r17-external-run-${{ matrix.shard }}.log
+          test -s r17-external/shard-${{ matrix.shard }}/measurements.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r17-external-shard-${{ matrix.shard }}
+          path: |
+            r17-external/shard-${{ matrix.shard }}/
+            r17-external-run-${{ matrix.shard }}.log
+          retention-days: 60
+          if-no-files-found: warn
+
+  audit:
+    name: Strict 24 original CNF 336 native SAT attempts same-runner & 95pct bootstrap
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r17-external-24-original-source-and-frozen-manifest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r17-external-shard-*
+          path: r17-external-download
+          merge-multiple: false
+      - name: Refuse missing SHA, partial shards, C/Python mismatch or false SAT witness
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r17_external_transfer.py audit | tee r17-external/audit.log
+          test -s r17-external/report_external.json
+          cat r17-external/report_external.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R17-REAL-EXTERNAL-TRANSFER-PAR2-REPORT
+          path: |
+            r17-external/report_external.json
+            r17-external/paired_external.csv
+            r17-external/audit.log
+            r17-external/frozen/manifest.json
+          retention-days: 60
+          if-no-files-found: warn
