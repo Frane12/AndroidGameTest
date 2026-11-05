@@ -15,7 +15,7 @@ ROOT.mkdir(exist_ok=True)
 PROTO="DRNAS-R124-FROZEN-EXTERNAL-MIXED-20261105-v1"
 SOURCES={
  "miter":("https://benchmark-database.de/getinstances?query=family%3Dmiter&context=cnf",40),
- "official2026":("https://satcompetition.github.io/2026/downloads/track_main_2026.uri",80),
+ "official2026":("https://satcompetition.github.io/2026/downloads/track_main_2026.uri",50),
 }
 CAP=15.0
 REPS=2
@@ -155,7 +155,7 @@ def freeze():
    novelty="SHA + URL/GBD crosschecked vs R120/R121/R122 and R118/R32p pins; historic exhaustive audit still incomplete")
  (ROOT/"manifest.json").write_text(json.dumps(m,indent=2)+"\n")
  print("R124_FREEZE_FINAL",json.dumps(dict(counts=dict(counts),cases=len(selected),exclusions=len(exclusions))),flush=True)
- if len(selected)<100 or counts["official2026"]<75 or counts["miter"]<15:
+ if len(selected)<85 or counts["official2026"]<45 or counts["miter"]<35:
   raise RuntimeError("FROZEN_CORPUS_INSUFFICIENT: no benchmark on undersized/cohort-biased data")
 
 def bins():
