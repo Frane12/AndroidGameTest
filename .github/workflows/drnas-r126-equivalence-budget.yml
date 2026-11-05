@@ -1,0 +1,315 @@
+name: DRNAS R126 frozen equivalence budget 0 4 16 32 128 and new external holdout
+on:
+  push:
+    branches: [experiment/drnas-r126-equivalence-budget-20261105]
+    paths:
+      - 'research/r126_native_gate_preprocessor.cpp'
+      - 'research/r126_equivalence_budget.py'
+      - '.github/workflows/drnas-r126-equivalence-budget.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  controls:
+    name: R126 native cap fail-closed source proof and negative controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build C++ and validate pinned baseline
+        run: |
+          set -euo pipefail
+          mkdir -p r126
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r126_native_gate_preprocessor.cpp -o r126/r126_native
+          python3 -m py_compile research/r126_equivalence_budget.py
+          sha256sum r126/r126_native built/bin/kissat_4_0_4 > r126/control-sha256.txt
+      - name: Assert caps 0 4 16 32 128 and audit every generated clause independently
+        run: |
+          set -euo pipefail
+          python3 -u research/r126_equivalence_budget.py controls | tee r126/controls.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r126-control-proofs
+          path: |
+            r126/controls/control-results.json
+            r126/controls.log
+            r126/control-sha256.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+  freeze_holdout:
+    name: Freeze new 2026 and miter identities before cap selection
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/prior/r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/prior/r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/prior/r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/prior/r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/prior/r125
+      - name: Precommit 25 miter and 35 official2026 external URI samples; SHA exclude R120 to R125
+        run: |
+          set -euo pipefail
+          python3 -u research/r126_equivalence_budget.py freeze | tee r126/holdout-freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          path: r126/holdout/
+          if-no-files-found: warn
+          retention-days: 90
+
+  calibration:
+    name: R126 historical calibration shard ${{ matrix.shard }}
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/calibration
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build native cap engine, pin exact binaries and same-run hardware
+        run: |
+          set -euo pipefail
+          mkdir -p r126
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r126_native_gate_preprocessor.cpp -o r126/r126_native
+          SHARD=${{ matrix.shard }} PHASE=calibration python3 - <<'PY'
+          import hashlib,json,os,pathlib,platform,subprocess
+          def digest(p):
+              h=hashlib.sha256()
+              with open(p,"rb") as f:
+                  for part in iter(lambda:f.read(1<<20),b""):h.update(part)
+              return h.hexdigest()
+          m=dict(commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                 binaries={p:digest(p) for p in ("r126/r126_native","built/bin/kissat_4_0_4")},
+                 cpu_model=next((x.strip() for x in pathlib.Path("/proc/cpuinfo").read_text().splitlines()
+                                 if x.startswith("model name")),"unknown"),
+                 cpu_affinity=list(os.sched_getaffinity(0)))
+          pathlib.Path(f"r126/{os.environ['PHASE']}-pin-{os.environ['SHARD']}.json").write_text(json.dumps(m)+"\n")
+          PY
+      - name: Paired 15 second PAR2 all 6 modes on reused R125 84 source manifest
+        run: |
+          set -euo pipefail
+          python3 -u research/r126_equivalence_budget.py run-calibration --shard ${{ matrix.shard }} | tee r126/calibration-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r126-calibration-${{ matrix.shard }}
+          path: |
+            r126/calibration-${{ matrix.shard }}.json
+            r126/calibration-pin-${{ matrix.shard }}.json
+            r126/calibration-${{ matrix.shard }}.log
+            r126/tmp/*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+
+  select:
+    name: R126 freeze single cap based ONLY on reused calibration, not unseen samples
+    needs: calibration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r126/calibration
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r126-calibration-*
+          merge-multiple: true
+          path: r126
+      - name: Audit all 1008 calibration trials and lock a single best experimental cap
+        run: |
+          set -euo pipefail
+          python3 -u research/r126_equivalence_budget.py select | tee r126/selection.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r126-precommitted-cap-selection
+          path: |
+            r126/selection.json
+            r126/calibration-results.json
+            r126/selection.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  holdout:
+    name: R126 truly new external holdout shard ${{ matrix.shard }}
+    needs: [select, freeze_holdout]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          path: r126/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-precommitted-cap-selection
+          path: r126
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin exact C++ and pure Kissat, no changes to frozen cap
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r126_native_gate_preprocessor.cpp -o r126/r126_native
+          SHARD=${{ matrix.shard }} PHASE=holdout python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          def digest(p):
+              h=hashlib.sha256()
+              with open(p,"rb") as f:
+                  for part in iter(lambda:f.read(1<<20),b""):h.update(part)
+              return h.hexdigest()
+          m=dict(commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                 binaries={p:digest(p) for p in ("r126/r126_native","built/bin/kissat_4_0_4")},
+                 cpu_model=next((x.strip() for x in pathlib.Path("/proc/cpuinfo").read_text().splitlines()
+                                 if x.startswith("model name")),"unknown"),
+                 cpu_affinity=list(os.sched_getaffinity(0)))
+          pathlib.Path(f"r126/{os.environ['PHASE']}-pin-{os.environ['SHARD']}.json").write_text(json.dumps(m)+"\n")
+          PY
+      - name: Do not change cap, pair every frozen new formula with pure Kissat
+        run: |
+          set -euo pipefail
+          python3 -u research/r126_equivalence_budget.py run-holdout --shard ${{ matrix.shard }} | tee r126/holdout-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r126-holdout-shard-${{ matrix.shard }}
+          path: |
+            r126/holdout-${{ matrix.shard }}.json
+            r126/holdout-pin-${{ matrix.shard }}.json
+            r126/holdout-${{ matrix.shard }}.log
+            r126/tmp/*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R126 audited external holdout PAR2 and promotion decision
+    needs: [freeze_holdout, select, holdout]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          path: r126/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-precommitted-cap-selection
+          path: r126
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r126-holdout-shard-*
+          merge-multiple: true
+          path: r126
+      - name: Strict complete formulas, timeouts, proof flags, source SHA and bootstrap audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r126_equivalence_budget.py aggregate-holdout | tee r126/final.log
+          cat r126/holdout-results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R126-SELECTIVE-EQUIVALENCE-CAP-BLIND-EXTERNAL-AUDIT
+          path: |
+            r126/holdout-results.json
+            r126/calibration-results.json
+            r126/selection.json
+            r126/final.log
+            r126/holdout-*.json
+            r126/holdout-pin-*.json
+          if-no-files-found: warn
+          retention-days: 90
