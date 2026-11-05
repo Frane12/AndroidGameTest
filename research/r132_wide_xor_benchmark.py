@@ -49,7 +49,7 @@ def freeze():
     """
     from r125_native_gate_benchmark import HISTORIC_IDS
     import r126_equivalence_budget as downloader
-    prior_names=("r120","r121","r122","r123","r124","r125","r126","r127","r128","r124t","r130")
+    prior_names=("r120","r121","r122","r123","r124","r125","r126","r127","r128","r124t","r130","r117500")
     used=set();ids=set(HISTORIC_IDS);urls=set();ledger={}
     for name in prior_names:
         f=ROOT/"prior"/name/"manifest.json"
@@ -60,10 +60,20 @@ def freeze():
         ledger[name]=digest(f)
         for c in entries:
             if c.get("sha256"): used.add(c["sha256"])
+            if c.get("id") and len(str(c["id"]))==32:
+                ids.add(str(c["id"])) # prospective R117-500 frozen candidate IDs
             for field in ("gbd","url"):
                 if c.get(field):
                     val=str(c[field]); ids.add(val.rsplit("/",1)[-1].split("?")[0])
                     if field=="url":urls.add(val)
+    # Explicitly exclude all four historically seen R115/R117 breakthroughs.
+    known_controls={
+      "75429ff7acb5acb597abe01aa745c2a6":"243e5d0079606862166a4619691cbbb8ffc9c8c14eb16250138b16d724c6bc83",
+      "42f1311ce504db8cc0cb590a568da20a":"9e4c57b9739f39a924d03267f05542831dc87fec9e9e2238f5e4ba11886378f4",
+      "01d6fa8efd18ebfecd06af408958477b":"6be9bfe6b44454a061a2e93350f589643f8a16f5bca6babdaa50a2d3d7069361",
+      "0efcbd10294eb001b16b4d126923372f":"84729f80119b50efac42d9477438abbc58c8712654ffe1fcdf9f324e44ae165d"
+    }
+    used.update(known_controls.values());ids.update(known_controls)
     need(len(used)>150,"insufficient historic SHA exclusion pool")
     specs={
        # Sources and quotas PRECOMMITTED before any R132 timings:
@@ -267,7 +277,7 @@ def audit():
             median_probe_seconds={m:round(statistics.median(p["probe_s"] for p in probes if p["policy"]==m),6) for m in ("q2_25","adaptive")}),
         all_runs_hardware=[x["runner_cpu"] for x in shards],strict_no_promotion=True,
         no_independent_UNSAT_LRAT=True,
-        holdout_note="R132 width 2..6 selector frozen before SHA-disjoint acquisition and excluded against R120-R130 and R124T; no official contest ranking; no independent UNSAT LRAT.")
+        holdout_note="R132 exact k2..6 precommitted SHA-disjoint external holdout, excludes R120-R130, R124T, R117500 and all 4 historical controls; no independent UNSAT LRAT or official ranking.")
     report["adaptive_verdict"]=("PROMISING_BUT_UNVERIFIED_UNSAT" if
         comparisons["r132"]["gain_vs_kissat_pct"]>0 and
         comparisons["r132"]["regressions_2x"]==0 and
