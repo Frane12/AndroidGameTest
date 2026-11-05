@@ -274,7 +274,7 @@ def audit():
         summary=summary,comparisons=comparisons,
         probes=dict(by_reason={f"{p}|{reason}":n for (p,reason),n in sorted(reasons.items())},
             triggered={m:sum(p["policy"]==m and p["route"]=="GF2" for p in probes) for m in ("adaptive","wide_exact")},
-            median_probe_seconds={m:round(statistics.median(p["probe_s"] for p in probes if p["policy"]==m),6) for m in ("q2_25","adaptive")}),
+            median_probe_seconds={m:round(statistics.median(p["probe_s"] for p in probes if p["policy"]==m),6) for m in ("adaptive","wide_exact")}),
         all_runs_hardware=[x["runner_cpu"] for x in shards],strict_no_promotion=True,
         no_independent_UNSAT_LRAT=True,
         holdout_note="R132 exact k2..6 precommitted SHA-disjoint external holdout, excludes R120-R130, R124T, R117500 and all 4 historical controls; no independent UNSAT LRAT or official ranking.")
