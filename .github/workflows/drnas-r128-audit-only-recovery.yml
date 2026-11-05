@@ -1,0 +1,81 @@
+name: DRNAS R128 audit-only recovery (no solver rerun)
+on:
+  push:
+    branches: [experiment/drnas-r128-audit-only-recovery-20261105]
+    paths: ['.github/workflows/drnas-r128-audit-only-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit_recovery:
+    name: Recover complete R128 PAR2 audit from immutable saved artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original R127 development source manifest and CNFs
+        uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/development
+      - name: Restore original R128 prospective frozen holdout
+        uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/holdout
+      - name: Restore original frozen policy from development-only selection
+        uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-development-selection
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128
+      - name: Restore all eight original paired holdout shard outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r128-holdout-*
+          merge-multiple: true
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128
+      - name: Check original development manifest SHA and aggregate only existing trials
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r128_xor_threshold_benchmark.py
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          manifest=pathlib.Path('r128/development/manifest.json')
+          selection=json.loads(pathlib.Path('r128/selection.json').read_text())
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest()==selection['development_source_sha256'], 'development SHA mismatch'
+          print('R128_RECOVERY_ORIGINAL_DEVELOPMENT_SHA_VERIFIED')
+          PY
+          python3 -u research/r128_xor_threshold_benchmark.py aggregate | tee r128/aggregate.log
+          test -s r128/holdout-results.json
+          test -s r128/paired.csv
+          cat r128/holdout-results.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve recovered independent final audit without mutating previous artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R128-AUDIT-ONLY-RECOVERED-42033905606
+          path: |
+            r128/holdout-results.json
+            r128/paired.csv
+            r128/aggregate.log
+            r128/selection.json
+            r128/development-results.json
+            r128/development/manifest.json
+            r128/holdout/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
