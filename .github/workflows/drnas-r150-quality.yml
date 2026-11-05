@@ -1,0 +1,128 @@
+name: DRNAS R150 cost-aware native structural selector
+on:
+  push:
+    branches: [experiment/drnas-r150-cost-aware-selector-20261105]
+    paths: ['.github/workflows/drnas-r150-quality.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          run-id: 42073257009
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150-history
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r150-prior-r132
+      - name: Freeze model using historical 400, then acquire untouched external CNFs
+        run: |
+          set -euo pipefail
+          mkdir -p r150
+          g++ -std=c++17 -O3 -DNDEBUG research/r150_features.cpp -o r150/r150_features
+          python3 -u research/r150_quality_benchmark.py train | tee r150/train.log
+          python3 -u research/r150_quality_benchmark.py freeze | tee r150/freeze.log
+          test -s r150/model.txt
+          test -s r150/holdout/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r150-frozen-model-and-new-holdout
+          path: |
+            r150/model.txt
+            r150/training.json
+            r150/train.log
+            r150/holdout/
+            r150/freeze.log
+          retention-days: 90
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          path: r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Native 5-way paired original CNF SAT trials
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r150_features.cpp -o r150/r150_features
+          g++ -std=c++17 -O3 -DNDEBUG research/r148_exact_fast_selector.cpp -o r150/r148_selector
+          python3 -u research/r150_quality_benchmark.py run --shard ${{ matrix.shard }} | tee r150/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r150-shard-${{ matrix.shard }}
+          path: |
+            r150/shard-${{ matrix.shard }}.json
+            r150/shard-${{ matrix.shard }}.log
+          retention-days: 90
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          path: r150
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r150-shard-*
+          merge-multiple: true
+          path: r150
+      - name: Verify all SHA, PAR2, paired times, proof tiers and bootstrap
+        run: |
+          set -euo pipefail
+          test "$(find r150 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r150_quality_benchmark.py audit | tee r150/audit.log
+          cat r150/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          path: |
+            r150/report.json
+            r150/paired.csv
+            r150/per_formula.csv
+            r150/audit.log
+            r150/training.json
+            r150/model.txt
+            r150/holdout/manifest.json
+          retention-days: 90
