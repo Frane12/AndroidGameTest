@@ -1,0 +1,167 @@
+name: DRNAS R123 external mixed AND OR XOR selective gate + Kissat fallback
+on:
+  push:
+    branches: [experiment/drnas-r123-external-mixed-selective-20261105]
+    paths:
+      - 'research/r123_external_mixed_benchmark.py'
+      - '.github/workflows/drnas-r123-external-mixed.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze 160 prospective external miter and SAT Competition CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load R120 previously measured external SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r123/prior-r120
+      - name: Load R121 previously measured external SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r123/prior-r121
+      - name: Load R122 generated formula SHA ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r123/prior-r122
+      - name: Freeze randomized URL order and audit external SHA exclusions
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r123_external_mixed_benchmark.py
+          python3 -u research/r123_external_mixed_benchmark.py freeze | tee r123/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r123-frozen-external-mixed
+          path: r123/
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R123 external mixed SAT shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r123-frozen-external-mixed
+          path: r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: r122-frozen-192-mixed-circuits
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r122-smoke
+      - name: Install CryptoMiniSat reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cms="$(command -v cryptominisat5 || command -v cryptominisat)"
+          test -x "$cms"
+          echo "CRYPTOMINISAT_BIN=$cms" >> "$GITHUB_ENV"
+      - name: Compile pinned R122 R118 and verify baseline binaries
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r122_mixed_gate_anf.cpp -o r123/r122_solver
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r123/r118
+          sha256sum r123/r122_solver r123/r118 built/bin/kissat_4_0_4 "$CRYPTOMINISAT_BIN" > r123/solver-sha256-${{ matrix.shard }}.txt
+          git rev-parse HEAD > r123/commit-${{ matrix.shard }}.txt
+          lscpu > r123/cpu-${{ matrix.shard }}.txt
+          dpkg-query -W cryptominisat > r123/cms-version-${{ matrix.shard }}.txt
+      - name: Validate R122 direct source certification on known synthetic control
+        run: |
+          set -euo pipefail
+          python3 -u research/r123_external_mixed_benchmark.py smoke
+      - name: Run paired external SAT measurements, independent source checks, and checkpoints
+        run: |
+          set -euo pipefail
+          python3 -u research/r123_external_mixed_benchmark.py benchmark --shard ${{ matrix.shard }} | tee r123/benchmark-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r123-shard-${{ matrix.shard }}
+          path: |
+            r123/shard-${{ matrix.shard }}.json
+            r123/solver-sha256-${{ matrix.shard }}.txt
+            r123/commit-${{ matrix.shard }}.txt
+            r123/cpu-${{ matrix.shard }}.txt
+            r123/cms-version-${{ matrix.shard }}.txt
+            r123/benchmark-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R123 strict 12 shard PAR2 formula bootstrap and activation audit
+    needs: [freeze,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r123-frozen-external-mixed
+          path: r123
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r123-shard-*
+          merge-multiple: true
+          path: r123
+      - name: Refuse partial shards, non-paired cases, SHA differences and contradictory SAT answers
+        run: |
+          set -euo pipefail
+          python3 -u research/r123_external_mixed_benchmark.py aggregate | tee r123/aggregate.log
+          cat r123/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          path: |
+            r123/manifest.json
+            r123/results.json
+            r123/aggregate.log
+            r123/shard-*.json
+            r123/solver-sha256-*.txt
+            r123/commit-*.txt
+            r123/cpu-*.txt
+          if-no-files-found: warn
+          retention-days: 90
