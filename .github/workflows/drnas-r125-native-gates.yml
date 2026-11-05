@@ -1,0 +1,254 @@
+name: DRNAS R125 native gate equivalence source proofs and prospective external SAT
+on:
+  push:
+    branches: [experiment/drnas-r125-native-partial-gate-20261105]
+    paths:
+      - 'research/r125_native_gate_preprocessor.cpp'
+      - 'research/r125_native_gate_benchmark.py'
+      - '.github/workflows/drnas-r125-native-gates.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  control:
+    name: R125 native C++ + independent signed-arc safety controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Compile native gate engine and check pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p r125
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r125_native_gate_preprocessor.cpp -o r125/r125_native
+          python3 -m py_compile research/r125_native_gate_benchmark.py
+          sha256sum r125/r125_native built/bin/kissat_4_0_4 > r125/control-binaries.sha256
+      - name: Independently prove signed XOR AND OR common-subexpression inferences
+        run: |
+          set -euo pipefail
+          python3 -u research/r125_native_gate_benchmark.py control | tee r125/control.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r125-native-proven-synthetic-controls
+          path: |
+            r125/controls/control-results.json
+            r125/control.log
+            r125/control-binaries.sha256
+          if-no-files-found: warn
+          retention-days: 90
+
+  freeze:
+    name: Freeze 90 never used external SAT and miter CNFs
+    needs: control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R120 historical SHA provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r125/prior/r120
+      - name: R121 historical SHA provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r125/prior/r121
+      - name: R122 generated controls SHA provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r125/prior/r122
+      - name: R123 external SHA provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r125/prior/r123
+      - name: Deterministic prospective selection and SHA checksum exclusions
+        run: |
+          set -euo pipefail
+          python3 -u research/r125_native_gate_benchmark.py freeze | tee r125/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r125-prospective-frozen
+          path: r125/prospective/
+          if-no-files-found: warn
+          retention-days: 90
+
+  monitor:
+    name: R125 native overhead reused R123 shard ${{ matrix.shard }}
+    needs: control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r123-frozen-external-mixed
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r125/old-r123
+      - name: Compile reproducible C++ shadow detector
+        run: |
+          set -euo pipefail
+          mkdir -p r125
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r125_native_gate_preprocessor.cpp -o r125/r125_native
+          sha256sum r125/r125_native > r125/monitor-bin-${{ matrix.shard }}.txt
+          git rev-parse HEAD > r125/monitor-commit-${{ matrix.shard }}.txt
+          lscpu > r125/monitor-cpu-${{ matrix.shard }}.txt
+      - name: Time native detection only on 160 reused external formulas
+        run: |
+          set -euo pipefail
+          python3 -u research/r125_native_gate_benchmark.py monitor --shard ${{ matrix.shard }} | tee r125/monitor-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r125-monitor-${{ matrix.shard }}
+          path: |
+            r125/monitor-${{ matrix.shard }}.json
+            r125/monitor-bin-${{ matrix.shard }}.txt
+            r125/monitor-commit-${{ matrix.shard }}.txt
+            r125/monitor-cpu-${{ matrix.shard }}.txt
+            r125/monitor-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R125 true prospective native-gate vs original Kissat shard ${{ matrix.shard }}
+    needs: [control, freeze]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          path: r125/prospective
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build and hash native detector with reference Kissat
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r125_native_gate_preprocessor.cpp -o r125/r125_native
+          sha256sum r125/r125_native built/bin/kissat_4_0_4 > r125/bins-${{ matrix.shard }}.txt
+          git rev-parse HEAD > r125/commit-${{ matrix.shard }}.txt
+          lscpu > r125/cpu-${{ matrix.shard }}.txt
+      - name: Real paired SAT attempts, 15s total cap including analysis and proof validation
+        run: |
+          set -euo pipefail
+          python3 -u research/r125_native_gate_benchmark.py benchmark --shard ${{ matrix.shard }} | tee r125/bench-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r125-benchmark-${{ matrix.shard }}
+          path: |
+            r125/shard-${{ matrix.shard }}.json
+            r125/proofs/
+            r125/bins-${{ matrix.shard }}.txt
+            r125/commit-${{ matrix.shard }}.txt
+            r125/cpu-${{ matrix.shard }}.txt
+            r125/bench-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R125 strict proof, 8 shard PAR2 and formula bootstrap final audit
+    needs: [control, freeze, monitor, benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r123-frozen-external-mixed
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r125/old-r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          path: r125/prospective
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r125-monitor-*
+          merge-multiple: true
+          path: r125
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r125-benchmark-*
+          merge-multiple: true
+          path: r125
+      - name: Fail closed on any missing pairing, SAT disagreement or invalid native source proof
+        run: |
+          set -euo pipefail
+          python3 -u research/r125_native_gate_benchmark.py aggregate | tee r125/aggregate.log
+          cat r125/results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R125-NATIVE-SOURCE-PROVED-EXTERNAL-SAT-REPORT
+          path: |
+            r125/results.json
+            r125/aggregate.log
+            r125/shard-*.json
+            r125/monitor-*.json
+            r125/proofs/
+            r125/bins-*.txt
+            r125/cpu-*.txt
+            r125/commit-*.txt
+          if-no-files-found: warn
+          retention-days: 90
