@@ -1,0 +1,66 @@
+name: DRNAS R148 audit-only recovery - reuse all 8 original shard artifacts
+on:
+  push:
+    branches: [experiment/drnas-r149-quality-crossfit-20261105]
+    paths: ['.github/workflows/drnas-r148-audit-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r148-aggregate-only
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: R148 audit-only - NO solver calls or new benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Recover 400-formula native R148 parity (correct directory)
+        uses: actions/download-artifact@v4
+        with:
+          name: r148-exact-400-decision-parity
+          run-id: 42082912034
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r148
+      - name: Recover all 8 completed R148 pilot benchmark shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r148-paired-shard-*
+          run-id: 42082912034
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: r148
+      - name: Validate original 400-sha parity and all 800 historical paired results
+        run: |
+          set -euo pipefail
+          test -s r148/parity.json
+          test "$(find r148 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r148_exact_fast_benchmark.py audit | tee r148/audit-recovery.log
+          test -s r148/report.json
+          cat r148/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R148-EXACT-FAST-RECOVERED-FINAL-PAR2-AUDIT
+          path: |
+            r148/report.json
+            r148/paired.csv
+            r148/parity.json
+            r148/parity.csv
+            r148/audit-recovery.log
+          retention-days: 90
+          if-no-files-found: warn
