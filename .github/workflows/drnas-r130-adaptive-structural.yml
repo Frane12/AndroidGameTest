@@ -1,0 +1,238 @@
+name: DRNAS R130 adaptive structural selector SHA-blind external SAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-r130-adaptive-structural-selector-20261105]
+    paths:
+      - 'research/r130_adaptive_selector.cpp'
+      - 'research/r130_adaptive_benchmark.py'
+      - '.github/workflows/drnas-r130-adaptive-structural.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r130-adaptive-holdout
+  cancel-in-progress: false
+
+jobs:
+  controls:
+    name: R130 native connectivity positive and negative selector controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile, syntax-check, independently exercise connected and disconnected complete XOR
+        run: |
+          set -euo pipefail
+          mkdir -p r130
+          python3 -m py_compile research/r130_adaptive_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r130_adaptive_selector.cpp -o r130/r130_filter
+          python3 - <<'PY'
+          import pathlib, subprocess
+          d=pathlib.Path('r130')
+          complete=[];disconnected=[]
+          for k in range(8):
+              connected_vars=[1,k*2+2,k*2+3]
+              disconnected_vars=[k*3+2,k*3+3,k*3+4]
+              for bits in (0,3,5,6):
+                  complete.append([(-v if bits & (1<<j) else v) for j,v in enumerate(connected_vars)])
+                  disconnected.append([(-v if bits & (1<<j) else v) for j,v in enumerate(disconnected_vars)])
+          unrelated=[[300+i] for i in range(200)]
+          def make(name,clauses):
+              path=d/name
+              path.write_text('p cnf 1000 '+str(len(clauses))+'\n'+''.join(' '.join(map(str,c))+' 0\n' for c in clauses))
+              return path
+          yes=make('connected.cnf',complete+unrelated)
+          no=make('disconnected.cnf',disconnected+unrelated)
+          broken=make('incomplete.cnf',complete[:3]+unrelated)
+          def probe(path,policy):
+              p=subprocess.run(['r130/r130_filter',str(path),'unused-r118','unused-kissat',policy,'--probe-only'],capture_output=True,text=True,check=True,timeout=8)
+              line=next(z for z in p.stdout.splitlines() if z.startswith('c R130_SELECTOR'))
+              print('R130_CONTROL',path.name,line,flush=True)
+              return 'route=GF2' in line
+          assert probe(yes,'adaptive'), 'connected verified XOR not recognized'
+          assert not probe(no,'adaptive'), 'disconnected XOR false activation'
+          assert not probe(broken,'adaptive'), 'incomplete XOR false activation'
+          assert probe(yes,'q2_25'), 'fixed baseline unexpectedly rejected'
+          print('R130_CONTROLS_PASS')
+          PY
+
+  freeze:
+    name: Freeze SHA-disjoint external CNFs BEFORE measuring R130
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          run-id: 42018077150
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r125
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          run-id: 42021817607
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r126
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r127
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          run-id: 42033905606
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r128
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124t-prospective-frozen
+          run-id: 42039355570
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r130/prior/r124t
+      - name: Freeze external miter 2025 and 2026 cohorts, exclude prior manifests
+        run: |
+          set -euo pipefail
+          python3 -u research/r130_adaptive_benchmark.py freeze | tee r130/freeze.log
+          test -s r130/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r130-frozen-sha-disjoint-external
+          path: r130/frozen/
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: R130 paired 15s original-CNF shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r130-frozen-sha-disjoint-external
+          path: r130/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Freeze exact pinned Kissat and CaDiCaL builds plus R118 and R130 binary
+        run: |
+          set -euo pipefail
+          mkdir -p r130
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r130/r118
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r130_adaptive_selector.cpp -o r130/r130_filter
+      - name: Run paired Kissat CaDiCaL R118 fixed gate and R130 adaptive (full wall time)
+        run: |
+          set -euo pipefail
+          python3 -u research/r130_adaptive_benchmark.py run --shard ${{ matrix.shard }} | tee r130/shard-${{ matrix.shard }}.log
+          test -s r130/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r130-shard-${{ matrix.shard }}
+          path: |
+            r130/shard-${{ matrix.shard }}.json
+            r130/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Strict R130 paired PAR2, status and original CNF identity audit
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r130-frozen-sha-disjoint-external
+          path: r130/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r130-shard-*
+          merge-multiple: true
+          path: r130
+      - name: Assert every paired record original CNF SHA, proof caveat and PAR2 totals
+        run: |
+          set -euo pipefail
+          python3 -u research/r130_adaptive_benchmark.py audit | tee r130/audit.log
+          test -s r130/report.json
+          cat r130/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R130-FROZEN-ADAPTIVE-STRUCTURAL-PAR2
+          path: |
+            r130/report.json
+            r130/audit.log
+            r130/paired.csv
+            r130/probes.csv
+            r130/shard-*.json
+            r130/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
