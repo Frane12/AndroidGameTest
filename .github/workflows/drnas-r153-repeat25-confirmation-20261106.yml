@@ -1,0 +1,185 @@
+name: DRNAS R153 repeat confirmation 25 original CNFs five solvers three repetitions 20s
+on:
+  push:
+    branches: [experiment/drnas-r153-confirmation2-repeat25-20261106]
+    paths:
+      - '.github/workflows/drnas-r153-repeat25-confirmation-20261106.yml'
+      - 'research/r153_repeat25_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r153-repeat25-originals-3x20s-20261106
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin and validate unchanged R154 25 original CNFs, frozen R153 R28 and known binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile python audit first and frozen native R153/R28
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r153_repeat25_benchmark.py research/r115_world_top_rematch.py
+          mkdir -p r153repeat
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r153repeat/r153
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r153repeat/r28
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          run-id: 42107642696
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r153repeat
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Check original source SHA, frozen real reference binaries, CryptoMiniSat version and R153 independent proof smoke
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | tee r153repeat/cryptominisat-package.txt
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          from collections import Counter
+          root=pathlib.Path('r153repeat/frozen')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['protocol']=='DRNAS-R154-UNSEEN-LIGHTSOUT-XOR-UNIT-TRANSFER-20261105-v1'
+          assert len(m['cases'])==25
+          assert Counter(x['cohort'] for x in m['cases'])==Counter({'complete_xor':7,'xor_plus_units':6,'mixed_residual':4,'nonxor_control':8})
+          for c in m['cases']:
+            p=root/(c['id']+'.cnf')
+            assert p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==c['sha256'],c['id']
+          print('R153_REPEAT_SOURCE_25_SHA_PIN_PASS',flush=True)
+          PY
+          (cd r153repeat && sha256sum r153 r28) > r153repeat/native-hashes.txt
+          python3 - <<'PY'
+          import json,sys
+          sys.path.insert(0,'research')
+          import r153_repeat25_benchmark as b
+          b.selftest()
+          b.manifest()
+          print('R153_REPEAT_NATIVE_SOURCE_PROOF_SMOKE_PASS',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r153repeat-original25-frozen-source-and-binaries
+          path: |
+            r153repeat/frozen/
+            r153repeat/r153
+            r153repeat/r28
+            r153repeat/native-hashes.txt
+            r153repeat/cryptominisat-package.txt
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R153 repeat 5 genuinely running solvers 3x20s original SHA paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r153repeat-original25-frozen-source-and-binaries
+          path: r153repeat
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin every unchanged reference binary and all source SHA, record CPU
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          chmod +x r153repeat/r153 r153repeat/r28
+          (cd r153repeat && sha256sum -c native-hashes.txt)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | cmp - r153repeat/cryptominisat-package.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          fs=['r153repeat/r153','r153repeat/r28','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1','/usr/bin/cryptominisat5']
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            binaries={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+            cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines()
+                      if x.startswith('model name')),'unknown'))
+          pathlib.Path('r153repeat/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: Three shuffled SAT solver repetitions 20s and independent proof of source XOR
+        run: |
+          set -euo pipefail
+          python3 -u research/r153_repeat25_benchmark.py shard --shard ${{ matrix.shard }} | tee r153repeat/shard-${{ matrix.shard }}.log
+          grep -q '^R153_REPEAT_SHARD_PASS ' r153repeat/shard-${{ matrix.shard }}.log
+          test -s r153repeat/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r153repeat-shard-${{ matrix.shard }}
+          path: |
+            r153repeat/shard-${{ matrix.shard }}.json
+            r153repeat/pin-${{ matrix.shard }}.json
+            r153repeat/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: benchmark
+    name: Audit 375 original SHA 5 solver paired attempts, witnesses and XOR proof on known repeat formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r153repeat-original25-frozen-source-and-binaries
+          path: r153repeat
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r153repeat-shard-*
+          merge-multiple: true
+          path: r153repeat
+      - name: Strict 25 source SHA, 3-repeat 5-mode PAR2, source SAT models GF2 replay and bootstrap
+        run: |
+          set -euo pipefail
+          test "$(find r153repeat -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r153_repeat25_benchmark.py audit | tee r153repeat/audit.log
+          grep -q '^R153_REPEAT_FINAL ' r153repeat/audit.log
+          cat r153repeat/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R153-REPEAT-25-5SOLVER-3X20S-AUDIT
+          path: |
+            r153repeat/report.json
+            r153repeat/paired.csv
+            r153repeat/audit.log
+            r153repeat/frozen/manifest.json
+            r153repeat/native-hashes.txt
+          if-no-files-found: warn
+          retention-days: 90
