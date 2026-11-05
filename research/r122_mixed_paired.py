@@ -124,7 +124,7 @@ def run_shard(root,index):
  cs=[c for i,c in enumerate(m["cases"]) if i%SHARDS==index]
  assert len(cs)==24
  bins={k:Path(v).resolve() for k,v in (
-   ("r118","r122/r118"),("r122","r122/r122"),("kissat","built/bin/kissat_4_0_4"),
+   ("r118","r122/r118"),("r122","r122/r122_solver"),("kissat","built/bin/kissat_4_0_4"),
    ("cryptominisat",os.environ.get("CRYPTOMINISAT_BIN","/usr/bin/cryptominisat5")))}
  assert all(path.exists() for path in bins.values())
  cpus=sorted(os.sched_getaffinity(0));os.sched_setaffinity(0,{cpus[0]})
