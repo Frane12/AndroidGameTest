@@ -249,6 +249,18 @@ def aggregate():
   assert len(rows)==len(cases[shard::SHARDS])*REPS*len(MODES),("incomplete shard",shard)
   all_rows+=rows
  assert len(all_rows)==len(cases)*REPS*len(MODES)
+ binary_sets=set();commits=set();cpu_models=set()
+ for shard in range(SHARDS):
+  pre=ROOT/f"solver-sha256-{shard}.txt"
+  commit=ROOT/f"commit-{shard}.txt"
+  cpu=ROOT/f"cpu-{shard}.txt"
+  assert pre.is_file() and commit.is_file() and cpu.is_file(),("missing hardware/source pin",shard)
+  binary_sets.add(pre.read_text().strip())
+  commits.add(commit.read_text().strip())
+  cpu_models.add(next((x.strip() for x in cpu.read_text().splitlines()
+          if x.strip().startswith("Model name:")),"unknown"))
+ assert len(binary_sets)==1,("different solver binary SHA sets across runners",len(binary_sets))
+ assert len(commits)==1,("different source commits across runners",commits)
  original={c["id"]:c for c in cases}
  seen=set();pairs=defaultdict(dict)
  for r in all_rows:
@@ -307,6 +319,8 @@ def aggregate():
  report=dict(protocol=PROTO,formula_count=len(cases),attempts=len(all_rows),
    shards=SHARDS,limit_seconds=CAP,by_cohort=summary,
    exclusion_manifest_count=len(m["exclusions"]),
+   binary_set_sha256=digest(next(iter(binary_sets)).encode()),
+   source_commits=list(commits),cpu_models=sorted(cpu_models),
    independent_proof_limit="Only source witness for SAT, source XOR contradiction for R118, and independently enumerated <=12 input gate-miter UNSAT are proof-checked",
    no_activation_interpretation="If R122 direct_gate=0 the test measures fallback overhead, not a transferable new gate-method advantage",
    scope="External GBD samples with size-biased exclusion; never official SAT Competition score or general world record")
@@ -315,7 +329,7 @@ def aggregate():
 
 def smoke():
  # Historical R122 generator is an explicit regression smoke, not an external benchmark.
- sample=pathlib.Path("r122-smoke/cnf/seen-mixed_equiv-000.cnf")
+ sample=pathlib.Path("r122-smoke/r122/cnf/seen-mixed_equiv-000.cnf")
  assert sample.is_file()
  b=bins();x=execute_one("r122",sample,b)
  assert x["status"]=="UNSAT" and x["route"]=="certified_gate_anf_equivalent"
