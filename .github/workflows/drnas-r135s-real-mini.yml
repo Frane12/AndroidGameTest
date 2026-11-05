@@ -1,0 +1,169 @@
+name: DRNAS R135S small fresh real SAT CNF mini paired validation
+on:
+  push:
+    branches: [experiment/drnas-r135s-real-mini-24-20261105]
+    paths: ['.github/workflows/drnas-r135s-real-mini.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r135s-real-mini-fixed
+  cancel-in-progress: false
+jobs:
+  controls:
+    name: R135S frozen structural selector sanity and Python syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Only compile R135 selector and check routing on synthetic controls
+        run: |
+          set -euo pipefail
+          mkdir -p r135s
+          python3 -m py_compile research/r135s_real_mini_freeze.py research/r135s_run_nonxor.py research/r135s_audit_nonxor.py
+          g++ -std=c++17 -O3 -DNDEBUG research/r135_nonxor_selector.cpp -o r135s/r135_selector
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          tests=[('binary','1 -2','KISSAT'),('nonhorn','1 2 -3','CADICAL'),('horn','1','KISSAT')]
+          for name,body,expect in tests:
+              p=Path('r135s')/(name+'.cnf')
+              p.write_text('p cnf 10 120\n'+(body+' 0\n')*120)
+              q=subprocess.run(['r135s/r135_selector',str(p)],check=True,capture_output=True,text=True)
+              assert 'route='+expect in q.stdout,(name,q.stdout)
+              print('R135S_CONTROL',name,q.stdout.strip(),flush=True)
+          print('R135S_CONTROLS_PASS',flush=True)
+          PY
+  freeze:
+    name: Freeze 16-24 unseen REAL source CNFs; mandatory SHA exclusions
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r135-source/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132-source/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: holdout-400
+      - name: Strict SHA disjoint original formula selection, before timings
+        run: |
+          set -euo pipefail
+          mkdir -p r135s
+          python3 -u research/r135s_real_mini_freeze.py | tee r135s/freeze.log
+          test -s r135s/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135s-mini-immutable-source-frozen
+          path: |
+            r135s/frozen/
+            r135s/freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R135S paired 15s original-CNF mini shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          path: r135s/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin original Kissat CaDiCaL and unchanged frozen R118
+        run: |
+          set -euo pipefail
+          mkdir -p r135s
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG research/r118_xor_proof_on_demand.cpp -o r135s/r118
+          g++ -std=c++17 -O3 -DNDEBUG research/r135_nonxor_selector.cpp -o r135s/r135_selector
+      - name: Randomized paired solver runs, SAT model validation, detector included
+        run: |
+          set -euo pipefail
+          python3 -u research/r135s_run_nonxor.py --shard ${{ matrix.shard }} | tee r135s/shard-${{ matrix.shard }}.log
+          test -s r135s/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r135s-shard-${{ matrix.shard }}
+          path: |
+            r135s/shard-${{ matrix.shard }}.json
+            r135s/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: R135S strict audit-only SAT status SHA and PAR2
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135s-mini-immutable-source-frozen
+          path: r135s/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r135s-shard-*
+          merge-multiple: true
+          path: r135s
+      - name: Aggregate original four-way paired comparisons without re-running solvers
+        run: |
+          set -euo pipefail
+          test "$(find r135s -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r135s_audit_nonxor.py | tee r135s/audit.log
+          test -s r135s/report.json
+          cat r135s/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R135S-REAL-MINI-FROZEN-PAR2-FINAL
+          path: |
+            r135s/report.json
+            r135s/audit.log
+            r135s/paired.csv
+            r135s/probes.csv
+            r135s/shard-*.json
+            r135s/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
