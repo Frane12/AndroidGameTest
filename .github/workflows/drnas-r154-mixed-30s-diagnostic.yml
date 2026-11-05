@@ -1,0 +1,132 @@
+name: DRNAS R154 MIX 30s diagnostic same frozen 12 R153 R28 Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-r154-mix-30s-diagnostics-20261105]
+    paths:
+      - '.github/workflows/drnas-r154-mixed-30s-diagnostic.yml'
+      - 'research/r154_mixed_30s_diagnostic.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r154-mix-30s-12-original-sha-paired
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: Same frozen 12 original mixed CNF 30s paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight diagnostic script and unchanged R153 native source
+        run: |
+          set -euo pipefail
+          mkdir -p r154mix30
+          python3 -m py_compile research/r154_mixed_30s_diagnostic.py research/r154_unseen_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r154mix30/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r154mix30/r153
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          run-id: 42112341909
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r154mix30
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: SHA pin all binaries original CNF manifest and CPU
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          test -s r154mix30/frozen/manifest.json
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          fs = ['r154mix30/r28','r154mix30/r153','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1']
+          pin = {
+              'commit': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+              'binaries': {f: hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+              'cpu': next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines()
+                           if x.startswith('model name')), 'unknown'),
+              'source_run_id': 42112341909,
+          }
+          pathlib.Path('r154mix30/pin-' + os.environ['SHARD'] + '.json').write_text(json.dumps(pin, sort_keys=True))
+          PY
+      - name: Strict original paired four-solvers 30s cap captures R153 decision and fallback even on timeout
+        run: |
+          set -euo pipefail
+          python3 -u research/r154_mixed_30s_diagnostic.py shard --shard ${{ matrix.shard }} | tee r154mix30/shard-${{ matrix.shard }}.log
+          grep -q '^R154_MIX30_SHARD_PASS ' r154mix30/shard-${{ matrix.shard }}.log
+          test -s r154mix30/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r154-mix30-shard-${{ matrix.shard }}
+          path: |
+            r154mix30/shard-${{ matrix.shard }}.json
+            r154mix30/shard-${{ matrix.shard }}.log
+            r154mix30/pin-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Verify source SHA, SAT witnesses, proof and calculate 15/30s PAR2 plus fallback
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          run-id: 42112341909
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r154mix30
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r154-mix30-shard-*
+          merge-multiple: true
+          path: r154mix30
+      - name: Complete four shards and independent certification audit
+        run: |
+          set -euo pipefail
+          test "$(find r154mix30 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r154_mixed_30s_diagnostic.py audit | tee r154mix30/audit.log
+          grep -q '^R154_MIX30_FINAL ' r154mix30/audit.log
+          test -s r154mix30/report.json
+          python3 - <<'PY'
+          import json,pathlib
+          d=json.loads(pathlib.Path('r154mix30/report.json').read_text())
+          assert d['status']=='AUDIT_PASS' and d['attempts']==96 and d['formulas']==12
+          assert d['diagnostics']['no_new_holdout_claim']
+          print('R154_MIX30_INDEPENDENT_SOURCE_AND_PAIRED_AUDIT_PASS')
+          PY
+          cat r154mix30/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R154-MIX-30S-SAME-FROZEN-12-DIAGNOSTICS-FINAL
+          path: |
+            r154mix30/report.json
+            r154mix30/paired.csv
+            r154mix30/audit.log
+            r154mix30/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
