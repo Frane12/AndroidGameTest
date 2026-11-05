@@ -18,7 +18,7 @@ SPEC={
 "official":{"archives":[],"indexes":[("official2026","https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/track_main_2026.uri"),("official2025","https://raw.githubusercontent.com/satcompetition/2025/5f286f4443ab2e1f3c1deded3255d8500ae46e2e/downloads/SC2025.uri"),("official2024","https://benchmark-database.de/getinstances?query=track%3Dmain_2024&context=cnf")]},
 "external_application":{"archives":["flat200","logistics","blocks","quasigroup"],"indexes":[(v,"https://benchmark-database.de/getinstances?query=family%3D"+v+"&context=cnf") for v in ["graph-coloring","bounded-model-checking","planning","quasigroup-completion"]]},
 "external_xor":{"archives":["parity"],"indexes":[(v,"https://benchmark-database.de/getinstances?query=family%3D"+v+"&context=cnf") for v in ["xor-shifting","cryptography","miter"]]},
-"external_nonxor":{"archives":["uf250","uuf250","uf100","uuf100","jnh"],"indexes":[]}}
+"external_nonxor":{"archives":["uf250","uuf250","uf100","uuf100","jnh"],"indexes":[(v,"https://benchmark-database.de/getinstances?query=family%3D"+v+"&context=cnf") for v in ["uniform-random","variable-length-random","random-3sat"]]}}
 def sha(b):return hashlib.sha256(b).hexdigest()
 def fetch(url,cap=10_000_000):
  url=url.replace("http://benchmark-database.de/","https://benchmark-database.de/")
