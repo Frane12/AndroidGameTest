@@ -31,33 +31,43 @@ def entropy(weights):
 
 
 def parse_dimacs(path):
+    """Parse legal DIMACS clauses across lines and multiple clauses per line."""
     n = clauses = None
     graph = None
     count = edges = 0
+    pending = []
     for line in path.read_text().splitlines():
         t = line.strip()
         if not t or t[0] in 'c%':
             continue
         if t.startswith('p '):
             parts = t.split()
-            require(len(parts) == 4 and parts[1] == 'cnf' and n is None, 'DIMACS header')
+            require(len(parts) == 4 and parts[1] == 'cnf' and n is None,
+                    'DIMACS header')
             n, clauses = int(parts[2]), int(parts[3])
             require(1 <= n <= MAX_N and 0 <= clauses <= 2000000, 'size budget')
             graph = [set() for _ in range(n)]
             continue
         require(graph is not None, 'missing DIMACS header')
-        literals = [int(x) for x in t.split()]
-        require(literals and literals[-1] == 0 and 0 not in literals[:-1], 'single-line clauses required')
-        vertices = sorted({abs(x)-1 for x in literals[:-1]})
-        require(all(0 <= v < n for v in vertices), 'variable outside declared range')
-        count += 1
-        for i, j in itertools.combinations(vertices, 2):
-            if j not in graph[i]:
-                edges += 1
-                require(edges <= MAX_EDGES, 'edge budget')
-                graph[i].add(j)
-                graph[j].add(i)
-    require(graph is not None and count == clauses, 'clause count mismatch')
+        for token in t.split():
+            literal = int(token)
+            if literal != 0:
+                require(1 <= abs(literal) <= n, 'variable outside declared range')
+                pending.append(abs(literal)-1)
+                require(len(pending) <= 100000, 'clause width budget')
+                continue
+            count += 1
+            require(count <= clauses, 'too many clauses')
+            vertices = sorted(set(pending))
+            pending = []
+            for i, j in itertools.combinations(vertices, 2):
+                if j not in graph[i]:
+                    edges += 1
+                    require(edges <= MAX_EDGES, 'edge budget')
+                    graph[i].add(j)
+                    graph[j].add(i)
+    require(graph is not None and count == clauses and not pending,
+            'incomplete DIMACS clauses')
     return graph
 
 
