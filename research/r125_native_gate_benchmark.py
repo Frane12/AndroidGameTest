@@ -47,8 +47,10 @@ def sha_file(path):
   for chunk in iter(lambda:f.read(1<<20),b""):h.update(chunk)
  return h.hexdigest()
 
-def get_binary():
- assert NATIVE.is_file() and KISSAT.is_file(),("missing frozen binaries",NATIVE,KISSAT)
+def get_binary(require_kissat=False):
+ assert NATIVE.is_file(),("missing native gate detector",NATIVE)
+ if require_kissat:
+  assert KISSAT.is_file(),("missing pinned Kissat binary",KISSAT)
 def native(source,out="-",proof="-",timeout=6):
  get_binary()
  run=subprocess.run([str(NATIVE),str(source),str(out),str(proof)],
@@ -323,7 +325,7 @@ def witness_verified(source,result):
  return "original_source_SAT_model_verified"
 
 def benchmark(shard):
- get_binary()
+ get_binary(require_kissat=True)
  dest=ROOT/"prospective";manifest=json.loads((dest/"manifest.json").read_text())
  cases=manifest["cases"]
  assert manifest["protocol"]==PROTO and 0<=shard<SHARDS
