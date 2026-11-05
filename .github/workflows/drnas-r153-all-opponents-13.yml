@@ -1,0 +1,191 @@
+name: DRNAS R153 all SATComp2026 opponents same 13 CNFs six genuine builds
+on:
+  push:
+    branches: [experiment/drnas-r153-all-world-opponents-13-20261105]
+    paths: ['.github/workflows/drnas-r153-all-opponents-13.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r153-world-opponents-frozen-13-20261105
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin same R153 original 13; extract genuine SC2026 source build; enumerate ALL published 2026 main solvers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify 13-source benchmark and official source provenance scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r153_world_field_rematch.py research/r153_unit_bridge_benchmark.py research/r115_world_top_rematch.py
+          mkdir -p r153field
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o /tmp/r153field-preflight
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o /tmp/r28field-preflight
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r153field
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28full-actual-official-SC2026-biere-source-and-signed-binaries
+          run-id: 42105963889
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r153field/official-artifact
+      - name: Verify exact original source SHA and official winning solver archive/bin identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,hashlib,pathlib,shutil
+          d=pathlib.Path('r153field/official-artifact')
+          metas=list(d.rglob('official-build.json'))
+          bins=list(d.rglob('sc2024-kissat'))
+          archives=list(d.rglob('official-2026-biere.tar.xz'))
+          assert len(metas)==len(bins)==len(archives)==1,(metas,bins,archives)
+          meta=json.loads(metas[0].read_text())
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          assert sha(bins[0])==meta['binary_sha256'], 'compiled official solver SHA drift'
+          assert sha(archives[0])==meta['archive_sha256'], 'official original archive SHA drift'
+          out=pathlib.Path('r153field')
+          shutil.copyfile(bins[0],out/'sc2024-kissat')
+          (out/'sc2024-kissat').chmod(0o755)
+          shutil.copyfile(metas[0],out/'official-build.json')
+          src=json.loads((out/'frozen/manifest.json').read_text())
+          assert len(src['cases'])==13
+          assert len({x['sha256'] for x in src['cases']})==13
+          for case in src['cases']:
+              f=out/'frozen'/(case['id']+'.cnf')
+              assert f.is_file() and sha(f)==case['sha256'],case['id']
+          print('R153_ALL_13_SOURCE_AND_REAL_COMPETITION_PIN_PASS',len(src['cases']),
+                sha(out/'sc2024-kissat'),meta['archive_sha256'],flush=True)
+          PY
+      - name: Download full official SATCompetition 2026 13-formula comparison table ALL solver names
+        run: |
+          set -euo pipefail
+          python3 -u research/r153_world_field_rematch.py official | tee r153field/official-score.log
+          test -s r153field/official_all_2026.json
+          test -s r153field/official_all_2026.csv
+          grep -q '^R153_ALL_OFFICIAL_FIELD ' r153field/official-score.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r153field-original-13-genuine-competition-binary-and-full-official-table
+          path: |
+            r153field/frozen/
+            r153field/sc2024-kissat
+            r153field/official-build.json
+            r153field/official_all_2026.json
+            r153field/official_all_2026.csv
+            r153field/official-score.log
+          retention-days: 90
+          if-no-files-found: warn
+  benchmark:
+    name: Six genuinely running solvers same 13 original CNFs shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r153field-original-13-genuine-competition-binary-and-full-official-table
+          path: r153field
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin CryptoMiniSat official Ubuntu package and compile original DRNAS binaries
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1 r153field/sc2024-kissat
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5
+          dpkg-query -W cryptominisat | tee r153field/cryptominisat-package.txt
+          sha256sum /usr/bin/cryptominisat5 > r153field/cryptominisat-binary.sha256
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r153field/r153
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r153field/r28
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          o=pathlib.Path('r153field/official-build.json')
+          m=json.loads(o.read_text())
+          x=hashlib.sha256(pathlib.Path('r153field/sc2024-kissat').read_bytes()).hexdigest()
+          assert m['binary_sha256']==x
+          print('R153_OFFICIAL_REAL_COMPETITOR_PIN_SHA_PASS',x,flush=True)
+          PY
+      - name: Same-original SHA verified strict 20s cap six-way randomized paired benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/r153_world_field_rematch.py run --shard ${{ matrix.shard }} | tee r153field/shard-${{ matrix.shard }}.log
+          test -s r153field/shard-${{ matrix.shard }}.json
+          grep -q '^R153_WORLD_SHARD_PASS ' r153field/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r153field-shard-${{ matrix.shard }}
+          path: |
+            r153field/shard-${{ matrix.shard }}.json
+            r153field/shard-${{ matrix.shard }}.log
+            r153field/cryptominisat-package.txt
+            r153field/cryptominisat-binary.sha256
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    name: Strict 156 paired trials, all official entrants historical comparison and complete proof/regressions
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r153field-original-13-genuine-competition-binary-and-full-official-table
+          path: r153field
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r153field-shard-*
+          merge-multiple: true
+          path: r153field
+      - name: Reject missing original SHA, incorrect SAT model or source GF2 proof; report all PAR2 losses
+        run: |
+          set -euo pipefail
+          test "$(find r153field -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r153_world_field_rematch.py audit | tee r153field/audit.log
+          grep -q '^R153_WORLD_FINAL ' r153field/audit.log
+          cat r153field/audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R153-ALL-WORLD-2026-13-FORMULAS-SIXWAY-COMPLETE-PAR2
+          path: |
+            r153field/audit.json
+            r153field/paired.csv
+            r153field/per_formula.csv
+            r153field/official_all_2026.json
+            r153field/official_all_2026.csv
+            r153field/audit.log
+            r153field/official-build.json
+            r153field/frozen/manifest.json
+          retention-days: 90
+          if-no-files-found: warn
