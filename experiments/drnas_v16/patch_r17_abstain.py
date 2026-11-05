@@ -17,6 +17,20 @@ def once(s,a,b):
 
 def patch(src):
     s=r16.patch(src)
+    # Native R13 originally rejected any n outside {200,220,240}.
+    # Permit R16/R17 telemetry on external CNFs but NEVER select a restart
+    # outside the 220/240 training domain; preserve all R13/R14 limits.
+    s=once(s,
+        '!(n_value==200 || n_value==220 || n_value==240)) {',
+        '((!(n_value==200 || n_value==220 || n_value==240)) && !r16_active) ||\\n'
+        '        (r16_active && (n_value==0 || n_value>1000000))) {')
+    s=once(s,
+        'selected=r13_n>=220 && isfinite(score) &&',
+        'selected=(r13_n==220 || r13_n==240) && isfinite(score) &&')
+    # Bound real CNF graph coefficient of variation without enabling actions.
+    s=once(s,
+        '!(r12_degree_cv>=0.0 && r12_degree_cv<=2.0)',
+        '!(r12_degree_cv>=0.0 && r12_degree_cv<=(r16_active ? 1000.0 : 2.0))')
     s=once(s,
 '''  const bool r16_snapshot50=!strcmp(drnas_mode,"r16_snapshot50");
   const bool r16_active=r16_live50 || r16_live50_strict || r16_snapshot50;''',
