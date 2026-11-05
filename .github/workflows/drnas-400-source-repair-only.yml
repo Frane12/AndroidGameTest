@@ -1,0 +1,113 @@
+name: DRNAS 400 repair and final CNF collection ONLY - zero solver runs
+on:
+  push:
+    branches: [experiment/drnas-five-step-world-validation-20261105]
+    paths: [.github/workflows/drnas-400-source-repair-only.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-400-source-repair-only
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Complete 100 non-XOR sources, preserving existing 200 CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-exclusion-ledgers
+          repository: Frane12/AndroidGameTest
+          run-id: 42059750939
+          github-token: ${{ github.token }}
+          path: prior-ledgers
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-external_xor
+          repository: Frane12/AndroidGameTest
+          run-id: 42059750939
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-external_application
+          repository: Frane12/AndroidGameTest
+          run-id: 42059750939
+          github-token: ${{ github.token }}
+          path: .
+      - name: Acquire 100 source verified non-XOR controls without benchmarking
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/acquire_400_only.py
+          python3 -u research/tseitin-replay/acquire_400_only.py external_nonxor | tee repair-nonxor.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-400-nonxor-repaired-source
+          path: |
+            holdout-400/external_nonxor.json
+            holdout-400/raw/external_nonxor/
+            repair-nonxor.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
+  final:
+    name: Independent 400 CNF manifest audit and bundle - NO solver
+    needs: repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-external_xor
+          repository: Frane12/AndroidGameTest
+          run-id: 42059750939
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-external_application
+          repository: Frane12/AndroidGameTest
+          run-id: 42059750939
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-official
+          repository: Frane12/AndroidGameTest
+          run-id: 42059750939
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-400-nonxor-repaired-source
+          path: .
+      - name: Verify 400 SHA-distinct CNFs; refuse partial set
+        run: |
+          set -euo pipefail
+          python3 -u research/tseitin-replay/audit_400_only.py | tee holdout-400/final-audit.log
+          echo "Collected 400 CNFs; no SAT benchmark was executed." >> "$GITHUB_STEP_SUMMARY"
+          cat holdout-400/audit.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          path: holdout-400/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: DRNAS-400-SOURCE-AUDIT-INCOMPLETE-ONLY
+          path: |
+            holdout-400/manifest-400.json
+            holdout-400/audit.txt
+          if-no-files-found: warn
+          retention-days: 30
