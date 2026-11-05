@@ -1,0 +1,328 @@
+name: DRNAS R128 frozen XOR threshold selection and independent external holdout
+on:
+  push:
+    branches: [experiment/drnas-r128-xor-thresholds-blind-20261105]
+    paths:
+      - 'research/r128_xor_threshold_filter.cpp'
+      - 'research/r128_xor_threshold_benchmark.py'
+      - '.github/workflows/drnas-r128-xor-thresholds.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  controls:
+    name: R128 exhaustive positive and negative XOR threshold controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile C++ prefilter and unchanged R118; prohibit incomplete XOR decisions
+        run: |
+          set -euo pipefail
+          mkdir -p r128
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r128_xor_threshold_filter.cpp -o r128/r128_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r128/r118
+          python3 -m py_compile research/r128_xor_threshold_benchmark.py
+          python3 -u research/r128_xor_threshold_benchmark.py controls | tee r128/controls.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r128-threshold-safety-controls
+          path: |
+            r128/controls/controls.json
+            r128/controls.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  freeze:
+    name: Freeze completely new SHA-excluded external holdout before selection
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R120-EXTERNAL-150-PAR2-AUDIT
+          run-id: 41982252882
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r120
+      - uses: actions/download-artifact@v4
+        with:
+          name: R121-PROSPECTIVE-EXTERNAL-XOR-TRANSFER-AUDIT
+          run-id: 41988869649
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r121
+      - uses: actions/download-artifact@v4
+        with:
+          name: R122-mixed-AND-OR-final-report
+          run-id: 41999580688
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r122
+      - uses: actions/download-artifact@v4
+        with:
+          name: R123-EXTERNAL-MIXED-SELECTIVE-PAR2-AUDIT
+          run-id: 42004032255
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r123
+      - uses: actions/download-artifact@v4
+        with:
+          name: r124-frozen-external-mixed
+          run-id: 42018077150
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r124
+      - uses: actions/download-artifact@v4
+        with:
+          name: r125-prospective-frozen
+          run-id: 42014900265
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r125
+      - uses: actions/download-artifact@v4
+        with:
+          name: r126-new-frozen-unmeasured-holdout
+          run-id: 42021817607
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r126
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/prior/r127
+      - name: Freeze new external identities, SHA and provenance before selecting policy
+        run: |
+          set -euo pipefail
+          python3 -u research/r128_xor_threshold_benchmark.py freeze | tee r128/freeze.log
+          test -s r128/holdout/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r128-frozen-prospective-external-holdout
+          path: r128/holdout/
+          if-no-files-found: warn
+          retention-days: 90
+
+  development:
+    name: R128 historical R127-development threshold ablation shard ${{ matrix.shard }}
+    needs: controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/development
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build exact frozen prefilter and original R118 and pin binary SHA and hardware
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r128_xor_threshold_filter.cpp -o r128/r128_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r128/r118
+          SHARD=${{ matrix.shard }} PHASE=development python3 - <<'PY'
+          import os,hashlib,json,pathlib,subprocess
+          def h(p):
+            x=hashlib.sha256()
+            with open(p,'rb') as f:
+              for b in iter(lambda:f.read(1048576),b''):x.update(b)
+            return x.hexdigest()
+          binaries={p:h(p) for p in ('r128/r128_filter','r128/r118','built/bin/kissat_4_0_4')}
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+             binaries=binaries,
+             cpu=next((x.strip() for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines()
+                       if x.startswith('model name')),'cpu_unavailable'),
+             affinity=sorted(os.sched_getaffinity(0)))
+          pathlib.Path(f"r128/{os.environ['PHASE']}-pin-{os.environ['SHARD']}.json").write_text(json.dumps(obj,sort_keys=True)+'\n')
+          PY
+      - name: Paired 15-second Kissat R118 and four frozen XOR threshold experiments on reused R127
+        run: |
+          set -euo pipefail
+          python3 -u research/r128_xor_threshold_benchmark.py development --shard ${{ matrix.shard }} | tee r128/development-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r128-development-${{ matrix.shard }}
+          path: |
+            r128/development-${{ matrix.shard }}.json
+            r128/development-pin-${{ matrix.shard }}.json
+            r128/development-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  select:
+    name: R128 lock one policy using ONLY reused R127 development data
+    needs: development
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r127-frozen-sha-excluded-external
+          run-id: 42027856303
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r128/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r128-development-*
+          merge-multiple: true
+          path: r128
+      - name: Audit all historical paired runs, keep R115 out of selection, freeze single threshold
+        run: |
+          set -euo pipefail
+          python3 -u research/r128_xor_threshold_benchmark.py select | tee r128/selection.log
+          test -s r128/development-results.json
+          test -s r128/selection.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r128-frozen-development-selection
+          path: |
+            r128/selection.json
+            r128/development-results.json
+            r128/selection.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  holdout:
+    name: R128 strictly unseen external prospective shard ${{ matrix.shard }}
+    needs: [freeze,select]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          path: r128/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-development-selection
+          path: r128
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin exact same sources binaries and original solver plus CPU metadata
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r128_xor_threshold_filter.cpp -o r128/r128_filter
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic research/r118_xor_proof_on_demand.cpp -o r128/r118
+          SHARD=${{ matrix.shard }} PHASE=holdout python3 - <<'PY'
+          import os,hashlib,json,pathlib,subprocess
+          def h(p):
+            x=hashlib.sha256()
+            with open(p,'rb') as f:
+              for b in iter(lambda:f.read(1048576),b''):x.update(b)
+            return x.hexdigest()
+          binaries={p:h(p) for p in ('r128/r128_filter','r128/r118','built/bin/kissat_4_0_4')}
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+             binaries=binaries,
+             cpu=next((x.strip() for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines()
+                       if x.startswith('model name')),'cpu_unavailable'),
+             affinity=sorted(os.sched_getaffinity(0)))
+          pathlib.Path(f"r128/{os.environ['PHASE']}-pin-{os.environ['SHARD']}.json").write_text(json.dumps(obj,sort_keys=True)+'\n')
+          PY
+      - name: Execute frozen selected policy vs R118 and unmodified Kissat, audit original SAT witness
+        run: |
+          set -euo pipefail
+          python3 -u research/r128_xor_threshold_benchmark.py holdout --shard ${{ matrix.shard }} | tee r128/holdout-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r128-holdout-${{ matrix.shard }}
+          path: |
+            r128/holdout-${{ matrix.shard }}.json
+            r128/holdout-pin-${{ matrix.shard }}.json
+            r128/holdout-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  aggregate:
+    name: R128 strict frozen holdout paired PAR2 source SHA accuracy and no leakage audit
+    needs: [freeze,select,holdout]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-prospective-external-holdout
+          path: r128/holdout
+      - uses: actions/download-artifact@v4
+        with:
+          name: r128-frozen-development-selection
+          path: r128
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r128-holdout-*
+          merge-multiple: true
+          path: r128
+      - name: Refuse missing shards formula SHA contradictions, incorrect SAT model or unpaired runs
+        run: |
+          set -euo pipefail
+          python3 -u research/r128_xor_threshold_benchmark.py aggregate | tee r128/aggregate.log
+          cat r128/holdout-results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R128-FROZEN-THRESHOLD-INDEPENDENT-EXTERNAL-PAR2
+          path: |
+            r128/holdout-results.json
+            r128/development-results.json
+            r128/selection.json
+            r128/paired.csv
+            r128/aggregate.log
+            r128/holdout-*.json
+            r128/holdout-pin-*.json
+            r128/holdout/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
