@@ -134,7 +134,7 @@ def run_one(case,rep,mode,runner):
             model=json.loads(b.MODEL.read_text())["models"]["trajectory"]["r11_2048_50"]
             x=b.r16.py_feature_vector(case,trace,model)
             expected=b.r16.score_from_features(model,x) if x else None
-            selected=bool(expected is not None and case["n"]>=220 and expected>.25)
+            selected=bool(expected is not None and case["n"] in (220,240) and expected>.25)
             need((native["selected"]=="1")==selected
               and expected is not None and abs(float(native["score"])-expected)<=.00002,
                  "R16 native score parity")
