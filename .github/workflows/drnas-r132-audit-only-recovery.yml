@@ -1,0 +1,58 @@
+name: DRNAS R132 audit-only recovery - reuse frozen original 8 shard artifacts
+on:
+  push:
+    branches: [experiment/drnas-r132-audit-only-recovery-20261105]
+    paths:
+      - '.github/workflows/drnas-r132-audit-only-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit_only:
+    name: Audit frozen R132 8 shard results - NO build or solver rerun
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover immutable R132 frozen formulas and manifest from original run
+        uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132/frozen
+      - name: Recover exactly eight completed original R132 paired benchmark shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r132-shard-*
+          run-id: 42050320220
+          merge-multiple: true
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r132
+      - name: Audit existing results only - source SHA pairs SAT witness and PAR-2
+        run: |
+          set -euo pipefail
+          test "$(find r132 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          test -s r132/frozen/manifest.json
+          python3 -u research/r132_wide_xor_benchmark.py audit | tee r132/audit-only-recovery.log
+          test -s r132/report.json
+          cat r132/report.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve audit-only report and original frozen shard records
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R132-AUDIT-ONLY-RECOVERED-42050320220
+          path: |
+            r132/report.json
+            r132/audit-only-recovery.log
+            r132/paired.csv
+            r132/probes.csv
+            r132/shard-*.json
+            r132/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
