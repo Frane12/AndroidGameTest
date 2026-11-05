@@ -1,0 +1,95 @@
+name: DRNAS R115 official SAT2026 VBS rematch
+on:
+  push:
+    branches: [experiment/drnas-r115-official-vbs-rematch-20261105]
+    paths:
+      - 'research/r115_world_top_rematch.py'
+      - '.github/workflows/drnas-r115-official-vbs-rematch.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze verified official scores and known plus random benchmark sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r115_world_top_rematch.py
+          python3 -u research/r115_world_top_rematch.py freeze | tee r115_world/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r115-world-frozen
+          path: r115_world/frozen/
+          retention-days: 90
+  benchmark:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          path: r115_world/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Audit unchanged binaries compile and pin source commit CPU
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r115_world/r28
+          python3 -c 'import hashlib,json,os,pathlib,subprocess;files=["r115_world/r28","built/bin/kissat_4_0_4","built/bin/cadical_3_0_1"];obj=dict(commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),binaries={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in files},cpu=next((x for x in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if x.startswith("model name")),"unknown"));pathlib.Path("r115_world/pin-"+os.environ["SHARD"]+".json").write_text(json.dumps(obj))' 
+        env:
+          SHARD: ${{ matrix.shard }}
+      - name: Same-host R28 Kissat CaDiCaL paired source-validated measurements
+        run: python3 -u research/r115_world_top_rematch.py shard --shard ${{ matrix.shard }} | tee r115_world/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r115-world-shard-${{ matrix.shard }}
+          path: |
+            r115_world/shard-${{ matrix.shard }}.json
+            r115_world/pin-${{ matrix.shard }}.json
+            r115_world/shard-${{ matrix.shard }}.log
+          retention-days: 90
+  audit:
+    needs: [freeze,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          path: r115_world/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r115-world-shard-*
+          merge-multiple: true
+          path: r115_world
+      - name: Audit official 2026 published verified best against same-source measured R28
+        run: |
+          set -euo pipefail
+          python3 -u research/r115_world_top_rematch.py aggregate | tee r115_world/final.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R115-OFFICIAL-SAT2026-VBS-REMATCH
+          path: |
+            r115_world/results.json
+            r115_world/comparison.csv
+            r115_world/final.log
+          retention-days: 90
