@@ -1,0 +1,118 @@
+name: DRNAS R153 certified units GF2 plus fast selector, paired R28 regression audit
+on:
+  push:
+    branches: [experiment/drnas-r153-certified-units-gf2-20261105]
+    paths:
+      - '.github/workflows/drnas-r153-certified-unit-bridge.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r153-fixed-13-source-paired-20261105
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: R153 native certified units with accelerated XOR decision shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static Python and native source compile
+        run: |
+          set -euo pipefail
+          mkdir -p r153
+          python3 -m py_compile research/r153_unit_bridge_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r153/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r153/r153
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r153
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: SHA pin unchanged R28 and R153 plus Kissat CaDiCaL and runner
+        env:
+          ${{ matrix.shard }}: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          test -s r153/frozen/manifest.json
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          fs=["r153/r28","r153/r153","built/bin/kissat_4_0_4","built/bin/cadical_3_0_1"]
+          obj={"commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "binaries":{f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+               "cpu":next((x for x in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if x.startswith("model name")),"unknown")}
+          pathlib.Path("r153/pin-"+os.environ["${{ matrix.shard }}"]+".json").write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: Four strict native GF2 SAT/UNSAT unit proof selftests and 4-mode paired trials
+        run: |
+          set -euo pipefail
+          python3 -u research/r153_unit_bridge_benchmark.py shard --shard ${{ matrix.shard }} | tee r153/shard-${{ matrix.shard }}.log
+          test -s r153/shard-${{ matrix.shard }}.json
+          grep -q '^R153_${{ matrix.shard }}_PASS ' r153/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r153-unit-bridge-shard-${{ matrix.shard }}
+          path: |
+            r153/shard-${{ matrix.shard }}.json
+            r153/shard-${{ matrix.shard }}.log
+            r153/pin-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: benchmark
+    name: Four-shard original SHA and complete SAT model / independently replayed unit XOR UNSAT proof audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r153
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r153-unit-bridge-shard-*
+          merge-multiple: true
+          path: r153
+      - name: Audit same original 13 known CNFs, 104 paired attempts, detector time, proof correctness
+        run: |
+          set -euo pipefail
+          test "$(find r153 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r153_unit_bridge_benchmark.py audit | tee r153/audit.log
+          grep -q '^R153_FINAL ' r153/audit.log
+          cat r153/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R153-GF2-UNIT-BRIDGE-FAST-DECISION-FINAL
+          path: |
+            r153/report.json
+            r153/paired.csv
+            r153/audit.log
+          if-no-files-found: warn
+          retention-days: 90
