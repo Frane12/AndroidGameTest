@@ -260,6 +260,19 @@ static int r158x_run(const string& mode,const string& src,
             if(!ok)throw runtime_error("R158X_ORIGINAL_SAT_WITNESS_INVALID");
         }
     }
+    // An independent benchmark checker replays this PARTIAL source model
+    // against every original clause. Auxiliary variables are never assumed.
+    if(result==10){
+        int on_line=0;
+        cout<<"v ";
+        for(int v=1;v<=n;v++){
+            const int val=solver.val(v);
+            if(!val)continue;
+            cout<<(val>0?v:-v)<<" ";
+            if(++on_line==32){cout<<"0\nv ";on_line=0;}
+        }
+        cout<<"0\n"<<flush;
+    }
     if(bridge.disabled)throw runtime_error("R158X_WATCH_REASON_INVARIANT");
     cout<<fixed<<setprecision(6)
         <<"R158X_RESULT mode="<<mode
