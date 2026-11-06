@@ -17,6 +17,7 @@
 #include <map>
 #include <cstdint>
 #include <iomanip>
+#include <deque>
 
 class R162Bridge final : public DrnasBridge {
 public:
@@ -28,6 +29,11 @@ public:
     long direct_reason_lits=0, direct_ready_checks=0;
     long direct_no_units=0, direct_expired=0;
     size_t peak_reason_cache=0;
+    // R174-B: globally entailed nogoods from certified source XOR rows.
+    bool feedback_clauses=false;
+    std::deque<std::vector<int>> feedback_pending;
+    std::set<std::vector<int>> feedback_published;
+    long feedback_conflicts_detected=0,feedback_clauses_consumed=0;
     bool adaptive_gate=false;
     long adaptive_gate_events=0;
     long reason_clauses_completed=0;
@@ -169,11 +175,21 @@ public:
     // For WATCH and DIRECT the original CNF solver handles all conflicts.
     // CLAUSE is the unchanged R133c external-clause baseline.
     bool cb_has_external_clause(bool& forgettable) override {
-        if (mode!=CLAUSE) { forgettable=true; return false; }
-        return DrnasBridge::cb_has_external_clause(forgettable);
+        if(mode==CLAUSE)return DrnasBridge::cb_has_external_clause(forgettable);
+        forgettable=true;
+        if(!feedback_clauses || disabled)return false;
+        if(!outgoing.empty())return true;
+        if(feedback_pending.empty())return false;
+        outgoing=std::move(feedback_pending.front());
+        feedback_pending.pop_front();send_index=0;
+        return true;
     }
     int cb_add_external_clause_lit() override {
-        return mode==CLAUSE ? DrnasBridge::cb_add_external_clause_lit() : 0;
+        if(mode==CLAUSE)return DrnasBridge::cb_add_external_clause_lit();
+        if(!feedback_clauses || outgoing.empty())return 0;
+        int lit=DrnasBridge::cb_add_external_clause_lit();
+        if(lit==0)++feedback_clauses_consumed;
+        return lit;
     }
 
     // IPASIR-UP: return a directly implied literal; the immutable reason
@@ -238,7 +254,7 @@ public:
                 // Audit a deterministic sample against the full source row.
                 const bool a=(assigned[watch_a[idx]]==0);
                 const bool b=(assigned[watch_b[idx]]==0);
-                if(a==b){
+                if(a==b && (!feedback_clauses || a)){
                     ++cheap_watch_rejects;
                     if((cheap_watch_rejects & 16383L)==1){
                         ++watch_invariant_audits;
@@ -277,6 +293,19 @@ public:
                 dirty.clear(); next_dirty=0;
                 fill(queued.begin(),queued.end(),0);
                 return 0;
+            }
+            if(unknown==0 && assigned_parity!=row.rhs && feedback_clauses) {
+                // Every satisfying assignment of this XOR satisfies the nogood.
+                if(clause.size()!=row.vars.size())
+                    throw runtime_error("R174_CONFLICT_REASON_WIDTH");
+                sort(clause.begin(),clause.end(),[](int a,int b){
+                    return abs(a)!=abs(b)?abs(a)<abs(b):a<b;
+                });
+                if(feedback_published.size()<64 &&
+                   feedback_published.insert(clause).second) {
+                    feedback_pending.push_back(std::move(clause));
+                    ++feedback_conflicts_detected;
+                }
             }
             if(unknown!=1) { ++direct_no_units; continue; }
             const int implied=((assigned_parity ^ row.rhs)!=0) ? unassigned : -unassigned;
@@ -449,7 +478,9 @@ static int r162_run(const string& mode,const string& src,
     int n=0;
     auto cnf=load_cnf(src,solver,n);
     const bool clean=mode=="clean";
-    const bool gauss=(mode=="gauss_full"||mode=="gauss_watchlazy"||mode=="gauss_cooldown");
+    const bool gauss=(mode=="gauss_full"||mode=="gauss_watchlazy"||
+                      mode=="gauss_cooldown"||mode=="gauss_feedback"||
+                      mode=="gauss_utility"||mode=="gauss_feedback_utility");
     if(gauss==units_path.empty())
         throw runtime_error("R166X_GAUSS_UNITS_PROTOCOL_MISMATCH");
     const int injected_units=gauss?r166x_add_gauss_units(solver,units_path,n):0;
@@ -471,7 +502,12 @@ static int r162_run(const string& mode,const string& src,
     bridge.incremental_enabled=(mode=="direct_incremental");
     bridge.watchlazy_enabled=(mode=="direct_watchlazy"||mode=="direct_cooldown"||
                               mode=="gauss_watchlazy"||mode=="gauss_cooldown");
-    bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown");
+    bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown"||
+                             mode=="gauss_feedback"||mode=="gauss_utility"||
+                             mode=="gauss_feedback_utility");
+    bridge.watchlazy_enabled=bridge.watchlazy_enabled ||
+        mode=="gauss_feedback"||mode=="gauss_utility"||mode=="gauss_feedback_utility";
+    bridge.feedback_clauses=mode=="gauss_feedback"||mode=="gauss_feedback_utility";
     if(bridge.incremental_enabled)bridge.initialize_incremental();
     if(!clean && !bridge.rows.empty()){
         solver.connect_external_propagator(&bridge);
@@ -548,6 +584,8 @@ static int r162_run(const string& mode,const string& src,
         <<" assignment_notify_ns="<<bridge.assignment_notify_ns
         <<" backtrack_notify_ns="<<bridge.backtrack_notify_ns
         <<" incremental_upd_ns="<<bridge.incremental_upd_ns
+        <<" feedback_conflicts_detected="<<bridge.feedback_conflicts_detected
+        <<" feedback_clauses_consumed="<<bridge.feedback_clauses_consumed
         <<" source_sat_witness_checked="<<(result==10?1:0)
         <<" disabled="<<bridge.disabled<<"\n"<<flush;
     // On 2.1.0 these native statistics include actual CDCL conflicts,
@@ -600,7 +638,9 @@ int main(int argc,char**argv) {
            mode!="direct_boundary"&&mode!="direct_feedback"&&
            mode!="direct_full_feedback"&&mode!="direct_incremental"&&
            mode!="direct_watchlazy"&&mode!="direct_cooldown"&&
-           mode!="gauss_full"&&mode!="gauss_watchlazy"&&mode!="gauss_cooldown")
+           mode!="gauss_full"&&mode!="gauss_watchlazy"&&mode!="gauss_cooldown"&&
+           mode!="gauss_feedback"&&mode!="gauss_utility"&&
+           mode!="gauss_feedback_utility")
             throw runtime_error("R166X_BAD_MODE");
         const double cap=stod(argv[4]);
         if(!(cap>=1.0&&cap<=120.0))
