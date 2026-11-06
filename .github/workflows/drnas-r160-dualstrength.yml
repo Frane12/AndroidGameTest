@@ -1,0 +1,167 @@
+name: DRNAS R160 dual-strength sequential native portfolio original CNF paired audit
+on:
+  push:
+    branches: [experiment/drnas-r160-dualstrength-portfolio-20261106]
+    paths:
+      - research/r160_dual_strength.py
+      - .github/workflows/drnas-r160-dualstrength.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r160-dualstrength-20261106
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Predeclare 24 original CNFs + 100ms primary budget, no case ID routing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require frozen DRNAS v15.3.1 source and syntax
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/r160_dual_strength.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r151-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R159-STRICT-AUDITED-240-REAL-REUSED-R151-R158-SHADOW
+          run-id: 42134974748
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-reused
+      - name: Freeze source SHA, formula IDs, static policy before any R160 timing
+        run: |
+          set -euo pipefail
+          python3 -u research/r160_dual_strength.py freeze | tee r160-freeze.log
+          grep -q '^R160_FROZEN ' r160-freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r160-frozen-24-original-same-budget
+          path: |
+            r160/frozen/
+            r160-freeze.log
+          retention-days: 90
+
+  benchmark:
+    name: Single-core four-mode 8s paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r151-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R159-STRICT-AUDITED-240-REAL-REUSED-R151-R158-SHADOW
+          run-id: 42134974748
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-reused
+      - uses: actions/download-artifact@v4
+        with:
+          name: r160-frozen-24-original-same-budget
+          path: r160-frozen-download
+      - name: Restore fixed source selection
+        run: |
+          set -euo pipefail
+          mkdir -p r160/frozen
+          cp r160-frozen-download/r160/frozen/manifest.json r160/frozen/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Build exact original native v15.3.1 + pinned Kissat and validate CaDiCaL
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          test "$(sha256sum built/bin/cadical_3_0_1 | cut -d' ' -f1)" = c9ddc4b19d6b78ffbb837cd9a9fc3ffd5e1004ed057b15441b0cfb372f3b9cd7
+          chmod +x built/bin/cadical_3_0_1
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+          sha256sum /tmp/drnas-r6-v1531 /tmp/kissat-r6-original/build/kissat
+      - name: Four real original-CNF modes, 3 repeats, total 8s each
+        run: |
+          set -euo pipefail
+          python3 -u research/r160_dual_strength.py run --shard ${{ matrix.shard }} | tee r160-run-${{ matrix.shard }}.log
+          grep -q '^R160_SHARD_PASS ' r160-run-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r160-shard-${{ matrix.shard }}
+          path: |
+            r160/shard-${{ matrix.shard }}/
+            r160-run-${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: Verify SHA, 288 paired trials, SAT witnesses, PAR2 and both focal formulas
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r160-frozen-24-original-same-budget
+          path: r160-frozen-download
+      - name: Restore frozen manifest
+        run: |
+          mkdir -p r160/frozen
+          cp r160-frozen-download/r160/frozen/manifest.json r160/frozen/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r160-shard-*
+          merge-multiple: false
+          path: r160-download
+      - name: Independent four-mode paired source and timing audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r160_dual_strength.py audit | tee r160-final.log
+          grep -q '^R160_FINAL ' r160-final.log
+          test -s r160/report/report.json
+          cat r160/report/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R160-DUAL-STRENGTH-24-ORIGINAL-PAR2-AUDIT
+          path: |
+            r160/report/
+            r160/frozen/manifest.json
+            r160-final.log
+          retention-days: 90
+          if-no-files-found: warn
