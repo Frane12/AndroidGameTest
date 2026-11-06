@@ -1,0 +1,160 @@
+name: DRNAS R166x R165 all modes vs Kissat CaDiCaL CryptoMiniSat MiniSat PicoSAT 25 original SHA CNFs
+on:
+  push:
+    branches: [experiment/drnas-r166x-r165-all-solvers-20261106]
+    paths:
+      - '.github/workflows/drnas-r166x-r165-all-solvers.yml'
+      - 'research/r166x_multi_solver_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r166x-r165-multisolver-25-original-550
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Pin exact R165 binary SHA and build Kissat 4.0.4 from source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download immutable R165 SHA pinned binary
+        uses: actions/download-artifact@v4
+        with:
+          name: r165-single-frozen-binary-and-source-commit
+          run-id: 42147520064
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - name: Build pinned Kissat and audit source/binary hashes
+        run: |
+          set -euo pipefail
+          mkdir -p r166x/bin
+          python3 -m py_compile research/r166x_multi_solver_benchmark.py research/r165_component_benchmark.py research/r164_pure_exact_gf2.py
+          git clone -q --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git /tmp/r166x-kissat
+          cd /tmp/r166x-kissat
+          test "$(git rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          ./configure
+          make -j2
+          cp build/kissat "$GITHUB_WORKSPACE/r166x/bin/kissat"
+          cd "$GITHUB_WORKSPACE"
+          chmod +x r165/r165-native r166x/bin/kissat
+          r166x/bin/kissat --version
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          pin=json.loads(pathlib.Path('r165/build-pin.json').read_text())
+          actual=hashlib.sha256(pathlib.Path('r165/r165-native').read_bytes()).hexdigest()
+          assert actual==pin['binary_sha256']=='f57e68640f576d2fe5ad541e343ba958d861d7ac1e5c7c37e0022ec3d088719e'
+          assert pin['commit']=='e5f1328c0f53eee6051da110cfae595440397251'
+          k=pathlib.Path('r166x/bin/kissat')
+          info={'kissat_version':'4.0.4','kissat_commit':'8af8e56f174b778aef3aa45af9f739b2a5f492c2',
+                'kissat_binary_sha256':hashlib.sha256(k.read_bytes()).hexdigest(),
+                'r165_source_commit':pin['commit'],'r165_binary_sha256':actual}
+          pathlib.Path('r166x/kissat-pin.json').write_text(json.dumps(info,sort_keys=True,indent=2))
+          print('R166X_BINARIES_PINNED',json.dumps(info,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r166x-frozen-r165-and-kissat404
+          path: |
+            r165/r165-native
+            r165/build-pin.json
+            r166x/bin/kissat
+            r166x/kissat-pin.json
+          retention-days: 90
+  shard:
+    needs: build
+    name: Paired 11-mode R165 vs Kissat CryptoMiniSat MiniSat PicoSAT original-CNF shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r166x-frozen-r165-and-kissat404
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - name: Install additional independent SAT solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat minisat picosat
+          mkdir -p r166x
+          dpkg-query -W -f='${Package} ${Version}\n' cryptominisat minisat picosat | tee r166x/apt-versions.txt
+          sha256sum r165/r165-native r166x/bin/kissat
+          chmod +x r165/r165-native r166x/bin/kissat
+          grep -m1 -E '^model name|^Processor' /proc/cpuinfo | tee r166x/cpu-${{ matrix.shard }}.txt || true
+      - name: Run each solver on SAME original SHA CNF shuffled paired CPU affinity
+        run: |
+          set -euo pipefail
+          python3 -u research/r166x_multi_solver_benchmark.py shard --shard ${{ matrix.shard }} --binary r165/r165-native | tee r166x/shard-${{ matrix.shard }}.log
+          grep -q '^R166X_SHARD_PASS ' r166x/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r166x-original25-shard-${{ matrix.shard }}
+          path: |
+            r166x/shard-${{ matrix.shard }}.json
+            r166x/shard-${{ matrix.shard }}.log
+            r166x/cpu-${{ matrix.shard }}.txt
+            r166x/apt-versions.txt
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: Audit 550 R165 vs world solvers paired original CNF trials and publish times
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r166x-frozen-r165-and-kissat404
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r166x-original25-shard-*
+          merge-multiple: true
+          path: r166x
+      - name: Verify all SHA pairs no incorrect SAT and create summary
+        run: |
+          set -euo pipefail
+          test "$(find r166x -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r166x_multi_solver_benchmark.py audit | tee r166x/audit.log
+          grep -q '^R166X_FINAL ' r166x/audit.log
+          cat r166x/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R166X-R165-KISSAT-CADICAL-CRYPTOMINISAT-MINISAT-PICOSAT-FINAL
+          path: |
+            r166x/report.json
+            r166x/summary.md
+            r166x/audit.log
+          if-no-files-found: warn
+          retention-days: 90
