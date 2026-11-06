@@ -193,6 +193,17 @@ def audit():
                      else min(z["cap"],z["elapsed"])))<1e-4,"bad PAR2")
                 need(z["status"]!="SAT" or z["proof"]=="ORIGINAL_SAT_CHECKED",
                      "SAT source witness missing")
+                if z["cohort"]=="mixed_residual":
+                    need(z["conflicts"] is not None and z["decisions"] is not None,
+                         "missing CDCL telemetry in mixed original")
+                if z["mode"]=="r175_shadow":
+                    need(z.get("feedback_consumed",0)==0,"shadow leaked into CDCL")
+                if z["mode"]=="r175_short4":
+                    need(z.get("feedback_delivered_width4",0)==z.get("feedback_consumed",0),
+                         "short4 exported long clause")
+                if z["mode"]=="r175_budget8":
+                    need(z.get("feedback_consumed",0)<=8,
+                         "budget8 exceeded source-certified clause limit")
     summary={}
     by_cohort={}
     for mode in MODES:
@@ -201,10 +212,18 @@ def audit():
             "solved":sum(z["status"]!="TIMEOUT" for z in group),
             "PAR2_s":round(sum(z["par2"] for z in group),5),
             "feedback_consumed":sum(z.get("feedback_consumed",0) for z in group),
-            "utility_sleeps":sum(z.get("utility_sleeps",0) for z in group)}
+            "feedback_candidates":sum(z.get("feedback_candidates",0) for z in group),
+            "feedback_shadow_admitted":sum(z.get("feedback_shadow_admitted",0) for z in group),
+            "feedback_rejected_width":sum(z.get("feedback_rejected_width",0) for z in group),
+            "feedback_rejected_budget":sum(z.get("feedback_rejected_budget",0) for z in group),
+            "mixed_conflicts":sum(z["conflicts"] for z in group if z["cohort"]=="mixed_residual" and z.get("conflicts") is not None),
+            "mixed_decisions":sum(z["decisions"] for z in group if z["cohort"]=="mixed_residual" and z.get("decisions") is not None),
+            "mixed_conflict_samples":sum(z["cohort"]=="mixed_residual" and z.get("conflicts") is not None for z in group)}
         by_cohort[mode]={co:{"solved":sum(z["status"]!="TIMEOUT"
             for z in group if z["cohort"]==co),
-            "PAR2_s":round(sum(z["par2"] for z in group if z["cohort"]==co),5)}
+            "PAR2_s":round(sum(z["par2"] for z in group if z["cohort"]==co),5),
+            "conflicts":sum(z["conflicts"] for z in group if z["cohort"]==co and z.get("conflicts") is not None),
+            "decisions":sum(z["decisions"] for z in group if z["cohort"]==co and z.get("decisions") is not None)}
             for co in sorted({z["cohort"] for z in group})}
     paired=[]
     for c in cases:
