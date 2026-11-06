@@ -1,0 +1,154 @@
+name: DRNAS R193 dual-live 1224 paired
+on:
+  push:
+    branches: [experiment/drnas-r193-dual-live-race-20261106]
+    paths:
+      - 'research/r193_dual_live_driver.cpp'
+      - 'research/r193_dual_live_benchmark.py'
+      - '.github/workflows/drnas-r193-dual-live-race.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r193-live-dual
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R193 Python policy selftest and static validation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r193_dual_live_benchmark.py research/r188_feedback_benchmark.py
+          python3 -u research/r193_dual_live_benchmark.py selftest
+      - name: Frozen same-SHA suite of 102 original R192 formulas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r193/source
+          gh run download 42291658026 --repo Frane12/AndroidGameTest -n r192-sha-frozen102-native -D r193/source
+          cp -a r193/source/frozen r193/frozen
+          python3 -u research/r193_dual_live_benchmark.py verify
+      - name: Compile pinned CaDiCaL 2.1 two-instance continuation solver
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r193-cadical
+          (
+            cd /tmp/r193-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r193-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r193-cadical/src research/r193_dual_live_driver.cpp /tmp/r193-cadical/build/libcadical.a -o r193/r193-driver
+          chmod +x r193/r193-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r193/smoke.cnf
+          for mode in default sat dual_fast dual_learning dual_keep_default dual_keep_sat; do
+            r193/r193-driver r193/smoke.cnf 2 "$mode" 0 > "r193/smoke-$mode.log"
+            grep -q '^R182_STATUS status=SAT' "r193/smoke-$mode.log"
+          done
+          for mode in dual_fast dual_learning dual_keep_default dual_keep_sat; do
+            grep -q '^R193_PILOT profile=' "r193/smoke-$mode.log"
+            grep -q '^R193_DUAL choice=' "r193/smoke-$mode.log"
+          done
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          root=pathlib.Path("r193")
+          sha=lambda path:hashlib.sha256((root/path).read_bytes()).hexdigest()
+          pin={"protocol":"R193-DUAL-LIVE-SAME-SHA-v1",
+            "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+            "manifest_sha256":sha("frozen/manifest.json"),
+            "binary_sha256":sha("r193-driver"),
+            "pilot_conflicts":[128,128],"external_cap":30}
+          assert pin["manifest_sha256"]=="9eebc6fc1e8ad3006fc3ecc8b451e1e57d3087932190ba5a91fd60aabf278658"
+          (root/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R193_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r193-frozen102-native
+          retention-days: 90
+          path: |
+            r193/frozen/
+            r193/r193-driver
+            r193/pin.json
+            r193/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    name: R193 paired dual live shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193-frozen102-native
+          path: r193
+      - name: Check source/binary SHA and run matched six-arm experiments
+        run: |
+          set -euo pipefail
+          chmod +x r193/r193-driver
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          root=pathlib.Path("r193")
+          pin=json.loads((root/"pin.json").read_text())
+          for p,k in (("frozen/manifest.json","manifest_sha256"),("r193-driver","binary_sha256")):
+            assert hashlib.sha256((root/p).read_bytes()).hexdigest()==pin[k]
+          PY
+          python3 -u research/r193_dual_live_benchmark.py shard --shard ${{ matrix.shard }} --binary r193/r193-driver | tee r193/shard-${{ matrix.shard }}.log
+          grep -q '^R193_SHARD_PASS ' r193/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r193-dual-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r193/shard-${{ matrix.shard }}.json
+            r193/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193-frozen102-native
+          path: r193
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r193-dual-shard-*
+          merge-multiple: true
+          path: r193
+      - name: Audit all 1224 paired original SHA cases and SAT original witnesses
+        run: |
+          set -euo pipefail
+          test "$(find r193 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r193_dual_live_benchmark.py audit | tee r193/audit.log
+          grep -q '^R193_FINAL ' r193/audit.log
+          cat r193/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R193-DUAL-LIVE-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r193/report.json
+            r193/all-trials.json
+            r193/summary.md
+            r193/audit.log
