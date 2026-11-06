@@ -1,0 +1,71 @@
+name: DRNAS R185 independent four method combined ranking
+on:
+  push:
+    branches: [experiment/drnas-r185-aggregate-20261106]
+    paths:
+      - 'research/r185_aggregate.trigger'
+      - 'research/r185_aggregate_four.py'
+      - '.github/workflows/drnas-r185-combine-four.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  aggregate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read exact four paired GitHub workflow runs, fail on any missing or failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for round in $(seq 1 150); do
+            ready=1
+            for pair in "gf2_gate:42216293355" "gf2_short4:42216297531" "live_feedback:42216302548" "live_cooldown:42216307152"; do
+              method="${pair%%:*}"; run_id="${pair#*:}"
+              state="$(gh api "repos/Frane12/AndroidGameTest/actions/runs/$run_id" --jq '.status + ":" + (.conclusion // "")')"
+              echo "R185_AGGREGATE_DEPENDENCY method=$method run=$run_id state=$state"
+              case "$state" in
+                completed:success) ;;
+                completed:*) echo "R185_METHOD_FAILED $method $state";exit 1 ;;
+                *) ready=0 ;;
+              esac
+            done
+            if [ "$ready" = 1 ]; then
+              echo "R185_ALL_FOUR_RUNS_SUCCESS"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'R185_METHODS_NOT_FINISHED_IN_WINDOW'; exit 1
+      - name: Download four separately completed, source-paired raw reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for pair in "gf2_gate:42216293355" "gf2_short4:42216297531" "live_feedback:42216302548" "live_cooldown:42216307152"; do
+            method="${pair%%:*}"; run_id="${pair#*:}"
+            mkdir -p "r185/aggregate/$method"
+            gh run download "$run_id" --repo Frane12/AndroidGameTest -n "r185-method-$method-final" -D "r185/aggregate/$method"
+            test -f "r185/aggregate/$method/report.json"
+            test -f "r185/aggregate/$method/all-trials.json"
+          done
+      - name: Sum same-SHA paired solves and PAR2, disallow winner when all external timeout
+        run: |
+          set -euo pipefail
+          python3 -u research/r185_aggregate_four.py | tee r185/aggregate/run.log
+          grep -q '^R185_AGGREGATE_FINAL ' r185/aggregate/run.log
+          cat r185/aggregate/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R185-FOUR-METHODS-PAIRED-COMPARISON
+          retention-days: 90
+          path: |
+            r185/aggregate/final.json
+            r185/aggregate/summary.md
+            r185/aggregate/run.log
