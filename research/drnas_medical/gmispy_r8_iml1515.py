@@ -205,7 +205,7 @@ def flux_witness(model,genes,rules,threshold):
     import gmispy_r7_witness as r7
     import numpy as np
     from cobra.util.array import create_stoichiometric_matrix
-    matrix=create_stoichiometric_matrix(model,array_type="csc")
+    matrix=create_stoichiometric_matrix(model,array_type="lil")
     original=r7.lp_flux
     ordered=[r.id for r in model.reactions]
     tested=0;worst_balance=0.
