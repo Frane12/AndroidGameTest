@@ -8,7 +8,7 @@ Known source development data, not a blind holdout.
 """
 import argparse,hashlib,json,os,pathlib,random,re,statistics,subprocess,time,sys
 sys.path.insert(0,str(pathlib.Path("research").resolve()))
-import r158_source_certified_xor as proofgen
+import r157_source_certified_xor as proofgen
 ROOT=pathlib.Path("r158");FROZEN=ROOT/"frozen";CAP=15.0
 MODES=("clean","direct","directconflict")
 REPS=2;SHARDS=4
@@ -111,9 +111,13 @@ def audit():
    keys.add(key)
    need(abs(x["par2"]-(2*CAP if x["status"]=="TIMEOUT" else x["time_s"]))<1e-5,"PAR2 wrong")
    if x["mode"]!="clean":need(x["source_rows"]>0,"no certified rows")
+   if x["mode"]=="directconflict":
+    if x["direct_conflicts_emitted"] is not None and x["direct_conflicts_queued"] is not None:
+     need(x["direct_conflicts_emitted"]<=x["direct_conflicts_queued"],"source conflicts emitted without queue")
   allrows.extend(data)
  need(len(allrows)==4*REPS*len(MODES),f"missing run: got {len(allrows)} expected {4*REPS*len(MODES)}")
  need(len(binary_hash)==1,f"binary drift across shards: {sorted(binary_hash)}")
+ need(next(iter(binary_hash))==sha(ROOT/"r158-native"),"pinned native binary SHA differs from source audit artifact")
  for c in cs:
   q=[x for x in allrows if x["id"]==c["id"]]
   need(len(q)==REPS*len(MODES),"incomplete matched source")
