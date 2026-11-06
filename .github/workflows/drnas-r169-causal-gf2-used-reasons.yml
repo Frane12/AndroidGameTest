@@ -1,0 +1,159 @@
+name: DRNAS R169 causal GF2/CDCL novel units, consumed reason clauses, shadow ablation
+on:
+  push:
+    branches: [experiment/drnas-r169-causal-gf2-reasons-20261106]
+    paths:
+      - 'research/r168_bidirectional_gf2_cdcl.cpp'
+      - 'research/r169_reasons_benchmark.py'
+      - '.github/workflows/drnas-r169-causal-gf2-used-reasons.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r169-causal-novel-used-GF2-96
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Compile ONE R169 native GF2/CDCL binary and verify novel-unit used-reason shadow & rollback
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native CaDiCaL 2.1.0 with certified R169 GF2
+        run: |
+          set -euo pipefail
+          mkdir -p r169
+          python3 -m py_compile research/r169_reasons_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r169-cadical
+          cd /tmp/r169-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r169/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r168_bidirectional_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r169/r169-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r169/r169-native selftest | tee r169/selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r169/selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r169/selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r169/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r169/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r169/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r169/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r169/r169-native")
+          pin=dict(binary_sha256=hashlib.sha256(b.read_bytes()).hexdigest(),
+               source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0],
+               cadical_commit=pathlib.Path("r169/cadical-source-commit.txt").read_text().strip(),
+               benchmark_protocol="DRNAS-R169-CAUSAL-GAUSSIAN-UNIT-REASON-ABLAT-20261106-v1")
+          pathlib.Path("r169/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R169_BINARY_CAUSAL_SELFTEST_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R169-CAUSAL-GF2-NATIVE-BINARY-AND-UNIT-REASON-PROOFS
+          path: |
+            r169/r169-native
+            r169/build-pin.json
+            r169/selftest.log
+            r169/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    name: R169 six-way causal Gaussian, source-only, new-only, shadow shard ${{ matrix.shard }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R169-CAUSAL-GF2-NATIVE-BINARY-AND-UNIT-REASON-PROOFS
+          path: r169
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r169
+      - name: Paired same original SHA, pinned binary, independent GF2 source proof
+        run: |
+          set -euo pipefail
+          chmod +x r169/r169-native
+          python3 -u research/r169_reasons_benchmark.py shard --shard ${{ matrix.shard }} --binary r169/r169-native | tee r169/shard-${{ matrix.shard }}.log
+          grep -q '^R169_SHARD_PASS ' r169/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r169-causal-shard-${{ matrix.shard }}
+          path: |
+            r169/shard-${{ matrix.shard }}.json
+            r169/shard-${{ matrix.shard }}.log
+            r169/prep-*.json
+            r169/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit 96 paired GF2 unit provenance, actually consumed CDCL reason clauses and PAR2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r169
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r169-causal-shard-*
+          merge-multiple: true
+          path: r169
+      - name: Verify complete source proof, SAT witnesses, paired censored PAR2, zero shadow emission
+        run: |
+          set -euo pipefail
+          test "$(find r169 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r169_reasons_benchmark.py audit | tee r169/audit.log
+          grep -q '^R169_FINAL ' r169/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("r169/report.json").read_text())
+          assert r["status"]=="RESEARCH_AUDIT_PASS_NOT_BLIND"
+          assert r["original_formulas"]==8 and r["attempts"]==96
+          assert r["all_SAT_models_rechecked"] and r["source_certificate_replayed"]
+          assert r["results"]["all"]["direct_two_way_shadow"]["derived_emitted"]==0
+          assert r["results"]["all"]["direct_two_way_shadow"]["actually_consumed_reasons"]==0
+          print("R169_STRICT_CAUSAL_SHADOW_PAIRED_AUDIT_PASS")
+          PY
+          cat r169/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R169-96-CAUSAL-GF2-UNIT-CONSUMED-CDCL-REASONS-PAR2-AUDIT
+          path: |
+            r169/report.json
+            r169/summary.md
+            r169/audit.log
+          if-no-files-found: warn
+          retention-days: 90
