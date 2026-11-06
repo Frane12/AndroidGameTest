@@ -1,0 +1,158 @@
+name: DRNAS R173 certified residual XOR gate vs R172 fused 250 paired originals
+on:
+  push:
+    branches: [experiment/drnas-r173-residual-gate-20261106]
+    paths:
+      - 'research/r173_residual_gate_benchmark.py'
+      - '.github/workflows/drnas-r173-residual-gate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r173-residual-250-paired-20261106
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Freeze R166x native CaDiCaL, R153 exact XOR and Gaussian source certificates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Selftests and build one SHA-pinned Gaussian/CDCL native executable
+        run: |
+          set -euo pipefail
+          mkdir -p r173
+          python3 -m py_compile research/r173_residual_gate_benchmark.py research/r166x_component_benchmark.py research/r166x_certified_gauss.py research/r164_pure_exact_gf2.py
+          python3 -u research/r164_pure_exact_gf2.py --selftest | tee r173/exact-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r173/exact-selftest.log
+          python3 -u research/r166x_certified_gauss.py --selftest | tee r173/gauss-selftest.log
+          grep -q '^R166X_GAUSS_PROOF_SELFTEST_PASS' r173/gauss-selftest.log
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r173-cadical
+          cd /tmp/r173-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r173/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r166x_component_feedback.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r173/r173-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r173/r173-native selftest | tee r173/native-selftest.log
+          grep -q '^R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS' r173/native-selftest.log
+          grep -q '^R166X_COOLDOWN_REAWAKEN_SELFTEST_PASS' r173/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r173/r173-native")
+          pin={"source_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "binary_sha256":hashlib.sha256(b.read_bytes()).hexdigest(),
+               "cadical_sha":pathlib.Path("r173/cadical-source-commit.txt").read_text().strip(),
+               "protocol":"DRNAS-R173-R153-EXACT-ROUTER-R166X-CERTIFIED-GAUSS-20261106-v1"}
+          pathlib.Path("r173/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R173_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r173-pinned-native-and-proofs
+          path: |
+            r173/r173-native
+            r173/build-pin.json
+            r173/exact-selftest.log
+            r173/gauss-selftest.log
+            r173/native-selftest.log
+            r173/cadical-source-commit.txt
+          retention-days: 90
+  paired:
+    needs: build
+    name: R173 5-way exact router vs Gaussian vs fusion vs clean shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r173-pinned-native-and-proofs
+          path: r173
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r173
+      - name: Charge exact detector, source Gaussian proof, and full solver wall time; verify SHA and SAT original witnesses
+        run: |
+          set -euo pipefail
+          chmod +x r173/r173-native
+          python3 -u research/r173_residual_gate_benchmark.py shard --shard ${{ matrix.shard }} --binary r173/r173-native | tee r173/shard-${{ matrix.shard }}.log
+          grep -q '^R173_SHARD_PASS ' r173/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r173-fused-shard-${{ matrix.shard }}
+          path: |
+            r173/shard-${{ matrix.shard }}.json
+            r173/shard-${{ matrix.shard }}.log
+            r173/prep-*.json
+            r173/cert-*.json
+            r173/gauss-*/gauss.tsv
+            r173/gauss-*/gauss-units.tsv
+            r173/gauss-*/gauss-cert.json
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Audit 250 paired original CNF runs, source GF2 proofs, SAT witnesses, PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r173-pinned-native-and-proofs
+          path: r173
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r173
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r173-fused-shard-*
+          merge-multiple: true
+          path: r173
+      - name: Validate all source SHAs and complete five-way paired timings
+        run: |
+          set -euo pipefail
+          test "$(find r173 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r173_residual_gate_benchmark.py audit | tee r173/audit.log
+          grep -q '^R173_FINAL ' r173/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          r=json.loads(pathlib.Path("r173/report.json").read_text())
+          assert r["status"]=="R173_RESEARCH_PAIRED_AUDIT_PASS_NOT_BLIND"
+          assert r["formulas"]==25 and r["attempts"]==250
+          assert len(r["paired"])==200
+          assert r["independent_source_certificates"] and r["original_SAT_witnesses_checked"]
+          print("R173_STRICT_ROUTER_GAUSSIAN_250_PASS")
+          PY
+          cat r173/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R173-FUSED-R153-ROUTER-R166X-GAUSSIAN-250-FINAL
+          path: |
+            r173/report.json
+            r173/summary.md
+            r173/audit.log
+          retention-days: 90
