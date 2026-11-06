@@ -1,0 +1,61 @@
+name: DRNAS R180 SAT Shazam source-only holdout replay
+on:
+  push:
+    branches: [experiment/drnas-r180-sat-shazam-20261106]
+    paths:
+      - 'research/r180_sat_shazam.py'
+      - '.github/workflows/drnas-r180-sat-shazam.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test fingerprint and router
+        run: python3 -u research/r180_sat_shazam.py selftest
+      - name: Find completed R179 paired 1000-trial workflow
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh run list --repo Frane12/AndroidGameTest --workflow drnas-r179-selective-gf2.yml --branch experiment/drnas-r179-selective-gf2-20261106 --status success --limit 20 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "R180_DEPENDENCY_MISSING: no successful audited R179 run found"
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "R180_SOURCE_RUN $RUN_ID"
+      - name: Download frozen SHA CNFs and all ten paired result shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p r179
+          gh run download "$RUN_ID" --repo Frane12/AndroidGameTest -n r179-source-native-pin -D r179
+          for i in $(seq 0 9); do
+            gh run download "$RUN_ID" --repo Frane12/AndroidGameTest -n "r179-shard-$i" -D r179
+          done
+          test -f r179/frozen/manifest.json
+          test "$(find r179 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 10
+      - name: Run frozen holdout evaluation without seeing target timings
+        run: |
+          set -euo pipefail
+          python3 -u research/r180_sat_shazam.py evaluate --root r179 | tee r180/run.log
+          grep -q '^R180_SHAZAM_REPLAY_PASS ' r180/run.log
+          cat r180/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R180-SAT-SHAZAM-HELDOUT
+          retention-days: 90
+          path: |
+            r180/report.json
+            r180/holdout.csv
+            r180/summary.md
+            r180/run.log
