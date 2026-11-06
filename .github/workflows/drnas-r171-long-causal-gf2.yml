@@ -1,0 +1,210 @@
+name: DRNAS R171 first-used GF2 CDCL reasons 180s causal paired replay
+on:
+  push:
+    branches: [experiment/drnas-r171-long-causal-gf2-20261106]
+    paths:
+      - 'research/r170_first_used_gf2_cdcl.cpp'
+      - 'research/r171_long_causal_gf2_benchmark.py'
+      - '.github/workflows/drnas-r171-long-causal-gf2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r170-first-used-180s-paired-replay
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Build ONE pinned R171 native GF2 CDCL binary and run causal reason selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build frozen CaDiCaL 2.1.0 and instrumented R171
+        run: |
+          set -euo pipefail
+          mkdir -p r170
+          python3 -m py_compile research/r171_long_causal_gf2_benchmark.py research/r171_reaudit_r170_spread.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r170-cadical
+          cd /tmp/r170-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r171/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r170_first_used_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r171/r171-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r171/r171-native selftest | tee r171/selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r171/selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r171/selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r171/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r171/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r171/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r171/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          binary=pathlib.Path("r171/r171-native")
+          pin=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0],
+                   cadical_commit=pathlib.Path("r171/cadical-source-commit.txt").read_text().strip(),
+                   benchmark_protocol="DRNAS-R171-FIRST-USED-REASON-180S-PAIRED-20261106-v1")
+          pathlib.Path("r171/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R171_PINNED_BINARY_SELFTEST_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R171-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: |
+            r171/r171-native
+            r171/build-pin.json
+            r171/selftest.log
+            r171/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    name: R171 paired 180s first GF2 reason shard ${{ matrix.shard }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R171-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - name: Solve original SHA CNFs for 180 seconds per mode and record first consumed GF2 reason
+        run: |
+          set -euo pipefail
+          chmod +x r171/r171-native
+          python3 -u research/r171_long_causal_gf2_benchmark.py shard --shard ${{ matrix.shard }} --binary r171/r171-native | tee r171/shard-${{ matrix.shard }}.log
+          grep -q '^R171_SHARD_PASS ' r171/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r170-first-used-shard-${{ matrix.shard }}
+          path: |
+            r171/shard-${{ matrix.shard }}.json
+            r171/shard-${{ matrix.shard }}.log
+            r171/prep-*.json
+            r171/cert-*.json
+            r171/full-*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit 20 paired native first-used reasons, original CNF SHA, PAR2, conflicts, SAT witnesses
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r170-first-used-shard-*
+          merge-multiple: true
+          path: r170
+      - name: Independent source GF2 certificate replay and complete paired audit
+        run: |
+          set -euo pipefail
+          test "$(find r170 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 2
+          python3 -u research/r171_long_causal_gf2_benchmark.py audit | tee r171/audit.log
+          grep -q '^R171_FINAL ' r171/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("r171/report.json").read_text())
+          assert r["status"]=="RESEARCH_REPLAY_AUDIT_PASS_NOT_BLIND"
+          assert r["original_formulas"]==2 and r["attempts"]==20
+          assert len(r["paired_comparisons"]) == 16
+          assert all(p["finite_speedup"] is None for p in r["paired_comparisons"] if p["baseline_status"]=="TIMEOUT" or p["variant_status"]=="TIMEOUT")
+          assert r["source_certificates_replayed"] and r["SAT_witnesses_independently_checked"]
+          assert r["results"]["direct_two_way_shadow"]["emitted_Gaussian_units"]==0
+          assert r["results"]["direct_two_way_shadow"]["used_Gaussian_reasons"]==0
+          print("R171_STRICT_PAIRED_FIRST_USED_REASON_AUDIT_PASS")
+          PY
+          cat r171/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R171-FIRST-USED-REASONS-20-PAIRED-180S-AUDIT
+          path: |
+            r171/report.json
+            r171/summary.md
+            r171/audit.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  reaudit_r170:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: Repair R170 four-shard audit: correct 112 count and spread-shadow key
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r170-causal-shard-*
+          run-id: 42155008199
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: r170
+      - name: Verify 112 paired R170 attempts without re-running solves
+        run: |
+          set -euo pipefail
+          test "$(find r170 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r171_reaudit_r170_spread.py audit | tee r170/reaudit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("r170/report.json").read_text())
+          assert r["status"]=="RESEARCH_AUDIT_PASS_NOT_BLIND"
+          assert r["attempts"]==112 and r["original_formulas"]==8
+          assert r["results"]["all"]["direct_two_way_spread_shadow"]["derived_emitted"]==0
+          assert r["results"]["all"]["direct_two_way_spread_shadow"]["actually_consumed_reasons"]==0
+          assert r["source_certificate_replayed"]
+          print("R170_REAUDIT_112_PASS")
+          PY
+          cat r170/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R171-FIXED-R170-112-SHARD-STRICT-AUDIT
+          path: |
+            r170/report.json
+            r170/summary.md
+            r170/reaudit.log
+          retention-days: 90
