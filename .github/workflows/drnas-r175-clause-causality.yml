@@ -1,0 +1,160 @@
+name: DRNAS R175 certified XOR clause causality 250 paired
+on:
+  push:
+    branches: [experiment/drnas-r175-gf2-feedback-utility-20261106]
+    paths:
+      - 'research/r175_clause_causality.cpp'
+      - 'research/r175_clause_causality_benchmark.py'
+      - '.github/workflows/drnas-r175-clause-causality.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r175-clause-causality-20261106
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Build R175 source-certified native with causal shadow/short4/budget8 selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned CaDiCaL and test certified reasons plus utility wake
+        run: |
+          set -euo pipefail
+          mkdir -p r175
+          python3 -m py_compile research/r175_clause_causality_benchmark.py research/r173_residual_gate_benchmark.py research/r166x_component_benchmark.py research/r166x_certified_gauss.py research/r164_pure_exact_gf2.py
+          python3 -u research/r164_pure_exact_gf2.py --selftest | tee r175/exact-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r175/exact-selftest.log
+          python3 -u research/r166x_certified_gauss.py --selftest | tee r175/gauss-selftest.log
+          grep -q '^R166X_GAUSS_PROOF_SELFTEST_PASS' r175/gauss-selftest.log
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r175-cadical
+          cd /tmp/r175-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r175/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r175_clause_causality.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r175/r175-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r175/r175-native selftest | tee r175/native-selftest.log
+          grep -q '^R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS' r175/native-selftest.log
+          grep -q '^R175_SHADOW_SHORT4_BUDGET8_SELFTEST_PASS' r175/native-selftest.log
+          grep -q '^R174_B_CERTIFIED_CONFLICT_SELFTEST_PASS' r175/native-selftest.log
+          grep -q '^R174_C_UTILITY_WAKE_SELFTEST_PASS' r175/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r175/r175-native")
+          pin={"source_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "binary_sha256":hashlib.sha256(b.read_bytes()).hexdigest(),
+               "cadical_sha":pathlib.Path("r175/cadical-source-commit.txt").read_text().strip(),
+               "protocol":"DRNAS-R175-CERTIFIED-CONFLICT-CAUSAL-v1"}
+          pathlib.Path("r175/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R175_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r175-pinned-native
+          retention-days: 90
+          path: |
+            r175/r175-native
+            r175/build-pin.json
+            r175/exact-selftest.log
+            r175/gauss-selftest.log
+            r175/native-selftest.log
+            r175/cadical-source-commit.txt
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R175 same-source shadow/short4/budget8 vs R174-B/R173 shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r175-pinned-native
+          path: r175
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r175
+      - name: Verify original SHA CNFs and run charged paired trials
+        run: |
+          set -euo pipefail
+          chmod +x r175/r175-native
+          python3 -u research/r175_clause_causality_benchmark.py shard --shard ${{ matrix.shard }} --binary r175/r175-native | tee r175/shard-${{ matrix.shard }}.log
+          grep -q '^R175_SHARD_PASS ' r175/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r175-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r175/shard-${{ matrix.shard }}.json
+            r175/shard-${{ matrix.shard }}.log
+            r175/prep-*.json
+            r175/cert-*.json
+            r175/gauss-*/gauss.tsv
+            r175/gauss-*/gauss-units.tsv
+            r175/gauss-*/gauss-cert.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Audit 250 R175 original-source SHA paired runs and Gaussian proofs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r175-pinned-native
+          path: r175
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r175
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r175-shard-*
+          merge-multiple: true
+          path: r175
+      - name: Validate complete paired comparisons and replay source certificates
+        run: |
+          set -euo pipefail
+          test "$(find r175 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r175_clause_causality_benchmark.py audit | tee r175/audit.log
+          grep -q '^R175_FINAL ' r175/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          a=json.loads(pathlib.Path("r175/report.json").read_text())
+          assert a["status"]=="R175_PAIRED_CAUSAL_AUDIT_PASS_NOT_BLIND"
+          assert a["formulas"]==25 and a["attempts"]==250
+          assert a["independent_source_certificates"] and a["SAT_originals_checked"]
+          print("R175_FIVE_ARM_CERTIFIED_AUDIT_PASS")
+          PY
+          cat r175/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R175-CLAUSE-CAUSAL-250-FINAL
+          retention-days: 90
+          path: |
+            r175/report.json
+            r175/summary.md
+            r175/audit.log
