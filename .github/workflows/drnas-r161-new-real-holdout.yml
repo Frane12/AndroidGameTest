@@ -1,0 +1,297 @@
+name: DRNAS R161 prospective SHA-disjoint original external SAT four-way 24x3
+on:
+  push:
+    branches: [experiment/drnas-r161-fresh-external-sha-holdout-20261106]
+    paths:
+      - research/r161_fresh_external.py
+      - .github/workflows/drnas-r161-new-real-holdout.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r161-real-sha-prospective-20261106
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Verify 2979+400+125+ prior SHA and URI IDs then freeze 24 new original CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Guard V15.3.1 immutable and Python source syntax
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/r161_fresh_external.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1531-SQLite-Analytics
+          run-id: 42044317651
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/analytics
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          run-id: 42073257009
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r135s
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R132-AUDIT-ONLY-RECOVERED-42050320220
+          run-id: 42058541681
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r148/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r151
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          run-id: 42112341909
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r154mix
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          run-id: 42134372039
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r158industrial
+      - uses: actions/download-artifact@v4
+        with:
+          name: r160-precommitted-original24-and-portfolio-map
+          run-id: 42135803972
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r160
+      - name: Select SHA-new original CNFs and preregister before solver timing
+        run: |
+          set -euo pipefail
+          python3 -u research/r161_fresh_external.py freeze | tee r161-freeze.log
+          grep -q '^R161_FREEZE_PASS ' r161-freeze.log
+          test -s r161/frozen/manifest.json
+          python3 - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          p=Path('r161/frozen')
+          m=json.loads((p/'manifest.json').read_text())
+          assert len(m['cases'])==24
+          assert len({x['sha256'] for x in m['cases']})==24
+          assert m['source_class']=='NEW_SHA_OUTSIDE_EXPLICIT_AUDITED_HISTORICAL_REGISTRY'
+          assert m['R158_features_shadow_only'] is True
+          assert m['V15_3_1_immutable'] is True
+          for x in m['cases']:
+              assert hashlib.sha256((p/x['id']).read_bytes()).hexdigest()==x['sha256']
+          print('R161_SOURCE_FROZEN_CONTENT_SHA_AND_HISTORICAL_EXCLUSIONS_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r161-frozen-prospective-24-new-original-cnfs-and-provenance
+          path: |
+            r161/frozen/
+            r161-freeze.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  benchmark:
+    name: R161 72 genuine native paired SAT solves shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r161-frozen-prospective-24-new-original-cnfs-and-provenance
+          run-id: ${{ github.run_id }}
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-frozen-download
+      - name: Restore precommitted untouched original CNF bytes
+        run: |
+          set -euo pipefail
+          test -s r161-frozen-download/r161/frozen/manifest.json
+          mkdir -p r161/frozen
+          cp -a r161-frozen-download/r161/frozen/. r161/frozen/
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify binary SHA and compile immutable V15.3.1
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Same-runner paired three repeats, four policies, capped wall-time
+        run: |
+          set -euo pipefail
+          python3 -u research/r161_fresh_external.py run --shard ${{ matrix.shard }} | tee r161-run-${{ matrix.shard }}.log
+          grep -q '^R161_SHARD_PASS ' r161-run-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r161-shard-${{ matrix.shard }}
+          path: |
+            r161/shard-${{ matrix.shard }}/
+            r161-run-${{ matrix.shard }}.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: Strict original SHA, 288 raw attempts, SAT witness, uniform binaries, bootstrap
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V1531-SQLite-Analytics
+          run-id: 42044317651
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/analytics
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R135S-VS-R135-EXACT-400-FINAL-PAR2-AUDIT
+          run-id: 42073257009
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r135s
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R132-AUDIT-ONLY-RECOVERED-42050320220
+          run-id: 42058541681
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r148/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r150-frozen-model-and-new-holdout
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r151
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          run-id: 42112341909
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r154mix
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          run-id: 42134372039
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r158industrial
+      - uses: actions/download-artifact@v4
+        with:
+          name: r160-precommitted-original24-and-portfolio-map
+          run-id: 42135803972
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r161-prior/r160
+      - uses: actions/download-artifact@v4
+        with:
+          name: r161-frozen-prospective-24-new-original-cnfs-and-provenance
+          path: r161-frozen-download
+      - name: Restore frozen formula bytes and provenance
+        run: |
+          set -euo pipefail
+          test -s r161-frozen-download/r161/frozen/manifest.json
+          mkdir -p r161/frozen
+          cp -a r161-frozen-download/r161/frozen/. r161/frozen/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r161-shard-*
+          path: r161-shards
+          merge-multiple: false
+      - name: Fail closed on missing raw, wrong SHA, SAT witness or mixed policies
+        run: |
+          set -euo pipefail
+          python3 -u research/r161_fresh_external.py audit | tee r161-audit.log
+          grep -q '^R161_FINAL ' r161-audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('r161/report/report.json').read_text())
+          assert r['new_original_formula_SHA']==24
+          assert r['compared_attempts']==288
+          assert r['source_disjoint_against_proven_audited_registry'] is True
+          assert r['consistent_reference_binaries'] is True
+          assert r['same_formula_CPU_paired'] is True
+          assert r['all_SAT_witness_verified'] is True
+          assert r['V15_3_1_changed'] is False
+          assert r['R158_features_shadow_only'] is True
+          assert r['independent_UNSAT_certificate'] is False
+          print('R161_FINAL_SHA_SAT_PAIRED_STRICT_PASS')
+          PY
+          cat r161/report/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R161-24-SHA-NEW-EXTERNAL-288-PAIRED-STRICT-AUDIT-FINAL
+          path: |
+            r161/report/
+            r161-audit.log
+            r161/frozen/manifest.json
+          retention-days: 90
+          if-no-files-found: error
