@@ -18,7 +18,7 @@ Freeze a publicly licensed metabolic model (SBML), regulatory network (CSV with 
 ## Run
 
 ```bash
-python3 -m pip install python-sat==1.9.dev18
+python3 -m pip install python-sat==1.9.dev21
 python3 research/drnas_medical/gmispy_r1.py sat-benchmark --out medical-results/gmispy-r1 --cap 5 --r108 6
 python3 -m pip install 'git+https://github.com/PlanesLab/cyclic-gMISpy.git@76ce96de9d4e18c8200876f5a73d3b2d60e4a012'
 python3 research/drnas_medical/gmispy_r1.py upstream-smoke --out medical-results/gmispy-r1
