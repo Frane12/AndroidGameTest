@@ -1,0 +1,154 @@
+name: DRNAS R191 early CDCL feedback 1224 paired
+on:
+  push:
+    branches: [experiment/drnas-r191-early-cdcl-feedback-20261106]
+    paths:
+      - 'research/r191_early_cdcl_feedback.py'
+      - 'research/r191_early_cdcl_driver.cpp'
+      - '.github/workflows/drnas-r191-early-cdcl-feedback.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r191-causal-pilot
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R191 source-only fixed early learning telemetry policy selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r191_early_cdcl_feedback.py research/r190_general_cdcl_router.py research/r188_feedback_benchmark.py
+          python3 -u research/r191_early_cdcl_feedback.py selftest
+      - name: Reuse exact 102 source SHA-pinned R190 original DIMACS files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r191/source
+          gh run download 42278392511 --repo Frane12/AndroidGameTest -n r190-frozen102-pinned-native -D r191/source
+          cp -a r191/source/frozen r191/frozen
+          python3 -u research/r191_early_cdcl_feedback.py verify
+      - name: Compile CaDiCaL 2.1 at R190 exact source commit
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r191-cadical
+          (
+            cd /tmp/r191-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r191-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r191-cadical/src research/r191_early_cdcl_driver.cpp /tmp/r191-cadical/build/libcadical.a -o r191/r191-driver
+          chmod +x r191/r191-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r191/smoke.cnf
+          for mode in default sat probe continue; do
+            r191/r191-driver r191/smoke.cnf 2 "$mode" > "r191/smoke-${mode}.log"
+            grep -q '^R182_STATUS status=SAT' "r191/smoke-${mode}.log"
+          done
+          grep -q '^R191_PROBE ' r191/smoke-probe.log
+          grep -q '^R191_PROBE ' r191/smoke-continue.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          r=pathlib.Path("r191")
+          sha=lambda p:hashlib.sha256((r/p).read_bytes()).hexdigest()
+          pin={"protocol":"R191-SAME-SHA-CNF-AND-CDCL-NATIVE-v1",
+               "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+               "manifest_sha256":sha("frozen/manifest.json"),
+               "driver_sha256":sha("r191-driver"),
+               "modes":["default","sat","probe_continue",
+                        "probe_sat","probe_shadow","adaptive"]}
+          assert pin["manifest_sha256"]=="9eebc6fc1e8ad3006fc3ecc8b451e1e57d3087932190ba5a91fd60aabf278658"
+          (r/"build-pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("R191_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r191-frozen102-native-verified
+          retention-days: 90
+          path: |
+            r191/frozen/
+            r191/r191-driver
+            r191/build-pin.json
+            r191/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    name: R191 six-arm early conflicts and learning shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r191-frozen102-native-verified
+          path: r191
+      - name: Validate exact native/source SHA and run 6 arms twice
+        run: |
+          set -euo pipefail
+          chmod +x r191/r191-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r191")
+          pin=json.loads((p/"build-pin.json").read_text())
+          for name,field in (("r191-driver","driver_sha256"),
+                             ("frozen/manifest.json","manifest_sha256")):
+              assert hashlib.sha256((p/name).read_bytes()).hexdigest()==pin[field]
+          PY
+          python3 -u research/r191_early_cdcl_feedback.py shard --shard ${{ matrix.shard }} --binary r191/r191-driver | tee r191/shard-${{ matrix.shard }}.log
+          grep -q '^R191_SHARD_PASS ' r191/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r191-early-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r191/shard-${{ matrix.shard }}.json
+            r191/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r191-frozen102-native-verified
+          path: r191
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r191-early-shard-*
+          merge-multiple: true
+          path: r191
+      - name: Audit original SHA, paired statuses, all 1224 attempts and PAR-2
+        run: |
+          set -euo pipefail
+          test "$(find r191 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r191_early_cdcl_feedback.py audit | tee r191/audit.log
+          grep -q '^R191_FINAL ' r191/audit.log
+          cat r191/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R191-EARLY-CDCL-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r191/report.json
+            r191/all-trials.json
+            r191/summary.md
+            r191/audit.log
