@@ -1,0 +1,138 @@
+name: DRNAS R189 certified one-shot XOR CNF useful information 456 paired
+on:
+  push:
+    branches: [experiment/drnas-r189-useful-clauses-20261106]
+    paths:
+      - 'research/r189_short_inference.py'
+      - '.github/workflows/drnas-r189-useful-information.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r189-short4-bridge
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R189 independent XOR2-6 source trace and bridge CNF resolution selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r189_short_inference.py research/r188_feedback_benchmark.py research/r182_mixed_engine.py research/r183_external_mixed.py research/r186_cheap_selector.py
+          python3 -u research/r189_short_inference.py selftest
+      - name: Reuse exact 38 original SHA-pinned R187 CNFs and CaDiCaL 2.1 native binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r189
+          gh run download 42221503842 --repo Frane12/AndroidGameTest -n r187-frozen-real25-synthetic13-native-binaries -D r189
+          cp r189/r187-driver r189/r189-driver
+          chmod +x r189/r189-driver
+          python3 -u research/r189_short_inference.py verify
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          root=pathlib.Path("r189")
+          sha=lambda x:hashlib.sha256((root/x).read_bytes()).hexdigest()
+          assert sha("frozen/manifest.json")=="3f0f67bea5547daa1ba07d9a1dba31d8d33f7d734db8eb6e8cae358a46c91ef3"
+          assert sha("r189-driver")=="f4ea8de92f8e1919c818bb85cc9863524ab440b138fde740a29795a666b9f405"
+          pin={"protocol":"R189-EXACT-R187-FROZEN-38-SAME-BINARY-v1",
+             "source_manifest_sha256":sha("frozen/manifest.json"),
+             "clean_binary_sha256":sha("r189-driver"),
+             "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+             "cap_seconds":15,"methods":6,"repetitions":2}
+          (root/"build-pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("R189_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' > r189/smoke.cnf
+          r189/r189-driver r189/smoke.cnf 15 | tee r189/smoke.log
+          grep -q '^R182_STATUS status=SAT' r189/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r189-exact-source38-pinned-native
+          retention-days: 90
+          path: |
+            r189/frozen/
+            r189/r189-driver
+            r189/build-pin.json
+            r189/smoke.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    name: R189 same-SHA gate short4 bridge4 hybrid shadow shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r189-exact-source38-pinned-native
+          path: r189
+      - name: Audit pin before exact original-CNF 6-arm 2-repeat benchmark
+        run: |
+          set -euo pipefail
+          chmod +x r189/r189-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r189")
+          pin=json.loads((p/"build-pin.json").read_text())
+          for filename,field in (("frozen/manifest.json","source_manifest_sha256"),("r189-driver","clean_binary_sha256")):
+              assert hashlib.sha256((p/filename).read_bytes()).hexdigest()==pin[field]
+          PY
+          python3 -u research/r189_short_inference.py shard --shard ${{ matrix.shard }} --binary r189/r189-driver | tee r189/shard-${{ matrix.shard }}.log
+          grep -q '^R189_SHARD_PASS ' r189/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r189-derivation-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r189/shard-${{ matrix.shard }}.json
+            r189/shard-${{ matrix.shard }}.log
+            r189/proofs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r189-exact-source38-pinned-native
+          path: r189
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r189-derivation-shard-*
+          merge-multiple: true
+          path: r189
+      - name: Verify all 456 SHA pairs, SAT/UNSAT agreement and real-vs-control PAR2
+        run: |
+          set -euo pipefail
+          test "$(find r189 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r189_short_inference.py audit | tee r189/audit.log
+          grep -q '^R189_FINAL ' r189/audit.log
+          cat r189/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R189-SOURCE-CERTIFIED-USEFUL-INFORMATION-FINAL
+          retention-days: 90
+          path: |
+            r189/report.json
+            r189/all-trials.json
+            r189/summary.md
+            r189/audit.log
+            r189/proofs/
