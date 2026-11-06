@@ -1,0 +1,151 @@
+name: DRNAS R184 external mixed 120s paired 12 original CNFs
+on:
+  push:
+    branches: [experiment/drnas-r184-external-mixed-120s-20261106]
+    paths:
+      - 'research/r184_external_mixed_120s.py'
+      - 'research/r184_cadical_driver.cpp'
+      - '.github/workflows/drnas-r184-external-mixed-120s.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r184-120s-ext
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R184 unchanged certified GF2 proof self-tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r184_external_mixed_120s.py research/r182_mixed_engine.py
+          python3 -u research/r184_external_mixed_120s.py selftest
+      - name: Reuse exact twelve source-SHA frozen external R183 originals, no reselection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r184
+          gh run download 42206668113 --repo Frane12/AndroidGameTest -n r183-pinned-external-originals-and-binary -D r184
+          test -f r184/frozen/manifest.json
+          python3 -u research/r184_external_mixed_120s.py verify
+      - name: Compile CaDiCaL 2.1.0 identical reference source, extend cap to 120s
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r184-cadical
+          (
+            cd /tmp/r184-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r184-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r184-cadical/src research/r184_cadical_driver.cpp /tmp/r184-cadical/build/libcadical.a -o r184/r184-driver
+          chmod +x r184/r184-driver
+          echo 'p cnf 2 2' > r184/smoke.cnf
+          echo '1 0' >> r184/smoke.cnf
+          echo '-1 2 0' >> r184/smoke.cnf
+          r184/r184-driver r184/smoke.cnf 120 | tee r184/smoke.log
+          grep -q 'R182_STATUS status=SAT' r184/smoke.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r184")
+          source=json.loads((p/"build-pin.json").read_text())
+          assert source["source_manifest_sha256"]==hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest()
+          pin={"protocol":"R184-120S-EXTERNAL-PAIRED-PIN-v1",
+            "cap_seconds":120,
+            "source_run_id":42206668113,
+            "source_manifest_sha256":source["source_manifest_sha256"],
+            "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+            "binary_sha256":hashlib.sha256((p/"r184-driver").read_bytes()).hexdigest()}
+          (p/"r184-build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R184_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r184-pinned-source-and-120s-native
+          retention-days: 90
+          path: |
+            r184/frozen/
+            r184/r184-driver
+            r184/r184-build-pin.json
+            r184/smoke.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    name: R184 120s external mixed original shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r184-pinned-source-and-120s-native
+          path: r184
+      - name: Verify pinned source/binary and run three arms twice with wall cap 120s
+        run: |
+          set -euo pipefail
+          chmod +x r184/r184-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r184")
+          b=json.loads((p/"r184-build-pin.json").read_text())
+          assert b["cap_seconds"]==120
+          assert hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest()==b["source_manifest_sha256"]
+          assert hashlib.sha256((p/"r184-driver").read_bytes()).hexdigest()==b["binary_sha256"]
+          PY
+          python3 -u research/r184_external_mixed_120s.py shard --shard ${{ matrix.shard }} --binary r184/r184-driver | tee r184/shard-${{ matrix.shard }}.log
+          grep -q '^R184_SHARD_PASS ' r184/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r184-paired-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r184/shard-${{ matrix.shard }}.json
+            r184/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r184-pinned-source-and-120s-native
+          path: r184
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r184-paired-shard-*
+          merge-multiple: true
+          path: r184
+      - name: Source SHA and paired repeat audit with solved/PAR2 by cohort
+        run: |
+          set -euo pipefail
+          test "$(find r184 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 6
+          python3 -u research/r184_external_mixed_120s.py audit | tee r184/audit.log
+          grep -q '^R184_FINAL ' r184/audit.log
+          cat r184/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R184-120S-EXTERNAL-MIXED-FINAL
+          retention-days: 90
+          path: |
+            r184/report.json
+            r184/summary.md
+            r184/audit.log
