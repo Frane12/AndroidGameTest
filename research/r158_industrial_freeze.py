@@ -11,14 +11,17 @@ spec=importlib.util.spec_from_file_location("r152","research/r152_lightsout_unse
 r152=importlib.util.module_from_spec(spec);spec.loader.exec_module(r152)
 orig=r152.orig
 PROTO="DRNAS-R158-INDUSTRIAL-SOURCE-FREEZE-PILOT-20261106-v1"
-FAMILIES=("miter","hardware-verification")
-TRACKS=("main_2025","main_2026","submissions_2025","submissions_2026")
+FAMILIES=("miter","hardware-verification","hardware-model-checking","circuit-multiplier")
+TRACKS=("main_2024","main_2025","main_2026","main_2023","submissions_2024")
 QUOTA={"xor_plus_units":6,"complete_xor":6,"mixed_residual":12,"nonxor_control":12}
-MAX_SOURCE_FETCH=180
+MAX_SOURCE_FETCH=240
 RAW_CAP=128*1024*1024
 CNF_CAP=96*1024*1024
 MAX_VARIABLES=250000
 MAX_CLAUSES=2500000
+# Source decoder inherited from R32p has a fixed 56 MiB cap. Override only
+# in this experimental process; the external CNF SHA and hard 96 MiB cap remain.
+orig.source.CNF_LIMIT=CNF_CAP
 def need(v,msg):
  if not v:raise RuntimeError("R158_SOURCE_AUDIT_FAIL "+str(msg))
 def sha(b):return hashlib.sha256(b).hexdigest()
