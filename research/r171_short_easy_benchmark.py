@@ -57,7 +57,9 @@ def generate():
         # Canonicalize optional historical DIMACS '%' trailer, if present.
         rawsha=hashlib.sha256(data).hexdigest()
         lines=data.decode("ascii").splitlines()
-        # SATLIB files may end with a % marker followed by a standalone 0.\n        # Both are DIMACS end-of-file markers, not an additional empty clause.\n        cutoff=next((j for j,x in enumerate(lines) if x.lstrip().startswith("%")),len(lines))\n        normalized=("\n".join(lines[:cutoff]).rstrip()+"\n").encode()
+        # SATLIB "%" marks EOF; its following standalone 0 is not a clause.
+        cutoff=next((j for j,x in enumerate(lines) if x.lstrip().startswith("%")),len(lines))
+        normalized=("\\n".join(lines[:cutoff]).rstrip()+"\\n").encode()
         ident="satlib-"+filename[:-4]
         p=ROOT/"frozen"/(ident+".cnf");p.write_bytes(normalized)
         variables,clauses=base.dimacs(p)
