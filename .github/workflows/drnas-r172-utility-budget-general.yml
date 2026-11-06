@@ -1,0 +1,161 @@
+name: DRNAS R172 GF2 utility-budget 25-source paired ablation
+on:
+  push:
+    branches: [experiment/drnas-r172-utility-budget-general-20261106]
+    paths:
+      - 'research/r172_utility_budget_gf2_cdcl.cpp'
+      - 'research/r172_utility_budget_benchmark.py'
+      - '.github/workflows/drnas-r172-utility-budget-general.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r172-utility-budget-25-original-paired
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Build ONE pinned R172 native GF2 CDCL binary and run causal reason selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build frozen CaDiCaL 2.1.0 and instrumented R172
+        run: |
+          set -euo pipefail
+          mkdir -p r172
+          python3 -m py_compile research/r172_utility_budget_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r170-cadical
+          cd /tmp/r170-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r172/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r172_utility_budget_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r172/r172-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r172/r172-native selftest | tee r172/selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r172/selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r172/selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r172/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r172/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r172/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r172/selftest.log
+          grep -q '^R172_BUDGET_SELFTEST_PASS' r172/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          binary=pathlib.Path("r172/r172-native")
+          pin=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0],
+                   cadical_commit=pathlib.Path("r172/cadical-source-commit.txt").read_text().strip(),
+                   benchmark_protocol="DRNAS-R172-UTILITY-BUDGET-GENERAL25-SHA-PAIRED-20261106-v1")
+          pathlib.Path("r172/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R172_PINNED_BINARY_SELFTEST_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R172-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: |
+            r172/r172-native
+            r172/build-pin.json
+            r172/selftest.log
+            r172/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    name: R172 broad paired GF2 utility-budget shard ${{ matrix.shard }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R172-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: r172
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r172
+      - name: Solve original SHA CNFs for 180 seconds per mode and record first consumed GF2 reason
+        run: |
+          set -euo pipefail
+          chmod +x r172/r172-native
+          python3 -u research/r172_utility_budget_benchmark.py shard --shard ${{ matrix.shard }} --binary r172/r172-native | tee r172/shard-${{ matrix.shard }}.log
+          grep -q '^R172_SHARD_PASS ' r172/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r172-first-used-shard-${{ matrix.shard }}
+          path: |
+            r172/shard-${{ matrix.shard }}.json
+            r172/shard-${{ matrix.shard }}.log
+            r172/prep-*.json
+            r172/cert-*.json
+            r172/full-*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit 150 paired original source SHA GF2/CDCL budget runs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r172
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r172-first-used-shard-*
+          merge-multiple: true
+          path: r172
+      - name: Independent source GF2 certificate replay and complete paired audit
+        run: |
+          set -euo pipefail
+          test "$(find r172 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 2
+          python3 -u research/r172_utility_budget_benchmark.py audit | tee r172/audit.log
+          grep -q '^R172_FINAL ' r172/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("r172/report.json").read_text())
+          assert r["status"]=="R172_RESEARCH_PAIRED_AUDIT_PASS_NOT_BLIND"
+          assert r["original_formulas"]==25 and r["attempts"]==150
+          assert len(r["paired_comparisons"]) == 100
+          assert all(p["finite_speedup"] is None for p in r["paired_comparisons"] if p["baseline_status"]=="TIMEOUT" or p["variant_status"]=="TIMEOUT")
+          assert r["source_certificates_replayed"] and r["original_sha_verified"]
+          assert r["results"]["clean"]["two_way_sweeps"]==0
+          assert r["results"]["clean"]["two_way_used_reasons"]==0
+          print("R172_STRICT_GENERAL_SOURCE_PAIRED_AUDIT_PASS")
+          PY
+          cat r172/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R172-25-ORIGINALS-150-PAIRED-BUDGET-AUDIT
+          path: |
+            r172/report.json
+            r172/summary.md
+            r172/audit.log
+          if-no-files-found: warn
+          retention-days: 90
