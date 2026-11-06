@@ -1,0 +1,96 @@
+name: DRNAS Medical R3 real complex AND OR GPR 3-arm benchmark
+
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-gmispy-r3-complex-gpr-20261106
+    paths:
+      - 'research/drnas_medical/gmispy_r3.py'
+      - 'research/drnas_medical/gmispy_r3_verify.py'
+      - '.github/workflows/drnas-medical-gmispy-r3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-complex-gpr-sat-fba:
+    name: Real 32-gene GPR 3-arm SAT-LP versus independent exhaustive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen FBA and SAT dependencies
+        run: |
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21
+      - name: Validate 5488 gene combinations and run repeated 3-arm ablations
+        run: |
+          python3 research/drnas_medical/gmispy_r3.py benchmark \
+            --out medical-results/gmispy-r3-fba --max-k 3 --repeats 3
+      - name: Preserve real source model, exhaustive oracle and paired timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-gmispy-r3-complex-sat-fba
+          path: medical-results/gmispy-r3-fba/
+          retention-days: 30
+          if-no-files-found: warn
+
+  real-upstream-gmispy-gpr:
+    name: Original gMISpy complex GPR parser on same E. coli model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install published gMISpy at frozen commit
+        run: |
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 \
+            'git+https://github.com/PlanesLab/cyclic-gMISpy.git@76ce96de9d4e18c8200876f5a73d3b2d60e4a012'
+      - name: Call actual gMISpy GPR functions
+        run: |
+          python3 research/drnas_medical/gmispy_r3.py upstream-gpr \
+            --out medical-results/gmispy-r3-original-gpr
+      - name: Preserve upstream GPR rules and source SHA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-gmispy-r3-original-gpr
+          path: medical-results/gmispy-r3-original-gpr/
+          retention-days: 30
+          if-no-files-found: warn
+
+  audited-crosscheck:
+    name: Exhaustive GPR equivalence to gMISpy plus gene KO oracle
+    needs: [real-complex-gpr-sat-fba, real-upstream-gmispy-gpr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-gmispy-r3-complex-sat-fba
+          path: compare/drnas
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-gmispy-r3-original-gpr
+          path: compare/gmispy
+      - name: Replay all original complex GPR truth tables independently
+        run: |
+          python3 research/drnas_medical/gmispy_r3_verify.py \
+            --drnas compare/drnas/summary.json \
+            --gmispy compare/gmispy/upstream_gpr.json \
+            --out compare/crosscheck.json
+      - name: Preserve validated crosscheck certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-gmispy-r3-verified-crosscheck
+          path: compare/crosscheck.json
+          retention-days: 30
+          if-no-files-found: warn
