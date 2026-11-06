@@ -6,7 +6,7 @@ Does the R3/R4 structural SAT master retain its speed advantage when we expand t
 
 The underlying real metabolic dataset is the published BiGG `e_coli_core` model, via frozen COBRApy 0.30.0 `textbook`. The SBML hash must be identical to certified R3/R4 `13daac1b0ef19a12459371d4c11d16122ffaccf207070c08a6a66f8ba983b91f`. All 95 reactions and their actual GPR AND/OR rules are reused unchanged.
 
-The original R3 32 genes are frozen. An additional **16 real genes** participating in model reactions are selected deterministically by count of complex GPR reaction participation, then number of associated reactions, then gene ID. This may bias toward structural overlap, so conclusions must be restricted to this cohort; an externally held-out, randomly sampled group is still required.
+The original R3 32 genes are frozen. An additional **16 genuine E. coli locus identifiers** (BiGG IDs matching `b[0-9]{4}`) participating in model reactions are selected deterministically by count of complex GPR reaction participation, then number of associated reactions, then gene ID. **The pseudogene `s0001`, which represents spontaneous reactions, is never a knockout target.** This may bias toward structural overlap, so conclusions must be restricted to this cohort; an externally held-out, randomly sampled group is still required.
 
 There are **18,472 candidate sets of size 1–3**, each independently evaluated as both native COBRApy gene knockout and GPR-implied reaction knockout, for 36,944 LP FBA equivalence checks. Biomass loss is defined exactly as below 1% of simulated unperturbed maximum flux.
 
@@ -35,3 +35,4 @@ Workflow `.github/workflows/drnas-medical-gmispy-r5.yml`. Outputs: 18,472 gene/r
 This is a **real bacterial metabolic simulation**, not a human tumor, clinical prediction or experimental drug-target result. It is not a native DRNAS SAT benchmark. The true full gMISpy may scale differently. Do not infer treatment relevance or broad solver superiority from synthetic intervention choices on one model.
 
 **Scientific next step:** compare with the established original genetic minimal cut set MILP formulation, not merely two custom masters with lazy cuts, then test human Human-GEM or Recon3D models with properly sourced human regulatory interactions.
+\n## Corrective audit note\n\nThe initial R5 run accidentally selected pseudo-gene `s0001` (BiGG representation of spontaneous reactions), producing non-biological intervention sets. That initial run and its observed times are retained for audit but are **not accepted as R5 scientific results**. The final R5 run excludes `s0001`, validates every selected gene against the `b[0-9]{4}` locus-ID pattern and reruns the independent 18,472-case audit and both MILP controls.\n
