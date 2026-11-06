@@ -1,0 +1,238 @@
+name: DRNAS R165 watch-lazy XOR cooldown plus exact source-XOR router and 30s mixed
+on:
+  push:
+    branches: [experiment/drnas-r165-xor-watch-cooldown-router-20261106]
+    paths:
+      - '.github/workflows/drnas-r165-watch-cooldown-router.yml'
+      - 'research/r165_component_feedback.cpp'
+      - 'research/r165_component_benchmark.py'
+      - 'research/r165_exact_router_benchmark.py'
+      - 'research/r164_pure_exact_gf2.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r165-watch-cooldown-router-8-original-96-pairs
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Compile ONCE pinned CaDiCaL and R165; immutable source and GF2 reasons selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the single common source-locked R165/CaDiCaL native binary
+        run: |
+          set -euo pipefail
+          mkdir -p r165
+          python3 -m py_compile research/r165_component_benchmark.py research/r165_exact_router_benchmark.py research/r164_pure_exact_gf2.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r165-cadical
+          cd /tmp/r165-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r165/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r165_component_feedback.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r165/r165-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r165/r165-native selftest | tee r165/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r165/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r165/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r165/native-selftest.log
+          grep -q '^R165_COMPONENT_GATE_SELFTEST_PASS' r165/native-selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r165/native-selftest.log
+          grep -q '^R165_LAZY_SOURCE_REASON_SELFTEST_PASS' r165/native-selftest.log
+          grep -q '^R165_COOLDOWN_REAWAKEN_SELFTEST_PASS' r165/native-selftest.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          p=pathlib.Path("r165/r165-native")
+          obj=dict(binary_sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+            commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            cadical_source_commit=pathlib.Path("r165/cadical-source-commit.txt").read_text().strip(),
+            compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0])
+          pathlib.Path("r165/build-pin.json").write_text(json.dumps(obj,sort_keys=True,indent=2))
+          print("R165_SINGLE_BINARY_PIN_PASS",json.dumps(obj,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r165-single-frozen-binary-and-source-commit
+          path: |
+            r165/r165-native
+            r165/build-pin.json
+            r165/cadical-source-commit.txt
+            r165/native-selftest.log
+          retention-days: 90
+  paired:
+    needs: build
+    name: Six-mode ORIGINAL CNF 30s mixed and 5s controls same-binary paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r165-single-frozen-binary-and-source-commit
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - name: Enforce SAME precompiled native SHA and record paired CPU source
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x r165/r165-native
+          python3 - <<'PY'
+          import pathlib,hashlib,json,os,subprocess
+          pin=json.loads(pathlib.Path("r165/build-pin.json").read_text())
+          check=hashlib.sha256(pathlib.Path("r165/r165-native").read_bytes()).hexdigest()
+          assert check==pin["binary_sha256"],"R165 NATIVE BINARY DRIFT"
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["commit"]
+          pin["cpu"]=next((v for v in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if v.startswith("model name")),"unknown")
+          pin["shard"]=int(os.environ["SHARD"])
+          pathlib.Path("r165/pin-"+os.environ["SHARD"]+".json").write_text(json.dumps(pin,sort_keys=True))
+          print("R165_COMMON_BINARY_SHA_PASS",check,"shard",os.environ["SHARD"])
+          PY
+      - name: Independently replay source-certified GF2 rows and 6 modes on original sources
+        run: |
+          set -euo pipefail
+          python3 -u research/r165_component_benchmark.py shard --shard ${{ matrix.shard }} --binary r165/r165-native | tee r165/shard-${{ matrix.shard }}.log
+          grep -q '^R165_SHARD_PASS ' r165/shard-${{ matrix.shard }}.log
+          test -s r165/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r165-causal-shard-${{ matrix.shard }}
+          path: |
+            r165/shard-${{ matrix.shard }}.json
+            r165/shard-${{ matrix.shard }}.log
+            r165/pin-${{ matrix.shard }}.json
+            r165/prep-*.json
+            r165/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  pure:
+    needs: build
+    name: Paired exact-source XOR routing vs native clean CaDiCaL on original 25 input source SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r165-single-frozen-binary-and-source-commit
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - name: Pure source-XOR router and 26 clean-native paired trials with SAT validation
+        run: |
+          set -euo pipefail
+          chmod +x r165/r165-native
+          python3 research/r164_pure_exact_gf2.py --selftest | tee r165/pure-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r165/pure-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          pin=json.loads(pathlib.Path('r165/build-pin.json').read_text())
+          assert hashlib.sha256(pathlib.Path('r165/r165-native').read_bytes()).hexdigest()==pin['binary_sha256']
+          print('R165_ROUTER_NATIVE_PIN_PASS',pin['binary_sha256'])
+          PY
+          python3 -u research/r165_exact_router_benchmark.py r165/r165-native | tee r165/router.log
+          grep -q '^R165_ROUTER_FINAL ' r165/router.log
+          test -s r165/router-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r165-source-exact-router-26-native-paired
+          path: |
+            r165/pure-selftest.log
+            r165/router.log
+            r165/router-report.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [paired,pure]
+    name: Audit 96 SHA-paired watch-lazy cooldown and event-state native original-CNF trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r165-single-frozen-binary-and-source-commit
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r165-causal-shard-*
+          merge-multiple: true
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          name: r165-source-exact-router-26-native-paired
+          path: r165
+      - name: Final source-specific causal and regression correctness audit
+        run: |
+          set -euo pipefail
+          test "$(find r165 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r165_component_benchmark.py audit | tee r165/audit.log
+          grep -q '^R165_FINAL ' r165/audit.log
+          test -s r165/router-report.json
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.loads(pathlib.Path('r165/router-report.json').read_text())
+          assert x['status']=='ROUTER_PAIRED_AUDIT_PASS_RESEARCH_ONLY'
+          assert x['input_cases']==25 and x['pure_pairs']==26
+          print('R165_INDEPENDENT_PAIRED_ROUTER_REPORT_PASS')
+          PY
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.loads(pathlib.Path("r165/report.json").read_text())
+          with open(pathlib.Path("r165/report-summary.md"),"w") as f:
+           f.write("# DRNAS R165: component-conditioned GF2/CDCL feedback metrics\n\n")
+           f.write("8 development SHA CNFs; six modes; two repetitions; 96 trials; mixed cap 30s.\n\n")
+           f.write("| Mode | Solved | PAR2 s | Conflicts | Decisions | GF2 proposals | Full reasons | Cheap watch rejects | Cooldown wakes | Assignment ns |\n")
+           f.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+           for key,d in x["summary"]["all"].items():
+            f.write(f'| {key} | {d["solved"]}/{d["trials"]} | {d["PAR2_s"]:.4f} | {d["conflicts"]} | {d["decisions"]} | {d["proposed_GF2"]} | {d["completed_reason_clauses"]} | {d["cheap_watch_rejects"]} | {d["cooldown_wakes"]} | {d["assignment_notify_ns"]} |\n')
+           f.write("\nRESEARCH ONLY. Same R154 development set; non-blind; source exact XOR parity proof is not LRAT.\n")
+          PY
+          cat r165/report-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R165-WATCHLAZY-COOLDOWN-EXACTROUTER-96-PAIRED-AUDIT-FINAL
+          path: |
+            r165/report.json
+            r165/audit.log
+            r165/report-summary.md
+            r165/router-report.json
+          if-no-files-found: warn
+          retention-days: 90
