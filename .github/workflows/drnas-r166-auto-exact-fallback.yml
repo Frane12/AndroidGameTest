@@ -1,0 +1,145 @@
+name: DRNAS R166 exact XOR auto-dispatch + safe CDCL fallback 25 original paired
+on:
+  push:
+    branches: [experiment/drnas-r166-exact-gf2-auto-dispatch-20261106]
+    paths:
+      - '.github/workflows/drnas-r166-auto-exact-fallback.yml'
+      - 'research/r166_auto_solver.py'
+      - 'research/r166_benchmark.py'
+      - 'research/r166_independent_verifier.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r166-exact-auto-25-original-2rep-20261106
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: Original SHA-pinned 25 CNFs auto vs clean shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r164-single-frozen-binary-and-source-commit
+          run-id: 42145404351
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r166
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r166
+      - name: Verify pinned binary and selftest exact-parity source proof
+        run: |
+          set -euo pipefail
+          mkdir -p r166
+          chmod +x r166/r164-native
+          python3 -m py_compile research/r166_auto_solver.py research/r166_independent_verifier.py research/r166_benchmark.py
+          python3 research/r166_auto_solver.py --selftest
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("r166/build-pin.json")
+          assert p.is_file()
+          pin=json.loads(p.read_text())
+          assert pin["commit"]=="2ff07b3af7f98b9d822b9626d348c681297fd174"
+          sha=hashlib.sha256(pathlib.Path("r166/r164-native").read_bytes()).hexdigest()
+          assert pin["binary_sha256"]==sha
+          manifest=json.loads(pathlib.Path("r166/frozen/manifest.json").read_text())
+          assert len(manifest["cases"])==25
+          print("R166_PINNED_SAME_BINARY_PASS",sha,flush=True)
+          PY
+      - name: End-to-end standalone auto dispatcher pure and mixed safety controls
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json,subprocess,sys
+          root=pathlib.Path("r166");p=root/"fixture"
+          p.mkdir(exist_ok=True)
+          cases=[
+            ("pure", "p cnf 2 2\n1 2 0\n-1 -2 0\n", "SAT", "EXACT_GF2_FASTPATH"),
+            ("mixed", "p cnf 3 3\n1 2 0\n-1 -2 0\n2 3 0\n", "SAT", "CLEAN_CDCL_FALLBACK"),
+            ("unsat", "p cnf 2 4\n1 2 0\n-1 -2 0\n1 -2 0\n-1 2 0\n", "UNSAT", "EXACT_GF2_FASTPATH")]
+          for name,cnf,want,route in cases:
+            src=p/(name+".cnf");src.write_text(cnf)
+            proof=p/(name+"-proof.json")
+            r=subprocess.run([sys.executable,"research/r166_auto_solver.py",
+              str(src),"--native","r166/r164-native","--cap","2",
+              "--proof-out",str(proof)],text=True,capture_output=True)
+            assert r.returncode=={"SAT":10,"UNSAT":20}[want],(name,r.stdout,r.stderr)
+            d=[json.loads(l[len("R166_RESULT "):]) for l in r.stdout.splitlines()
+               if l.startswith("R166_RESULT ")]
+            assert len(d)==1 and d[0]["status"]==want and d[0]["method"]==route,(name,d)
+            if route=="EXACT_GF2_FASTPATH":
+              assert proof.exists()
+              q=subprocess.run([sys.executable,"research/r166_independent_verifier.py",
+                str(src),str(proof)],text=True,capture_output=True)
+              assert q.returncode==0,(name,q.stdout,q.stderr)
+            else:
+              assert not proof.exists()
+            print("R166_ROUTE_SELFTEST_PASS",name,route,want)
+          PY
+      - name: Run 25 original source real CNF paired development benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/r166_benchmark.py shard --shard ${{ matrix.shard }} --binary r166/r164-native | tee r166/shard-${{ matrix.shard }}.log
+          grep -q '^R166_SHARD_PASS ' r166/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r166-paired-shard-${{ matrix.shard }}
+          path: |
+            r166/shard-${{ matrix.shard }}.json
+            r166/shard-${{ matrix.shard }}.log
+            r166/proof-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: R166 final same-source parity certificate and wall-time audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r166
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r166-paired-shard-*
+          merge-multiple: true
+          path: r166
+      - name: Audit all 25 SHA pinned source trials and 2 repetitions
+        run: |
+          set -euo pipefail
+          python3 -u research/r166_benchmark.py audit | tee r166/audit.log
+          grep -q '^R166_FINAL ' r166/audit.log
+          cat r166/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R166-25-ORIGINAL-AUTO-XOR-CLEAN-CDCL-PAIRED-RESEARCH-FINAL
+          path: |
+            r166/report.json
+            r166/summary.md
+            r166/audit.log
+          if-no-files-found: warn
+          retention-days: 90
