@@ -1,0 +1,69 @@
+name: DRNAS R158x native CaDiCaL causal-metrics compile and proof smoke
+on:
+  push:
+    branches: [experiment/drnas-r158x-causal-cdcl-gf2-20261106]
+    paths: ['.github/workflows/drnas-r158x-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    name: R158x compile same-mode binary, prove watched reasons and test graceful native statistics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile pinned CaDiCaL 2.1.0 from fixed release tag
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r158x-cadical
+          cd /tmp/r158x-cadical
+          git checkout -q rel-2.1.0
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src \
+            "$GITHUB_WORKSPACE/research/r158x_causal_cdcl_bridge.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/r158x-native"
+      - name: Exact XOR source/reason/backtrack selftests
+        run: |
+          set -euo pipefail
+          ./r158x-native selftest | tee r158x-smoke.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r158x-smoke.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r158x-smoke.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r158x-smoke.log
+      - name: Native time cap produces actual CDCL statistics, original SAT witnesses, and six mode execution
+        run: |
+          set -euo pipefail
+          cat > /tmp/r158x-demo.cnf <<'CNF'
+          p cnf 4 6
+          1 -2 0
+          -1 2 0
+          2 -3 0
+          -2 3 0
+          1 4 0
+          -4 3 0
+          CNF
+          printf '2 0 1 2\n2 0 2 3\n' > /tmp/r158x-demo.tsv
+          for mode in clean watch_boundary shadow_boundary direct_full direct_boundary_nogate direct_boundary; do
+            set +e
+            ./r158x-native "$mode" /tmp/r158x-demo.cnf /tmp/r158x-demo.tsv 2 > "/tmp/r158x-$mode.log"
+            code=$?
+            set -e
+            test "$code" -eq 10 -o "$code" -eq 20 -o "$code" -eq 0
+            grep -q '^R158X_RESULT ' "/tmp/r158x-$mode.log"
+            grep -q '^R158X_STATS_BEGIN ' "/tmp/r158x-$mode.log"
+            grep -q '^R158X_STATS_END ' "/tmp/r158x-$mode.log"
+            grep -Eq '^c +conflicts:' "/tmp/r158x-$mode.log" || true
+            echo "R158X_SMOKE_MODE_PASS $mode exit=$code"
+          done
+          echo R158X_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r158x-native-smoke-debug
+          path: |
+            r158x-smoke.log
+            /tmp/r158x-*.log
+          if-no-files-found: warn
