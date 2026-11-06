@@ -544,9 +544,11 @@ static int r162_run(const string& mode,const string& src,
     int n=0;
     auto cnf=load_cnf(src,solver,n);
     const bool clean=mode=="clean";
+    const bool r175=(mode=="gauss_shadow"||mode=="gauss_short4"||
+                      mode=="gauss_budget8");
     const bool gauss=(mode=="gauss_full"||mode=="gauss_watchlazy"||
                       mode=="gauss_cooldown"||mode=="gauss_feedback"||
-                      mode=="gauss_utility"||mode=="gauss_feedback_utility");
+                      mode=="gauss_utility"||mode=="gauss_feedback_utility"||r175);
     if(gauss==units_path.empty())
         throw runtime_error("R166X_GAUSS_UNITS_PROTOCOL_MISMATCH");
     const int injected_units=gauss?r166x_add_gauss_units(solver,units_path,n):0;
@@ -570,10 +572,15 @@ static int r162_run(const string& mode,const string& src,
                               mode=="gauss_watchlazy"||mode=="gauss_cooldown");
     bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown"||
                              mode=="gauss_feedback"||mode=="gauss_utility"||
-                             mode=="gauss_feedback_utility");
+                             mode=="gauss_feedback_utility"||r175);
     bridge.watchlazy_enabled=bridge.watchlazy_enabled ||
-        mode=="gauss_feedback"||mode=="gauss_utility"||mode=="gauss_feedback_utility";
-    bridge.feedback_clauses=mode=="gauss_feedback"||mode=="gauss_feedback_utility";
+        mode=="gauss_feedback"||mode=="gauss_utility"||
+        mode=="gauss_feedback_utility"||r175;
+    bridge.feedback_clauses=mode=="gauss_feedback"||
+                            mode=="gauss_feedback_utility"||r175;
+    bridge.feedback_shadow=mode=="gauss_shadow";
+    bridge.feedback_max_width=mode=="gauss_short4"?4:0;
+    bridge.feedback_max_clauses=mode=="gauss_budget8"?8:64;
     bridge.utility_gate=mode=="gauss_utility"||mode=="gauss_feedback_utility";
     if(bridge.incremental_enabled)bridge.initialize_incremental();
     if(!clean && !bridge.rows.empty()){
@@ -653,6 +660,14 @@ static int r162_run(const string& mode,const string& src,
         <<" incremental_upd_ns="<<bridge.incremental_upd_ns
         <<" feedback_conflicts_detected="<<bridge.feedback_conflicts_detected
         <<" feedback_clauses_consumed="<<bridge.feedback_clauses_consumed
+        <<" feedback_candidates="<<bridge.feedback_candidates
+        <<" feedback_candidates_width4="<<bridge.feedback_candidates_width4
+        <<" feedback_duplicates="<<bridge.feedback_duplicates
+        <<" feedback_rejected_width="<<bridge.feedback_rejected_width
+        <<" feedback_rejected_budget="<<bridge.feedback_rejected_budget
+        <<" feedback_shadow_admitted="<<bridge.feedback_shadow_admitted
+        <<" feedback_delivered_width4="<<bridge.feedback_delivered_width4
+        <<" feedback_sum_width_delivered="<<bridge.feedback_sum_width_delivered
         <<" utility_windows="<<bridge.utility_windows
         <<" utility_sleeps="<<bridge.utility_sleeps
         <<" utility_wakes="<<bridge.utility_wakes
@@ -756,7 +771,9 @@ int main(int argc,char**argv) {
            mode!="direct_watchlazy"&&mode!="direct_cooldown"&&
            mode!="gauss_full"&&mode!="gauss_watchlazy"&&mode!="gauss_cooldown"&&
            mode!="gauss_feedback"&&mode!="gauss_utility"&&
-           mode!="gauss_feedback_utility")
+           mode!="gauss_feedback_utility"&&
+           mode!="gauss_shadow"&&mode!="gauss_short4"&&
+           mode!="gauss_budget8")
             throw runtime_error("R166X_BAD_MODE");
         const double cap=stod(argv[4]);
         if(!(cap>=1.0&&cap<=120.0))
