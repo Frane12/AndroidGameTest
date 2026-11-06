@@ -1,0 +1,59 @@
+name: DRNAS Medical R5 expanded 48-gene GPR SAT vs two MILPs
+
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-gmispy-r5-gpr-mip-20261106
+    paths:
+      - 'research/drnas_medical/gmispy_r5.py'
+      - 'research/drnas_medical/gmispy_r5_verify.py'
+      - '.github/workflows/drnas-medical-gmispy-r5.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  complete-real-gpr-comparison:
+    name: 48 gene E coli GPR FBA SAT and two Gurobi MIP masters
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen independent biological and optimization dependencies
+        run: python3 -m pip install cobra==0.30.0 python-sat==1.9.dev21 gurobipy==12.0.3
+      - name: Run all 18472 independent gene and reaction KOs and paired methods
+        run: python3 research/drnas_medical/gmispy_r5.py --out medical-results/r5 --extra-genes 16 --max-k 3 --repeats 2 --mip-cap 150
+      - name: Preserve source SBML, original GPRs, FBA table and each complete trial
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-medical-r5-benchmarks
+          path: medical-results/r5/
+          retention-days: 30
+          if-no-files-found: warn
+
+  independent-certificate:
+    name: Check R5 exact equivalence and all known R3/R4 minimal gene KOs
+    needs: complete-real-gpr-comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r5-benchmarks
+          path: check
+      - name: Fail closed on missing KOs or result mismatches
+        run: python3 research/drnas_medical/gmispy_r5_verify.py --summary check/summary.json --out check/verification.json
+      - name: Preserve independent exact certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-medical-r5-proof
+          path: check/verification.json
+          retention-days: 30
+          if-no-files-found: warn
