@@ -1,0 +1,151 @@
+name: DRNAS R190 general CDCL structural router 1020 paired
+on:
+  push:
+    branches: [experiment/drnas-r190-general-cdcl-router-20261106]
+    paths:
+      - 'research/r190_general_cdcl_router.py'
+      - 'research/r190_general_cdcl_driver.cpp'
+      - '.github/workflows/drnas-r190-general-cdcl-router.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r190-general-cdcl
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R190 static source-only router selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r190_general_cdcl_router.py research/r186_cheap_selector.py research/r188_feedback_benchmark.py
+          python3 -u research/r190_general_cdcl_router.py selftest
+      - name: Reuse 38 SHA-fixed originals and create 64 new-seed generated source CNFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r190/source
+          gh run download 42221503842 --repo Frane12/AndroidGameTest -n r187-frozen-real25-synthetic13-native-binaries -D r190/source
+          python3 -u research/r190_general_cdcl_router.py freeze
+          python3 -u research/r190_general_cdcl_router.py verify
+      - name: Build identical source-pinned CaDiCaL 2.1 for all three configurations
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r190-cadical
+          (
+            cd /tmp/r190-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r190-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r190-cadical/src research/r190_general_cdcl_driver.cpp /tmp/r190-cadical/build/libcadical.a -o r190/r190-driver
+          chmod +x r190/r190-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r190/smoke.cnf
+          for profile in default sat unsat; do
+            r190/r190-driver r190/smoke.cnf 2 "$profile" > "r190/smoke-${profile}.log"
+            grep -q '^R182_STATUS status=SAT' "r190/smoke-${profile}.log"
+            grep -q '^R190_PROFILE ' "r190/smoke-${profile}.log"
+          done
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r190")
+          sha=lambda x:hashlib.sha256((p/x).read_bytes()).hexdigest()
+          pin={"protocol":"R190-GENERAL-CDCL-SAME-BINARY-PAIRED-v1",
+               "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+               "manifest_sha256":sha("frozen/manifest.json"),
+               "binary_sha256":sha("r190-driver"),
+               "reference_source_manifest_sha256":"3f0f67bea5547daa1ba07d9a1dba31d8d33f7d734db8eb6e8cae358a46c91ef3"}
+          (p/"build-pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("R190_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r190-frozen102-pinned-native
+          retention-days: 90
+          path: |
+            r190/frozen/
+            r190/r190-driver
+            r190/build-pin.json
+            r190/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    name: R190 matched CNF default sat unsat auto shadow shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r190-frozen102-pinned-native
+          path: r190
+      - name: Verify SHA and run all five policies on exact same original CNFs
+        run: |
+          set -euo pipefail
+          chmod +x r190/r190-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r190")
+          pin=json.loads((p/"build-pin.json").read_text())
+          for file,key in (("frozen/manifest.json","manifest_sha256"),
+                           ("r190-driver","binary_sha256")):
+              assert hashlib.sha256((p/file).read_bytes()).hexdigest()==pin[key]
+          PY
+          python3 -u research/r190_general_cdcl_router.py shard --shard ${{ matrix.shard }} --binary r190/r190-driver | tee r190/shard-${{ matrix.shard }}.log
+          grep -q '^R190_SHARD_PASS ' r190/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r190-general-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r190/shard-${{ matrix.shard }}.json
+            r190/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r190-frozen102-pinned-native
+          path: r190
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r190-general-shard-*
+          merge-multiple: true
+          path: r190
+      - name: Fail-closed audit all 1020 pairs and source witness checks
+        run: |
+          set -euo pipefail
+          test "$(find r190 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r190_general_cdcl_router.py audit | tee r190/audit.log
+          grep -q '^R190_FINAL ' r190/audit.log
+          cat r190/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R190-GENERAL-CDCL-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r190/report.json
+            r190/all-trials.json
+            r190/summary.md
+            r190/audit.log
