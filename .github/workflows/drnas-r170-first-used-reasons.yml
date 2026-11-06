@@ -1,0 +1,158 @@
+name: DRNAS R170 first-used GF2 CDCL reasons 90s causal paired replay
+on:
+  push:
+    branches: [experiment/drnas-r170-first-used-paired-20261106]
+    paths:
+      - 'research/r170_first_used_gf2_cdcl.cpp'
+      - 'research/r170_first_used_benchmark.py'
+      - '.github/workflows/drnas-r170-first-used-reasons.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r170-first-used-90s-paired-replay
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Build ONE pinned R170 native GF2 CDCL binary and run causal reason selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build frozen CaDiCaL 2.1.0 and instrumented R170
+        run: |
+          set -euo pipefail
+          mkdir -p r170
+          python3 -m py_compile research/r170_first_used_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r170-cadical
+          cd /tmp/r170-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r170/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r170_first_used_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r170/r170-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r170/r170-native selftest | tee r170/selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r170/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          binary=pathlib.Path("r170/r170-native")
+          pin=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0],
+                   cadical_commit=pathlib.Path("r170/cadical-source-commit.txt").read_text().strip(),
+                   benchmark_protocol="DRNAS-R170-FIRST-USED-REASON-90S-PAIRED-20261106-v1")
+          pathlib.Path("r170/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R170_PINNED_BINARY_SELFTEST_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R170-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: |
+            r170/r170-native
+            r170/build-pin.json
+            r170/selftest.log
+            r170/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    name: R170 paired 90s first GF2 reason shard ${{ matrix.shard }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R170-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - name: Solve original SHA CNFs for 90 seconds per mode and record first consumed GF2 reason
+        run: |
+          set -euo pipefail
+          chmod +x r170/r170-native
+          python3 -u research/r170_first_used_benchmark.py shard --shard ${{ matrix.shard }} --binary r170/r170-native | tee r170/shard-${{ matrix.shard }}.log
+          grep -q '^R170_SHARD_PASS ' r170/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r170-first-used-shard-${{ matrix.shard }}
+          path: |
+            r170/shard-${{ matrix.shard }}.json
+            r170/shard-${{ matrix.shard }}.log
+            r170/prep-*.json
+            r170/cert-*.json
+            r170/full-*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit 20 paired native first-used reasons, original CNF SHA, PAR2, conflicts, SAT witnesses
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r170-first-used-shard-*
+          merge-multiple: true
+          path: r170
+      - name: Independent source GF2 certificate replay and complete paired audit
+        run: |
+          set -euo pipefail
+          test "$(find r170 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 2
+          python3 -u research/r170_first_used_benchmark.py audit | tee r170/audit.log
+          grep -q '^R170_FINAL ' r170/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("r170/report.json").read_text())
+          assert r["status"]=="RESEARCH_REPLAY_AUDIT_PASS_NOT_BLIND"
+          assert r["original_formulas"]==2 and r["attempts"]==20
+          assert r["source_certificates_replayed"] and r["SAT_witnesses_independently_checked"]
+          assert r["results"]["direct_two_way_shadow"]["emitted_Gaussian_units"]==0
+          assert r["results"]["direct_two_way_shadow"]["used_Gaussian_reasons"]==0
+          print("R170_STRICT_PAIRED_FIRST_USED_REASON_AUDIT_PASS")
+          PY
+          cat r170/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R170-FIRST-USED-REASONS-20-PAIRED-90S-AUDIT
+          path: |
+            r170/report.json
+            r170/summary.md
+            r170/audit.log
+          if-no-files-found: warn
+          retention-days: 90
