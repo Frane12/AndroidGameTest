@@ -1,0 +1,57 @@
+name: DRNAS Medical R4 Gurobi vs SAT
+
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-gmispy-r4-gurobi-20261106
+    paths:
+      - 'research/drnas_medical/gmispy_r4.py'
+      - 'research/drnas_medical/gmispy_r4_verify.py'
+      - '.github/workflows/drnas-medical-gmispy-r4.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact solver versions
+        run: python3 -m pip install cobra==0.30.0 python-sat==1.9.dev21 gurobipy==12.0.3
+      - name: Run real GPR SAT and MIP trials
+        run: python3 research/drnas_medical/gmispy_r4.py --out medical-results/gmispy-r4 --max-k 3 --repeats 3 --mip-cap 120
+      - name: Upload full results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-gmispy-r4-results
+          path: medical-results/gmispy-r4/
+          retention-days: 30
+          if-no-files-found: warn
+
+  independent-audit:
+    needs: paired-benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-gmispy-r4-results
+          path: audit
+      - name: Verify frozen exact reference and matched outcomes
+        run: python3 research/drnas_medical/gmispy_r4_verify.py --summary audit/summary.json --out audit/verification.json
+      - name: Upload verified audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-gmispy-r4-verification
+          path: audit/verification.json
+          retention-days: 30
+          if-no-files-found: warn
