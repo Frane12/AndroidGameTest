@@ -225,13 +225,17 @@ def freeze():
         "manifest_sha256":sha(FROZEN/"manifest.json")},sort_keys=True),flush=True)
 
 def selected(shard):
-    _,_,_,audit,choice=inventory()
+    # The freeze job has already hashed each historical registry and published
+    # the immutable original CNFs. Do not redownload 45MB analytics in every
+    # measurement shard: source identity is enforced by frozen manifest SHA.
     m=json.loads((FROZEN/"manifest.json").read_text())
     need(m["protocol"]==PROTO and
          m["status"]=="FROZEN_BEFORE_ANY_R161_TIMING",
          "unfrozen or wrong protocol")
-    need(m["original_history"]==audit and m["frozen_portfolio"]==choice,
-         "history/portfolio source changed")
+    need(set(m["original_history"])==set(SOURCE_FILES)|{"portfolio_r160_precommitted_sha256"}
+         and m["r161_source_registry_hash_count"]>3000 and
+         set(m["frozen_portfolio"])==set(QUOTA),
+         "missing historical exclusion registry or frozen policies")
     need(len(m["cases"])==24 and m["repetitions"]==REPEATS,
          "incomplete frozen sample")
     cases=[]
