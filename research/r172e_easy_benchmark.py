@@ -104,8 +104,12 @@ def trial(case,mode,rep,prep,binary):
              "control mode emitted Gaussian units")
     if mode in ("direct_two_way","direct_two_way_newonly","direct_two_way_budget"):
         need(m["two_way_shadow_candidates"]==0,"active GF2 units suppressed")
-    need(stats.get("conflicts") is not None and stats.get("decisions") is not None,
-         "missing genuine CaDiCaL conflict/decision counters")
+    # CaDiCaL statistics() can omit zero-value keys for trivially solved CNFs.
+    # Preserve absent counters as null (NEVER pretend missing == measured zero).
+    # A timeout with missing conflicts/decisions remains an invalid measurement.
+    need(status!="TIMEOUT" or (stats.get("conflicts") is not None
+         and stats.get("decisions") is not None),
+         "missing genuine CaDiCaL conflict/decision counters on TIMEOUT")
     return dict(id=case["id"],sha256=case["sha256"],cohort=case["cohort"],
          mode=mode,repeat=rep,status=status,cap=CAP,elapsed=round(elapsed,6),
          par2=round(2*CAP if status=="TIMEOUT" else min(CAP,elapsed),6),
@@ -197,7 +201,13 @@ def audit():
           UNSAT=sum(r["status"]=="UNSAT" for r in group),
           PAR2_s=round(sum(r["par2"] for r in group),6),
           wall_s=round(sum(r["elapsed"] for r in group),6),
-          cdcl_conflicts=sum(r["native_stats"]["conflicts"] for r in group),
+          cdcl_conflicts=(sum(r["native_stats"]["conflicts"] for r in group)
+                          if all(r["native_stats"]["conflicts"] is not None
+                                 for r in group) else None),
+          missing_conflict_counters=sum(r["native_stats"]["conflicts"] is None
+                                        for r in group),
+          missing_decision_counters=sum(r["native_stats"]["decisions"] is None
+                                        for r in group),
           two_way_sweeps=sum(r["two_way_sweeps"] for r in group),
           two_way_used_reasons=sum(r["two_way_used_reasons"] for r in group),
           GF2_processing_ns=sum(r["two_way_ns"] for r in group),
@@ -223,6 +233,8 @@ def audit():
         for mode,x in summary.items():
             f.write(f'| {mode} | {x["solved"]}/72 | {x["PAR2_s"]:.3f} | {x["wall_s"]:.3f} | {x["cdcl_conflicts"]} | {x["two_way_sweeps"]} | {x["two_way_used_reasons"]} |\n')
         f.write("\nOnly both-solved pairs permit finite speedup. External UNSAT LRAT absent.\n")
+        f.write("CaDiCaL may omit zero-valued statistics on trivially solved CNFs; "
+                "absent conflict/decision counters remain null, never imputed.\n")
     print("R172E_FINAL",json.dumps(dict(status=report["status"],
       attempts=216,formulas=24,summary=summary),sort_keys=True),flush=True)
 if __name__=="__main__":
