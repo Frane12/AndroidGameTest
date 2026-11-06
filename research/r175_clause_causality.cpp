@@ -31,7 +31,13 @@ public:
     long direct_no_units=0, direct_expired=0;
     size_t peak_reason_cache=0;
     // R174-B: globally entailed nogoods from certified source XOR rows.
-    bool feedback_clauses=false;
+    // R175 selective source-certified conflict admission; same solver as R174.
+    bool feedback_clauses=false,feedback_shadow=false;
+    int feedback_max_width=0;
+    size_t feedback_max_clauses=64,feedback_outgoing_width=0;
+    long feedback_candidates=0,feedback_candidates_width4=0,feedback_duplicates=0;
+    long feedback_rejected_width=0,feedback_rejected_budget=0;
+    long feedback_shadow_admitted=0,feedback_delivered_width4=0,feedback_sum_width_delivered=0;
     std::deque<std::vector<int>> feedback_pending;
     std::set<std::vector<int>> feedback_published;
     long feedback_conflicts_detected=0,feedback_clauses_consumed=0;
@@ -184,18 +190,24 @@ public:
     bool cb_has_external_clause(bool& forgettable) override {
         if(mode==CLAUSE)return DrnasBridge::cb_has_external_clause(forgettable);
         forgettable=true;
-        if(!feedback_clauses || disabled)return false;
+        if(!feedback_clauses || feedback_shadow || disabled)return false;
         if(!outgoing.empty())return true;
         if(feedback_pending.empty())return false;
         outgoing=std::move(feedback_pending.front());
+        feedback_outgoing_width=outgoing.size();
         feedback_pending.pop_front();send_index=0;
         return true;
     }
     int cb_add_external_clause_lit() override {
         if(mode==CLAUSE)return DrnasBridge::cb_add_external_clause_lit();
-        if(!feedback_clauses || outgoing.empty())return 0;
+        if(!feedback_clauses || feedback_shadow || outgoing.empty())return 0;
         int lit=DrnasBridge::cb_add_external_clause_lit();
-        if(lit==0)++feedback_clauses_consumed;
+        if(lit==0) {
+            ++feedback_clauses_consumed;
+            feedback_sum_width_delivered+=(long)feedback_outgoing_width;
+            if(feedback_outgoing_width<=4)++feedback_delivered_width4;
+            feedback_outgoing_width=0;
+        }
         return lit;
     }
 
@@ -344,10 +356,21 @@ public:
                 sort(clause.begin(),clause.end(),[](int a,int b){
                     return abs(a)!=abs(b)?abs(a)<abs(b):a<b;
                 });
-                if(feedback_published.size()<64 &&
-                   feedback_published.insert(clause).second) {
-                    feedback_pending.push_back(std::move(clause));
-                    ++feedback_conflicts_detected;
+                ++feedback_candidates;
+                if(clause.size()<=4)++feedback_candidates_width4;
+                if(feedback_max_width && (int)clause.size()>feedback_max_width)
+                    ++feedback_rejected_width;
+                else if(feedback_published.count(clause))
+                    ++feedback_duplicates;
+                else if(feedback_published.size()>=feedback_max_clauses)
+                    ++feedback_rejected_budget;
+                else {
+                    feedback_published.insert(clause);
+                    if(feedback_shadow)++feedback_shadow_admitted;
+                    else {
+                        feedback_pending.push_back(std::move(clause));
+                        ++feedback_conflicts_detected;
+                    }
                 }
             }
             if(unknown!=1) { ++direct_no_units; continue; }
