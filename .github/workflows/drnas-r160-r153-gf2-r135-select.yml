@@ -1,0 +1,169 @@
+name: DRNAS R160 frozen R153 GF2 plus R135 structural portfolio 25 CNFs 2x20s
+on:
+  push:
+    branches: [experiment/drnas-r160-r153-gf2-r135-structural-20261106]
+    paths:
+      - '.github/workflows/drnas-r160-r153-gf2-r135-select.yml'
+      - 'research/r160_r153_r135_dispatch.cpp'
+      - 'research/r160_hybrid_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r160-gf2-structural-20261106
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Preserve exact R153 frozen executable; compile R135 dispatcher; prove smoke routes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch audited unchanged R153 original 25 CNFs and R153 native executable
+        uses: actions/download-artifact@v4
+        with:
+          name: r153repeat-original25-frozen-source-and-binaries
+          run-id: 42128549081
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r160/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Verify immutable originals and compile only selector, never R153
+        run: |
+          set -euo pipefail
+          mkdir -p r160
+          (cd r160/source && sha256sum -c native-hashes.txt)
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x r160/source/r153 built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r160_r153_r135_dispatch.cpp -o r160/r160_dispatch
+          python3 -m py_compile research/r153_repeat25_benchmark.py research/r160_hybrid_benchmark.py research/r115_world_top_rematch.py
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          from collections import Counter
+          root=pathlib.Path('r160/source/frozen')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['protocol']=='DRNAS-R154-UNSEEN-LIGHTSOUT-XOR-UNIT-TRANSFER-20261105-v1'
+          assert len(m['cases'])==25
+          assert Counter(c['cohort'] for c in m['cases'])==Counter({'complete_xor':7,'xor_plus_units':6,'mixed_residual':4,'nonxor_control':8})
+          for c in m['cases']:
+            assert hashlib.sha256((root/(c['id']+'.cnf')).read_bytes()).hexdigest()==c['sha256']
+          print('R160_SOURCE_SHA_25_REPLAY_PASS',flush=True)
+          PY
+          python3 -u research/r160_hybrid_benchmark.py selftest | tee r160/smoke.log
+          grep -q '^R160_SMOKE_PASS xor_unit_unsat r160 gf2_unsat' r160/smoke.log
+          grep -q '^R160_SMOKE_PASS nonxor_cadical r160 fallback CADICAL' r160/smoke.log
+          grep -q '^R160_SMOKE_PASS nonxor_horn r160 fallback KISSAT' r160/smoke.log
+          sha256sum r160/source/r153 r160/r160_dispatch > r160/native-pins.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r160-frozen-source-native-and-smoke
+          path: |
+            r160/source/
+            r160/r160_dispatch
+            r160/smoke.log
+            r160/native-pins.sha256
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    name: R160 true paired original CNF 4 solvers 2x20s shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r160-frozen-source-native-and-smoke
+          path: r160
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Recheck binaries SHA and CPU, preserve every 20s wall time
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd r160/source && sha256sum -c native-hashes.txt)
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x r160/source/r153 r160/r160_dispatch built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          paths=['r160/source/r153','r160/r160_dispatch','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1']
+          o=dict(binaries={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths},
+             cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),'unknown'))
+          pathlib.Path('r160/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(o,sort_keys=True)+'\n')
+          PY
+      - name: 5 source cases each, 2 randomized repetitions, 4 real solvers
+        run: |
+          set -euo pipefail
+          python3 -u research/r160_hybrid_benchmark.py shard --shard ${{ matrix.shard }} | tee r160/shard-${{ matrix.shard }}.log
+          grep -q '^R160_SHARD_PASS ${{ matrix.shard }} ' r160/shard-${{ matrix.shard }}.log
+          test -s r160/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r160-shard-${{ matrix.shard }}
+          path: |
+            r160/shard-${{ matrix.shard }}.json
+            r160/pin-${{ matrix.shard }}.json
+            r160/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Audit 200 paired trials, original SAT witnesses and replayed GF2 UNSAT proofs
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r160-frozen-source-native-and-smoke
+          path: r160
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r160-shard-*
+          merge-multiple: true
+          path: r160
+      - name: Verify 25 original SHA and preserve per-family PAR2
+        run: |
+          set -euo pipefail
+          test "$(find r160 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r160_hybrid_benchmark.py audit | tee r160/audit.log
+          grep -q '^R160_AUDIT_PASS ' r160/audit.log
+          cat r160/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R160-R153-FROZEN-GF2-R135-STRUCTURAL-25X2-20S-AUDIT
+          path: |
+            r160/report.json
+            r160/paired.csv
+            r160/audit.log
+            r160/source/frozen/manifest.json
+            r160/native-pins.sha256
+          if-no-files-found: warn
+          retention-days: 90
