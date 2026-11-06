@@ -435,6 +435,20 @@ int main(int argc,char**argv) {
             DrnasBridge::watch_selftest();
             gf2_closure_selftest();
             R162Bridge::selftest();
+            {
+                R162Bridge inc({{{1,2,3},0}},3,R162Bridge::DIRECT);
+                inc.incremental_enabled=true;
+                inc.initialize_incremental();
+                inc.notify_new_decision_level();
+                inc.notify_assignment({1,2});
+                if(inc.row_unassigned[0]!=1 || inc.row_parity[0]!=0 ||
+                   inc.cb_propagate()!=-3)throw runtime_error("R164_INCREMENTAL_UNIT_TEST_FAIL");
+                inc.notify_backtrack(0);
+                if(inc.row_unassigned[0]!=3 || inc.row_parity[0]!=0 ||
+                   inc.incremental_row_events!=4)
+                    throw runtime_error("R164_INCREMENTAL_BACKTRACK_TEST_FAIL");
+                cout<<"R164_INCREMENTAL_SELFTEST_PASS"<<"\n";
+            }
             return 0;
         }
         if(argc!=5) {
