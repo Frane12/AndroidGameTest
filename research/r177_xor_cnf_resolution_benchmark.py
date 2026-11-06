@@ -2,7 +2,7 @@
 """R177 research only: frozen original SHA-matched residual-mixed SAT instances.
 4 arm paired causality: R174-B, R176 triple, R177 one/two-hop CNF resolution. NOT BLIND or a world ranking.
 """
-import argparse,hashlib,json,os,pathlib,random,time
+import argparse,hashlib,json,os,pathlib,random,time,subprocess
 import r175_clause_causality_benchmark as prior
 
 ROOT=pathlib.Path("r177")
