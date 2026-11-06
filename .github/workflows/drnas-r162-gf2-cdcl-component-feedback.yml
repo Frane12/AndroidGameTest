@@ -1,0 +1,172 @@
+name: DRNAS R162 causal GF2 CDCL conflicts decisions learned five modes original CNF
+on:
+  push:
+    branches: [experiment/drnas-r162-gf2-cdcl-component-feedback-20261106]
+    paths: ['.github/workflows/drnas-r162-causal-benchmark.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r162-causal-8-original-80-pairs
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Compile ONCE pinned CaDiCaL and R162; immutable source and GF2 reasons selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the single common source-locked R162/CaDiCaL native binary
+        run: |
+          set -euo pipefail
+          mkdir -p r162
+          python3 -m py_compile research/r162_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r162-cadical
+          cd /tmp/r162-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r162/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r162_component_feedback.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r162/r162-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r162/r162-native selftest | tee r162/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r162/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r162/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r162/native-selftest.log
+          grep -q '^R162_COMPONENT_GATE_SELFTEST_PASS' r162/native-selftest.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          p=pathlib.Path("r162/r162-native")
+          obj=dict(binary_sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+            commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            cadical_source_commit=pathlib.Path("r162/cadical-source-commit.txt").read_text().strip(),
+            compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0])
+          pathlib.Path("r162/build-pin.json").write_text(json.dumps(obj,sort_keys=True,indent=2))
+          print("R162_SINGLE_BINARY_PIN_PASS",json.dumps(obj,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r162-single-frozen-binary-and-source-commit
+          path: |
+            r162/r162-native
+            r162/build-pin.json
+            r162/cadical-source-commit.txt
+            r162/native-selftest.log
+          retention-days: 90
+  paired:
+    needs: build
+    name: Five-mode ORIGINAL CNF 15s hard and 5s controls same-binary paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r162-single-frozen-binary-and-source-commit
+          path: r162
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r162
+      - name: Enforce SAME precompiled native SHA and record paired CPU source
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x r162/r162-native
+          python3 - <<'PY'
+          import pathlib,hashlib,json,os,subprocess
+          pin=json.loads(pathlib.Path("r162/build-pin.json").read_text())
+          check=hashlib.sha256(pathlib.Path("r162/r162-native").read_bytes()).hexdigest()
+          assert check==pin["binary_sha256"],"R162 NATIVE BINARY DRIFT"
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["commit"]
+          pin["cpu"]=next((v for v in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if v.startswith("model name")),"unknown")
+          pin["shard"]=int(os.environ["SHARD"])
+          pathlib.Path("r162/pin-"+os.environ["SHARD"]+".json").write_text(json.dumps(pin,sort_keys=True))
+          print("R162_COMMON_BINARY_SHA_PASS",check,"shard",os.environ["SHARD"])
+          PY
+      - name: Independently replay certified GF2 rows and 6 modes on matching original sources
+        run: |
+          set -euo pipefail
+          python3 -u research/r162_component_benchmark.py shard --shard ${{ matrix.shard }} --binary r162/r162-native | tee r162/shard-${{ matrix.shard }}.log
+          grep -q '^R162_SHARD_PASS ' r162/shard-${{ matrix.shard }}.log
+          test -s r162/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r162-causal-shard-${{ matrix.shard }}
+          path: |
+            r162/shard-${{ matrix.shard }}.json
+            r162/shard-${{ matrix.shard }}.log
+            r162/pin-${{ matrix.shard }}.json
+            r162/prep-*.json
+            r162/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Audit 80 SHA-paired native conflict decision GF2 source proof and true SAT models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r162-single-frozen-binary-and-source-commit
+          path: r162
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r162
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r162-causal-shard-*
+          merge-multiple: true
+          path: r162
+      - name: Final source-specific causal and regression correctness audit
+        run: |
+          set -euo pipefail
+          test "$(find r162 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r162_component_benchmark.py audit | tee r162/audit.log
+          grep -q '^R162_FINAL ' r162/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.loads(pathlib.Path("r162/report.json").read_text())
+          with open(pathlib.Path("r162/report-summary.md"),"w") as f:
+           f.write("# DRNAS R162: component-conditioned GF2/CDCL feedback metrics\n\n")
+           f.write("8 development original SHA CNFs, 5 same-binary modes, 2 repetitions, 80 trials.\n\n")
+           f.write("| Mode | Solved | PAR2 s | Conflicts | Decisions | Learned | GF2 proposals | Full reasons |\n")
+           f.write("|---|---:|---:|---:|---:|---:|---:|---:|\n")
+           for key,d in x["summary"]["all"].items():
+            f.write(f'| {key} | {d["solved"]}/{d["trials"]} | {d["PAR2_s"]:.4f} | {d["conflicts"]} | {d["decisions"]} | {d["learned_clauses"]} | {d["proposed_GF2"]} | {d["completed_reason_clauses"]} |\n')
+           f.write("\nRESEARCH ONLY, existing R154 development formulas, no independent UNSAT LRAT.\n")
+          PY
+          cat r162/report-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R162-CAUSAL-CDCL-8-ORIGINAL-80-PAIRED-AUDIT-FINAL
+          path: |
+            r162/report.json
+            r162/audit.log
+            r162/report-summary.md
+          if-no-files-found: warn
+          retention-days: 90
