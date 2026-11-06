@@ -55,6 +55,8 @@ public:
     uint64_t assignment_notify_ns=0, backtrack_notify_ns=0, incremental_upd_ns=0;
     bool incremental_enabled=false;
     bool two_way_enabled=false, two_way_early=false, two_way_novel_only=false, two_way_shadow=false;
+    // R170: bounded sweeps distributed across actual CDCL search/backtracking.
+    bool two_way_spread=false, two_way_dense=false;
     long two_way_sweeps=0, two_way_row_xors=0, two_way_proposals=0;
     long two_way_candidates=0, two_way_multi_source_candidates=0;
     long two_way_source_duplicate_units=0, two_way_shadow_candidates=0;
@@ -160,7 +162,8 @@ public:
         }
         DrnasBridge::notify_backtrack(level);
         // CDCL trail changed: invalidate residual basis schedule after rollback.
-        if(two_way_enabled)last_two_way_notifications=-8192;
+        if(two_way_enabled && !two_way_spread && !two_way_dense)
+            last_two_way_notifications=-8192;
         if(incremental_enabled && !disabled)
             for(auto it=undone.rbegin();it!=undone.rend();++it)
                 incremental_update(*it,false);
@@ -198,8 +201,10 @@ public:
     int propagate_gaussian_residual() {
         if(!two_way_enabled || disabled || rows.empty() || rows.size()>512)
             return 0;
-        const long gap=two_way_early?512L:8192L;
-        if(two_way_sweeps>=256 || (last_two_way_notifications>=0 &&
+        const long gap=two_way_spread?32768L:(two_way_dense?8192L:
+            (two_way_early?512L:8192L));
+        const long budget=two_way_spread?1024L:(two_way_dense?2048L:256L);
+        if(two_way_sweeps>=budget || (last_two_way_notifications>=0 &&
            notifications-last_two_way_notifications<gap))return 0;
         auto start=chrono::steady_clock::now();
         ++two_way_sweeps; last_two_way_notifications=notifications;
@@ -593,7 +598,10 @@ static int r162_run(const string& mode,const string& src,
                             mode=="direct_cooldown"||mode=="direct_two_way"||
                             mode=="direct_two_way_early"||
                             mode=="direct_two_way_newonly"||
-                            mode=="direct_two_way_shadow")?128:32;
+                            mode=="direct_two_way_shadow"||
+                            mode=="direct_two_way_spread"||
+                            mode=="direct_two_way_dense"||
+                            mode=="direct_two_way_spread_shadow")?128:32;
     if(extend)certified=gf2_pairwise_closure(certified,max_extra);
     const long derived=(long)certified.size()-(long)source_rows;
     R162Bridge::Mode m=clean?R162Bridge::FREEZE:
@@ -607,13 +615,23 @@ static int r162_run(const string& mode,const string& src,
     bridge.two_way_enabled=(mode=="direct_two_way"||
                             mode=="direct_two_way_early"||
                             mode=="direct_two_way_newonly"||
-                            mode=="direct_two_way_shadow");
+                            mode=="direct_two_way_shadow"||
+                            mode=="direct_two_way_spread"||
+                            mode=="direct_two_way_dense"||
+                            mode=="direct_two_way_spread_shadow");
     bridge.two_way_early=(mode=="direct_two_way_early"||
                           mode=="direct_two_way_newonly"||
                           mode=="direct_two_way_shadow");
     bridge.two_way_novel_only=(mode=="direct_two_way_newonly"||
-                               mode=="direct_two_way_shadow");
-    bridge.two_way_shadow=(mode=="direct_two_way_shadow");
+                               mode=="direct_two_way_shadow"||
+                               mode=="direct_two_way_spread"||
+                               mode=="direct_two_way_dense"||
+                               mode=="direct_two_way_spread_shadow");
+    bridge.two_way_shadow=(mode=="direct_two_way_shadow"||
+                           mode=="direct_two_way_spread_shadow");
+    bridge.two_way_spread=(mode=="direct_two_way_spread"||
+                           mode=="direct_two_way_spread_shadow");
+    bridge.two_way_dense=(mode=="direct_two_way_dense");
     bridge.watchlazy_enabled=(mode=="direct_watchlazy"||mode=="direct_cooldown");
     bridge.cooldown_enabled=(mode=="direct_cooldown");
     if(bridge.incremental_enabled)bridge.initialize_incremental();
@@ -789,11 +807,36 @@ int main(int argc,char**argv) {
                 cout<<"R169_CAUSAL_GAUSSIAN_SELFTEST_PASS multi_source=1"
                       " consumed=1 shadow_inert=1 rollback=1\n";
             }
+            {
+                vector<XorRow> source{{{1,2,3},0},{{1,2,4},0}};
+                R162Bridge spread(source,4,R162Bridge::DIRECT);
+                spread.two_way_enabled=true;
+                spread.two_way_novel_only=true;
+                spread.two_way_spread=true;
+                spread.notify_new_decision_level();
+                spread.notify_assignment({3});
+                if(spread.cb_propagate()!=4||spread.two_way_used_reasons!=0)
+                    throw runtime_error("R170_SPREAD_NOVEL_UNIT_FAIL");
+                spread.notify_assignment({4});
+                spread.notify_backtrack(0);
+                if(spread.disabled||!spread.reasons.empty()||
+                   !spread.two_way_reason_keys.empty())
+                    throw runtime_error("R170_SPREAD_BACKTRACK_FAIL");
+                if(spread.two_way_sweeps!=1||
+                   spread.last_two_way_notifications==-8192)
+                    throw runtime_error("R170_SPREAD_BUDGET_RESET_FAIL");
+                spread.notify_new_decision_level();
+                spread.notify_assignment({-3});
+                if(spread.cb_propagate()!=0||spread.two_way_sweeps!=1)
+                    throw runtime_error("R170_SPREAD_COOLDOWN_NOT_RESPECTED");
+                cout<<"R170_SUSTAINED_GAUSSIAN_SCHEDULE_SELFTEST_PASS"
+                      " no_backtrack_reset=1 source_proof_preserved=1\n";
+            }
             return 0;
         }
         if(argc!=5) {
             cerr<<"R165_USAGE clean|watch_boundary|shadow_boundary|"
-                   "direct_full|direct_full_feedback|direct_incremental|direct_two_way|direct_two_way_early|direct_two_way_newonly|direct_two_way_shadow|direct_watchlazy|direct_cooldown|direct_boundary_nogate|direct_boundary|direct_feedback"
+                   "direct_full|direct_full_feedback|direct_incremental|direct_two_way|direct_two_way_early|direct_two_way_newonly|direct_two_way_shadow|direct_two_way_spread|direct_two_way_dense|direct_two_way_spread_shadow|direct_watchlazy|direct_cooldown|direct_boundary_nogate|direct_boundary|direct_feedback"
                    " ORIGINAL.cnf SOURCE-CERTIFIED.tsv CAP_SECONDS\n";
             return 2;
         }
@@ -804,7 +847,8 @@ int main(int argc,char**argv) {
            mode!="direct_full_feedback"&&mode!="direct_incremental"&&
            mode!="direct_watchlazy"&&mode!="direct_cooldown"&&mode!="direct_two_way"&&
            mode!="direct_two_way_early"&&mode!="direct_two_way_newonly"&&
-           mode!="direct_two_way_shadow")
+           mode!="direct_two_way_shadow"&&mode!="direct_two_way_spread"&&
+           mode!="direct_two_way_dense"&&mode!="direct_two_way_spread_shadow")
             throw runtime_error("R165_BAD_MODE");
         const double cap=stod(argv[4]);
         if(!(cap>=1.0&&cap<=120.0))
