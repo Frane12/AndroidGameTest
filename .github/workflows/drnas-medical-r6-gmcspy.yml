@@ -1,0 +1,79 @@
+name: DRNAS Medical R6 vs published specialized gMCSpy gene MCS
+
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r6-gmcspy-specialist-20261106
+    paths:
+      - 'research/drnas_medical/gmispy_r6_specialist.py'
+      - 'research/drnas_medical/gmispy_r6_verify.py'
+      - '.github/workflows/drnas-medical-r6-gmcspy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-specialist:
+    name: Real E coli specialized gene MCS cohort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [48, 64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned FBA, SAT and published gMCSpy research solver
+        run: |
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 gurobipy==12.0.3 \
+            beartype joblib bidict scipy tqdm
+          python3 -m pip install --disable-pip-version-check --no-deps \
+            'git+https://github.com/PlanesLab/gMCSpy.git@4567a6d14bd2e5517e7a86b17aebefb0f285544c'
+      - name: Run 3 paired exact biological gene MCS comparisons
+        run: |
+          python3 research/drnas_medical/gmispy_r6_specialist.py benchmark \
+            --out medical-results/r6-cohort-${{ matrix.cohort }} \
+            --cohort ${{ matrix.cohort }} --max-k 3 --repeats 3 --competitor-cap 120
+      - name: Preserve all source hashes and matched original-specialist evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-medical-r6-cohort-${{ matrix.cohort }}
+          path: medical-results/r6-cohort-${{ matrix.cohort }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+  independent-certificate:
+    name: Strict independent biological and specialist-solvers comparison
+    needs: paired-specialist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r6-cohort-48
+          path: compare/48
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r6-cohort-64
+          path: compare/64
+      - name: Verify reference, published gMCSpy output and completion
+        run: |
+          python3 research/drnas_medical/gmispy_r6_verify.py \
+            --cohort48 compare/48/summary.json \
+            --cohort64 compare/64/summary.json \
+            --out compare/final_verification.json
+      - name: Preserve independent verification and speedup eligibility
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-medical-r6-independent-certificate
+          path: compare/final_verification.json
+          retention-days: 30
+          if-no-files-found: warn
