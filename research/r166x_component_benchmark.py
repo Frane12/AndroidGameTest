@@ -149,16 +149,24 @@ def sat_check(path,txt):
 def trial(c,mode,rep,prep,binary):
  src=FROZEN/(c["id"]+".cnf")
  need(h(src)==c["sha256"],"source altered before solving")
- bound=mode not in ("clean","direct_full","direct_full_feedback","direct_incremental","direct_watchlazy","direct_cooldown")
- tsv=ROOT/(("boundary-" if bound else "full-")+c["id"]+".tsv")
- need(h(tsv)==prep["boundary_tsv_sha" if bound else "full_tsv_sha"],"source row pin changed")
+ isgauss=mode.startswith("gauss_")
+ bound=mode not in ("clean","direct_full","direct_full_feedback","direct_incremental","direct_watchlazy","direct_cooldown","gauss_full","gauss_watchlazy","gauss_cooldown")
+ tsv=(ROOT/("gauss-"+c["id"])/"gauss.tsv") if isgauss else ROOT/(("boundary-" if bound else "full-")+c["id"]+".tsv")
+ if isgauss:
+  need(h(tsv)==prep["gauss_rows_sha"],"certified Gaussian row pin changed")
+  ut=ROOT/("gauss-"+c["id"])/"gauss-units.tsv"
+  need(h(ut)==prep["gauss_units_sha"],"certified implied-unit pin changed")
+ else:
+  need(h(tsv)==prep["boundary_tsv_sha" if bound else "full_tsv_sha"],"source row pin changed")
  cap=30.0 if c["cohort"]=="mixed_residual" else 5.0
- charge=0.0 if mode=="clean" else prep["preprocessing_s"]
+ charge=0.0 if mode=="clean" else prep["gauss_preprocessing_s"] if isgauss else prep["preprocessing_s"]
  need(cap-charge>=1.0,"preprocessing consumed all source budget")
  effective=cap-charge
  begin=time.perf_counter()
  try:
-  p=subprocess.run([str(binary.resolve()),mode,str(src.resolve()),str(tsv.resolve()),str(effective)],
+  argv=[str(binary.resolve()),mode,str(src.resolve()),str(tsv.resolve()),str(effective)]
+  if isgauss:argv.append(str(ut.resolve()))
+  p=subprocess.run(argv,
     stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=cap+12)
  except subprocess.TimeoutExpired as exc:
   raise RuntimeError("R166X_HARD_TIMEOUT: native Terminator did not return or stats inaccessible "+str(c["id"])) from exc
@@ -167,7 +175,12 @@ def trial(c,mode,rep,prep,binary):
  txt,native,stats,nrows,derived=parse_native(p.stdout,mode)
  status={"SAT":"SAT","UNSAT":"UNSAT","UNKNOWN":"TIMEOUT"}[native["status"]]
  need(p.returncode=={"SAT":10,"UNSAT":20,"TIMEOUT":0}[status],"solver exit/result inconsistent")
- need(nrows==(0 if mode=="clean" else prep["boundary_rows"] if bound else prep["full_rows"]),"GF2 source rows provenance mismatch")
+ need(nrows==(prep["gauss_source_rows"] if isgauss else
+                0 if mode=="clean" else prep["boundary_rows"] if bound else prep["full_rows"]),
+      "GF2 source rows provenance mismatch")
+ need(int(native.get("gauss_units",0))==(prep["gauss_units"] if isgauss else 0),
+      "Gauss native implied units mismatch")
+ if isgauss:need(derived==0,"pre-certified Gaussian TSV unexpectedly expanded")
  if status=="SAT":
   need(native.get("source_sat_witness_checked")=="1","native SAT source validation missing")
   sat_check(src,txt)
@@ -177,13 +190,13 @@ def trial(c,mode,rep,prep,binary):
         "shadow_candidates","adaptive_gate_events","component_count","component_gate_events",
          "blocked_components","suppressed_rows","components_with_reasons","propagate_calls","propagate_ns","incremental_row_events","incremental_reason_checks",
          "cheap_watch_rejects","watch_invariant_audits","cooldown_wakes","cooldown_skips",
-         "assignment_notify_ns","backtrack_notify_ns","incremental_upd_ns")
+         "assignment_notify_ns","backtrack_notify_ns","incremental_upd_ns","gauss_units")
  dt={k:int(native[k]) for k in needed}
  need(dt["reason_clauses_completed"]<=dt["direct_reason_requests"],"reason accounting invalid")
  if mode in ("clean","watch_boundary","shadow_boundary"):
   need(dt["direct_proposals"]==0,"non-direct mode proposed external GF2")
  need(dt["adaptive_gate_events"]==0,"legacy global gate must remain disabled in R166X")
- if mode not in ("direct_feedback","direct_full_feedback","direct_cooldown"):
+ if mode not in ("direct_feedback","direct_full_feedback","direct_cooldown","gauss_cooldown"):
   need(dt["component_gate_events"]==0 and dt["blocked_components"]==0,"gate activated in control mode")
  elif mode=="direct_full_feedback":
   need(dt["component_gate_events"]==dt["blocked_components"],"permanent gate accounting mismatch")
@@ -195,9 +208,9 @@ def trial(c,mode,rep,prep,binary):
   need(dt["incremental_row_events"]>=dt["incremental_reason_checks"],"incremental metrics wrong")
  else:
   need(dt["incremental_row_events"]==dt["incremental_reason_checks"]==dt["incremental_upd_ns"]==0,"nonincremental mode polluted")
- if mode not in ("direct_watchlazy","direct_cooldown"):
+ if mode not in ("direct_watchlazy","direct_cooldown","gauss_watchlazy","gauss_cooldown"):
   need(dt["cheap_watch_rejects"]==dt["watch_invariant_audits"]==0,"unexpected lazy watch activity")
- if mode!="direct_cooldown":
+ if mode not in ("direct_cooldown","gauss_cooldown"):
   need(dt["cooldown_wakes"]==dt["cooldown_skips"]==0,"unexpected reversible cooldown")
  if c["cohort"]=="mixed_residual":
   need(stats["conflicts"] is not None and stats["decisions"] is not None,
@@ -207,7 +220,8 @@ def trial(c,mode,rep,prep,binary):
   elapsed=round(elapsed,6),charged_preprocess_s=round(charge,6),
   par2=round(2*cap if status=="TIMEOUT" else min(cap,elapsed),6),cap=cap,
   proof="SOURCE_SAT_INDEPENDENT_CHECK" if status=="SAT" else "UNSAT_UNVERIFIED_LRAT" if status=="UNSAT" else "TIMEOUT",
-  native_stats=stats,**dt)
+  native_stats=stats,gauss_multiway_selected=prep["gauss_multiway_selected"] if isgauss else 0,
+  gauss_source_unsat=prep["gauss_source_unsat"] if isgauss else False,**dt)
 def shard(idx,binary):
  need(idx in range(SHARDS),"bad shard")
  sourceset=sources();need(binary.is_file(),"missing pinned native binary")
