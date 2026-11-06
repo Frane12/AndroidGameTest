@@ -1,0 +1,154 @@
+name: DRNAS R168 two-way GF2 CDCL source-certified Gaussian residual 96 original-CNF paired trials
+on:
+  push:
+    branches: [experiment/drnas-r168-bidirectional-gf2-cdcl-20261106]
+    paths:
+      - '.github/workflows/drnas-r168-two-way-gf2-cdcl.yml'
+      - 'research/r168_bidirectional_gf2_cdcl.cpp'
+      - 'research/r168_two_way_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r168-gf2-cdcl-two-way-96
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Compile R168 native CDCL/GF2 and fail-closed provenance + rollback selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned CaDiCaL with native GF2 source proof
+        run: |
+          set -euo pipefail
+          mkdir -p r168
+          python3 -m py_compile research/r168_two_way_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r168-cadical
+          cd /tmp/r168-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r168/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r168_bidirectional_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r168/r168-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r168/r168-native selftest | tee r168/selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r168/selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r168/selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r168/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r168/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r168/selftest.log
+          python3 - <<'PY'
+          import json,hashlib,pathlib,subprocess
+          bin=pathlib.Path('r168/r168-native')
+          obj=dict(binary_sha256=hashlib.sha256(bin.read_bytes()).hexdigest(),
+            source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            compiler=subprocess.check_output(['g++','--version'],text=True).splitlines()[0],
+            cadical_commit=pathlib.Path('r168/cadical-source-commit.txt').read_text().strip())
+          pathlib.Path('r168/build-pin.json').write_text(json.dumps(obj,indent=2,sort_keys=True))
+          print("R168_BUILD_PIN_PASS",json.dumps(obj,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R168-SOURCE-CERTIFIED-NATIVE-GF2-BINARY-SELFTEST
+          path: |
+            r168/r168-native
+            r168/build-pin.json
+            r168/selftest.log
+            r168/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+  shard:
+    needs: build
+    runs-on: ubuntu-24.04
+    name: R168 bidirectional GF2 vs R165/clean paired shard ${{ matrix.shard }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R168-SOURCE-CERTIFIED-NATIVE-GF2-BINARY-SELFTEST
+          path: r168
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r168
+      - name: Verify frozen binary and original source inputs
+        run: |
+          set -euo pipefail
+          chmod +x r168/r168-native
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          pin=json.loads(pathlib.Path('r168/build-pin.json').read_text())
+          assert hashlib.sha256(pathlib.Path('r168/r168-native').read_bytes()).hexdigest()==pin['binary_sha256']
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==pin['source_commit']
+          print("R168_SHA_PIN_PASS")
+          PY
+      - name: Six paired native modes on unchanged original SHA CNF
+        run: |
+          set -euo pipefail
+          python3 -u research/r168_two_way_benchmark.py shard --shard ${{ matrix.shard }} --binary r168/r168-native | tee r168/shard-${{ matrix.shard }}.log
+          grep -q '^R168_SHARD_PASS ' r168/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R168-SOURCE-PROOF-PAIRED-SHARD-${{ matrix.shard }}
+          path: |
+            r168/shard-${{ matrix.shard }}.json
+            r168/shard-${{ matrix.shard }}.log
+            r168/prep-*.json
+            r168/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: Independently audit R168 96 GF2-CDCL versus clean paired CNFs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r168
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: R168-SOURCE-PROOF-PAIRED-SHARD-*
+          merge-multiple: true
+          path: r168
+      - name: Replay certified XOR proofs, compare original SAT witnesses and publish timings
+        run: |
+          set -euo pipefail
+          test "$(find r168 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r168_two_way_benchmark.py audit | tee r168/audit.log
+          grep -q '^R168_FINAL ' r168/audit.log
+          cat r168/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R168-BIDIRECTIONAL-GF2-CDCL-96-PAIRED-FINAL-AUDIT
+          path: |
+            r168/report.json
+            r168/summary.md
+            r168/audit.log
+          if-no-files-found: warn
+          retention-days: 90
