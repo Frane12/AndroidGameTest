@@ -54,8 +54,12 @@ public:
     long cooldown_wakes=0, cooldown_skips=0;
     uint64_t assignment_notify_ns=0, backtrack_notify_ns=0, incremental_upd_ns=0;
     bool incremental_enabled=false;
-    bool two_way_enabled=false;
+    bool two_way_enabled=false, two_way_early=false, two_way_novel_only=false, two_way_shadow=false;
     long two_way_sweeps=0, two_way_row_xors=0, two_way_proposals=0;
+    long two_way_candidates=0, two_way_multi_source_candidates=0;
+    long two_way_source_duplicate_units=0, two_way_shadow_candidates=0;
+    long two_way_used_reasons=0, two_way_evidence_samples=0;
+    set<int> two_way_reason_keys;
     long two_way_abstentions=0, last_two_way_notifications=-8192;
     uint64_t two_way_ns=0;
     vector<vector<size_t>> row_incidence;
@@ -165,6 +169,7 @@ public:
             if(v<=0 || v>=(int)assigned.size() || assigned[v]==0) {
                 reason_pos.erase(it->first);
                 reason_component.erase(it->first);
+                two_way_reason_keys.erase(it->first);
                 it=reasons.erase(it);
                 ++direct_expired;
             } else ++it;
@@ -193,8 +198,9 @@ public:
     int propagate_gaussian_residual() {
         if(!two_way_enabled || disabled || rows.empty() || rows.size()>512)
             return 0;
+        const long gap=two_way_early?512L:8192L;
         if(two_way_sweeps>=256 || (last_two_way_notifications>=0 &&
-           notifications-last_two_way_notifications<8192))return 0;
+           notifications-last_two_way_notifications<gap))return 0;
         auto start=chrono::steady_clock::now();
         ++two_way_sweeps; last_two_way_notifications=notifications;
         struct Residual {
@@ -241,6 +247,13 @@ public:
             if(assigned[target]!=0)continue;
             const int implied=x.rhs?target:-target;
             if(reasons.count(implied))continue;
+            ++two_way_candidates;
+            long proof_rows=0;
+            for(uint64_t word:x.provenance)proof_rows+=__builtin_popcountll(word);
+            if(proof_rows>=2)++two_way_multi_source_candidates;
+            if(two_way_novel_only && proof_rows<2){
+                ++two_way_source_duplicate_units;continue;
+            }
             vector<int> original;
             int original_rhs=0;
             for(size_t j=0;j<rows.size();++j){
@@ -270,8 +283,40 @@ public:
                 ++two_way_abstentions;
                 continue;
             }
+            // Strict novel-only: no certified single source row can already
+            // yield this literal under the current CDCL trail.
+            if(two_way_novel_only){
+                bool duplicate=false;
+                for(const auto& row:rows){
+                    int remaining=0, free_var=0, parity=0;
+                    for(int v:row.vars){
+                        int a=assigned.at(v);
+                        if(!a){++remaining;free_var=v;if(remaining>1)break;}
+                        else parity^=(a>0);
+                    }
+                    if(remaining==1 && free_var==target &&
+                       (((parity^row.rhs)!=0)?target:-target)==implied){
+                        duplicate=true;break;
+                    }
+                }
+                if(duplicate){++two_way_source_duplicate_units;continue;}
+            }
+            if(two_way_shadow){
+                ++two_way_shadow_candidates;
+                two_way_ns+=(uint64_t)chrono::duration_cast<chrono::nanoseconds>(
+                    chrono::steady_clock::now()-start).count();
+                return 0;
+            }
+            if(two_way_evidence_samples<8){
+                ++two_way_evidence_samples;
+                cout<<"R169_PROOF_CANDIDATE multi_source_rows="<<proof_rows
+                    <<" residual_free_vars="<<x.free_vars.size()
+                    <<" reason_len="<<clause.size()
+                    <<" source_certified=1\n"<<flush;
+            }
             reasons[implied]=std::move(clause);
             reason_pos[implied]=0;
+            two_way_reason_keys.insert(implied);
             ++direct_proposals;
             ++two_way_proposals;
             peak_reason_cache=max(peak_reason_cache,reasons.size());
@@ -427,6 +472,8 @@ public:
         size_t& pos=reason_pos[propagated_lit];
         if(pos==it->second.size()) {
             ++reason_clauses_completed;
+            if(two_way_reason_keys.erase(propagated_lit)>0)
+                ++two_way_used_reasons;
             auto c=reason_component.find(propagated_lit);
             if(c!=reason_component.end())++component_reasons[c->second];
             pos=0;
@@ -543,7 +590,10 @@ static int r162_run(const string& mode,const string& src,
     const bool extend=!clean;
     const size_t max_extra=(mode=="direct_full"||mode=="direct_full_feedback"||
                             mode=="direct_incremental"||mode=="direct_watchlazy"||
-                            mode=="direct_cooldown"||mode=="direct_two_way")?128:32;
+                            mode=="direct_cooldown"||mode=="direct_two_way"||
+                            mode=="direct_two_way_early"||
+                            mode=="direct_two_way_newonly"||
+                            mode=="direct_two_way_shadow")?128:32;
     if(extend)certified=gf2_pairwise_closure(certified,max_extra);
     const long derived=(long)certified.size()-(long)source_rows;
     R162Bridge::Mode m=clean?R162Bridge::FREEZE:
@@ -554,7 +604,16 @@ static int r162_run(const string& mode,const string& src,
     bridge.component_feedback=(mode=="direct_feedback"||mode=="direct_full_feedback");
     bridge.component_scan_gate=(mode=="direct_full_feedback"?32768:4096);
     bridge.incremental_enabled=(mode=="direct_incremental");
-    bridge.two_way_enabled=(mode=="direct_two_way");
+    bridge.two_way_enabled=(mode=="direct_two_way"||
+                            mode=="direct_two_way_early"||
+                            mode=="direct_two_way_newonly"||
+                            mode=="direct_two_way_shadow");
+    bridge.two_way_early=(mode=="direct_two_way_early"||
+                          mode=="direct_two_way_newonly"||
+                          mode=="direct_two_way_shadow");
+    bridge.two_way_novel_only=(mode=="direct_two_way_newonly"||
+                               mode=="direct_two_way_shadow");
+    bridge.two_way_shadow=(mode=="direct_two_way_shadow");
     bridge.watchlazy_enabled=(mode=="direct_watchlazy"||mode=="direct_cooldown");
     bridge.cooldown_enabled=(mode=="direct_cooldown");
     if(bridge.incremental_enabled)bridge.initialize_incremental();
@@ -635,6 +694,11 @@ static int r162_run(const string& mode,const string& src,
         <<" two_way_sweeps="<<bridge.two_way_sweeps
         <<" two_way_row_xors="<<bridge.two_way_row_xors
         <<" two_way_proposals="<<bridge.two_way_proposals
+        <<" two_way_candidates="<<bridge.two_way_candidates
+        <<" two_way_multi_source_candidates="<<bridge.two_way_multi_source_candidates
+        <<" two_way_source_duplicate_units="<<bridge.two_way_source_duplicate_units
+        <<" two_way_shadow_candidates="<<bridge.two_way_shadow_candidates
+        <<" two_way_used_reasons="<<bridge.two_way_used_reasons
         <<" two_way_abstentions="<<bridge.two_way_abstentions
         <<" two_way_ns="<<bridge.two_way_ns
         <<" source_sat_witness_checked="<<(result==10?1:0)
@@ -696,11 +760,40 @@ int main(int argc,char**argv) {
                     throw runtime_error("R168_REPROPAGATION_FAILED");
                 cout<<"R168_TWO_WAY_SELFTEST_PASS consequence=x3_xor_x4_0 reason_replayed=1 rollback=1\n";
             }
+            {
+                vector<XorRow> source{{{1,2,3},0},{{1,2,4},0}};
+                R162Bridge early(source,4,R162Bridge::DIRECT);
+                early.two_way_enabled=early.two_way_early=early.two_way_novel_only=true;
+                early.notify_new_decision_level();
+                early.notify_assignment({3});
+                const int lit=early.cb_propagate();
+                if(lit!=4 || early.two_way_proposals!=1 ||
+                   early.two_way_multi_source_candidates!=1)
+                    throw runtime_error("R169_NOVEL_GF2_UNIT_FAIL");
+                vector<int> reason;
+                for(int v;(v=early.cb_add_reason_clause_lit(lit))!=0;)reason.push_back(v);
+                if(reason!=vector<int>({4,-3})||early.two_way_used_reasons!=1)
+                    throw runtime_error("R169_GAUSS_REASON_NOT_USED");
+                early.notify_assignment({4});
+                early.notify_backtrack(0);
+                if(early.disabled||!early.reasons.empty()||!early.two_way_reason_keys.empty())
+                    throw runtime_error("R169_GAUSS_ROLLBACK_FAIL");
+                R162Bridge shadow(source,4,R162Bridge::DIRECT);
+                shadow.two_way_enabled=shadow.two_way_early=true;
+                shadow.two_way_novel_only=shadow.two_way_shadow=true;
+                shadow.notify_new_decision_level();
+                shadow.notify_assignment({3});
+                if(shadow.cb_propagate()!=0 || shadow.two_way_shadow_candidates!=1 ||
+                   shadow.direct_proposals!=0 || !shadow.reasons.empty())
+                    throw runtime_error("R169_SHADOW_NOT_INERT");
+                cout<<"R169_CAUSAL_GAUSSIAN_SELFTEST_PASS multi_source=1"
+                      " consumed=1 shadow_inert=1 rollback=1\n";
+            }
             return 0;
         }
         if(argc!=5) {
             cerr<<"R165_USAGE clean|watch_boundary|shadow_boundary|"
-                   "direct_full|direct_full_feedback|direct_incremental|direct_two_way|direct_watchlazy|direct_cooldown|direct_boundary_nogate|direct_boundary|direct_feedback"
+                   "direct_full|direct_full_feedback|direct_incremental|direct_two_way|direct_two_way_early|direct_two_way_newonly|direct_two_way_shadow|direct_watchlazy|direct_cooldown|direct_boundary_nogate|direct_boundary|direct_feedback"
                    " ORIGINAL.cnf SOURCE-CERTIFIED.tsv CAP_SECONDS\n";
             return 2;
         }
@@ -709,7 +802,9 @@ int main(int argc,char**argv) {
            mode!="direct_full"&&mode!="direct_boundary_nogate"&&
            mode!="direct_boundary"&&mode!="direct_feedback"&&
            mode!="direct_full_feedback"&&mode!="direct_incremental"&&
-           mode!="direct_watchlazy"&&mode!="direct_cooldown"&&mode!="direct_two_way")
+           mode!="direct_watchlazy"&&mode!="direct_cooldown"&&mode!="direct_two_way"&&
+           mode!="direct_two_way_early"&&mode!="direct_two_way_newonly"&&
+           mode!="direct_two_way_shadow")
             throw runtime_error("R165_BAD_MODE");
         const double cap=stod(argv[4]);
         if(!(cap>=1.0&&cap<=120.0))
