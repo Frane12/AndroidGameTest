@@ -1,0 +1,158 @@
+name: DRNAS R158 GF2 source-certified conflict feedback CDCL mixed original SAT paired audit
+on:
+  push:
+    branches: [experiment/drnas-r158-gf2-conflict-feedback-20261106]
+    paths:
+      - '.github/workflows/drnas-r158-conflict-feedback-20261106.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r158-mixed-certified-conflicts-fixed-native
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: One pinned native CaDiCaL R158 executable, proof selftests, source SHA freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r158
+      - name: Compile exact CaDiCaL 2.1.0 once, audit Python and native XOR conflicting row reason
+        run: |
+          set -euo pipefail
+          mkdir -p r158
+          python3 -m py_compile research/r158_live_gf2_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r158-cadical
+          cd /tmp/r158-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r158/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r158_live_gf2_conflict.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r158/r158-native"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum r158/r158-native > r158/native-sha256.txt
+          r158/r158-native selftest | tee r158/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r158/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r158/native-selftest.log
+          grep -q '^R158_DIRECT_CONFLICT_SELFTEST_PASS' r158/native-selftest.log
+      - name: Verify original 25 SHA and exact 4 mixed source evidence before any timed trials
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import r158_live_gf2_benchmark as b
+          cs=b.sources()
+          assert len(cs)==4
+          print('R158_FROZEN_4_ORIGINAL_MIXED_SOURCE_SHA_PASS',*[x['id'] for x in cs],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r158-pinned-native-original25-proof-selftest
+          path: |
+            r158/r158-native
+            r158/native-sha256.txt
+            r158/native-selftest.log
+            r158/cadical-source-commit.txt
+            r158/frozen/
+          if-no-files-found: warn
+          retention-days: 90
+  paired:
+    needs: prepare
+    name: Paired same native CaDiCaL clean direct directconflict shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r158-pinned-native-original25-proof-selftest
+          path: r158
+      - name: Check frozen native SHA and SHA original sources, pin CPU
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x r158/r158-native
+          sha256sum -c r158/native-sha256.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          p=pathlib.Path('r158/r158-native')
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            binary_sha=hashlib.sha256(p.read_bytes()).hexdigest(),
+            cadical_commit=pathlib.Path('r158/cadical-source-commit.txt').read_text().strip(),
+            cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines()
+             if x.startswith('model name')),'unknown'))
+          pathlib.Path('r158/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: Original matched mixed CNF 3-mode 2-repeat 15s and conflict telemetry even on TIMEOUT
+        run: |
+          set -euo pipefail
+          python3 -u research/r158_live_gf2_benchmark.py shard --shard ${{ matrix.shard }} --binary r158/r158-native | tee r158/shard-${{ matrix.shard }}.log
+          grep -q '^R158_SHARD_PASS ' r158/shard-${{ matrix.shard }}.log
+          test -s r158/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r158-conflict-shard-${{ matrix.shard }}
+          path: |
+            r158/shard-${{ matrix.shard }}.json
+            r158/pin-${{ matrix.shard }}.json
+            r158/shard-${{ matrix.shard }}.log
+            r158/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    name: Audit 24 native SHA paired attempts, original SAT models, certified XOR reasons and PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r158-pinned-native-original25-proof-selftest
+          path: r158
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r158-conflict-shard-*
+          merge-multiple: true
+          path: r158
+      - name: Strict 24 paired records and one native SHA, known sources only
+        run: |
+          set -euo pipefail
+          test "$(find r158 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r158_live_gf2_benchmark.py audit | tee r158/audit.log
+          grep -q '^R158_FINAL ' r158/audit.log
+          cat r158/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R158-MIXED-SOURCE-GF2-CONFLICT-CDCL-PAR2-AUDIT
+          path: |
+            r158/report.json
+            r158/audit.log
+            r158/native-selftest.log
+            r158/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
