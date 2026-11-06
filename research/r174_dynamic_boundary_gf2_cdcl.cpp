@@ -58,6 +58,15 @@ public:
     bool incremental_enabled=false;
     bool two_way_enabled=false, two_way_early=false, two_way_novel_only=false, two_way_shadow=false;
     bool two_way_utility_budget=false;
+    // Only scheduling is adaptive; all exported reasons remain certified.
+    bool two_way_dynamic=false;
+    vector<vector<size_t>> r174_component_rows;
+    vector<vector<int>> r174_var_components;
+    vector<long> r174_boundary, r174_dirty_epoch, r174_scanned_epoch;
+    vector<long> r174_next_notify, r174_misses, r174_sweeps, r174_used, r174_last_used_seen;
+    map<int,int> r174_reason_component;
+    long r174_dirty_events=0, r174_component_skips=0, r174_boundary_skips=0;
+    long r174_sweeps_total=0, r174_feedback_resets=0, r174_last_selected=-1;
     long two_way_sweeps=0, two_way_row_xors=0, two_way_proposals=0;
     long two_way_candidates=0, two_way_multi_source_candidates=0;
     long two_way_source_duplicate_units=0, two_way_shadow_candidates=0;
@@ -124,6 +133,34 @@ public:
         component_epoch_proposal_start.assign(component_count,0);
         component_epoch_reason_start.assign(component_count,0);
         component_sleep_episodes.assign(component_count,0);
+        r174_component_rows.assign(component_count,{});
+        r174_var_components.assign(assigned.size(),{});
+        for(size_t i=0;i<rows.size();++i){
+            const int ci=component_of_row[i];
+            r174_component_rows[ci].push_back(i);
+            for(int v:rows[i].vars)r174_var_components.at(v).push_back(ci);
+        }
+        for(auto &v:r174_var_components){
+            sort(v.begin(),v.end());
+            v.erase(unique(v.begin(),v.end()),v.end());
+        }
+        r174_boundary.assign(component_count,0);
+        r174_dirty_epoch.assign(component_count,1);
+        r174_scanned_epoch.assign(component_count,0);
+        r174_next_notify.assign(component_count,0);
+        r174_misses.assign(component_count,0);
+        r174_sweeps.assign(component_count,0);
+        r174_used.assign(component_count,0);
+        r174_last_used_seen.assign(component_count,0);
+    }
+    void r174_mark_dirty(int lit,bool rollback=false){
+        const int v=abs(lit);
+        if(v<=0 || v>=(int)r174_var_components.size())
+            throw runtime_error("R174_DIRTY_VAR_RANGE");
+        for(int ci:r174_var_components[v]){
+            ++r174_dirty_epoch[ci];++r174_dirty_events;
+            if(rollback){r174_next_notify[ci]=0;r174_misses[ci]=0;}
+        }
     }
 
     unsigned long callback_events=0;
@@ -135,6 +172,8 @@ public:
         auto before_incremental=chrono::steady_clock::now();
         if(incremental_enabled && !disabled)
             for(size_t k=old_trail;k<trail.size();++k) incremental_update(trail[k],true);
+        if(two_way_dynamic && !disabled)
+            for(size_t k=old_trail;k<trail.size();++k)r174_mark_dirty(trail[k]);
         auto notify_end=chrono::steady_clock::now();
         assignment_notify_ns+=(uint64_t)chrono::duration_cast<chrono::nanoseconds>(notify_end-notify_begin).count();
         if(incremental_enabled)
@@ -161,7 +200,7 @@ public:
     void notify_backtrack(size_t level) override {
         auto backtrack_start=chrono::steady_clock::now();
         vector<int> undone;
-        if(incremental_enabled && level<marks.size()){
+        if((incremental_enabled || two_way_dynamic) && level<marks.size()){
             size_t start=marks[level];
             if(start>trail.size()) throw runtime_error("R165_BAD_BACKTRACK_MARK");
             undone.assign(trail.begin()+start,trail.end());
@@ -172,12 +211,16 @@ public:
         if(incremental_enabled && !disabled)
             for(auto it=undone.rbegin();it!=undone.rend();++it)
                 incremental_update(*it,false);
+        if(two_way_dynamic && !disabled)
+            for(auto it=undone.rbegin();it!=undone.rend();++it)
+                r174_mark_dirty(*it,true);
         for(auto it=reasons.begin();it!=reasons.end();) {
             int v=abs(it->first);
             if(v<=0 || v>=(int)assigned.size() || assigned[v]==0) {
                 reason_pos.erase(it->first);
                 reason_component.erase(it->first);
                 two_way_reason_keys.erase(it->first);
+                r174_reason_component.erase(it->first);
                 it=reasons.erase(it);
                 ++direct_expired;
             } else ++it;
@@ -206,16 +249,53 @@ public:
     int propagate_gaussian_residual() {
         if(!two_way_enabled || disabled || rows.empty() || rows.size()>512)
             return 0;
-        // If early Gaussian scans produce no CDCL-consumed reason, back off.
-        // Source-certified explanations and reversible trails are untouched.
-        const bool backoff=two_way_utility_budget && two_way_sweeps>=16 &&
-                           two_way_used_reasons==0;
-        const long gap=backoff?8192L:(two_way_early?512L:8192L);
-        const long max_sweeps=backoff?64L:256L;
-        if(two_way_sweeps>=max_sweeps || (last_two_way_notifications>=0 &&
-           notifications-last_two_way_notifications<gap))return 0;
+        // R174 scans only newly affected residual-linked XOR components.
+        // R172 controls retain their original global scheduling unchanged.
+        int chosen=-1;
+        vector<size_t> scan_ids;
+        if(two_way_dynamic){
+            if(two_way_sweeps>=256)return 0;
+            long best=-9223372036854775807LL;
+            for(size_t ci=0;ci<component_count;++ci){
+                if(r174_component_rows[ci].empty())continue;
+                if(r174_boundary[ci]==0 && r174_used[ci]==0){
+                    ++r174_boundary_skips;continue;
+                }
+                if(r174_dirty_epoch[ci]<=r174_scanned_epoch[ci] ||
+                   notifications<r174_next_notify[ci]){
+                    ++r174_component_skips;continue;
+                }
+                const long score=32L*min(32L,r174_boundary[ci])+
+                    16L*min(16L,r174_used[ci])+
+                    min(64L,r174_dirty_epoch[ci]-r174_scanned_epoch[ci])-
+                    8L*min(16L,r174_misses[ci]);
+                if(score>best){best=score;chosen=int(ci);}
+            }
+            if(chosen<0)return 0;
+            r174_last_selected=chosen;
+            scan_ids=r174_component_rows[chosen];
+            if(scan_ids.size()>256)return 0; // fail-closed work budget
+            if(r174_sweeps[chosen]){
+                if(r174_used[chosen]>r174_last_used_seen[chosen]){
+                    r174_misses[chosen]=0;++r174_feedback_resets;
+                } else r174_misses[chosen]=min(8L,r174_misses[chosen]+1);
+            }
+            r174_last_used_seen[chosen]=r174_used[chosen];
+            r174_scanned_epoch[chosen]=r174_dirty_epoch[chosen];
+            r174_next_notify[chosen]=notifications+
+                min(8192L,32L<<min(8L,r174_misses[chosen]));
+            ++r174_sweeps[chosen];++r174_sweeps_total;
+        }else{
+            const bool backoff=two_way_utility_budget && two_way_sweeps>=16 &&
+                               two_way_used_reasons==0;
+            const long gap=backoff?8192L:(two_way_early?512L:8192L);
+            const long max_sweeps=backoff?64L:256L;
+            if(two_way_sweeps>=max_sweeps || (last_two_way_notifications>=0 &&
+               notifications-last_two_way_notifications<gap))return 0;
+            for(size_t i=0;i<rows.size();++i)scan_ids.push_back(i);
+        }
         auto start=chrono::steady_clock::now();
-        ++two_way_sweeps; last_two_way_notifications=notifications;
+        ++two_way_sweeps;last_two_way_notifications=notifications;
         struct Residual {
             vector<int> free_vars;
             int rhs=0;
@@ -223,7 +303,7 @@ public:
         };
         const size_t words=(rows.size()+63)/64;
         map<int,Residual> basis;
-        for(size_t i=0;i<rows.size();++i){
+        for(size_t i:scan_ids){
             Residual x;
             x.rhs=rows[i].rhs;
             x.provenance.assign(words,0);
@@ -330,6 +410,7 @@ public:
             reasons[implied]=std::move(clause);
             reason_pos[implied]=0;
             two_way_reason_keys.insert(implied);
+            if(two_way_dynamic && chosen>=0)r174_reason_component[implied]=chosen;
             ++direct_proposals;
             ++two_way_proposals;
             if(r170_first_proposal_ms<0){
@@ -492,6 +573,12 @@ public:
             ++reason_clauses_completed;
             if(two_way_reason_keys.erase(propagated_lit)>0){
                 ++two_way_used_reasons;
+                auto where=r174_reason_component.find(propagated_lit);
+                if(where!=r174_reason_component.end()){
+                    ++r174_used[where->second];
+                    r174_next_notify[where->second]=0;
+                    r174_reason_component.erase(where);
+                }
                 if(r170_first_used_ms<0){
                     r170_first_used_ms=long(chrono::duration<double,milli>(
                         chrono::steady_clock::now()-r170_benchmark_start).count());
@@ -736,6 +823,11 @@ static int r162_run(const string& mode,const string& src,
         <<" r170_first_used_notifications="<<bridge.r170_first_used_notifications
         <<" two_way_abstentions="<<bridge.two_way_abstentions
         <<" two_way_ns="<<bridge.two_way_ns
+        <<" r174_dirty_events="<<bridge.r174_dirty_events
+        <<" r174_component_skips="<<bridge.r174_component_skips
+        <<" r174_boundary_skips="<<bridge.r174_boundary_skips
+        <<" r174_sweeps_total="<<bridge.r174_sweeps_total
+        <<" r174_feedback_resets="<<bridge.r174_feedback_resets
         <<" source_sat_witness_checked="<<(result==10?1:0)
         <<" disabled="<<bridge.disabled<<"\n"<<flush;
     // On 2.1.0 these native statistics include actual CDCL conflicts,
