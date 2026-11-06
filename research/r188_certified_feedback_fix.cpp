@@ -918,8 +918,7 @@ static int r162_run(const string& mode,const string& src,
     const bool r177=(mode=="gauss_resolve1"||mode=="gauss_resolve2");
     const bool gauss=(mode=="gauss_full"||mode=="gauss_watchlazy"||
                       mode=="gauss_cooldown"||mode=="gauss_feedback"||
-                      mode=="gauss_utility"||mode=="gauss_feedback_utility"||r175||r176||r177||
-                             mode=="direct_full_feedback_budget8"||mode=="direct_full_feedback_shadow8");
+                      mode=="gauss_utility"||mode=="gauss_feedback_utility"||r175||r176||r177);
     if(gauss==units_path.empty())
         throw runtime_error("R166X_GAUSS_UNITS_PROTOCOL_MISMATCH");
     const int injected_units=gauss?r166x_add_gauss_units(solver,units_path,n):0;
@@ -961,7 +960,9 @@ static int r162_run(const string& mode,const string& src,
                               mode=="gauss_watchlazy"||mode=="gauss_cooldown");
     bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown"||
                              mode=="gauss_feedback"||mode=="gauss_utility"||
-                             mode=="gauss_feedback_utility"||r175||r176||r177);
+                             mode=="gauss_feedback_utility"||r175||r176||r177||
+                             mode=="direct_full_feedback_budget8"||
+                             mode=="direct_full_feedback_shadow8");
     bridge.watchlazy_enabled=bridge.watchlazy_enabled ||
         mode=="direct_full_feedback_budget8"||mode=="direct_full_feedback_shadow8"||
         mode=="gauss_feedback"||mode=="gauss_utility"||
