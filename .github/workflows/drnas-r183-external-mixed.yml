@@ -1,0 +1,154 @@
+name: DRNAS R183 real external mixed SAT XOR2-6 transfer
+on:
+  push:
+    branches: [experiment/drnas-r183-external-mixed-transfer-20261106]
+    paths:
+      - 'research/r183_external_mixed.py'
+      - '.github/workflows/drnas-r183-external-mixed.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r183-external-mixed
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm XOR2-6 source certification and contradiction self-tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r183_external_mixed.py research/r182_mixed_engine.py
+          python3 -u research/r183_external_mixed.py selftest
+      - name: Import immutable R154/R155 known originals for source exclusion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r183/prior
+          gh run download 42112755104 --repo Frane12/AndroidGameTest -n r155-original25-pinned-native-and-independent-smoke -D r183/prior
+          test -f r183/prior/frozen/manifest.json
+      - name: Collect NEW GBD external original CNFs by precommitted structural quotas ONLY
+        run: |
+          set -euo pipefail
+          python3 -u research/r183_external_mixed.py freeze | tee r183/freeze.log
+          grep -q '^R183_FREEZE_PASS ' r183/freeze.log
+          python3 -u research/r183_external_mixed.py verify
+      - name: Compile pinned CaDiCaL 2.1 driver (not DRNAS benchmark during freeze)
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r183-cadical
+          (
+            cd /tmp/r183-cadical
+            git checkout -q rel-2.1.0
+            ./configure
+            make -j2
+          )
+          mkdir -p r183
+          git -C /tmp/r183-cadical rev-parse HEAD > r183/cadical-commit.txt
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r183-cadical/src research/r182_cadical_driver.cpp /tmp/r183-cadical/build/libcadical.a -o r183/r182-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path("r183")
+          d={"protocol":"R183-EXT-PAIRED-PIN-v1",
+             "source_manifest_sha256":hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest(),
+             "binary_sha256":hashlib.sha256((p/"r182-driver").read_bytes()).hexdigest(),
+             "cadical_commit":(p/"cadical-commit.txt").read_text().strip(),
+             "research_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()}
+          (p/"build-pin.json").write_text(json.dumps(d,indent=2))
+          print("R183_BUILD_SHA_PIN_PASS",json.dumps(d,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r183-source-log-always
+          retention-days: 90
+          path: |
+            r183/freeze.log
+            r183/frozen/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r183-pinned-external-originals-and-binary
+          retention-days: 90
+          path: |
+            r183/frozen/
+            r183/r182-driver
+            r183/build-pin.json
+            r183/cadical-commit.txt
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    name: R183 paired SHA mixed original cohort shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r183-pinned-external-originals-and-binary
+          path: r183
+      - name: Pin verification and 3-arm pairwise 12s cap x2
+        run: |
+          set -euo pipefail
+          chmod +x r183/r182-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r183")
+          d=json.loads((p/"build-pin.json").read_text())
+          assert hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest()==d["source_manifest_sha256"]
+          assert hashlib.sha256((p/"r182-driver").read_bytes()).hexdigest()==d["binary_sha256"]
+          PY
+          python3 -u research/r183_external_mixed.py shard --shard ${{ matrix.shard }} --binary r183/r182-driver | tee r183/shard-${{ matrix.shard }}.log
+          grep -q '^R183_SHARD_PASS ' r183/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r183-paired-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r183/shard-${{ matrix.shard }}.json
+            r183/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r183-pinned-external-originals-and-binary
+          path: r183
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r183-paired-shard-*
+          merge-multiple: true
+          path: r183
+      - name: Verify complete same-original SHA pairs and truth consistency
+        run: |
+          set -euo pipefail
+          test "$(find r183 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 6
+          python3 -u research/r183_external_mixed.py audit | tee r183/audit.log
+          grep -q '^R183_FINAL ' r183/audit.log
+          cat r183/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R183-EXTERNAL-MIXED-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r183/report.json
+            r183/summary.md
+            r183/audit.log
