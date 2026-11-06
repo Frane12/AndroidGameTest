@@ -66,18 +66,30 @@ def select_genes(model):
     return {24:list(first24),48:list(genes)}
 
 def freeze(root):
-    from cobra.io import load_model,write_sbml_model
+    from cobra.io import read_sbml_model
+    import gzip, urllib.request
     root=pathlib.Path(root);root.mkdir(parents=True,exist_ok=True)
     source=root/"iML1515.xml"
-    model=load_model(MODEL_NAME)
+    # Cobra 0.30.0 still uses http://bigg.ucsd.edu, which now redirects;
+    # httpx does not follow this redirect in its repository loader.
+    # Fetch immutable source BYTES from the official HTTPS BiGG endpoint.
+    official_url="https://bigg.ucsd.edu/static/models/iML1515.xml.gz"
+    request=urllib.request.Request(official_url,
+        headers={"User-Agent":"DRNAS-Medical-R8-reproducible-model-freeze"})
+    with urllib.request.urlopen(request,timeout=120) as response:
+        packed=response.read()
+    source.write_bytes(gzip.decompress(packed))
+    model=read_sbml_model(str(source))
     model.solver="glpk"
     need(dims(model)==EXPECTED_DIMS,f"BiGG model dimensional drift {dims(model)}")
     wild=float(model.slim_optimize(error_value=float("nan")))
     need(math.isfinite(wild) and wild>0.05,"unexpected wildtype biomass")
     groups=select_genes(model)
-    write_sbml_model(model,str(source))
+    # Keep EXACT published BiGG SBML bytes (no COBRApy reserialization).
     manifest={"protocol":PROTOCOL,"model_id":MODEL_NAME,
-       "model_source":"COBRApy 0.30.0 BiGG load_model(iML1515)",
+       "model_source":"official BiGG iML1515 SBML HTTPS download",
+       "model_source_url":"https://bigg.ucsd.edu/static/models/iML1515.xml.gz",
+       "compressed_SBML_sha256":hashlib.sha256(packed).hexdigest(),
        "SBML_sha256":sha(source),
        "reactions":dims(model)[0],"metabolites":dims(model)[1],"genes_total":dims(model)[2],
        "wildtype_biomass":wild,"biomass_fraction":0.01,
