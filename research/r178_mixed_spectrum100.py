@@ -78,8 +78,7 @@ def generate(i):
             vs=[rng.choice(xorpool),*rng.sample(nonxorpool,2)]
         bits=[rng.randrange(2) for _ in vs]
         if not any(bits[k]==witness[v] for k,v in enumerate(vs)):
-            bits[rng.randrange(3)]=witness[vs[rng.randrange(3)]] if False else 0
-            # Regenerate exactly one satisfying sign, avoiding index mismatch.
+            # Enforce one satisfied residual literal under the planted model.
             k=rng.randrange(3)
             bits[k]=witness[vs[k]]
         clause=normalize([v if b else -v for v,b in zip(vs,bits)])
@@ -104,7 +103,7 @@ def freeze():
         src=srcroot/(id+".cnf")
         need(sig(src)==known[id]["sha256"],"original source SHA failed")
         dst=frozen/(id+".cnf");dst.write_bytes(src.read_bytes())
-        cases.append({"id":id,"sha256":sig(dst),"origin":"real_frozen",
+        cases.append({"id":id,"sha256":sig(dst),"origin":"real_frozen","cohort":"mixed_residual",
             "nominal_band":"original_hard","original_provenance":"r155_original25",
             "source_family":known[id].get("family","unknown"),"expected":"unknown",
             "cap_s":45.0})
@@ -116,7 +115,7 @@ def freeze():
         digest=hashlib.sha256(raw).hexdigest()
         id="s"+digest[:31]
         (frozen/(id+".cnf")).write_bytes(raw)
-        cases.append({"id":id,"sha256":digest,"origin":"synthetic_planted",
+        cases.append({"id":id,"sha256":digest,"origin":"synthetic_planted","cohort":"mixed_residual",
            "nominal_band":("easy","medium","hard")[band],
            "original_provenance":"R178_local_deterministic_generator",
            "source_family":"generated_xor3_and_or3",
