@@ -15,10 +15,10 @@ FAMILIES=("miter","hardware-verification")
 TRACKS=("main_2025","main_2026","submissions_2025","submissions_2026")
 QUOTA={"xor_plus_units":6,"complete_xor":6,"mixed_residual":12,"nonxor_control":12}
 MAX_SOURCE_FETCH=180
-RAW_CAP=28*1024*1024
-CNF_CAP=12*1024*1024
-MAX_VARIABLES=3000
-MAX_CLAUSES=150000
+RAW_CAP=128*1024*1024
+CNF_CAP=96*1024*1024
+MAX_VARIABLES=250000
+MAX_CLAUSES=2500000
 def need(v,msg):
  if not v:raise RuntimeError("R158_SOURCE_AUDIT_FAIL "+str(msg))
 def sha(b):return hashlib.sha256(b).hexdigest()
