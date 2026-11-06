@@ -155,6 +155,8 @@ public:
             undone.assign(trail.begin()+start,trail.end());
         }
         DrnasBridge::notify_backtrack(level);
+        // CDCL trail changed: invalidate residual basis schedule after rollback.
+        if(two_way_enabled)last_two_way_notifications=-8192;
         if(incremental_enabled && !disabled)
             for(auto it=undone.rbegin();it!=undone.rend();++it)
                 incremental_update(*it,false);
