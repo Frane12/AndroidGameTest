@@ -1,0 +1,159 @@
+name: DRNAS R179 mixed XOR-CNF 100 formula calibrated spectrum 1000 paired
+on:
+  push:
+    branches: [experiment/drnas-r179-selective-gf2-20261106]
+    paths:
+      - 'research/r179_selective_gf2.py'
+      - '.github/workflows/drnas-r179-mixed-spectrum100.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r179-mixed-spectrum100
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    name: Pin CaDiCaL 2.1 and freeze 4 real plus 96 synthetic SHA-CNFs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve prior original pinned source archive
+        uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r179/input
+      - name: Freeze 100 source formulas before timing and compile pinned native
+        run: |
+          set -euo pipefail
+          mkdir -p r179
+          python3 -m py_compile research/r179_selective_gf2.py research/r177_xor_cnf_resolution_benchmark.py research/r175_clause_causality_benchmark.py
+          python3 -u research/r179_selective_gf2.py freeze | tee r179/freeze.log
+          grep -q '^R179_FROZEN_100_PASS ' r179/freeze.log
+          python3 -u research/r164_pure_exact_gf2.py --selftest | tee r179/exact-selftest.log
+          python3 -u research/r166x_certified_gauss.py --selftest | tee r179/gauss-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r179/exact-selftest.log
+          grep -q '^R166X_GAUSS_PROOF_SELFTEST_PASS' r179/gauss-selftest.log
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r179-cadical
+          cd /tmp/r179-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r179/cadical-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r177_xor_cnf_resolution.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r179/r179-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r179/r179-native selftest | tee r179/native-selftest.log
+          grep -q '^R177_XOR_CNF_RESOLUTION_SELFTEST_PASS' r179/native-selftest.log
+          grep -q '^R176_GF2_CNF_PROPAGATION_SELFTEST_PASS' r179/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          binary=pathlib.Path("r179/r179-native")
+          pin={"source_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            "binary_sha256":hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "manifest_sha256":hashlib.sha256(pathlib.Path("r179/frozen/manifest.json").read_bytes()).hexdigest(),
+            "cadical_sha":pathlib.Path("r179/cadical-commit.txt").read_text().strip(),
+            "protocol":"DRNAS-R179-FROZEN-100-MIXED-SPECTRUM-v1"}
+          pathlib.Path("r179/build-pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("R179_SOURCE_BINARY_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r179-source-native-pin
+          retention-days: 90
+          path: |
+            r179/r179-native
+            r179/build-pin.json
+            r179/cadical-commit.txt
+            r179/frozen/
+            r179/freeze.log
+            r179/native-selftest.log
+            r179/exact-selftest.log
+            r179/gauss-selftest.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R179 mixed SHA 5-arm paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r179-source-native-pin
+          path: r179
+      - name: Randomized-order same-source 5 arms by two repetitions
+        run: |
+          set -euo pipefail
+          chmod +x r179/r179-native
+          python3 -u research/r179_selective_gf2.py verify
+          python3 -u research/r179_selective_gf2.py shard --shard ${{ matrix.shard }} --binary r179/r179-native | tee r179/shard-${{ matrix.shard }}.log
+          grep -q '^R179_SHARD_PASS ' r179/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r179-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r179/shard-${{ matrix.shard }}.json
+            r179/shard-${{ matrix.shard }}.log
+            r179/prep-*.json
+            r179/cert-*.json
+            r179/gauss-*/gauss.tsv
+            r179/gauss-*/gauss-units.tsv
+            r179/gauss-*/gauss-cert.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    name: Audit 1000 SHA pairs and classify CaDiCaL difficulty bands
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r179-source-native-pin
+          path: r179
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r179-shard-*
+          merge-multiple: true
+          path: r179
+      - name: Validate 100 original CNFs, GF2 proofs, SAT witnesses, difficulty bins
+        run: |
+          set -euo pipefail
+          test "$(find r179 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 10
+          python3 -u research/r179_selective_gf2.py audit | tee r179/audit.log
+          grep -q '^R179_FINAL ' r179/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          a=json.loads(pathlib.Path("r179/report.json").read_text())
+          assert a["status"]=="R179_SPECTRUM_100_AUDIT_PASS_NOT_BLIND"
+          assert a["formulas"]==100 and a["originals"]==4 and a["generated"]==96
+          assert a["attempts"]==1000 and a["original_SAT_witnesses_checked"]
+          assert a["independent_source_Gaussian_certificates_replayed"]
+          print("R179_SPECTRUM_1000_AUDIT_PASS")
+          PY
+          cat r179/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R179-100-MIXED-1000-FINAL
+          retention-days: 90
+          path: |
+            r179/report.json
+            r179/paired.csv
+            r179/summary.md
+            r179/audit.log
