@@ -21,17 +21,20 @@ def mod(path,name):
  return x
 
 def freeze():
- x=mod("research/r154_unseen_freeze.py","r158short_prospective_source")
+ x=mod("research/r158x_short_source_engine.py","r158short_prospective_source")
  x.ROOT=ROOT
  x.PROTO=PROTO
  x.FAMILIES=("lights-out","linear-equations","xor-chain","cryptography",
-             "miter","random-circuits","bitvector","or_randxor","random-graph-xorsat")
+             "miter","random-circuits","bitvector","or_randxor","random-graph-xorsat",
+             "xor-shifting","minimum-disagreement-parity")
  x.TRACKS=("main_2025","main_2026","submissions_2025","submissions_2026")
  x.QUOTA=QUOTAS
- x.MAX_SOURCE_FETCH=340
+ x.MAX_SOURCE_FETCH=900
  x.MIN_FREEZE_CASES=6
- x.MAX_VARIABLES=3000
- x.MAX_CLAUSES=150000
+ x.MAX_VARIABLES=25000
+ x.MAX_CLAUSES=500000
+ x.RAW_CAP=48*1024*1024
+ x.CNF_CAP=24*1024*1024
  x.freeze()
  verify()
 
