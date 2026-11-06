@@ -1,0 +1,111 @@
+name: DRNAS Medical R10 frozen iML1515 cross-engine and independent FBA
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r10-crossengine-20261106
+    paths:
+      - 'research/drnas_medical/gmispy_r10_crossengine.py'
+      - '.github/workflows/drnas-medical-r10-crossengine.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r10-crossengine-20261106
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: R10 SHA-frozen ${{ matrix.n }} genes three SAT engines x two repeats
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24, 48, 96, 192, 384]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install identical R9 biological and SAT runtime
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r10_crossengine.py
+          python3 -u research/drnas_medical/gmispy_r10_crossengine.py selftest
+      - name: Retrieve R9 original iML1515 immutable SBML source and same cohort
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r10/r9 r10/ref
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r10/r9
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-COHORT-${{ matrix.n }}-RAW -D r10/ref
+          test -s r10/ref/summary.json
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r10/r9/source --freeze r10/r9/frozen
+      - name: Interleaved same-source paired SAT engines and sampled FBA truth
+        run: |
+          set -euo pipefail
+          mkdir -p r10-results/${{ matrix.n }}
+          python3 -u research/drnas_medical/gmispy_r10_crossengine.py cohort \
+            --source r10/r9/source --freeze r10/r9/frozen \
+            --reference r10/ref/summary.json \
+            --n ${{ matrix.n }} --out r10-results/${{ matrix.n }} \
+            | tee r10-results/${{ matrix.n }}/cohort.log
+          grep -q '^R10_COHORT_FINAL ' r10-results/${{ matrix.n }}/cohort.log
+      - name: Preserve raw independently verified benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW
+          path: r10-results/${{ matrix.n }}/
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: R10 independent cross-engine completion and truth audit
+    needs: compare
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R10-IML1515-COHORT-*-RAW
+          path: all-r10
+          merge-multiple: false
+      - name: Fail closed on absent, inconsistent or improperly claimed evidence
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r10/DRNAS-MEDICAL-R10-IML1515-COHORT-${n}-RAW"
+            mapfile -t f < <(find "$d" -type f -name summary.json | sort)
+            test "${#f[@]}" -eq 1
+            inputs+=("${f[0]}")
+          done
+          mkdir -p r10-final
+          python3 -u research/drnas_medical/gmispy_r10_crossengine.py audit \
+            --inputs "${inputs[@]}" --out r10-final/certified-crossengine.json \
+            | tee r10-final/audit.log
+          grep -q '^R10_FINAL ' r10-final/audit.log
+          cat r10-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish complete certification and limitations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R10-CROSSENGINE-FINAL
+          path: r10-final/
+          retention-days: 90
+          if-no-files-found: warn
