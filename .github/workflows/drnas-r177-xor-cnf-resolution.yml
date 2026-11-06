@@ -1,0 +1,163 @@
+name: DRNAS R177 certified XOR-CNF one/two-hop resolution 32 paired
+on:
+  push:
+    branches: [experiment/drnas-r177-certified-mixed-bridge-20261106]
+    paths:
+      - 'research/r177_xor_cnf_resolution.cpp'
+      - 'research/r177_xor_cnf_resolution_benchmark.py'
+      - '.github/workflows/drnas-r177-xor-cnf-resolution.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r177-xor-cnf-resolution-20261106
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Build R177 certified XOR-CNF resolution and 2-hop native selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned CaDiCaL and test certified reasons plus utility wake
+        run: |
+          set -euo pipefail
+          mkdir -p r177
+          python3 -m py_compile research/r177_xor_cnf_resolution_benchmark.py research/r176_certified_mixed_benchmark.py research/r175_clause_causality_benchmark.py research/r173_residual_gate_benchmark.py research/r166x_component_benchmark.py research/r166x_certified_gauss.py research/r164_pure_exact_gf2.py
+          python3 -u research/r164_pure_exact_gf2.py --selftest | tee r177/exact-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r177/exact-selftest.log
+          python3 -u research/r166x_certified_gauss.py --selftest | tee r177/gauss-selftest.log
+          grep -q '^R166X_GAUSS_PROOF_SELFTEST_PASS' r177/gauss-selftest.log
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r177-cadical
+          cd /tmp/r177-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r177/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r177_xor_cnf_resolution.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r177/r177-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r177/r177-native selftest | tee r177/native-selftest.log
+          grep -q '^R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS' r177/native-selftest.log
+          grep -q '^R175_SHADOW_SHORT4_BUDGET8_SELFTEST_PASS' r177/native-selftest.log
+          grep -q '^R174_B_CERTIFIED_CONFLICT_SELFTEST_PASS' r177/native-selftest.log
+          grep -q '^R174_C_UTILITY_WAKE_SELFTEST_PASS' r177/native-selftest.log
+          grep -q '^R176_GF2_CNF_CLOSURE_SELFTEST_PASS' r177/native-selftest.log
+          grep -q '^R176_GF2_CNF_PROPAGATION_SELFTEST_PASS' r177/native-selftest.log
+          grep -q '^R177_XOR_CNF_RESOLUTION_SELFTEST_PASS' r177/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r177/r177-native")
+          pin={"source_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "binary_sha256":hashlib.sha256(b.read_bytes()).hexdigest(),
+               "cadical_sha":pathlib.Path("r177/cadical-source-commit.txt").read_text().strip(),
+               "protocol":"DRNAS-DRNAS-R177-CERTIFIED-XOR-CNF-ONE-TWO-HOP-v1"}
+          pathlib.Path("r177/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R177_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r177-pinned-native
+          retention-days: 90
+          path: |
+            r177/r177-native
+            r177/build-pin.json
+            r177/exact-selftest.log
+            r177/gauss-selftest.log
+            r177/native-selftest.log
+            r177/cadical-source-commit.txt
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R177 original mixed CNF four-arm paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r177-pinned-native
+          path: r177
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r177
+      - name: Verify original SHA CNFs and run charged paired trials
+        run: |
+          set -euo pipefail
+          chmod +x r177/r177-native
+          python3 -u research/r177_xor_cnf_resolution_benchmark.py shard --shard ${{ matrix.shard }} --binary r177/r177-native | tee r177/shard-${{ matrix.shard }}.log
+          grep -q '^R177_SHARD_PASS ' r177/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r177-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r177/shard-${{ matrix.shard }}.json
+            r177/shard-${{ matrix.shard }}.log
+            r177/prep-*.json
+            r177/cert-*.json
+            r177/gauss-*/gauss.tsv
+            r177/gauss-*/gauss-units.tsv
+            r177/gauss-*/gauss-cert.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Audit 32 R177 mixed CNFs original-SHA paired and source-resolution proofs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r177-pinned-native
+          path: r177
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r177
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r177-shard-*
+          merge-multiple: true
+          path: r177
+      - name: Validate complete paired comparisons and replay source certificates
+        run: |
+          set -euo pipefail
+          test "$(find r177 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r177_xor_cnf_resolution_benchmark.py audit | tee r177/audit.log
+          grep -q '^R177_FINAL ' r177/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          a=json.loads(pathlib.Path("r177/report.json").read_text())
+          assert a["status"]=="R177_FROZEN_PAIRED_SOURCE_PROOF_PASS_NOT_BLIND"
+          assert a["formulas"]==4 and a["attempts"]==32
+          assert a["independent_source_gaussian_proof"] and a["SAT_originals_checked"] and a["xor_cnf_resolution_traces_checked"]
+          print("R177_FOUR_ARM_CERTIFIED_AUDIT_PASS")
+          PY
+          cat r177/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R177-XOR-CNF-RESOLUTION-32-FINAL
+          retention-days: 90
+          path: |
+            r177/report.json
+            r177/summary.md
+            r177/audit.log
