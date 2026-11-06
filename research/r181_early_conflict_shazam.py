@@ -39,8 +39,12 @@ def probe(src,binary,cutoff,timeout):
         stats[key]=int(vals[-1]) if vals else -1
     # At least two real internal CDCL counters required. Never substitute
     # intended conflict cutoff for actual conflicts reached.
-    need(stats["conflicts"]>=0 and stats["decisions"]>=0,
-         "CaDiCaL statistics not captured: "+block[-2000:])
+    # CaDiCaL may finish with the "lucky" preprocessing/decision path
+    # before it has CDCL conflict or decision counters to print at all.
+    # Missing counters remain -1 (unavailable), not fabricated zeros.
+    if head[2]=="UNKNOWN":
+        need(stats["conflicts"]>=0 and stats["decisions"]>=0,
+             "UNKNOWN probe statistics not captured: "+block[-2000:])
     return {"status":head[2],"wall_s":elapsed,**stats}
 
 def features(static,obs):
