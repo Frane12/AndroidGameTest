@@ -226,7 +226,7 @@ def audit():
     report=dict(protocol=PROTO,status="R194_SEED_REPLAY_AUDIT_PASS",
        source_original_id=TARGET_ID,source_sha256=case["sha256"],
        R193_original_manifest_sha256=SOURCE_SHA,original_source_reused_not_blind=True,
-       caDiCaL_commit=pin["cadical_commit"],
+       caDiCaL_commit=pin["caDiCaL_commit"],
        separate_seeds=len(SEEDS),seed_order_pairs=len(pairs),attempts=len(rows),
        same_source_sha=True,SAT_witness_original_verified=True,
        independent_LRAT_for_UNSAT=False,not_global_world_benchmark=True,
