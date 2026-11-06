@@ -145,7 +145,7 @@ def freeze():
     random.Random(PROTO).shuffle(cases)
     pin=get(ROOT/"external/build-pin.json")
     need(sha(ROOT/"external/r182-driver")==pin["binary_sha256"],"R183 binary drift")
-    binary=ROOT/"r185-driver"
+    binary=ROOT/"r186-driver"
     binary.write_bytes((ROOT/"external/r182-driver").read_bytes())
     save(ROOT/"pin.json",dict(binary_sha256=sha(binary),
        original_external_manifest_sha256=sha(ROOT/"external/frozen/manifest.json"),
@@ -163,7 +163,7 @@ def freeze():
 def verify():
     m=get(ROOT/"manifest.json")
     need(m["protocol"]==PROTO and len(m["cases"])==129,"manifest drift")
-    need(sha(ROOT/"r185-driver")==get(ROOT/"pin.json")["binary_sha256"],
+    need(sha(ROOT/"r186-driver")==get(ROOT/"pin.json")["binary_sha256"],
          "binary SHA drift")
     for c in m["cases"]:
         need(sha(FROZEN/(c["id"]+".cnf"))==c["sha256"],"source SHA drift "+c["id"])
