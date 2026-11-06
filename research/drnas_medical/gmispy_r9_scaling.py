@@ -173,10 +173,34 @@ def solve(model,genes,rules,threshold,cap):
     stages=[]
     def check():
         if time.perf_counter()>deadline:raise TimeoutError("R9 hard deadline in algorithm")
-    def add_flux(flux,solver=None):
+    def add_flux(flux,solver=None,ko=None):
         check()
         clause=logic.witness_clause(flux)
-        need(clause not in known,"repeated flux witness: exact GPR SAT should exclude it")
+        # A flux returned by a floating-point LP solver can carry tiny
+        # non-zero numerical residues on a nominally knocked-out reaction.
+        # Such a flux cannot certify a GLOBAL witness cut in exact arithmetic.
+        # Likewise an already-learned cut does not exclude the current KO.
+        # The safe CEGAR fallback is to exclude ONLY this independently
+        # LP-verified viable gene assignment, never its supersets.
+        ambiguous=False
+        if solver is not None:
+            need(ko is not None,"candidate K required for a learned cut")
+            from gmispy_r3 import disabled_reactions
+            disabled=set(disabled_reactions(rules,(genes[i] for i in ko)))
+            support={rid for rid in logic.disabled
+                     if float(flux.get(rid,0.0))!=0.0}
+            ambiguous=bool(disabled & support)
+        if clause in known or ambiguous:
+            need(solver is not None and ko is not None,
+                 "wildtype witness unexpectedly duplicated")
+            chosen=set(ko)
+            exclusive=[-(i+1) if i in chosen else (i+1)
+                       for i in range(len(genes))]
+            solver.add_clause(exclusive)
+            stats["candidate_only_safe_fallbacks"]+=1
+            if ambiguous:stats["numerically_ambiguous_flux_support"]+=1
+            if clause in known:stats["duplicate_flux_clause_suppressed"]+=1
+            return
         known.add(clause)
         learned.append(list(clause))
         stats["flux_cuts"]+=1
@@ -210,7 +234,7 @@ def solve(model,genes,rules,threshold,cap):
                 stats["lp_calls"]+=1
                 if is_viable:
                     stats["viable_lp"]+=1
-                    add_flux(flx,sat)
+                    add_flux(flx,sat,ko)
                 else:
                     stats["lethal_lp"]+=1
                     need(not any(set(m).issubset(ko) for m in minima),
