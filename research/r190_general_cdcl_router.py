@@ -125,7 +125,7 @@ def selftest():
         need(profile=="default" and features["n"]==3 and t>=0,"small abstention")
         # Synthetic profiles: threshold functions must use only syntactic text.
         for density,want in ((3.0,"sat"),(5.0,"unsat")):
-            n=100;m=int(n*density)
+            n=150;m=int(n*density)
             p.write_text(f"p cnf {n} {m}\n"+("1 2 3 0\n"*m))
             found,_,_,_=fingerprint(p)
             need(found==want,"fixed generic profile router")
