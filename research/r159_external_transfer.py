@@ -228,7 +228,10 @@ def audit():
     original={c["id"]:c for c in source["cases"]}
     observed=[];traces={};source_shards=[]
     for shard in range(SHARDS):
-        folder=Path("r159-download")/("r159-shard-%d"%shard)
+        # actions/upload-artifact preserves r159/shard-N under each ZIP root;
+        # do not silently fall back to an unverified or different run.
+        folder=Path("r159-download")/("r159-shard-%d"%shard)/"r159"/("shard-%d"%shard)
+        need(folder.is_dir(),"expected exact retained artifact directory "+str(folder))
         meta=json.loads((folder/"manifest.json").read_text())
         measurements=rows(folder/"measurements.csv")
         logs=[json.loads(line) for line in (folder/"traces.jsonl").read_text().splitlines()]
