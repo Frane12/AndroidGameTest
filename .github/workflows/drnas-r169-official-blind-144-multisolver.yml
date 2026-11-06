@@ -1,0 +1,249 @@
+name: DRNAS R169 BLIND 96+48 official SAT 2026 all-solvers conditional automatic confirmation
+on:
+  push:
+    branches: [experiment/drnas-r169-2026-blind-144-multisolver-autoconfirm-20261106]
+    paths:
+      - '.github/workflows/drnas-r169-official-blind-144-multisolver.yml'
+      - 'research/r169_official_2026_blind_benchmark.py'
+      - 'research/r169_official_2026_frozen_manifest.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r169-frozen-official-2026-96-plus-48-independent-validation
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    name: Preflight immutable R167 native plus Kissat 4.0.4 and SAT2026 400-case source index
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R167-CPP-NATIVE-PINNED-GF2-BINARY-AND-SELFTEST
+          run-id: 42149826500
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r167
+      - uses: actions/download-artifact@v4
+        with:
+          name: r166x-frozen-r165-and-kissat404
+          run-id: 42149824021
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Preregistered official SAT2026 list and frozen binary integrity
+        run: |
+          set -euo pipefail
+          mkdir -p r169
+          python3 -m py_compile research/r169_official_2026_blind_benchmark.py research/r167_blind2026.py research/r166_independent_verifier.py
+          git clone -q --depth 1 https://github.com/satcompetition/2026.git /tmp/drnas-r169-official-index
+          cp /tmp/drnas-r169-official-index/downloads/track_main_2026.uri r169/official.uri
+          test "$(git hash-object r169/official.uri)" = "2b86a4d685b492a844646f378ac3f3415fd131d5"
+          chmod +x r167/native r166x/bin/kissat
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          m=json.loads(pathlib.Path('research/r169_official_2026_frozen_manifest.json').read_text())
+          r=json.loads(pathlib.Path('r167/build-pin.json').read_text())
+          k=json.loads(pathlib.Path('r166x/kissat-pin.json').read_text())
+          sha=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          assert sha('r167/native')==r['binary_sha256']==m['native_binary_sha256']
+          assert sha('research/r167_native_exact_gf2.cpp')==r['source_cpp_sha256']==m['native_cpp_sha256']
+          assert sha('r166x/bin/kissat')==k['kissat_binary_sha256']
+          assert k['kissat_commit']==m['kissat_commit'] and k['kissat_version']=='4.0.4'
+          lines=pathlib.Path('r169/official.uri').read_text().splitlines()
+          assert len(lines)==400
+          assert len(m['primary'])==96 and len(m['confirmation'])==48
+          known=set(m['known_prior_2026_indices_excluded'])
+          seen=set()
+          for stage in ['primary','confirmation']:
+           for c in m[stage]:
+            assert c['index'] not in known and c['index'] not in seen
+            assert lines[c['index']].endswith('/'+c['gbd_md5'])
+            seen.add(c['index'])
+          assert len(seen)==144
+          print('R169_FROZEN_PREBLIND_PASS','primary',96,'confirmation',48,
+                'native',r['binary_sha256'],'kissat',k['kissat_binary_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r169-frozen-native-kissat-and-official-2026-index
+          path: |
+            r167/native
+            r167/build-pin.json
+            r166x/bin/kissat
+            r166x/kissat-pin.json
+            r169/official.uri
+          retention-days: 90
+
+  primary:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    name: R169 blind original SAT2026 primary multi-solver shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r169-frozen-native-kissat-and-official-2026-index
+          path: .
+      - name: Install reference solver packages and record exact versions
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat minisat picosat zstd
+          mkdir -p r169/primary
+          dpkg-query -W -f='${Package} ${Version}\n' cryptominisat minisat picosat zstd > r169/primary/versions-${{ matrix.shard }}.txt
+          cat r169/primary/versions-${{ matrix.shard }}.txt
+          chmod +x r167/native r166x/bin/kissat
+      - name: Frozen 96 previously unused official CNFs x 2 repeats x 6 solvers
+        run: |
+          set -euo pipefail
+          python3 -u research/r169_official_2026_blind_benchmark.py shard --stage primary --shard ${{ matrix.shard }} | tee r169/primary/log-${{ matrix.shard }}.txt
+          grep -q '^R169_SHARD_PASS primary ' r169/primary/log-${{ matrix.shard }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r169-primary-shard-${{ matrix.shard }}
+          path: |
+            r169/primary/shard-${{ matrix.shard }}.json
+            r169/primary/log-${{ matrix.shard }}.txt
+            r169/primary/versions-${{ matrix.shard }}.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+  primary_audit:
+    needs: [prepare,primary]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    name: Audit complete R169 primary results and determine preregistered verification gate
+    outputs:
+      promising: ${{ steps.gate.outputs.promising }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r169-frozen-native-kissat-and-official-2026-index
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r169-primary-shard-*
+          merge-multiple: true
+          path: r169/primary
+      - name: Audit paired SAT certificates, statuses, PAR2 and preregistered win signal
+        id: gate
+        run: |
+          set -euo pipefail
+          test "$(find r169/primary -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          python3 -u research/r169_official_2026_blind_benchmark.py audit --stage primary | tee r169/primary/audit.log
+          grep -q '^R169_FINAL ' r169/primary/audit.log
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib,json
+          x=json.loads(pathlib.Path('r169/primary/report.json').read_text())
+          print('promising='+('true' if x['first_stage_promising'] else 'false'))
+          PY
+          cat r169/primary/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R169-PRIMARY-96-OFFICIAL-BLIND-ALL-SOLVERS-AUDIT
+          path: |
+            r169/primary/report.json
+            r169/primary/summary.md
+            r169/primary/audit.log
+            research/r169_official_2026_frozen_manifest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  confirmation:
+    if: needs.primary_audit.outputs.promising == 'true'
+    needs: [prepare,primary_audit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    name: AUTOMATIC NEW BLIND VERIFY 48 disjoint CNFs shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r169-frozen-native-kissat-and-official-2026-index
+          path: .
+      - name: Install exact reference solver packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat minisat picosat zstd
+          mkdir -p r169/confirmation
+          dpkg-query -W -f='${Package} ${Version}\n' cryptominisat minisat picosat zstd > r169/confirmation/versions-${{ matrix.shard }}.txt
+          chmod +x r167/native r166x/bin/kissat
+      - name: Run fresh 48 official CNFs automatically ONLY IF gate passed, with unchanged binaries
+        run: |
+          set -euo pipefail
+          python3 -u research/r169_official_2026_blind_benchmark.py shard --stage confirmation --shard ${{ matrix.shard }} | tee r169/confirmation/log-${{ matrix.shard }}.txt
+          grep -q '^R169_SHARD_PASS confirmation ' r169/confirmation/log-${{ matrix.shard }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r169-confirmation-shard-${{ matrix.shard }}
+          path: |
+            r169/confirmation/shard-${{ matrix.shard }}.json
+            r169/confirmation/log-${{ matrix.shard }}.txt
+            r169/confirmation/versions-${{ matrix.shard }}.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+  confirmation_audit:
+    if: needs.primary_audit.outputs.promising == 'true'
+    needs: [prepare,primary_audit,confirmation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    name: Final independent R169 48 unseen-source validation audit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r169-frozen-native-kissat-and-official-2026-index
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r169-confirmation-shard-*
+          merge-multiple: true
+          path: r169/confirmation
+      - name: Independently verify disjoint holdout, original SHA, SAT, and measured speedup
+        run: |
+          set -euo pipefail
+          test "$(find r169/confirmation -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 6
+          python3 -u research/r169_official_2026_blind_benchmark.py audit --stage confirmation | tee r169/confirmation/audit.log
+          grep -q '^R169_FINAL ' r169/confirmation/audit.log
+          cat r169/confirmation/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R169-AUTOMATIC-48-NEW-UNSEEN-OFFICIAL-VALIDATION-FINAL
+          path: |
+            r169/confirmation/report.json
+            r169/confirmation/summary.md
+            r169/confirmation/audit.log
+          if-no-files-found: warn
+          retention-days: 90
