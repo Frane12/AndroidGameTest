@@ -671,6 +671,51 @@ int main(int argc,char**argv) {
                     throw runtime_error("R166X_DERIVED_UNIT_NATIVE_SELFTEST_FAIL");
                 cout<<"R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS\n";
             }
+            {
+                // XOR (1,2,3)=0 forbids all three positive.
+                R162Bridge b({{{1,2,3},0}},3,R162Bridge::DIRECT);
+                b.feedback_clauses=true;b.watchlazy_enabled=true;
+                b.notify_new_decision_level();
+                b.notify_assignment({1,2,3});
+                if(b.cb_propagate()!=0 || b.feedback_conflicts_detected!=1)
+                    throw runtime_error("R174_CONFLICT_MISSING");
+                bool forgettable=false;
+                if(!b.cb_has_external_clause(forgettable))
+                    throw runtime_error("R174_EXTERNAL_CLAUSE_MISSING");
+                vector<int> clause;
+                while(true){
+                    int lit=b.cb_add_external_clause_lit();
+                    if(!lit)break;
+                    clause.push_back(lit);
+                }
+                if(clause!=vector<int>({-1,-2,-3}) || b.feedback_clauses_consumed!=1)
+                    throw runtime_error("R174_CONFLICT_REASON_WRONG");
+                for(int mask=0;mask<8;mask++) {
+                    int parity=((mask>>0)&1)^((mask>>1)&1)^((mask>>2)&1);
+                    bool satisfied=false;
+                    for(int lit:clause) {
+                        bool val=bool(mask&(1<<(abs(lit)-1)));
+                        satisfied|=(val==(lit>0));
+                    }
+                    if(parity==0 && !satisfied)
+                        throw runtime_error("R174_CLAUSE_NOT_ENTAILED");
+                }
+                cout<<"R174_B_CERTIFIED_CONFLICT_SELFTEST_PASS\n";
+            }
+            {
+                R162Bridge g({{{1,2,3},0}},3,R162Bridge::DIRECT);
+                g.utility_gate=true;g.notifications=10;
+                g.rows_scanned=768;g.propagate_ns=300000;
+                g.utility_bad_windows=2;
+                if(g.cb_propagate()!=0 || g.utility_sleeps!=1 ||
+                   g.utility_sleep_until<=g.notifications)
+                    throw runtime_error("R174_C_SLEEP_FAIL");
+                g.notifications=g.utility_sleep_until;
+                g.cb_propagate();
+                if(g.utility_wakes!=1 || g.disabled)
+                    throw runtime_error("R174_C_WAKE_FAIL");
+                cout<<"R174_C_UTILITY_WAKE_SELFTEST_PASS\n";
+            }
             return 0;
         }
         if(argc!=5 && argc!=6) {
