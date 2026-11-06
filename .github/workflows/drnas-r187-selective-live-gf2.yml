@@ -1,0 +1,156 @@
+name: DRNAS R187 cheap source selector plus live GF2 CDCL real25 paired
+on:
+  push:
+    branches: [experiment/drnas-r187-selective-live-gf2-real25-20261106]
+    paths:
+      - 'research/r187_selective_live_gf2.py'
+      - 'research/r187_cadical_driver.cpp'
+      - '.github/workflows/drnas-r187-selective-live-gf2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r187-selective-live
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R187 source-certification and R186 gate compatibility unit test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r187_selective_live_gf2.py research/r186_cheap_selector.py research/r183_external_mixed.py research/r182_mixed_engine.py
+          python3 -u research/r187_selective_live_gf2.py selftest
+      - name: Download R155 original real 25 and R179 synthetic 13 frozen sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r187/prior_real r187/prior_synthetic
+          gh run download 42112755104 --repo Frane12/AndroidGameTest -n r155-original25-pinned-native-and-independent-smoke -D r187/prior_real
+          gh run download 42204848401 --repo Frane12/AndroidGameTest -n r182-pinned-build-and-53-sources -D r187/prior_synthetic
+          test -f r187/prior_real/frozen/manifest.json
+          test -f r187/prior_synthetic/r179/r179-selected-freeze.json
+          python3 -u research/r187_selective_live_gf2.py freeze
+          python3 -u research/r187_selective_live_gf2.py verify
+      - name: Compile source-pinned CaDiCaL 2.1 with all native live GF2 bridge controls
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r187-cadical
+          (
+            cd /tmp/r187-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r187-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r187-cadical/src research/r187_cadical_driver.cpp /tmp/r187-cadical/build/libcadical.a -o r187/r187-driver
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r187-cadical/src research/r177_xor_cnf_resolution.cpp /tmp/r187-cadical/build/libcadical.a -o r187/r187-live
+          chmod +x r187/r187-driver r187/r187-live
+          r187/r187-live selftest > r187/live-selftest.log
+          grep -q 'SELFTEST_PASS' r187/live-selftest.log
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' > r187/smoke.cnf
+          r187/r187-driver r187/smoke.cnf 15 > r187/smoke.log
+          grep -q '^R185_STATS_END' r187/smoke.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r187")
+          pin={"protocol":"R187-CADICAL-2.1-PAIRED-SHA-v1",
+               "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+               "source_manifest_sha256":hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest(),
+               "clean_binary_sha256":hashlib.sha256((p/"r187-driver").read_bytes()).hexdigest(),
+               "live_binary_sha256":hashlib.sha256((p/"r187-live").read_bytes()).hexdigest()}
+          (p/"build-pin.json").write_text(json.dumps(pin,indent=2))
+          print("R187_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r187-frozen-real25-synthetic13-native-binaries
+          retention-days: 90
+          path: |
+            r187/frozen/
+            r187/r187-driver
+            r187/r187-live
+            r187/build-pin.json
+            r187/smoke.log
+            r187/live-selftest.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    name: R187 selective GF2 live CDCL paired 15s shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r187-frozen-real25-synthetic13-native-binaries
+          path: r187
+      - name: Verify original CNF and binary SHA, four modes, paired x2 cap 15s
+        run: |
+          set -euo pipefail
+          chmod +x r187/r187-driver r187/r187-live
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          root=pathlib.Path("r187")
+          pin=json.loads((root/"build-pin.json").read_text())
+          for file,key in [("frozen/manifest.json","source_manifest_sha256"),
+                           ("r187-driver","clean_binary_sha256"),
+                           ("r187-live","live_binary_sha256")]:
+              assert hashlib.sha256((root/file).read_bytes()).hexdigest()==pin[key]
+          PY
+          python3 -u research/r187_selective_live_gf2.py shard --shard ${{ matrix.shard }} --driver r187/r187-driver --live r187/r187-live | tee r187/shard-${{ matrix.shard }}.log
+          grep -q '^R187_SHARD_PASS ' r187/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r187-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r187/shard-${{ matrix.shard }}.json
+            r187/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r187-frozen-real25-synthetic13-native-binaries
+          path: r187
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r187-shard-*
+          path: r187
+          merge-multiple: true
+      - name: Audit all 304 exact SHA pairs and GF2/CDCL consumption statistics
+        run: |
+          set -euo pipefail
+          test "$(find r187 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r187_selective_live_gf2.py audit | tee r187/audit.log
+          grep -q '^R187_FINAL ' r187/audit.log
+          cat r187/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R187-SELECTIVE-LIVE-GF2-REAL25-FINAL
+          retention-days: 90
+          path: |
+            r187/report.json
+            r187/all-trials.json
+            r187/summary.md
+            r187/audit.log
