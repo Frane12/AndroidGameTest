@@ -235,21 +235,32 @@ def audit():
                 paired.append({"id":c["id"],"cohort":c["cohort"],"repeat":rep,
                     "variant":mode,"delta_PAR2_s":round(old["par2"]-new["par2"],6),
                     "both_solved":both,
+                    "baseline_conflicts":old.get("conflicts"),
+                    "variant_conflicts":new.get("conflicts"),
+                    "baseline_decisions":old.get("decisions"),
+                    "variant_decisions":new.get("decisions"),
+                    "delta_conflicts_fixed_wall":old["conflicts"]-new["conflicts"]
+                       if old.get("conflicts") is not None and new.get("conflicts") is not None else None,
                     "speedup_if_both_solved":round(old["elapsed"]/new["elapsed"],5)
                     if both and new["elapsed"]>0 else None})
     report={"status":"R175_PAIRED_CAUSAL_AUDIT_PASS_NOT_BLIND","protocol":PROTO,
       "formulas":25,"attempts":len(rows),"known_development_sources":True,
       "independent_source_certificates":True,"SAT_originals_checked":True,
       "independent_UNSAT_LRAT":False,"summary":summary,
-      "by_cohort":by_cohort,"paired":paired,"records":rows}
+      "by_cohort":by_cohort,"paired":paired,"records":rows,
+      "caveats":["Known original CNFs, NOT BLIND",
+      "Raw conflicts under equal wall caps measure CDCL throughput; not attributable per exported clause",
+      "A speedup requires solved paired cases or improved PAR2 solved outcomes",
+      "UNSAT not certified by independent LRAT"]}
     save(ROOT/"report.json",report)
     with (ROOT/"summary.md").open("w") as f:
-        f.write("# R174 B/C feedback and utility — development paired originals\n\n")
-        f.write("| Arm | Solved | PAR2 s | Consumed conflict clauses | Utility sleeps |\n")
-        f.write("|---|---:|---:|---:|---:|\n")
+        f.write("# R175 source-certified XOR clause causal ablations\n\n")
+        f.write("25 known development original CNFs, 250 same-source trials; NOT BLIND.\n\n")
+        f.write("| Arm | Solved | PAR2 s | Delivered clauses | Shadow admissions | Mixed conflicts |\n")
+        f.write("|---|---:|---:|---:|---:|---:|\n")
         for k,v in summary.items():
-            f.write(f'| {k} | {v["solved"]}/{v["attempts"]} | {v["PAR2_s"]} | {v["feedback_consumed"]} | {v["utility_sleeps"]} |\n')
-        f.write("\nKnown original CNFs, NOT BLIND. UNSAT lacks independent LRAT.\n")
+            f.write(f'| {k} | {v["solved"]}/{v["attempts"]} | {v["PAR2_s"]} | {v["feedback_consumed"]} | {v["feedback_shadow_admitted"]} | {v["mixed_conflicts"]} |\n')
+        f.write("\nMixed CDCL conflict counts at equal wall time are throughput, not per-clause utility. UNSAT without LRAT.\n")
     print("R175_FINAL",json.dumps({"summary":summary,"by_cohort":by_cohort},
                                   sort_keys=True),flush=True)
 
