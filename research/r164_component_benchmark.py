@@ -173,10 +173,10 @@ def trial(c,mode,rep,prep,binary):
  else:
   need(dt["component_gate_events"]==dt["blocked_components"],"component gate accounting mismatch")
  need(dt["components_with_reasons"]<=dt["component_count"],"component reason accounting invalid")
-  if mode=="direct_incremental":
-   need(dt["incremental_row_events"]>=dt["incremental_reason_checks"],"incremental metrics wrong")
-  else:
-   need(dt["incremental_row_events"]==dt["incremental_reason_checks"]==0,"nonincremental mode polluted")
+ if mode=="direct_incremental":
+  need(dt["incremental_row_events"]>=dt["incremental_reason_checks"],"incremental metrics wrong")
+ else:
+  need(dt["incremental_row_events"]==dt["incremental_reason_checks"]==0,"nonincremental mode polluted")
  if c["cohort"]=="mixed_residual":
   need(stats["conflicts"] is not None and stats["decisions"] is not None,
     "missing genuine CaDiCaL native conflict/decision metrics on hard mixed")
