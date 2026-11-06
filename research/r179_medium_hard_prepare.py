@@ -134,7 +134,7 @@ def generate(index):
           "".join(" ".join(map(str,c))+" 0\n" for c in ordered)).encode()
     cert={"index":index,"expected":"SAT" if sat else "UNSAT",
           "graph_vertices":vertices,"source_xor_rows":vertices,
-          "xor_edges":edges,"xor_rhs":rhs,
+          "xor_edges":[list(e) for e in edges],"xor_rhs":rhs,
           "xor_rhs_parity":sum(rhs)%2,
           "witness":witness[1:] if sat else None,
           "residual_count":len(ordered)-4*vertices,
