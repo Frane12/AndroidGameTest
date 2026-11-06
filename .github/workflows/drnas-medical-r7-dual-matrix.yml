@@ -1,0 +1,113 @@
+name: DRNAS Medical R7 exact G/F dual reforms vs original gMCSpy
+on:
+  push:
+    branches: [experiment/drnas-medical-r7-dual-matrix-20261106]
+    paths:
+      - 'research/drnas_medical/gmispy_r7_dual.py'
+      - '.github/workflows/drnas-medical-r7-dual-matrix.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r7-dual-matrix
+  cancel-in-progress: false
+jobs:
+  cohort:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    name: R7 original G-F dual MILP same truth ${{ matrix.cohort }} genes x4 formulations
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [48,64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exact R7 proof checks and freeze source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_medical/gmispy_r7_dual.py
+          python3 research/drnas_medical/gmispy_r7_dual.py selftest
+      - name: Install exact original gMCSpy with Gurobi and independent COBRA model
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 gurobipy==12.0.3 \
+            beartype joblib bidict scipy tqdm
+          python3 -m pip install --disable-pip-version-check --no-deps \
+            'git+https://github.com/PlanesLab/gMCSpy.git@4567a6d14bd2e5517e7a86b17aebefb0f285544c'
+      - name: Download R6 independently FBA-certified exhaustive truth for same cohort
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p medical-results/r7-reference
+          gh run download 42223264995 --repo Frane12/AndroidGameTest \
+            -n drnas-medical-r6-cohort-${{ matrix.cohort }} \
+            -D medical-results/r7-reference/cohort-${{ matrix.cohort }}
+          test -s medical-results/r7-reference/cohort-${{ matrix.cohort }}/summary.json
+          python3 - <<'PY'
+          import json,pathlib
+          c=${{ matrix.cohort }}
+          p=pathlib.Path("medical-results/r7-reference/cohort-"+str(c)+"/summary.json")
+          r=json.loads(p.read_text())
+          assert r["source_model_sha256"]=="13daac1b0ef19a12459371d4c11d16122ffaccf207070c08a6a66f8ba983b91f"
+          assert r["cohort"]==c
+          assert r["exhaustive"]["gene_and_reaction_FBA_calls"]==2*r["exhaustive"]["candidate_KO_sets"]
+          print("DRNAS_MEDICAL_R7_R6_TRUTH_PIN_PASS",c,r["exhaustive"]["candidate_KO_sets"])
+          PY
+      - name: Run 3 paired cycles for original and three exact dual reformulations
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r7_dual.py benchmark \
+            --cohort ${{ matrix.cohort }} --repeats 3 --cap 120 \
+            --reference medical-results/r7-reference/cohort-${{ matrix.cohort }}/summary.json \
+            --out medical-results/r7-cohort-${{ matrix.cohort }} | tee r7-${{ matrix.cohort }}.log
+          grep -q '^DRNAS_MEDICAL_R7_SUMMARY ' r7-${{ matrix.cohort }}.log
+      - name: Preserve complete original gene sets, dual formulation and timing evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-medical-r7-cohort-${{ matrix.cohort }}
+          retention-days: 90
+          path: |
+            medical-results/r7-cohort-${{ matrix.cohort }}/summary.json
+            medical-results/r7-cohort-${{ matrix.cohort }}/trial-*.json
+            medical-results/r7-cohort-${{ matrix.cohort }}/trial-*.stdout.txt
+            medical-results/r7-cohort-${{ matrix.cohort }}/trial-*.stderr.txt
+            r7-${{ matrix.cohort }}.log
+  audit:
+    needs: cohort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r7-cohort-48
+          path: r7/48
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r7-cohort-64
+          path: r7/64
+      - name: Validate source hashes and exact independent FBA reference before performance claims
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r7_dual.py audit \
+            --cohort48 r7/48/summary.json \
+            --cohort64 r7/64/summary.json \
+            --out r7/audit.json | tee r7/audit.log
+          grep -q '^DRNAS_MEDICAL_R7_AUDIT ' r7/audit.log
+          cat r7/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R7-GF-DUAL-EXACT-AUDIT
+          retention-days: 90
+          path: |
+            r7/audit.json
+            r7/audit.log
