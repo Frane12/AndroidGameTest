@@ -267,7 +267,14 @@ static void proof_json(const string& path,const string& sha,
             first=false;out<<i+1;
         }
         out<<"]";
-        // Independent Python verifier computes SAT model SHA itself if present.
+        string bits;
+        bits.reserve(ans.model.size());
+        for(auto b:ans.model)bits.push_back(b?'1':'0');
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(bits.data()),bits.size(),hash);
+        ostringstream digest;digest<<hex<<setfill('0');
+        for(unsigned char byte:hash)digest<<setw(2)<<unsigned(byte);
+        out<<",\"model_sha256\":\""<<digest.str()<<"\"";
     }else{
         out<<",\"conflict_row_ids\":[";
         for(size_t j=0;j<ans.contradiction.size();j++){
