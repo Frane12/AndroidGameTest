@@ -260,11 +260,18 @@ def audit():
   need(h(FROZEN/(c["id"]+".cnf"))==c["sha256"],"original CNF SHA bad at audit")
   need(hashlib.sha256(full.encode()).hexdigest()==pr["full_tsv_sha"],"full exact source rows changed")
   need(hashlib.sha256(bd.encode()).hexdigest()==pr["boundary_tsv_sha"],"boundary chosen from different source")
+  gc=ROOT/("gauss-"+c["id"])/"gauss-cert.json"
+  grow=ROOT/("gauss-"+c["id"])/"gauss.tsv"
+  gunit=ROOT/("gauss-"+c["id"])/"gauss-units.tsv"
+  need(h(gc)==pr["gauss_certificate_sha"] and h(grow)==pr["gauss_rows_sha"] and h(gunit)==pr["gauss_units_sha"],
+       "Gaussian proof artifacts changed")
+  need(gaussian.replay(FROZEN/(c["id"]+".cnf"),ev,gc,grow,gunit),
+       "Gaussian replay audit rejected derived rows or units")
   preps[c["id"]]=pr
   matching=[z for z in rows if z["id"]==c["id"]]
   need(len(matching)==REPS*len(MODES),"missing same-formula comparisons")
   need(len({z["status"] for z in matching if z["status"]!="TIMEOUT"})<=1,"SAT/UNSAT contradictory solver answers")
- need(len(rows)==8*len(MODES)*REPS and len(keys)==len(rows),"total paired trial count not 96")
+ need(len(rows)==8*len(MODES)*REPS and len(keys)==len(rows),"total paired trial count not 144")
  hashes={p["binary_sha256"] for p in pins}
  need(len(hashes)==1 and all(p["binary_sha256"]==rd(ROOT/"build-pin.json")["binary_sha256"] for p in pins),
    "single native binary SHA mismatch across 4 shards")
@@ -298,7 +305,9 @@ def audit():
      cooldown_skips=sum(z["cooldown_skips"] for z in v),
      assignment_notify_ns=sum(z["assignment_notify_ns"] for z in v),
      backtrack_notify_ns=sum(z["backtrack_notify_ns"] for z in v),
-     incremental_upd_ns=sum(z["incremental_upd_ns"] for z in v))
+     incremental_upd_ns=sum(z["incremental_upd_ns"] for z in v),
+     gauss_units=sum(z["gauss_units"] for z in v),
+     gauss_multiway_selected=sum(z["gauss_multiway_selected"] for z in v))
  for grp in group.values():
   b=grp["clean"]["PAR2_s"]
   for mode in MODES:
@@ -322,7 +331,10 @@ def audit():
     "Completed reason means CDCL requested a GF2 explanation, not proof of a saved conflict",
     "R166X watcher fast filter assumes and audits inherited two-watch invariant",
     "R166X notification/update timers are instrumented; do not claim callback speedups equal solver speedups",
-    "Callback nanoseconds include measurement overhead in all native modes"])
+    "Callback nanoseconds include measurement overhead in all native modes",
+    "R166x Gaussian rows and inferred units replayed from original CNF source proof",
+    "Gaussian pre-processing time charged for all gauss modes",
+    "Source-XOR contradiction certificate is research-only and not LRAT/FRAT"])
  wr(ROOT/"report.json",report)
  print("R166X_FINAL",json.dumps({"status":report["status"],"formulas":8,"trials":len(rows),"summary":group},sort_keys=True),flush=True)
 if __name__=="__main__":
