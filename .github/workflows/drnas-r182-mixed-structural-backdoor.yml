@@ -1,0 +1,159 @@
+name: DRNAS R182 certified mixed XOR GF2 backdoor 53 paired SAT UNSAT
+on:
+  push:
+    branches: [experiment/drnas-r182-mixed-structural-backdoor-20261106]
+    paths:
+      - 'research/r182_mixed_engine.py'
+      - 'research/r182_cadical_driver.cpp'
+      - '.github/workflows/drnas-r182-mixed-structural-backdoor.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r182-mixed-structural-backdoor
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Local GF2 proof + Schaefer/backdoor self-tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r182_mixed_engine.py research/r181_early_conflict_shazam.py research/r180_sat_shazam.py
+          python3 -u research/r182_mixed_engine.py selftest
+      - name: Download R179 source-frozen 364 CNFs and selected reference-calibrated 53
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r179 r182
+          gh run download 42192469296 --repo Frane12/AndroidGameTest -n r179-frozen-sources-and-pinned-reference -D r179
+          gh run download 42192469296 --repo Frane12/AndroidGameTest -n DRNAS-R179-MEDIUM-HARD-SOURCES-REFERENCE-ONLY -D r179
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,"research")
+          import r182_mixed_engine as e
+          c=e.selected()
+          print("R182_SOURCE_53_SHA_PIN_PASS",len(c))
+          PY
+      - name: Compile clean CaDiCaL 2.1 and isolated R181 early conflict probe
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r182-cadical
+          (
+            cd /tmp/r182-cadical
+            git checkout -q rel-2.1.0
+            ./configure
+            make -j2
+          )
+          git -C /tmp/r182-cadical rev-parse HEAD > r182/cadical-source-commit.txt
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r182-cadical/src research/r182_cadical_driver.cpp /tmp/r182-cadical/build/libcadical.a -o r182/r182-driver
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r182-cadical/src research/r181_early_conflict_probe.cpp /tmp/r182-cadical/build/libcadical.a -o r182/r181-probe
+          chmod +x r182/r182-driver r182/r181-probe
+          echo "p cnf 2 2" > r182/smoke.cnf
+          echo "1 0" >> r182/smoke.cnf
+          echo "-1 2 0" >> r182/smoke.cnf
+          r182/r182-driver r182/smoke.cnf 1 | tee r182/smoke.log
+          grep -q 'R182_STATUS status=SAT' r182/smoke.log
+          r182/r181-probe r182/smoke.cnf 64 | grep -q 'R181_PROBE cutoff=64'
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r182")
+          data={"protocol":"R182-CADICAL-2.1-PIN-v1",
+             "cadical_commit":(p/"cadical-source-commit.txt").read_text().strip(),
+             "driver_sha256":hashlib.sha256((p/"r182-driver").read_bytes()).hexdigest(),
+             "probe_sha256":hashlib.sha256((p/"r181-probe").read_bytes()).hexdigest(),
+             "source_selection_sha256":hashlib.sha256(pathlib.Path("r179/r179-selected-freeze.json").read_bytes()).hexdigest()}
+          (p/"build-pin.json").write_text(json.dumps(data,indent=2))
+          print("R182_BUILD_PIN_PASS",json.dumps(data,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r182-pinned-build-and-53-sources
+          retention-days: 90
+          path: |
+            r179/frozen/
+            r179/r179-selected-freeze.json
+            r182/r182-driver
+            r182/r181-probe
+            r182/build-pin.json
+            r182/smoke.log
+            r182/cadical-source-commit.txt
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: R182 GF2 source-certified vs clean medium-hard mixed shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r182-pinned-build-and-53-sources
+          path: .
+      - name: Verify pinned binaries then run two randomized-order repeats
+        run: |
+          set -euo pipefail
+          chmod +x r182/r182-driver r182/r181-probe
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          x=json.loads(pathlib.Path("r182/build-pin.json").read_text())
+          for name,key in (("r182-driver","driver_sha256"),("r181-probe","probe_sha256")):
+              assert hashlib.sha256((pathlib.Path("r182")/name).read_bytes()).hexdigest()==x[key]
+          PY
+          python3 -u research/r182_mixed_engine.py shard --shard ${{ matrix.shard }} --binary r182/r182-driver | tee r182/run-shard-${{ matrix.shard }}.log
+          grep -q '^R182_SHARD_PASS ' r182/run-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r182-paired-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r182/shard-${{ matrix.shard }}.json
+            r182/structure-${{ matrix.shard }}-*.json
+            r182/run-shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r182-pinned-build-and-53-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r182-paired-shard-*
+          merge-multiple: true
+          path: r182
+      - name: Independent paired-source SHA audit, proof-first and early-conflict holdout replay
+        run: |
+          set -euo pipefail
+          test "$(find r182 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r182_mixed_engine.py audit | tee r182/audit.log
+          grep -q '^R182_FINAL ' r182/audit.log
+          cat r182/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R182-CERTIFIED-MIXED-53-318-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r182/report.json
+            r182/summary.md
+            r182/holdout.json
+            r182/audit.log
