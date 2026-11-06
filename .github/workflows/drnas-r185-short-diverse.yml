@@ -1,0 +1,127 @@
+name: DRNAS R185 short diverse SAT 129 SHA 774 paired 5s
+on:
+  push:
+    branches: [experiment/drnas-r185-short-diverse-paired-20261106]
+    paths:
+      - 'research/r185_short_diverse.py'
+      - '.github/workflows/drnas-r185-short-diverse.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r185-short-diverse
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Certify generator and Python source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r185_short_diverse.py research/r183_external_mixed.py research/r182_mixed_engine.py
+          python3 -u research/r185_short_diverse.py selftest
+      - name: Download immutable pinned R182 sources / pinned CaDiCaL and 12 R183 original SHA CNFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r185/external
+          gh run download 42204848401 --repo Frane12/AndroidGameTest -n r182-pinned-build-and-53-sources -D .
+          gh run download 42206668113 --repo Frane12/AndroidGameTest -n r183-pinned-external-originals-and-binary -D r185/external
+          test -f r179/r179-selected-freeze.json
+          test -f r185/external/frozen/manifest.json
+          test -f r185/external/r182-driver
+      - name: Freeze full mixed sources before ANY timed trials (no outcome filtering)
+        run: |
+          set -euo pipefail
+          python3 -u research/r185_short_diverse.py freeze | tee r185/freeze.log
+          grep -q '^R185_FREEZE_PASS ' r185/freeze.log
+          python3 -u research/r185_short_diverse.py verify
+          chmod +x r185/r185-driver
+          echo 'p cnf 2 2' > r185/smoke.cnf
+          echo '1 0' >> r185/smoke.cnf
+          echo '-1 2 0' >> r185/smoke.cnf
+          r185/r185-driver r185/smoke.cnf 1 | tee r185/smoke.log
+          grep -q 'R182_STATUS status=SAT' r185/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r185-pinned-129-sources-native
+          retention-days: 90
+          path: |
+            r185/frozen/
+            r185/manifest.json
+            r185/pin.json
+            r185/r185-driver
+            r185/freeze.log
+            r185/smoke.log
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: R185 5s diverse SHA paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r185-pinned-129-sources-native
+          path: r185
+      - name: Verify source manifest and run randomized-order paired SAT/UNSAT
+        run: |
+          set -euo pipefail
+          chmod +x r185/r185-driver
+          python3 -u research/r185_short_diverse.py verify
+          python3 -u research/r185_short_diverse.py shard --shard ${{ matrix.shard }} --binary r185/r185-driver | tee r185/shard-${{ matrix.shard }}.log
+          grep -q '^R185_SHARD_PASS ' r185/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r185-paired-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r185/shard-${{ matrix.shard }}.json
+            r185/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r185-pinned-129-sources-native
+          path: r185
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r185-paired-shard-*
+          merge-multiple: true
+          path: r185
+      - name: Source-SHA, original SAT witnesses, GF2 traces and 774 paired PAR2 audit
+        run: |
+          set -euo pipefail
+          test "$(find r185 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r185_short_diverse.py audit | tee r185/audit.log
+          grep -q '^R185_FINAL ' r185/audit.log
+          cat r185/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R185-SHORT-DIVERSE-774-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r185/report.json
+            r185/summary.md
+            r185/audit.log
