@@ -1,0 +1,150 @@
+name: DRNAS R172E easier generated SAT and UNSAT formulas same-SHA paired timing
+on:
+  push:
+    branches: [experiment/drnas-r172e-easy-forms-20261106]
+    paths:
+      - 'research/r172e_easy_cnf_generator.py'
+      - 'research/r172e_easy_benchmark.py'
+      - '.github/workflows/drnas-r172e-easy-forms.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: r172e-easy-24-synthetic-source-formulas
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Compile frozen CaDiCaL and R172 budget selftests for easy CNFs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and selftest one frozen binary shared across all modes
+        run: |
+          set -euo pipefail
+          mkdir -p r172e
+          python3 -m py_compile research/r172e_easy_cnf_generator.py research/r172e_easy_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          python3 research/r172e_easy_cnf_generator.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r172e-cadical
+          cd /tmp/r172e-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r172e/cadical-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r172_utility_budget_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r172e/r172e-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r172e/r172e-native selftest | tee r172e/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r172e/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r172e/selftest.log
+          grep -q '^R172_BUDGET_SELFTEST_PASS' r172e/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r172e/r172e-native")
+          pin=dict(binary_sha256=hashlib.sha256(b.read_bytes()).hexdigest(),
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   cadical_commit=pathlib.Path("r172e/cadical-commit.txt").read_text().strip(),
+                   generator_sha256=hashlib.sha256(pathlib.Path("research/r172e_easy_cnf_generator.py").read_bytes()).hexdigest())
+          pathlib.Path("r172e/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R172E_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R172E-PINNED-BINARY-AND-SELFTEST
+          path: |
+            r172e/r172e-native
+            r172e/build-pin.json
+            r172e/selftest.log
+            r172e/cadical-commit.txt
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    timeout-minutes: 20
+    name: R172E 24 easier original SHA CNFs paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R172E-PINNED-BINARY-AND-SELFTEST
+          path: r172e
+      - name: Reconstruct deterministic easier SAT UNSAT sources and original SHA
+        run: |
+          set -euo pipefail
+          python3 research/r172e_easy_cnf_generator.py
+      - name: Run 3 frozen modes 3 repeat exact-SHA paired attempts with 3-second cap
+        run: |
+          set -euo pipefail
+          chmod +x r172e/r172e-native
+          python3 -u research/r172e_easy_benchmark.py shard --shard ${{ matrix.shard }} --binary r172e/r172e-native | tee r172e/shard-${{ matrix.shard }}.log
+          grep -q '^R172E_SHARD_PASS ' r172e/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r172e-easy-shard-${{ matrix.shard }}
+          path: |
+            r172e/shard-${{ matrix.shard }}.json
+            r172e/shard-${{ matrix.shard }}.log
+            r172e/prep-*.json
+            r172e/cert-*.json
+            r172e/full-*.tsv
+            r172e/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 20
+    name: Audit 216 paired easier SAT/UNSAT attempts, original SHA, model proofs and times
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Independently regenerate deterministic SAT and UNSAT originals
+        run: |
+          set -euo pipefail
+          python3 research/r172e_easy_cnf_generator.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r172e-easy-shard-*
+          merge-multiple: true
+          path: r172e
+      - name: Replay XOR source proof and compute real paired solved/PAR-2
+        run: |
+          set -euo pipefail
+          test "$(find r172e -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r172e_easy_benchmark.py audit | tee r172e/audit.log
+          grep -q '^R172E_FINAL ' r172e/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          d=json.loads(pathlib.Path("r172e/report.json").read_text())
+          assert d["status"]=="R172E_EASY_GENERATED_PAIRED_AUDIT_PASS_NOT_BLIND"
+          assert d["original_formulas"]==24 and d["attempts"]==216
+          assert len(d["paired_comparisons"])==144
+          assert d["source_certificates_replayed"] and d["original_sha_verified"]
+          assert d["synthetic_generated_not_official"] and d["not_blind"]
+          assert d["results"]["clean"]["two_way_sweeps"]==0
+          assert all(p["finite_speedup"] is None for p in d["paired_comparisons"]
+                     if p["baseline_status"]=="TIMEOUT" or p["variant_status"]=="TIMEOUT")
+          print("R172E_EASIER_216_PAIRED_SOURCE_AUDIT_PASS")
+          PY
+          cat r172e/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R172E-EASY-216-PAIRED-FINAL-SHA-AUDIT
+          path: |
+            r172e/report.json
+            r172e/summary.md
+            r172e/audit.log
+          if-no-files-found: warn
+          retention-days: 90
