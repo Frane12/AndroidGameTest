@@ -1,0 +1,112 @@
+name: DRNAS Medical R11 exact phenotype cache paired LP audit
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r11-phenotype-cache-20261106
+    paths:
+      - 'research/drnas_medical/gmispy_r11_phenotype_cache.py'
+      - '.github/workflows/drnas-medical-r11-phenotype-cache.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-medical-r11-phenotype-cache-20261106
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    name: R11 same-source ${{ matrix.n }} genes baseline vs exact phenotype cache
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24,48,96,192,384]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Frozen R9/R10 PySAT/CaDiCaL, GLPK, COBRA dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r11_phenotype_cache.py
+          python3 -u research/drnas_medical/gmispy_r11_phenotype_cache.py selftest
+      - name: Get R9 SHA-pinned original SBML and verified R10 cohort output
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r11/r9 r11/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r11/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest \
+            -n DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW -D r11/reference
+          test -s r11/reference/summary.json
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r11/r9/source --freeze r11/r9/frozen
+      - name: Execute alternated no-cache vs exact-phenotype-cache paired trials
+        run: |
+          set -euo pipefail
+          mkdir -p r11-results/${{ matrix.n }}
+          python3 -u research/drnas_medical/gmispy_r11_phenotype_cache.py cohort \
+            --source r11/r9/source --frozen r11/r9/frozen \
+            --reference r11/reference/summary.json \
+            --n ${{ matrix.n }} --out r11-results/${{ matrix.n }} \
+            | tee r11-results/${{ matrix.n }}/cohort.log
+          grep -q '^R11_COHORT_FINAL ' r11-results/${{ matrix.n }}/cohort.log
+      - name: Preserve full raw paired trials, counters and independent checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R11-COHORT-${{ matrix.n }}-RAW
+          path: r11-results/${{ matrix.n }}/
+          retention-days: 90
+          if-no-files-found: warn
+
+  audit:
+    name: R11 fail-closed consistency and measured LP savings audit
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R11-COHORT-*-RAW
+          path: all-r11
+          merge-multiple: false
+      - name: Require five frozen source-identical complete cohort reports
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r11/DRNAS-MEDICAL-R11-COHORT-${n}-RAW"
+            mapfile -t f < <(find "$d" -type f -name summary.json | sort)
+            test "${#f[@]}" -eq 1
+            inputs+=("${f[0]}")
+          done
+          mkdir -p r11-final
+          python3 -u research/drnas_medical/gmispy_r11_phenotype_cache.py audit \
+            --inputs "${inputs[@]}" --out r11-final/certificate.json \
+            | tee r11-final/audit.log
+          grep -q '^R11_FINAL ' r11-final/audit.log
+          cat r11-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R11-FINAL
+          path: r11-final/
+          retention-days: 90
+          if-no-files-found: warn
