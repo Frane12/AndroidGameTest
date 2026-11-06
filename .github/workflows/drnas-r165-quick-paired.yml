@@ -1,0 +1,108 @@
+name: DRNAS R165 quick R164 paired 4 CNFs 90s mixed 30s XOR
+on:
+  push:
+    branches: [experiment/drnas-r165-quick-paired-r164-20261106]
+    paths:
+      - '.github/workflows/drnas-r165-quick-paired.yml'
+      - 'research/r165_short_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r165-quick-4-original-same-r164-bin
+  cancel-in-progress: false
+jobs:
+  short-paired:
+    name: SHA-pinned original pair shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r164-single-frozen-binary-and-source-commit
+          run-id: 42145404351
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - name: Verify native binary SHA, selftest provenance and original manifest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r165_short_benchmark.py
+          chmod +x r165/r164-native
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          from pathlib import Path
+          x=json.loads(Path("r165/build-pin.json").read_text())
+          assert x["commit"]=="2ff07b3af7f98b9d822b9626d348c681297fd174"
+          assert hashlib.sha256(Path("r165/r164-native").read_bytes()).hexdigest()==x["binary_sha256"]
+          m=json.loads(Path("r165/frozen/manifest.json").read_text())
+          assert len(m["cases"])==25
+          print("R165_IMMUTABLE_R164_SHA_PASS",x["binary_sha256"])
+          PY
+      - name: Compare clean CDCL vs R164 event-incremental GF2 plus pure-exact control
+        run: |
+          set -euo pipefail
+          python3 -u research/r165_short_benchmark.py shard --shard ${{ matrix.shard }} --binary r165/r164-native | tee r165/short-shard-${{ matrix.shard }}.log
+          grep -q '^R165_SHARD_PASS ' r165/short-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r165-quick-shard-${{ matrix.shard }}
+          path: |
+            r165/result-${{ matrix.shard }}.json
+            r165/short-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: short-paired
+    name: Final four-case paired wall-time PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r165
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r165-quick-shard-*
+          merge-multiple: true
+          path: r165
+      - name: Verify source, pair integrity, and comparable timed results
+        run: |
+          set -euo pipefail
+          python3 -u research/r165_short_benchmark.py audit | tee r165/short-audit.log
+          grep -q '^R165_FINAL ' r165/short-audit.log
+          cat r165/short-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R165-QUICK-PAIRED-R164-4-SHA-CNFS-FINAL
+          path: |
+            r165/short-report.json
+            r165/short-summary.md
+            r165/short-audit.log
+          if-no-files-found: warn
+          retention-days: 90
