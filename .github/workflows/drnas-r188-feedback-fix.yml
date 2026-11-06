@@ -1,0 +1,159 @@
+name: DRNAS R188 fix disabled CDCL feedback full64 budget8 shadow8
+on:
+  push:
+    branches: [experiment/drnas-r188-certified-feedback-fix-20261106]
+    paths:
+      - 'research/r188_feedback_benchmark.py'
+      - 'research/r187_cadical_driver.cpp'
+      - '.github/workflows/drnas-r188-feedback-fix.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r188-selective-live
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R188 source-certification and R186 gate compatibility unit test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r188_feedback_benchmark.py research/r186_cheap_selector.py research/r183_external_mixed.py research/r182_mixed_engine.py
+          python3 -u research/r188_feedback_benchmark.py selftest
+      - name: Reuse R187 SHA frozen real25 and synthetic13, no source selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r188
+          gh run download 42221503842 --repo Frane12/AndroidGameTest -n r187-frozen-real25-synthetic13-native-binaries -D r188
+          test -f r188/frozen/manifest.json
+          python3 -u research/r188_feedback_benchmark.py verify
+          python3 - <<'PY'
+          import hashlib,pathlib
+          h=hashlib.sha256(pathlib.Path("r188/frozen/manifest.json").read_bytes()).hexdigest()
+          assert h=="3f0f67bea5547daa1ba07d9a1dba31d8d33f7d734db8eb6e8cae358a46c91ef3",h
+          print("R188_SAME_SOURCE_PIN_PASS",h)
+          PY
+      - name: Compile source-pinned CaDiCaL 2.1 with all native live GF2 bridge controls
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r188-cadical
+          (
+            cd /tmp/r188-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r188-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r188-cadical/src research/r187_cadical_driver.cpp /tmp/r188-cadical/build/libcadical.a -o r188/r188-driver
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r188-cadical/src research/r188_certified_feedback_fix.cpp /tmp/r188-cadical/build/libcadical.a -o r188/r188-live
+          chmod +x r188/r188-driver r188/r188-live
+          r188/r188-live selftest > r188/live-selftest.log
+          grep -q 'SELFTEST_PASS' r188/live-selftest.log
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' > r188/smoke.cnf
+          r188/r188-driver r188/smoke.cnf 15 > r188/smoke.log
+          grep -q '^R185_STATS_END' r188/smoke.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r188")
+          pin={"protocol":"R188-CADICAL-2.1-PAIRED-SHA-v1",
+               "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+               "source_manifest_sha256":hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest(),
+               "clean_binary_sha256":hashlib.sha256((p/"r188-driver").read_bytes()).hexdigest(),
+               "live_binary_sha256":hashlib.sha256((p/"r188-live").read_bytes()).hexdigest()}
+          (p/"build-pin.json").write_text(json.dumps(pin,indent=2))
+          print("R188_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r188-frozen-real25-synthetic13-native-binaries
+          retention-days: 90
+          path: |
+            r188/frozen/
+            r188/r188-driver
+            r188/r188-live
+            r188/build-pin.json
+            r188/smoke.log
+            r188/live-selftest.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    name: R188 selective GF2 live CDCL paired 15s shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r188-frozen-real25-synthetic13-native-binaries
+          path: r188
+      - name: Verify original CNF and binary SHA, five modes, paired x2 cap 15s
+        run: |
+          set -euo pipefail
+          chmod +x r188/r188-driver r188/r188-live
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          root=pathlib.Path("r188")
+          pin=json.loads((root/"build-pin.json").read_text())
+          for file,key in [("frozen/manifest.json","source_manifest_sha256"),
+                           ("r188-driver","clean_binary_sha256"),
+                           ("r188-live","live_binary_sha256")]:
+              assert hashlib.sha256((root/file).read_bytes()).hexdigest()==pin[key]
+          PY
+          python3 -u research/r188_feedback_benchmark.py shard --shard ${{ matrix.shard }} --driver r188/r188-driver --live r188/r188-live | tee r188/shard-${{ matrix.shard }}.log
+          grep -q '^R188_SHARD_PASS ' r188/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r188-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r188/shard-${{ matrix.shard }}.json
+            r188/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r188-frozen-real25-synthetic13-native-binaries
+          path: r188
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r188-shard-*
+          path: r188
+          merge-multiple: true
+      - name: Audit all 380 exact SHA trials and GF2/CDCL consumption statistics
+        run: |
+          set -euo pipefail
+          test "$(find r188 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r188_feedback_benchmark.py audit | tee r188/audit.log
+          grep -q '^R188_FINAL ' r188/audit.log
+          cat r188/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R188-FEEDBACK-CAUSE-SHADOW8-REAL25-FINAL
+          retention-days: 90
+          path: |
+            r188/report.json
+            r188/all-trials.json
+            r188/summary.md
+            r188/audit.log
