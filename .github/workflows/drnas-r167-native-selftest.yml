@@ -1,0 +1,95 @@
+name: DRNAS R167 C++ certified XOR native compile and selftest
+on:
+  push:
+    branches: [experiment/drnas-r167-native-gf2-blind-20261106]
+    paths:
+      - '.github/workflows/drnas-r167-native-selftest.yml'
+      - 'research/r167_native_exact_gf2.cpp'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compile-and-prove:
+    name: Pinned CaDiCaL native C++ build and 12 logic safety cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile CaDiCaL rel-2.1.0 and the native GF2 dispatch binary
+        run: |
+          set -euo pipefail
+          mkdir -p r167
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r167-cadical
+          cd /tmp/r167-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r167/cadical-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r167_native_exact_gf2.cpp" ./build/libcadical.a -lcrypto -o "$GITHUB_WORKSPACE/r167/native"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path("r167/native")
+          d=dict(binary_sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+            source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            source_cpp_sha256=hashlib.sha256(pathlib.Path("research/r167_native_exact_gf2.cpp").read_bytes()).hexdigest(),
+            cadical_commit=pathlib.Path("r167/cadical-commit.txt").read_text().strip())
+          pathlib.Path("r167/build-pin.json").write_text(json.dumps(d,sort_keys=True,indent=2))
+          print("R167_BINARY_BUILD_PASS",json.dumps(d,sort_keys=True))
+          PY
+      - name: Test C++ auto/clean parity and independently replay source proofs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,subprocess,sys
+          root=pathlib.Path("r167")
+          fixtures={
+            "xor2-sat":("p cnf 2 2\n1 2 0\n-1 -2 0\n", "SAT","NATIVE_EXACT_GF2"),
+            "xor2-unsat":("p cnf 2 4\n1 2 0\n-1 -2 0\n1 -2 0\n-1 2 0\n","UNSAT","NATIVE_EXACT_GF2"),
+            "xor2-unit":("p cnf 2 3\n1 2 0\n-1 -2 0\n1 0\n","SAT","NATIVE_EXACT_GF2"),
+            "units-conflict":("p cnf 1 2\n1 0\n-1 0\n","UNSAT","NATIVE_EXACT_GF2"),
+            "no-clauses":("p cnf 2 0\n","SAT","NATIVE_EXACT_GF2"),
+            "plain-sat":("p cnf 3 1\n1 2 3 0\n","SAT","CDCL_FALLBACK"),
+            "plain-unsat":("p cnf 1 2\n1 0\n-1 0\n1 1 0\n","UNSAT","CDCL_FALLBACK"),
+            "partial-xor":("p cnf 3 3\n1 2 3 0\n-1 -2 3 0\n1 -2 -3 0\n","SAT","CDCL_FALLBACK"),
+            "tautology":("p cnf 2 1\n1 -1 0\n","SAT","CDCL_FALLBACK"),
+            "empty-clause":("p cnf 1 1\n0\n","UNSAT","CDCL_FALLBACK"),
+            "mixed-xor":("p cnf 3 3\n1 2 0\n-1 -2 0\n2 3 0\n","SAT","CDCL_FALLBACK"),
+            "xor3-sat":("p cnf 3 4\n1 2 3 0\n-1 -2 3 0\n-1 2 -3 0\n1 -2 -3 0\n","SAT","NATIVE_EXACT_GF2"),
+          }
+          for name,(text,expected,route) in fixtures.items():
+            src=root/(name+".cnf");src.write_text(text)
+            proof=root/(name+"-proof.json")
+            cmd=[str(root/"native"),str(src),"--cap","5","--proof",str(proof)]
+            out=subprocess.run(cmd,capture_output=True,text=True)
+            print("R167_FIXTURE",name,out.returncode,out.stderr[-300:])
+            assert out.returncode=={"SAT":10,"UNSAT":20}[expected],(name,out.stdout,out.stderr)
+            arr=[json.loads(line[len("R167_RESULT "):]) for line in out.stdout.splitlines() if line.startswith("R167_RESULT ")]
+            assert len(arr)==1 and arr[0]["method"]==route and arr[0]["status"]==expected,(name,arr)
+            if route=="NATIVE_EXACT_GF2":
+              assert proof.is_file(),name
+              result=subprocess.run([sys.executable,"research/r166_independent_verifier.py",
+                    str(src),str(proof)],capture_output=True,text=True)
+              assert result.returncode==0,(name,result.stdout,result.stderr)
+            else:
+              assert not proof.exists(),name
+            clean=subprocess.run([str(root/"native"),str(src),"--cap","5","--force-clean"],
+                  capture_output=True,text=True)
+            assert clean.returncode==out.returncode,(name,clean.stdout,clean.stderr)
+            print("R167_FIXTURE_PASS",name,expected,route)
+          print("R167_12_FIXTURES_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R167-CPP-NATIVE-PINNED-GF2-BINARY-AND-SELFTEST
+          path: |
+            r167/native
+            r167/build-pin.json
+            r167/cadical-commit.txt
+            r167/*-proof.json
+          if-no-files-found: warn
+          retention-days: 90
