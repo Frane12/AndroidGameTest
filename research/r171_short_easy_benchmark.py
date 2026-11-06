@@ -59,7 +59,7 @@ def generate():
         lines=data.decode("ascii").splitlines()
         # SATLIB "%" marks EOF; its following standalone 0 is not a clause.
         cutoff=next((j for j,x in enumerate(lines) if x.lstrip().startswith("%")),len(lines))
-        normalized=("\\n".join(lines[:cutoff]).rstrip()+"\\n").encode()
+        normalized=("\n".join(lines[:cutoff]).rstrip()+"\n").encode()
         ident="satlib-"+filename[:-4]
         p=ROOT/"frozen"/(ident+".cnf");p.write_bytes(normalized)
         variables,clauses=base.dimacs(p)
