@@ -1,0 +1,104 @@
+name: DRNAS R159 strict audit recovery of 240 pre-measured real CNFs
+on:
+  push:
+    branches: [experiment/drnas-r159-audit-recovery-20261106]
+    paths: ['.github/workflows/drnas-r159-audit-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    name: Reuse exact 4 complete shards no SAT rerun; SHA pinned full R158 shadow audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify immutable baseline and audit source
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          python3 -m py_compile research/r159_external_transfer.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r151-frozen-model-and-independent-real-40
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r151-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R158-FED-STRICT-OFFLINE-FEATURES-MODELS
+          run-id: 42130768112
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-r158-model
+      - uses: actions/download-artifact@v4
+        with:
+          name: r159-frozen-16-real-original-SHA-precommitted
+          run-id: 42133272364
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159-source-download
+      - name: Restore frozen original provenance
+        run: |
+          set -euo pipefail
+          mkdir -p r159/frozen
+          cp r159-source-download/r159/frozen/manifest.json r159/frozen/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r159-shard-*
+          run-id: 42133272364
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: false
+          path: r159-download
+      - name: Require exact source SHA, per-shard manifest, trials and traces
+        run: |
+          set -euo pipefail
+          cat > /tmp/r159-checks.sha256 <<'SHA'
+          1b55b49ca4478981d7d05b782982a3c9243e1380e5a4c73736d6dcf556aab5b8  r159/frozen/manifest.json
+          60a62b1ff45c0f9e1a35825834c467a6aeb08edddafd36404fc24d8ae3fa505b  r159-download/r159-shard-0/r159/shard-0/manifest.json
+          0e3ed086eb73146ce949af32194d564b9a6d5390c96cdb1656e388d5e52f7c73  r159-download/r159-shard-0/r159/shard-0/measurements.csv
+          c748b533694754c53646d98308255c434986c3dcb676ddc4bf0bec0c78dbe90f  r159-download/r159-shard-0/r159/shard-0/traces.jsonl
+          ab5a6daae92bac4987970c04822411db5b2bd982f8f6ed63be9599fa6b7b597e  r159-download/r159-shard-1/r159/shard-1/manifest.json
+          f015eeffab827a9d8edafbc1317c96e2750d6abcb298a3e78560c21732f890f6  r159-download/r159-shard-1/r159/shard-1/measurements.csv
+          34d0ed930355e4860744c7bc28a062beee8c0707f423a10f475cfa972afd35dc  r159-download/r159-shard-1/r159/shard-1/traces.jsonl
+          32bcb51fe88df1faa087038c9d87975d108ae527c7a40d61fb69561f46ba4212  r159-download/r159-shard-2/r159/shard-2/manifest.json
+          915b2f1494b4bca6d5b383fb1ae3e034d4b28237b0f582608199466e69b5acc5  r159-download/r159-shard-2/r159/shard-2/measurements.csv
+          ed8d5b1383e5bd756fb8960f0c94afa62e03902457619fcf12c4402320dbb910  r159-download/r159-shard-2/r159/shard-2/traces.jsonl
+          ffe22f9c53bdc9c7588877a270171773a8fc5beb1cb29e40031ec03f129c7a76  r159-download/r159-shard-3/r159/shard-3/manifest.json
+          24ce2e5f280ad95eaa75a052bf51ac2bd32c2849ea9225ae29789c0417c55cc0  r159-download/r159-shard-3/r159/shard-3/measurements.csv
+          826dbfe3beb07a211f7b32633d42dea8f8ed2a11de84e05a74186590361b6800  r159-download/r159-shard-3/r159/shard-3/traces.jsonl
+          SHA
+          sha256sum -c /tmp/r159-checks.sha256
+      - name: Audit SAT witnesses, 4 cohorts, paired PAR-2 and R158 shadow transfer
+        run: |
+          set -euo pipefail
+          python3 -u research/r159_external_transfer.py audit | tee r159-recovered-audit.log
+          grep -q '^R159_FINAL ' r159-recovered-audit.log
+          test -s r159/report/report.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path("r159/report/report.json").read_text())
+          assert data["original_formulas"]==16 and data["measured_SAT_attempts"]==240
+          assert data["new_to_frozen_R158_training_and_test"] is True
+          assert data["live_R158_policy_executed"] is False
+          assert data["frozen_V1531_changed"] is False
+          assert data["independent_UNSAT_certificate"] is False
+          print("R159_RECOVERY_PROVENANCE_AND_SAT_AUDIT_PASS")
+          PY
+          cat r159/report/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R159-STRICT-AUDITED-240-REAL-REUSED-R151-R158-SHADOW
+          path: |
+            r159/report/
+            r159-recovered-audit.log
+            r159/frozen/manifest.json
+          retention-days: 90
+          if-no-files-found: error
