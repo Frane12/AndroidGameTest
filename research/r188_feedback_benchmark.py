@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""R187: R186 low-cost source selector + R177 certified live GF2↔CDCL bridge.
+"""R188: repair missing external clause admission in R177 direct GF2 modes;
+causal budget8/short4 vs full64 vs shadow8 with unchanged R187 frozen 38 CNFs.
 
 Fixed development-only suite:
 * 25 previously seen R154/R155 source-original GBD CNFs (R155 run 42112755104)
@@ -7,8 +8,8 @@ Fixed development-only suite:
 * 13 reference-calibrated *generated* R179 controls (9 validation, 4 sealed).
 Both source sets were seen in past work; no claims of blind novelty.
 
-Compare one clean CaDiCaL 2.1.0 solver and three selective GF2 strategies:
-  clean, selective_gate, selective_feedback, selective_cooldown.
+Compare clean CaDiCaL, selective Gate, fixed full-64 feedback,
+short-width <=4 budget8 feedback, and matching shadow-only feedback.
 All start from same original SHA, randomized per pair, 15s END-TO-END wall cap,
 2 paired repetitions, 8 shards. Independent SAT check on original source.
 Source GF2 traces replayed. CaDiCaL UNSAT without GF2 source proof is not LRAT.
@@ -21,7 +22,7 @@ import r183_external_mixed as ext
 import r186_cheap_selector as r186
 
 ROOT=pathlib.Path("r188")
-R188_SOURCE_PROTO="DRNAS-R188-FEEDBACK-CLAUSE-EXPORT-CAUSAL-v1"
+R188_SOURCE_PROTO="DRNAS-R187-REAL25-SELECTIVE-LIVE-GF2-20261106-v1"
 R188_SOURCE_SHA="3f0f67bea5547daa1ba07d9a1dba31d8d33f7d734db8eb6e8cae358a46c91ef3"
 FROZEN=ROOT/"frozen"
 CAP=15.0
