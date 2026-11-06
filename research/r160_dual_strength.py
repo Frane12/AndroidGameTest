@@ -60,13 +60,19 @@ def freeze():
         need(y is not None and y["sha256"]==x["sha256"],"R159 SHA differs")
         entries.append(y);used.add(x["sha256"])
     cohorts=("official2026","official2025","miter","cryptography")
+    # Feasibility preregistration based only on original CNF dimensions.
+    # R151 has exactly four eligible official2025 cases, all in frozen R159.
+    # Thus choose eight additional cases from other cohorts without looking
+    # at R160 solver outcomes or R151/R159 timing data.
+    extra_quotas={"official2026":4,"official2025":0,"miter":3,"cryptography":1}
     for group in cohorts:
         options=sorted((x for x in src["cases"] if x["cohort"]==group
             and x["sha256"] not in used and x["variables"]<=5000
             and x["bytes"]<=5000000 and x["clauses"]<=250000),
             key=lambda x:(x["variables"],x["sha256"]))
-        need(len(options)>=2,"insufficient transfer cases "+group)
-        entries.extend(options[:2]);used.update(x["sha256"] for x in options[:2])
+        count=extra_quotas[group]
+        need(len(options)>=count,"insufficient feasible source cases "+group)
+        entries.extend(options[:count]);used.update(x["sha256"] for x in options[:count])
     need(len(entries)==24 and len(used)==24,"bad 24 case freeze")
     for x in entries:
         p=SOURCE/x["id"]
