@@ -1,0 +1,105 @@
+name: DRNAS R167 BLIND SAT Competition 2026 native C++ vs clean CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-r167-native-gf2-blind-20261106]
+    paths: ['.github/workflows/drnas-r167-blind-2026.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r167-official-2026-eight-frozen-blind
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: Official GBD native/CaDiCaL pair shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R167-CPP-NATIVE-PINNED-GF2-BINARY-AND-SELFTEST
+          run-id: 42149826500
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r167
+      - name: Check frozen C++ source and official 2026 preregistered source list
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r167_blind2026.py research/r166_independent_verifier.py
+          chmod +x r167/native
+          cp research/r167_blind2026_manifest.json r167/blind-manifest.json
+          git clone -q --depth 1 https://github.com/satcompetition/2026.git /tmp/satcomp-2026-official
+          cp /tmp/satcomp-2026-official/downloads/track_main_2026.uri r167/official.uri
+          test "$(git hash-object r167/official.uri)" = "2b86a4d685b492a844646f378ac3f3415fd131d5"
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          r=pathlib.Path("r167")
+          m=json.loads((r/"blind-manifest.json").read_text())
+          pin=json.loads((r/"build-pin.json").read_text())
+          src=pathlib.Path("research/r167_native_exact_gf2.cpp")
+          assert hashlib.sha256(src.read_bytes()).hexdigest()==pin["source_cpp_sha256"],"native source changed after freeze"
+          assert hashlib.sha256((r/"native").read_bytes()).hexdigest()==pin["binary_sha256"]
+          assert len(m["selection"])==8
+          lines=(r/"official.uri").read_text().strip().splitlines()
+          assert len(lines)==400
+          for c in m["selection"]:
+            assert lines[c["index"]].endswith("/"+c["gbd_md5"]),c
+          print("R167_BLIND_FROZEN_SOURCE_PASS",pin["source_cpp_sha256"],pin["binary_sha256"])
+          print("R167_BLIND_URI_PRE_REGISTER_PASS",len(m["selection"]))
+          PY
+          command -v zstd || (sudo apt-get update -qq && sudo apt-get install -y zstd)
+      - name: Run frozen two-paired trials for each preregistered official source
+        run: |
+          set -euo pipefail
+          python3 -u research/r167_blind2026.py shard --shard ${{ matrix.shard }} --native r167/native | tee r167/blind-shard-${{ matrix.shard }}.log
+          grep -q '^R167_BLIND_SHARD_PASS ' r167/blind-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r167-official-blind-shard-${{ matrix.shard }}
+          path: |
+            r167/shard-${{ matrix.shard }}.json
+            r167/blind-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Final blind 2026 immutable instances paired PAR2 and proof audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r167-official-blind-shard-*
+          merge-multiple: true
+          path: r167
+      - name: Audit all eight preregistered GBD identifiers and paired runs
+        run: |
+          set -euo pipefail
+          cp research/r167_blind2026_manifest.json r167/blind-manifest.json
+          python3 -u research/r167_blind2026.py audit | tee r167/blind-audit.log
+          grep -q '^R167_BLIND_FINAL ' r167/blind-audit.log
+          cat r167/blind-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R167-2026-GBD-FROZEN-8-BLIND-NATIVE-GF2-VS-CADICAL-FINAL
+          path: |
+            r167/blind-manifest.json
+            r167/blind-report.json
+            r167/blind-summary.md
+            r167/blind-audit.log
+          if-no-files-found: warn
+          retention-days: 90
