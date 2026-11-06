@@ -1,0 +1,118 @@
+name: DRNAS ORION public research evidence release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/drnas-orion-evidence-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.repository == 'Frane12/AndroidGameTest'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout public research index
+        uses: actions/checkout@v4
+      - name: Download immutable original GitHub Actions artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets evidence
+          fetch_artifact() {
+            local run="$1" name="$2" label="$3"
+            mkdir -p "evidence/$label"
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "evidence/$label"
+            ( cd "evidence/$label" && zip -qr "../../release-assets/${label}.zip" . )
+            test -s "release-assets/${label}.zip"
+            unzip -t "release-assets/${label}.zip" | tail -1
+          }
+          fetch_artifact 42228208905 DRNAS-R189-SOURCE-CERTIFIED-USEFUL-INFORMATION-FINAL DRNAS_R189_AUDIT
+          fetch_artifact 42228208905 r189-exact-source38-pinned-native DRNAS_R189_FROZEN_SOURCE
+          fetch_artifact 41898809612 R115-historical-14k-repeat-raw DRNAS_R115_RAW
+          fetch_artifact 42128549081 DRNAS-R153-REPEAT-25-5SOLVER-3X20S-AUDIT DRNAS_R153_AUDIT
+          fetch_artifact 42128549081 r153repeat-original25-frozen-source-and-binaries DRNAS_R153_FROZEN_SOURCE
+          fetch_artifact 42217191848 DRNAS-R186-CHEAP-SELECTOR-774-PAIRED-FINAL DRNAS_R186_AUDIT
+          cp research/DRNAS_ORION_2026-11-06_PUBLIC_REVIEW.md release-assets/RESEARCH_EVIDENCE_INDEX.md
+          ( cd release-assets && sha256sum *.zip RESEARCH_EVIDENCE_INDEX.md > SHA256SUMS.txt )
+          cat > release-assets/READ_ME_FIRST.txt <<'EOF'
+          DRNAS SAT / ORION research evidence v0.1
+          Author: Frane Drnas
+          Date: 2026-11-06
+          Status: research evidence for independent review; not peer-reviewed.
+          This release is a frozen test-data and audit archive. ORION is a PROPOSAL,
+          not a validated new SAT solving implementation or world-record claim.
+          The main science dossier: RESEARCH_EVIDENCE_INDEX.md
+          R189 is the primary related experiment, with raw audit and frozen source.
+          R115: a censored (timeout-limited) specialized-instance comparison.
+          R153: known development/repeat cohort, not a fresh blind holdout.
+          Mixed-instance results and failures must be considered.
+          Attached academic PDF documents were provided separately to reviewers;
+          they are NOT included in this release at this stage.
+          EOF
+          cat > release-notes.md <<'EOF'
+          ## DRNAS SAT / ORION independent review — evidence archive
+
+          **Author:** Frane Drnas (Croatia).
+          **Status:** Research pre-release for independent scientific evaluation, not peer-reviewed.
+
+          This archive contains the **actual frozen GitHub Actions benchmark inputs,
+          paired runs and audit records**, alongside the [public evidence index](https://github.com/Frane12/AndroidGameTest/blob/main/research/DRNAS_ORION_2026-11-06_PUBLIC_REVIEW.md).
+
+          **Primary ORION-relevant test — [R189](https://github.com/Frane12/AndroidGameTest/actions/runs/42228208905):**
+          38 formulas; 456 total attempts across 6 modes. Reported aggregate
+          PAR-2: clean 1514.506 s, selected certified GF(2) gate 1085.118 s
+          (1.396× ratio); solved 26/76 vs 40/76 paired attempts.
+          [Exact experimental source](https://github.com/Frane12/AndroidGameTest/tree/7728bc0d9b7caa29e6547319953f79035b26d747).
+
+          **[R115](https://github.com/Frane12/AndroidGameTest/actions/runs/41898809612):**
+          On one externally sourced 250-variable, 1,000-clause formula, DRNAS R28
+          ran in 0.002465–0.003064 s, while Kissat and CaDiCaL hit the 60 s cap.
+          Those are LOWER BOUNDS on speedup, not exact completion-time ratios.
+          This is one known specialized case, not universal superiority.
+
+          **[R153](https://github.com/Frane12/AndroidGameTest/actions/runs/42128549081):**
+          25 original CNFs, 375 paired attempts and strong complete-XOR behavior;
+          mixed-residual / non-XOR controls were not solved within their caps.
+
+          **[R186](https://github.com/Frane12/AndroidGameTest/actions/runs/42217191848):**
+          A 129-formula development test illustrates selective gating and its
+          limits on external mixed-encoding families.
+
+          **Research proposal:** DRNAS–ORION asks whether source-certified,
+          low-overhead GF(2)-to-CDCL communication can help on heterogeneous
+          real SAT tasks. It is not yet established as a novel or generally
+          superior algorithm. Gaussian elimination and XOR-aware SAT are
+          established prior art. Independent SAT witness checking, UNSAT
+          certificate verification and blind holdouts are important next steps.
+
+          Download the six ZIP assets, the readable evidence index and
+          SHA256SUMS.txt below for source data and provenance.
+
+          **PDF manuscripts are not included in this release yet:** they can be
+          sent as email attachments to reviewers alongside this permanent link.
+          EOF
+      - name: Publish reproducible pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: drnas-orion-review-v0.1-20261106
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title 'DRNAS SAT / ORION v0.1 — Public Research Evidence (Frane Drnas)' \
+              --notes-file release-notes.md --prerelease
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,name,isPrerelease,assets
