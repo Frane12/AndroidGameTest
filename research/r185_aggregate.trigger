@@ -1,0 +1,1 @@
+DRNAS R185 sum exactly four paired runs: 42216293355 42216297531 42216302548 42216307152. Strict same-SHA and censored-timing audit.
