@@ -739,7 +739,7 @@ static int r162_run(const string& mode,const string& src,
         mode=="gauss_feedback"||mode=="gauss_utility"||
         mode=="gauss_feedback_utility"||r175||r176;
     bridge.feedback_clauses=mode=="gauss_feedback"||
-                            mode=="gauss_feedback_utility"||r175;
+                            mode=="gauss_feedback_utility"||r175||r176;
     bridge.feedback_shadow=mode=="gauss_shadow";
     bridge.feedback_max_width=mode=="gauss_short4"?4:0;
     bridge.feedback_max_clauses=mode=="gauss_budget8"?8:64;
@@ -855,6 +855,49 @@ int main(int argc,char**argv) {
             DrnasBridge::watch_selftest();
             gf2_closure_selftest();
             r176_closure_selftest();
+            {
+                // Four assignments may be CNF-propagated: the newly derived
+                // triple-source XOR row becomes a single correct IPASIR-UP unit.
+                vector<XorRow> src={{{1,2,3},0},{{3,4,5},1},{{5,6,7},1}};
+                vector<vector<int>> clauses={{1,8},{-7,-8},{2,4,8}};
+                auto proof=r176_cnf_guided_closure(src,clauses,true,32);
+                bool demonstrated=false;
+                for(const auto&r:proof.rows){
+                    if(r.vars!=vector<int>({1,2,4,6,7})||r.rhs!=0)continue;
+                    R162Bridge b({r},8,R162Bridge::DIRECT);
+                    b.watchlazy_enabled=true;
+                    b.notify_new_decision_level();
+                    b.notify_assignment({1,2,4,6});
+                    const int implication=b.cb_propagate();
+                    if(implication!=-7)
+                        throw runtime_error("R176_TRIPLE_REASON_MISSING");
+                    vector<int> reason;
+                    for(int lit=0;(lit=b.cb_add_reason_clause_lit(-7))!=0;)
+                        reason.push_back(lit);
+                    if(reason.size()!=5 || reason[0]!=-7)
+                        throw runtime_error("R176_TRIPLE_REASON_INVALID");
+                    for(int mask=0;mask<128;++mask){
+                        bool src_sat=true;
+                        for(const auto&orig:src){
+                            int parity=0;
+                            for(int v:orig.vars)parity^=(mask>>(v-1))&1;
+                            src_sat&=(parity==orig.rhs);
+                        }
+                        if(!src_sat)continue;
+                        bool clause_sat=false;
+                        for(int lit:reason){
+                            bool val=((mask>>(abs(lit)-1))&1)!=0;
+                            clause_sat|=(val==(lit>0));
+                        }
+                        if(!clause_sat)
+                            throw runtime_error("R176_CNF_GUIDED_REASON_NOT_ENTAILED");
+                    }
+                    demonstrated=true;break;
+                }
+                if(!demonstrated)
+                    throw runtime_error("R176_TRIPLE_ROW_NOT_GENERATED");
+                cout<<"R176_GF2_CNF_PROPAGATION_SELFTEST_PASS\n";
+            }
             R162Bridge::selftest();
             {
                 R162Bridge inc({{{1,2,3},0}},3,R162Bridge::DIRECT);
