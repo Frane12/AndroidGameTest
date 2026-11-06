@@ -1,0 +1,147 @@
+name: DRNAS R194 independent-seed external SAT R193 replay 96 paired
+on:
+  push:
+    branches: [experiment/drnas-r194-dual-live-external-repro-20261106]
+    paths:
+      - 'research/r194_dual_live_repro.py'
+      - 'research/r194_dual_live_driver.cpp'
+      - '.github/workflows/drnas-r194-dual-live-repro.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r194-seed-repro
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Precommitted seed/order matrix and Python parser validation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r194_dual_live_repro.py research/r193_dual_live_benchmark.py research/r188_feedback_benchmark.py
+          python3 -u research/r194_dual_live_repro.py selftest
+      - name: Reimport SAME immutable R193 external CNF source, verify all 102 SHA identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r194
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D r194
+          python3 -u research/r194_dual_live_repro.py verify | tee r194/source-verify.log
+          grep -q '^R194_SOURCE_VERIFIED 20ca08f58828637815d93f46ef60b517' r194/source-verify.log
+      - name: Compile pinned CaDiCaL 2.1 with explicit seed for BOTH in-process solvers
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r194-cadical
+          (
+            cd /tmp/r194-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r194-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r194-cadical/src research/r194_dual_live_driver.cpp /tmp/r194-cadical/build/libcadical.a -o r194/r194-driver
+          chmod +x r194/r194-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r194/smoke.cnf
+          for seed in 0 17 191; do
+            for mode in default sat dual_keep_default dual_keep_sat; do
+              r194/r194-driver r194/smoke.cnf 2 "$mode" 0 "$seed" > "r194/smoke-$mode-$seed.log"
+              grep -q '^R182_STATUS status=SAT' "r194/smoke-$mode-$seed.log"
+            done
+          done
+          python3 - <<'PY'
+          import hashlib,json,pathlib,sys
+          sys.path.insert(0,"research")
+          import r194_dual_live_repro as b
+          case=b.selected();root=pathlib.Path("r194")
+          pin=dict(protocol=b.PROTO,source_id=case["id"],source_sha256=case["sha256"],
+             original_manifest_sha256=b.SOURCE_SHA,
+             caDiCaL_commit="31f9aae44947c673dc6190c9beb399acb9ffec6a",
+             binary_sha256=b.sha(root/"r194-driver"),
+             seeds=list(b.SEEDS),pilot_orders=[0,1],
+             limit_seconds=30,modes=list(b.MODES))
+          (root/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2)+"\n")
+          print("R194_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r194-pinned-original-and-seeded-native
+          retention-days: 90
+          path: |
+            r194/frozen/
+            r194/r194-driver
+            r194/pin.json
+            r194/source-verify.log
+            r194/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    name: R194 same external SAT CNF seeds/order shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r194-pinned-original-and-seeded-native
+          path: r194
+      - name: Check exact source SHA and seeded native, run matched 30-second pairs
+        run: |
+          set -euo pipefail
+          chmod +x r194/r194-driver
+          python3 -u research/r194_dual_live_repro.py verify
+          python3 -u research/r194_dual_live_repro.py shard --shard ${{ matrix.shard }} --binary r194/r194-driver | tee r194/shard-${{ matrix.shard }}.log
+          grep -q '^R194_SHARD_PASS ' r194/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r194-replay-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r194/shard-${{ matrix.shard }}.json
+            r194/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r194-pinned-original-and-seeded-native
+          path: r194
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r194-replay-shard-*
+          merge-multiple: true
+          path: r194
+      - name: Independent seed/order same-original-SHA SAT witness and PAR-2 audit
+        run: |
+          set -euo pipefail
+          test "$(find r194 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r194_dual_live_repro.py audit | tee r194/audit.log
+          grep -q '^R194_FINAL ' r194/audit.log
+          cat r194/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R194-R193-EXTERNAL-SEED-REPLAY-FINAL
+          retention-days: 90
+          path: |
+            r194/report.json
+            r194/summary.md
+            r194/audit.log
