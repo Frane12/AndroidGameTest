@@ -134,8 +134,8 @@ def wide_shallow_gate(path):
                            if a.bit_count()%2==parity):
                         found.add(vars)
                         if len(found)>=2:
-                            return True,"r187_two_complete_xor_width2_4",
-                                   time.perf_counter()-start
+                            return (True,"r187_two_complete_xor_width2_4",
+                                    time.perf_counter()-start)
         return False,"no_two_source_complete_xor_width2_4",time.perf_counter()-start
 
 def route(path):
