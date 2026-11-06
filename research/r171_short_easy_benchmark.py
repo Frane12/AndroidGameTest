@@ -47,7 +47,7 @@ def make_control(n,unsat):
 def generate():
     (ROOT/"frozen").mkdir(parents=True,exist_ok=True)
     cases=[]
-    names=["uf20-%02d.cnf"%i for i in range(1,13)]
+    names=["uf20-0%d.cnf"%i for i in range(1,13)]
     for filename in names:
         u=("https://raw.githubusercontent.com/mitchellh/go-sat/"+SOURCE_COMMIT+
            "/testdata/satlib/sat-uniform-20-91/"+filename)
