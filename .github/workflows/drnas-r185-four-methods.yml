@@ -1,0 +1,184 @@
+name: DRNAS R185 four independent logical methods paired
+on:
+  push:
+    branches:
+      - 'experiment/drnas-r185-method-*-20261106'
+    paths:
+      - 'research/r185_method.trigger'
+      - 'research/r185_four_methods.py'
+      - 'research/r185_cadical_driver.cpp'
+      - '.github/workflows/drnas-r185-four-methods.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r185-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      method: ${{ steps.ident.outputs.method }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Identify one of four PREDECLARED distinct research methods
+        id: ident
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            experiment/drnas-r185-method-gate-20261106) METHOD=gf2_gate ;;
+            experiment/drnas-r185-method-short4-20261106) METHOD=gf2_short4 ;;
+            experiment/drnas-r185-method-feedback-20261106) METHOD=live_feedback ;;
+            experiment/drnas-r185-method-cooldown-20261106) METHOD=live_cooldown ;;
+            *) echo 'Unknown R185 method branch'; exit 1 ;;
+          esac
+          echo "method=$METHOD" >> "$GITHUB_OUTPUT"
+          echo "R185_METHOD_NAME=$METHOD"
+      - name: Test independent XOR2-6 certification and short consequence proof
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r185_four_methods.py research/r182_mixed_engine.py research/r184_external_mixed_120s.py
+          python3 -u research/r185_four_methods.py selftest
+      - name: Freeze identical twelve R183 real CNFs and thirteen R179 known medium synthetic controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r185/source_external r185/source_synthetic
+          gh run download 42206668113 --repo Frane12/AndroidGameTest -n r183-pinned-external-originals-and-binary -D r185/source_external
+          gh run download 42204848401 --repo Frane12/AndroidGameTest -n r182-pinned-build-and-53-sources -D r185/source_synthetic
+          test -f r185/source_external/frozen/manifest.json
+          test -f r185/source_synthetic/r179/r179-selected-freeze.json
+          python3 -u research/r185_four_methods.py freeze
+          python3 -u research/r185_four_methods.py verify
+      - name: Compile same pinned CaDiCaL 2.1.0 baseline and certified live GF2 bridge binary
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r185-cadical
+          (
+            cd /tmp/r185-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r185-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r185-cadical/src research/r185_cadical_driver.cpp /tmp/r185-cadical/build/libcadical.a -o r185/r185-driver
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r185-cadical/src research/r177_xor_cnf_resolution.cpp /tmp/r185-cadical/build/libcadical.a -o r185/r185-live
+          chmod +x r185/r185-driver r185/r185-live
+          r185/r185-live selftest > r185/live-selftest.log
+          grep -q 'SELFTEST_PASS' r185/live-selftest.log
+          echo "p cnf 2 2" > r185/smoke.cnf
+          echo "1 0" >> r185/smoke.cnf
+          echo "-1 2 0" >> r185/smoke.cnf
+          r185/r185-driver r185/smoke.cnf 25 | tee r185/smoke.log
+          grep -q 'R185_STATS_END' r185/smoke.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r185")
+          d={"protocol":"R185-FOUR-PINNED-20261106-v1",
+             "case_manifest_sha256":hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest(),
+             "clean_sha256":hashlib.sha256((p/"r185-driver").read_bytes()).hexdigest(),
+             "live_sha256":hashlib.sha256((p/"r185-live").read_bytes()).hexdigest(),
+             "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a"}
+          (p/"build-pin.json").write_text(json.dumps(d,sort_keys=True,indent=2))
+          print("R185_PIN_PASS",json.dumps(d,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r185-build-audit-${{ steps.ident.outputs.method }}
+          retention-days: 90
+          path: |
+            r185/smoke.log
+            r185/live-selftest.log
+            r185/frozen/manifest.json
+            r185/build-pin.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r185-frozen-and-bins-${{ steps.ident.outputs.method }}
+          retention-days: 90
+          path: |
+            r185/frozen/
+            r185/r185-driver
+            r185/r185-live
+            r185/build-pin.json
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    name: R185 ${{ needs.build.outputs.method }} shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    env:
+      METHOD: ${{ needs.build.outputs.method }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r185-frozen-and-bins-${{ needs.build.outputs.method }}
+          path: r185
+      - name: Pin SHA and compare same-source clean vs ONE logical method, two repeats
+        run: |
+          set -euo pipefail
+          chmod +x r185/r185-driver r185/r185-live
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r185")
+          d=json.loads((p/"build-pin.json").read_text())
+          for file,key in (("r185-driver","clean_sha256"),("r185-live","live_sha256"),("frozen/manifest.json","case_manifest_sha256")):
+              assert hashlib.sha256((p/file).read_bytes()).hexdigest()==d[key]
+          PY
+          mkdir -p r185/logs r185/results
+          python3 -u research/r185_four_methods.py shard --shard ${{ matrix.shard }} --method "$METHOD" --driver r185/r185-driver --live r185/r185-live | tee r185/logs/shard-${{ matrix.shard }}.log
+          grep -q '^R185_SHARD_PASS ' r185/logs/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r185-shard-${{ needs.build.outputs.method }}-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r185/results/shard-${{ matrix.shard }}.json
+            r185/logs/shard-${{ matrix.shard }}.log
+  audit:
+    needs: [build,paired]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      METHOD: ${{ needs.build.outputs.method }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r185-frozen-and-bins-${{ needs.build.outputs.method }}
+          path: r185
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r185-shard-${{ needs.build.outputs.method }}-*
+          merge-multiple: true
+          path: r185
+      - name: Same-SHA paired audit, per-method PAR-2 and solved counts
+        run: |
+          set -euo pipefail
+          python3 -u research/r185_four_methods.py audit --method "$METHOD" | tee r185/audit.log
+          grep -q '^R185_METHOD_FINAL ' r185/audit.log
+          cat r185/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r185-method-${{ needs.build.outputs.method }}-final
+          retention-days: 90
+          path: |
+            r185/report.json
+            r185/all-trials.json
+            r185/audit.log
