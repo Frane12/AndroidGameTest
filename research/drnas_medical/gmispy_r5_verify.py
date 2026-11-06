@@ -19,7 +19,9 @@ def verify(data):
     if data.get("sha256")!=FROZEN:
         raise AssertionError("Source metabolic model changed")
     genes=data["genes"]
-    if not all(g.startswith("b") and len(g)==5 and g[1:].isdigit() for g in genes):\n        raise AssertionError("Spontaneous pseudo-gene or invalid E. coli locus among KO targets")\n    if not len(genes)==48 or len(set(genes))!=48 or len(data["added_genes"])!=16:
+    if not all(g.startswith("b") and len(g)==5 and g[1:].isdigit() for g in genes):
+        raise AssertionError("Spontaneous pseudo-gene or invalid E. coli locus among KO targets")
+    if not len(genes)==48 or len(set(genes))!=48 or len(data["added_genes"])!=16:
         raise AssertionError("Not frozen 48 gene enlargement")
     observed_genesets={frozenset(x) for x in data["exhaustive"]["minimal_sets"]}
     if not {frozenset(x) for x in OLD18}.issubset(observed_genesets):
