@@ -1,0 +1,55 @@
+name: DRNAS R194 audited replay without duplicating 96 trials
+on:
+  push:
+    branches: [experiment/drnas-r194-audit-repair-20261106]
+    paths:
+      - '.github/workflows/drnas-r194-audit-only-repair.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit-only:
+    name: R194 fix schema typo and audit existing immutable paired outputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reuse exact pinned native and original SHA from first run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42305088778
+          name: r194-pinned-original-and-seeded-native
+          github-token: ${{ github.token }}
+          path: r194
+      - name: Reuse all eight successful original benchmark shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42305088778
+          pattern: r194-replay-shard-*
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: r194
+      - name: Run corrected audit without rerunning solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r194_dual_live_repro.py
+          python3 -u research/r194_dual_live_repro.py selftest
+          python3 -u research/r194_dual_live_repro.py verify
+          test "$(find r194 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r194_dual_live_repro.py audit | tee r194/audit.log
+          grep -q '^R194_FINAL ' r194/audit.log
+          cat r194/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish corrected audited report and original source identities
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R194-REPLAY-CERTIFIED-AUDIT-CORRECTED
+          retention-days: 90
+          path: |
+            r194/report.json
+            r194/summary.md
+            r194/audit.log
+            r194/pin.json
