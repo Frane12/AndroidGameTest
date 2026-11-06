@@ -1,0 +1,150 @@
+name: DRNAS R159 industrial XOR2 XOR3 certified unit bridge five solvers
+on:
+  push:
+    branches: [experiment/drnas-r159-industrial-xor-unit-20261106]
+    paths: ['.github/workflows/drnas-r159-industrial-xor.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r159-seen-r158-development
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Reuse and SHA-verify frozen R158 originals (seen development cohort)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          set -euo pipefail
+          mkdir -p r159
+          python3 -m py_compile research/r159_industrial_benchmark.py
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror -fsyntax-only research/r159_industrial_xor_unit_bridge.cpp
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-unseen-frozen-original-SAT2026-source
+          run-id: 42134372039
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r159
+      - name: Audit exact frozen originals
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('r159/frozen')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['protocol']=='DRNAS-R158-INDUSTRIAL-SOURCE-FREEZE-PILOT-20261106-v1'
+          assert len(m['cases'])==20 and len({c['sha256'] for c in m['cases']})==20
+          for c in m['cases']:
+              p=root/(c['id']+'.cnf')
+              assert p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==c['sha256']
+          print('R159_SEEN_DEVELOPMENT_SOURCE_SHA_PASS',len(m['cases']),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r159-seen-original-r158-industrial-20-source
+          path: r159/frozen/
+          if-no-files-found: error
+          retention-days: 90
+  benchmark:
+    needs: prepare
+    name: R159 R153 R28 Kissat CaDiCaL paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r159-seen-original-r158-industrial-20-source
+          path: r159/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin hashes and compile untouched R28 R153 plus experimental R159
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror experiments/drnas_v16/r28_exact_gf2.cpp -o r159/r28
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r153_exact_units_gf2.cpp -o r159/r153
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r159_industrial_xor_unit_bridge.cpp -o r159/r159
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          fs=['r159/r28','r159/r153','r159/r159','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1']
+          obj=dict(commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            binaries={f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest() for f in fs},
+            cpu=next((x for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),'unknown'))
+          pathlib.Path('r159/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+      - name: XOR2 XOR3 selftests and paired randomized five-solver trial
+        run: |
+          set -euo pipefail
+          python3 -u research/r159_industrial_benchmark.py shard --shard ${{ matrix.shard }} | tee r159/shard-${{ matrix.shard }}.log
+          grep -q '^R159_SELFTEST_PASS xor2_derived ' r159/shard-${{ matrix.shard }}.log
+          grep -q '^R159_SELFTEST_PASS xor3_derived ' r159/shard-${{ matrix.shard }}.log
+          grep -q '^R159_SHARD_PASS ' r159/shard-${{ matrix.shard }}.log
+          test -s r159/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r159-industrial-shard-${{ matrix.shard }}
+          path: |
+            r159/shard-${{ matrix.shard }}.json
+            r159/pin-${{ matrix.shard }}.json
+            r159/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: benchmark
+    name: Strict SHA PAR2 binary-identity and original SAT witness audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r159-seen-original-r158-industrial-20-source
+          path: r159/frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r159-industrial-shard-*
+          merge-multiple: true
+          path: r159
+      - name: Audit complete paired trials (no unseen-world claims)
+        run: |
+          set -euo pipefail
+          test "$(find r159 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r159_industrial_benchmark.py audit | tee r159/audit.log
+          grep -q '^R159_FINAL ' r159/audit.log
+          cat r159/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R159-INDUSTRIAL-SEEN-DEVELOPMENT-FINAL
+          path: |
+            r159/report.json
+            r159/paired.csv
+            r159/audit.log
+            r159/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
