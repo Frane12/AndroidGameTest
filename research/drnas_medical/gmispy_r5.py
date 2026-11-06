@@ -42,7 +42,7 @@ def prepare_48(out, extra_count):
     return cobra_model, genes, rules, wild, sha, n_and, n_or, examples, extra
 
 
-def gpr_mip_arm(cobra_model, genes, rules, truth, minimal,
+def gpr_mip_arm(cobra_model, genes, rules, truth, minimal, threshold,
                 max_k=3, cap_s=120, seed=42):
     """Gurobi MILP master with exact AND/OR gene-reaction logic, objective guided
     toward higher disabled-reaction count. GLPK remains an independent oracle.
@@ -171,7 +171,6 @@ def run(out, extra_count=16,max_k=3,repeats=2,mip_cap=120.):
         raise ValueError("R5 supports k=2..3, repeats 1..3")
     out.mkdir(parents=True,exist_ok=True)
     model,genes,rules,wild,sha,a_count,o_count,examples,extra=prepare_48(out,extra_count)
-    global threshold
     threshold=wild*.01
     t0=time.perf_counter()
     truth,minimal,oracle_rows,oracle_seconds=structural_oracle(
@@ -198,7 +197,7 @@ def run(out, extra_count=16,max_k=3,repeats=2,mip_cap=120.):
                                time_cap=mip_cap,mip_seed=42+rep)
                 row["method"]=method
             else:
-                row=gpr_mip_arm(model,genes,rules,truth,minimal,max_k,
+                row=gpr_mip_arm(model,genes,rules,truth,minimal,threshold,max_k,
                                 cap_s=mip_cap,seed=42+rep)
             row["repeat"]=rep
             trials.append(row)
