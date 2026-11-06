@@ -829,7 +829,7 @@ int main(int argc,char**argv) {
            mode!="direct_two_way_shadow")
             throw runtime_error("R165_BAD_MODE");
         const double cap=stod(argv[4]);
-        if(!(cap>=1.0&&cap<=120.0))
+        if(!(cap>=1.0&&cap<=180.0))
             throw runtime_error("R165_BAD_CAP");
         return r162_run(mode,argv[2],argv[3],cap);
     }catch(const exception&e){
