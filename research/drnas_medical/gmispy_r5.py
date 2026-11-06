@@ -227,7 +227,7 @@ def run(out, extra_count=16,max_k=3,repeats=2,mip_cap=120.):
                         wall_s=oracle_seconds,monotone_checked=monotone_checks,
                         gene_reaction_equivalence=True,
                         minimal_sets=[[genes[i] for i in x] for x in sorted(minimal)]),
-        trials=trials, methods=summary,
+        repeats=repeats, trials=trials, methods=summary,
         independent_model_origin=True,
         caveats=[
             "real E coli metabolic model; not cancer or clinical testing",
