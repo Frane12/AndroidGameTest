@@ -1,0 +1,113 @@
+name: DRNAS R168 BLIND 12 official SAT 2026 mixed GF2 CDCL vs CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-r168-mixed-gf2-cdcl-blind-20261106]
+    paths: ['.github/workflows/drnas-r168-blind-2026.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r168-official-2026-new12-frozen
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: R168 certified GF2 CDCL vs clean CaDiCaL shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R168-NATIVE-BINARY-FROZEN-BRIDGE-SELFTEST
+          run-id: 42151426617
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r168
+      - name: Verify native compiled BEFORE new unseen official 2026 selection
+        run: |
+          set -euo pipefail
+          chmod +x r168/native
+          cp research/r168_blind_manifest.json r168/blind-manifest.json
+          python3 -m py_compile research/r168_blind_benchmark.py research/r167_blind2026.py research/r166_independent_verifier.py
+          git clone -q --depth 1 https://github.com/satcompetition/2026.git /tmp/r168-satcomp-2026
+          cp /tmp/r168-satcomp-2026/downloads/track_main_2026.uri r168/official.uri
+          test "$(git hash-object r168/official.uri)" = "2b86a4d685b492a844646f378ac3f3415fd131d5"
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          r=pathlib.Path("r168")
+          m=json.loads((r/"blind-manifest.json").read_text())
+          pin=json.loads((r/"build-pin.json").read_text())
+          assert m["native_build_run"]==42151426617
+          assert m["pinned_native_sha256"]==pin["binary_sha256"]
+          assert hashlib.sha256((r/"native").read_bytes()).hexdigest()==pin["binary_sha256"]
+          assert pin["source_commit"]==m["native_build_source_commit"]
+          for path,key in [
+            ("research/r168_native_mixed_gf2.cpp","native_cpp_sha256"),
+            ("research/r168_proven_gf2_bridge.cpp","bridge_cpp_sha256"),
+            ("research/r167_native_exact_gf2.cpp","r167_cpp_sha256"),
+            ("research/r133c_native_gf2_cdcl_bridge.cpp","r133c_cpp_sha256")]:
+            assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()==pin[key],path
+          source_list=(r/"official.uri").read_text().strip().splitlines()
+          assert len(source_list)==400
+          assert len(m["selection"])==12
+          assert not set(x["index"] for x in m["selection"]) & set(m["previous_r167_indices"])
+          for c in m["selection"]:
+            assert source_list[c["index"]].endswith("/"+c["gbd_md5"])
+          print("R168_BLIND_FROZEN_BINARY_AND_SOURCE_PASS",pin["binary_sha256"])
+          print("R168_BLIND_NEW_OFFICIAL_IDS_PASS",len(m["selection"]))
+          PY
+          command -v zstd || (sudo apt-get update -qq && sudo apt-get install -y zstd)
+      - name: Blind 12 official CNFs two repeats same-native GF2 CDCL vs clean
+        run: |
+          set -euo pipefail
+          python3 -u research/r168_blind_benchmark.py shard --shard ${{ matrix.shard }} --binary r168/native | tee r168/blind-shard-${{ matrix.shard }}.log
+          grep -q '^R168_BLIND_SHARD_PASS ' r168/blind-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r168-blind-shard-${{ matrix.shard }}
+          path: |
+            r168/shard-${{ matrix.shard }}.json
+            r168/blind-shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Frozen 12 original GBD source paired PAR2 SHA proof and GF2 propagation audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r168-blind-shard-*
+          merge-multiple: true
+          path: r168
+      - name: Final independent blind-source paired output audit
+        run: |
+          set -euo pipefail
+          cp research/r168_blind_manifest.json r168/blind-manifest.json
+          python3 -u research/r168_blind_benchmark.py audit | tee r168/blind-audit.log
+          grep -q '^R168_BLIND_FINAL ' r168/blind-audit.log
+          cat r168/blind-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R168-NEW12-OFFICIAL-2026-GF2-CDCL-BLIND-AUDIT-FINAL
+          path: |
+            r168/blind-manifest.json
+            r168/blind-report.json
+            r168/blind-summary.md
+            r168/blind-audit.log
+          if-no-files-found: warn
+          retention-days: 90
