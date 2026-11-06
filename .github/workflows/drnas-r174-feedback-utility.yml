@@ -1,0 +1,159 @@
+name: DRNAS R174 B C BC certified Gaussian CDCL utility 250 paired
+on:
+  push:
+    branches: [experiment/drnas-r174-gf2-feedback-utility-20261106]
+    paths:
+      - 'research/r174_feedback_utility.cpp'
+      - 'research/r174_feedback_utility_benchmark.py'
+      - '.github/workflows/drnas-r174-feedback-utility.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r174-feedback-utility-20261106
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Build R174 source-certified native and exhaustive reason selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned CaDiCaL and test certified reasons plus utility wake
+        run: |
+          set -euo pipefail
+          mkdir -p r174
+          python3 -m py_compile research/r174_feedback_utility_benchmark.py research/r173_residual_gate_benchmark.py research/r166x_component_benchmark.py research/r166x_certified_gauss.py research/r164_pure_exact_gf2.py
+          python3 -u research/r164_pure_exact_gf2.py --selftest | tee r174/exact-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r174/exact-selftest.log
+          python3 -u research/r166x_certified_gauss.py --selftest | tee r174/gauss-selftest.log
+          grep -q '^R166X_GAUSS_PROOF_SELFTEST_PASS' r174/gauss-selftest.log
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r174-cadical
+          cd /tmp/r174-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r174/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r174_feedback_utility.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r174/r174-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r174/r174-native selftest | tee r174/native-selftest.log
+          grep -q '^R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS' r174/native-selftest.log
+          grep -q '^R174_B_CERTIFIED_CONFLICT_SELFTEST_PASS' r174/native-selftest.log
+          grep -q '^R174_C_UTILITY_WAKE_SELFTEST_PASS' r174/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r174/r174-native")
+          pin={"source_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "binary_sha256":hashlib.sha256(b.read_bytes()).hexdigest(),
+               "cadical_sha":pathlib.Path("r174/cadical-source-commit.txt").read_text().strip(),
+               "protocol":"DRNAS-R174-CERTIFIED-FEEDBACK-UTILITY-v1"}
+          pathlib.Path("r174/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R174_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r174-pinned-native
+          retention-days: 90
+          path: |
+            r174/r174-native
+            r174/build-pin.json
+            r174/exact-selftest.log
+            r174/gauss-selftest.log
+            r174/native-selftest.log
+            r174/cadical-source-commit.txt
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R174 same-source B C BC vs R173 and clean shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r174-pinned-native
+          path: r174
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r174
+      - name: Verify original SHA CNFs and run charged paired trials
+        run: |
+          set -euo pipefail
+          chmod +x r174/r174-native
+          python3 -u research/r174_feedback_utility_benchmark.py shard --shard ${{ matrix.shard }} --binary r174/r174-native | tee r174/shard-${{ matrix.shard }}.log
+          grep -q '^R174_SHARD_PASS ' r174/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r174-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r174/shard-${{ matrix.shard }}.json
+            r174/shard-${{ matrix.shard }}.log
+            r174/prep-*.json
+            r174/cert-*.json
+            r174/gauss-*/gauss.tsv
+            r174/gauss-*/gauss-units.tsv
+            r174/gauss-*/gauss-cert.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Audit 250 R174 original-source SHA paired runs and Gaussian proofs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r174-pinned-native
+          path: r174
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r174
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r174-shard-*
+          merge-multiple: true
+          path: r174
+      - name: Validate complete paired comparisons and replay source certificates
+        run: |
+          set -euo pipefail
+          test "$(find r174 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r174_feedback_utility_benchmark.py audit | tee r174/audit.log
+          grep -q '^R174_FINAL ' r174/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          a=json.loads(pathlib.Path("r174/report.json").read_text())
+          assert a["status"]=="R174_PAIRED_AUDIT_PASS_NOT_BLIND"
+          assert a["formulas"]==25 and a["attempts"]==250
+          assert a["independent_source_certificates"] and a["SAT_originals_checked"]
+          print("R174_FIVE_ARM_CERTIFIED_AUDIT_PASS")
+          PY
+          cat r174/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R174-FEEDBACK-UTILITY-250-FINAL
+          retention-days: 90
+          path: |
+            r174/report.json
+            r174/summary.md
+            r174/audit.log
