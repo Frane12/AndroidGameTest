@@ -705,6 +705,7 @@ static int r162_run(const string& mode,const string& src,
                             mode=="direct_two_way_early"||
                             mode=="direct_two_way_newonly"||
                             mode=="direct_two_way_budget"||
+                             mode=="direct_two_way_dynamic"||
                             mode=="direct_two_way_shadow")?128:32;
     if(extend)certified=gf2_pairwise_closure(certified,max_extra);
     const long derived=(long)certified.size()-(long)source_rows;
@@ -720,15 +721,39 @@ static int r162_run(const string& mode,const string& src,
                             mode=="direct_two_way_early"||
                             mode=="direct_two_way_newonly"||
                             mode=="direct_two_way_budget"||
+                             mode=="direct_two_way_dynamic"||
                             mode=="direct_two_way_shadow");
     bridge.two_way_early=(mode=="direct_two_way_early"||
                           mode=="direct_two_way_newonly"||
                           mode=="direct_two_way_budget"||
+                             mode=="direct_two_way_dynamic"||
                           mode=="direct_two_way_shadow");
     bridge.two_way_novel_only=(mode=="direct_two_way_newonly"||
                                mode=="direct_two_way_budget"||
+                             mode=="direct_two_way_dynamic"||
                                mode=="direct_two_way_shadow");
     bridge.two_way_utility_budget=(mode=="direct_two_way_budget");
+    bridge.two_way_dynamic=(mode=="direct_two_way_dynamic");
+    if(bridge.two_way_dynamic){
+        // Detect residual (non-complete-parity-support) original CNF clauses.
+        // Used only to prioritize work, never to justify a logical inference.
+        set<vector<int>> exact_supports;
+        for(size_t i=0;i<source_rows;++i)exact_supports.insert(bridge.rows[i].vars);
+        vector<int> component_of_var(n+1,-1);
+        for(size_t i=0;i<bridge.rows.size();++i)
+            for(int v:bridge.rows[i].vars)
+                component_of_var.at(v)=bridge.component_of_row[i];
+        for(const auto& clause:cnf){
+            vector<int> vs;
+            for(int lit:clause)vs.push_back(abs(lit));
+            sort(vs.begin(),vs.end());vs.erase(unique(vs.begin(),vs.end()),vs.end());
+            if(exact_supports.count(vs))continue;
+            set<int> touched;
+            for(int v:vs)if(v>0 && v<=n && component_of_var[v]>=0)
+                touched.insert(component_of_var[v]);
+            for(int ci:touched)++bridge.r174_boundary[ci];
+        }
+    }
     bridge.two_way_shadow=(mode=="direct_two_way_shadow");
     bridge.watchlazy_enabled=(mode=="direct_watchlazy"||mode=="direct_cooldown");
     bridge.cooldown_enabled=(mode=="direct_cooldown");
@@ -934,11 +959,40 @@ int main(int argc,char**argv) {
                     throw runtime_error("R172_BUDGET_REACTIVATION_FAIL");
                 cout<<"R172_BUDGET_SELFTEST_PASS backoff=8192 reactivation=512\n";
             }
+            {
+                // Two disconnected, certified XOR components.
+                R162Bridge probe({{{1,2,3},0},{{1,2,4},0},{{5,6,7},0}},
+                                 7,R162Bridge::DIRECT);
+                probe.two_way_enabled=probe.two_way_early=
+                    probe.two_way_novel_only=probe.two_way_dynamic=true;
+                const int target_ci=probe.component_of_row[0];
+                probe.r174_boundary[target_ci]=3;
+                probe.notify_new_decision_level();
+                probe.notify_assignment({3});
+                const int unit=probe.cb_propagate();
+                if(unit!=4 || probe.r174_last_selected!=target_ci ||
+                   probe.r174_sweeps_total!=1 || probe.two_way_proposals!=1)
+                    throw runtime_error("R174_DIRTY_BOUNDARY_SELECT_FAIL");
+                vector<int> reason;
+                for(int lit;(lit=probe.cb_add_reason_clause_lit(unit))!=0;)
+                    reason.push_back(lit);
+                if(reason!=vector<int>({4,-3}) || probe.two_way_used_reasons!=1 ||
+                   probe.r174_used[target_ci]!=1)
+                    throw runtime_error("R174_USED_REASON_REPLAY_FAIL");
+                probe.notify_assignment({4});
+                probe.notify_backtrack(0);
+                probe.notify_new_decision_level();
+                probe.notify_assignment({-3});
+                if(probe.cb_propagate()!=-4 || probe.r174_dirty_events<3)
+                    throw runtime_error("R174_ROLLBACK_REAWAKEN_FAIL");
+                cout<<"R174_DYNAMIC_FEEDBACK_SELFTEST_PASS boundary=1 used=1"
+                    <<" proof=1 rollback=1 reawake=1\n";
+            }
             return 0;
         }
         if(argc!=5) {
             cerr<<"R165_USAGE clean|watch_boundary|shadow_boundary|"
-                   "direct_full|direct_full_feedback|direct_incremental|direct_two_way|direct_two_way_early|direct_two_way_newonly|direct_two_way_budget|direct_two_way_shadow|direct_watchlazy|direct_cooldown|direct_boundary_nogate|direct_boundary|direct_feedback"
+                   "direct_full|direct_full_feedback|direct_incremental|direct_two_way|direct_two_way_early|direct_two_way_newonly|direct_two_way_budget|direct_two_way_dynamic|direct_two_way_shadow|direct_watchlazy|direct_cooldown|direct_boundary_nogate|direct_boundary|direct_feedback"
                    " ORIGINAL.cnf SOURCE-CERTIFIED.tsv CAP_SECONDS\n";
             return 2;
         }
@@ -950,6 +1004,7 @@ int main(int argc,char**argv) {
            mode!="direct_watchlazy"&&mode!="direct_cooldown"&&mode!="direct_two_way"&&
            mode!="direct_two_way_early"&&mode!="direct_two_way_newonly"&&
            mode!="direct_two_way_budget"&&
+           mode!="direct_two_way_dynamic"&&
            mode!="direct_two_way_shadow")
             throw runtime_error("R165_BAD_MODE");
         const double cap=stod(argv[4]);
