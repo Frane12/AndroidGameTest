@@ -1,0 +1,161 @@
+name: DRNAS R179 calibration: medium mixed SAT and UNSAT reference-only
+on:
+  push:
+    branches: [experiment/drnas-r179-medium-mixed-calibration-20261106]
+    paths:
+      - 'research/r179_medium_hard_prepare.py'
+      - '.github/workflows/drnas-r179-medium-mixed-calibration.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r179-baseline-prep-20261106
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Freeze 360 generated SAT+UNSAT and four clearly KNOWN originals
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r179/prior
+      - name: Generate and independently reconstruct source parity witnesses
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r179_medium_hard_prepare.py
+          python3 -u research/r179_medium_hard_prepare.py freeze | tee r179/freeze.log
+          grep -q '^R179_SOURCE_FROZEN_PASS ' r179/freeze.log
+          python3 -u research/r179_medium_hard_prepare.py verify
+      - name: Compile version-pinned CaDiCaL 2.1 (reference only, no DRNAS)
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r179-cadical
+          cd /tmp/r179-cadical
+          git checkout -q rel-2.1.0
+          COMMIT=$(git rev-parse HEAD)
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          test -x /tmp/r179-cadical/build/cadical
+          cp /tmp/r179-cadical/build/cadical r179/cadical
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path("r179")
+          c=subprocess.check_output(["git","-C","/tmp/r179-cadical","rev-parse","HEAD"],text=True).strip()
+          b=root/"cadical"
+          pin={"protocol":"DRNAS-R179-MIXED-MEDIUM-SAT-UNSAT-REFERENCE-CALIBRATION-v1",
+               "cadical_commit":c,
+               "cadical_binary_sha256":hashlib.sha256(b.read_bytes()).hexdigest(),
+               "manifest_sha256":hashlib.sha256((root/"frozen/manifest.json").read_bytes()).hexdigest(),
+               "generation_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "reference_only":True}
+          (root/"baseline-pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("R179_REFERENCE_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - name: Independent quick SAT+UNSAT solver cross-check on known tiny generated formulas
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,"research")
+          import r179_medium_hard_prepare as p
+          examples=[c for c in p.verify() if c["origin"]=="generated_tseitin_mixed"]
+          for truth in ("SAT","UNSAT"):
+              x=next(c for c in examples if c["class"]==truth and c["nominal_size"]==24)
+              z=p.timed_call(pathlib.Path("r179/cadical"),pathlib.Path("r179/frozen")/(x["id"]+".cnf"),20.)
+              assert z["status"]==truth,(truth,z)
+              print("R179_INITIAL_SOURCE_TRUTH_PASS",truth,z)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r179-frozen-sources-and-pinned-reference
+          retention-days: 90
+          path: |
+            r179/frozen/
+            r179/cadical
+            r179/baseline-pin.json
+            r179/freeze.log
+  calibrate:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    name: R179 CaDiCaL-only medium-range calibration shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r179-frozen-sources-and-pinned-reference
+          path: r179
+      - name: Calibrate only unmodified CaDiCaL baseline; never run R174 or R177
+        run: |
+          set -euo pipefail
+          chmod +x r179/cadical
+          python3 -u research/r179_medium_hard_prepare.py shard --shard ${{ matrix.shard }} --baseline r179/cadical | tee r179/calibrate-${{ matrix.shard }}.log
+          grep -q '^R179_BASELINE_SHARD_PASS ' r179/calibrate-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r179-reference-only-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r179/shard-${{ matrix.shard }}.json
+            r179/calibrate-${{ matrix.shard }}.log
+  select:
+    needs: calibrate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    name: Freeze up to 100 benchmark-calibrated SAT and UNSAT candidates
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r179-frozen-sources-and-pinned-reference
+          path: r179
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r179-reference-only-shard-*
+          merge-multiple: true
+          path: r179
+      - name: Independent 364-source baseline audit, class stratification and holdout freeze
+        run: |
+          set -euo pipefail
+          test "$(find r179 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          python3 -u research/r179_medium_hard_prepare.py finalize | tee r179/audit.log
+          grep -q '^R179_CALIBRATION_FINAL ' r179/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          a=json.loads(pathlib.Path("r179/report.json").read_text())
+          assert a["status"]=="R179_REFERENCE_CALIBRATION_AUDIT_PASS"
+          assert a["candidate_count"]==364 and a["no_DRNAS_modes_benchmarked"]
+          assert 0<=a["selected"]<=100
+          print("R179_REFERENCE_ONLY_FROZEN_AUDIT_PASS")
+          PY
+          cat r179/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R179-MEDIUM-HARD-SOURCES-REFERENCE-ONLY
+          retention-days: 90
+          path: |
+            r179/r179-selected-freeze.json
+            r179/report.json
+            r179/summary.md
+            r179/audit.log
