@@ -1,0 +1,154 @@
+name: DRNAS R192 three-window CDCL trajectory 1428 paired
+on:
+  push:
+    branches: [experiment/drnas-r192-three-window-trajectory-20261106]
+    paths:
+      - 'research/r192_three_window_driver.cpp'
+      - 'research/r192_three_window_benchmark.py'
+      - '.github/workflows/drnas-r192-three-window-trajectory.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r192-three-window-paired
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R192 registered trajectory and audit selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r192_three_window_benchmark.py research/r191_early_cdcl_feedback.py research/r188_feedback_benchmark.py
+          python3 -u research/r192_three_window_benchmark.py selftest
+      - name: Retrieve same SHA frozen 102 real/synthetic R191 originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r192/source
+          gh run download 42284307816 --repo Frane12/AndroidGameTest -n r191-frozen102-native-verified -D r192/source
+          cp -a r192/source/frozen r192/frozen
+          python3 -u research/r192_three_window_benchmark.py verify
+      - name: Compile source-pinned CaDiCaL 2.1 for all seven policies
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r192-cadical
+          (
+            cd /tmp/r192-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r192-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r192-cadical/src research/r192_three_window_driver.cpp /tmp/r192-cadical/build/libcadical.a -o r192/r192-driver
+          chmod +x r192/r192-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r192/smoke.cnf
+          for mode in default sat windows_continue windows_shadow windows_restart_default windows_restart_sat windows_adaptive; do
+            r192/r192-driver r192/smoke.cnf 2 "$mode" > "r192/smoke-${mode}.log"
+            grep -q '^R182_STATUS status=SAT' "r192/smoke-${mode}.log"
+            grep -q '^R192_POLICY ' "r192/smoke-${mode}.log"
+          done
+          grep -q '^R192_WINDOW index=0 ' r192/smoke-windows_adaptive.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r192")
+          sha=lambda x:hashlib.sha256((p/x).read_bytes()).hexdigest()
+          pin={"protocol":"R192-3x128-FROZEN-SHA-SEVEN-ARM-v1",
+              "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+              "source_manifest_sha256":sha("frozen/manifest.json"),
+              "binary_sha256":sha("r192-driver"),
+              "conflict_windows":[128,128,128],
+              "original_real_blind":False}
+          assert pin["source_manifest_sha256"]=="9eebc6fc1e8ad3006fc3ecc8b451e1e57d3087932190ba5a91fd60aabf278658"
+          (p/"build-pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("R192_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r192-sha-frozen102-native
+          retention-days: 90
+          path: |
+            r192/frozen/
+            r192/r192-driver
+            r192/build-pin.json
+            r192/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: R192 3x128 seven-arm window causal shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r192-sha-frozen102-native
+          path: r192
+      - name: Check source and pinned binary then perform paired trials
+        run: |
+          set -euo pipefail
+          chmod +x r192/r192-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path("r192")
+          pin=json.loads((p/"build-pin.json").read_text())
+          for filename,key in (("frozen/manifest.json","source_manifest_sha256"),
+                               ("r192-driver","binary_sha256")):
+              assert hashlib.sha256((p/filename).read_bytes()).hexdigest()==pin[key]
+          PY
+          python3 -u research/r192_three_window_benchmark.py shard --shard ${{ matrix.shard }} --binary r192/r192-driver | tee r192/shard-${{ matrix.shard }}.log
+          grep -q '^R192_SHARD_PASS ' r192/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r192-three-window-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r192/shard-${{ matrix.shard }}.json
+            r192/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r192-sha-frozen102-native
+          path: r192
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r192-three-window-shard-*
+          merge-multiple: true
+          path: r192
+      - name: Audit same-source seven arms x two repeats, SAT, timings, window logs
+        run: |
+          set -euo pipefail
+          test "$(find r192 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r192_three_window_benchmark.py audit | tee r192/audit.log
+          grep -q '^R192_FINAL ' r192/audit.log
+          cat r192/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R192-THREE-WINDOW-CAUSAL-FINAL
+          retention-days: 90
+          path: |
+            r192/report.json
+            r192/trials.json
+            r192/summary.md
+            r192/audit.log
