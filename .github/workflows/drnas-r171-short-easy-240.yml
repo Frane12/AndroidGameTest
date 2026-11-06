@@ -1,0 +1,120 @@
+name: DRNAS R171 short easy 240 SATLIB plus controlled XOR paired
+on:
+  push:
+    branches: [experiment/drnas-r171-short-easy-20261106]
+    paths:
+      - 'research/r171_short_easy_benchmark.py'
+      - '.github/workflows/drnas-r171-short-easy-240.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r171-short-easy-paired-240
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: Pin R170 native binary and 12 real public SATLIB SHA plus 8 controlled XOR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r170-native-binary-pinned
+          run-id: 42155105007
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r171
+      - name: Freeze easy original SATLIB & controlled CNFs before any timing
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r171_short_easy_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          mv r171/build-pin.json r171/r170-build-pin.json
+          chmod +x r171/r170-native
+          ./r171/r170-native selftest | tee r171/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r171/selftest.log
+          python3 -u research/r171_short_easy_benchmark.py generate | tee r171/generation.log
+          grep -q '^R171_FROZEN_PASS 20 SATLIB 12 controls 8' r171/generation.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R171-EASY-FROZEN-20-ORIGINAL-AND-CONTROL-NATIVE
+          path: |
+            r171/r170-native
+            r171/r170-build-pin.json
+            r171/frozen
+            r171/generation.log
+            r171/selftest.log
+          if-no-files-found: error
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: prepare
+    name: R171 short 4s paired easy SATLIB GF2 shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R171-EASY-FROZEN-20-ORIGINAL-AND-CONTROL-NATIVE
+          path: r171
+      - name: Fast paired 3 repeats x 4 modes with original SAT witnesses
+        run: |
+          set -euo pipefail
+          chmod +x r171/r170-native
+          python3 -u research/r171_short_easy_benchmark.py shard --shard ${{ matrix.shard }} --binary r171/r170-native | tee r171/shard-${{ matrix.shard }}.log
+          grep -q '^R171_SHARD_PASS' r171/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R171-EASY-SHARD-${{ matrix.shard }}
+          path: |
+            r171/shard-${{ matrix.shard }}.json
+            r171/shard-${{ matrix.shard }}.log
+            r171/cert-*.json
+            r171/prep-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: benchmark
+    name: Validate 240 paired outcomes, independent SAT witnesses, median times
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R171-EASY-FROZEN-20-ORIGINAL-AND-CONTROL-NATIVE
+          path: r171
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: R171-EASY-SHARD-*
+          merge-multiple: true
+          path: r171
+      - name: 240 strict verified paired trials and timing summary
+        run: |
+          set -euo pipefail
+          python3 -u research/r171_short_easy_benchmark.py audit | tee r171/audit.log
+          grep -q '^R171_FINAL ' r171/audit.log
+          cat r171/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R171-SHORT-EASY-240-AUDIT-REPORT
+          path: |
+            r171/report.json
+            r171/summary.md
+            r171/audit.log
+          if-no-files-found: warn
+          retention-days: 90
