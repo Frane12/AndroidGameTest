@@ -1,0 +1,162 @@
+name: DRNAS R176 source-certified mixed XOR-CNF bridge 24 paired
+on:
+  push:
+    branches: [experiment/drnas-r176-certified-mixed-bridge-20261106]
+    paths:
+      - 'research/r176_certified_mixed_bridge.cpp'
+      - 'research/r176_certified_mixed_benchmark.py'
+      - '.github/workflows/drnas-r176-mixed-bridge.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r176-clause-causality-20261106
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Build R176 CNF-guided GF2 pair/triple native selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned CaDiCaL and test certified reasons plus utility wake
+        run: |
+          set -euo pipefail
+          mkdir -p r176
+          python3 -m py_compile research/r176_certified_mixed_benchmark.py research/r175_clause_causality_benchmark.py research/r173_residual_gate_benchmark.py research/r166x_component_benchmark.py research/r166x_certified_gauss.py research/r164_pure_exact_gf2.py
+          python3 -u research/r164_pure_exact_gf2.py --selftest | tee r176/exact-selftest.log
+          grep -q '^R164_PURE_SELFTEST_PASS' r176/exact-selftest.log
+          python3 -u research/r166x_certified_gauss.py --selftest | tee r176/gauss-selftest.log
+          grep -q '^R166X_GAUSS_PROOF_SELFTEST_PASS' r176/gauss-selftest.log
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r176-cadical
+          cd /tmp/r176-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r176/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r176_certified_mixed_bridge.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r176/r176-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r176/r176-native selftest | tee r176/native-selftest.log
+          grep -q '^R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS' r176/native-selftest.log
+          grep -q '^R175_SHADOW_SHORT4_BUDGET8_SELFTEST_PASS' r176/native-selftest.log
+          grep -q '^R174_B_CERTIFIED_CONFLICT_SELFTEST_PASS' r176/native-selftest.log
+          grep -q '^R174_C_UTILITY_WAKE_SELFTEST_PASS' r176/native-selftest.log
+          grep -q '^R176_GF2_CNF_CLOSURE_SELFTEST_PASS' r176/native-selftest.log
+          grep -q '^R176_GF2_CNF_PROPAGATION_SELFTEST_PASS' r176/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r176/r176-native")
+          pin={"source_commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+               "binary_sha256":hashlib.sha256(b.read_bytes()).hexdigest(),
+               "cadical_sha":pathlib.Path("r176/cadical-source-commit.txt").read_text().strip(),
+               "protocol":"DRNAS-DRNAS-R176-RESIDUAL-CNF-GF2-PAIR-TRIPLE-v1"}
+          pathlib.Path("r176/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R176_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r176-pinned-native
+          retention-days: 90
+          path: |
+            r176/r176-native
+            r176/build-pin.json
+            r176/exact-selftest.log
+            r176/gauss-selftest.log
+            r176/native-selftest.log
+            r176/cadical-source-commit.txt
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R176 mixed residual 3-arm original SHA pairs shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r176-pinned-native
+          path: r176
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r176
+      - name: Verify original SHA CNFs and run charged paired trials
+        run: |
+          set -euo pipefail
+          chmod +x r176/r176-native
+          python3 -u research/r176_certified_mixed_benchmark.py shard --shard ${{ matrix.shard }} --binary r176/r176-native | tee r176/shard-${{ matrix.shard }}.log
+          grep -q '^R176_SHARD_PASS ' r176/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r176-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r176/shard-${{ matrix.shard }}.json
+            r176/shard-${{ matrix.shard }}.log
+            r176/prep-*.json
+            r176/cert-*.json
+            r176/gauss-*/gauss.tsv
+            r176/gauss-*/gauss-units.tsv
+            r176/gauss-*/gauss-cert.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: Audit 24 R176 residual mixed original-SHA pairs with source proofs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r176-pinned-native
+          path: r176
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r176
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r176-shard-*
+          merge-multiple: true
+          path: r176
+      - name: Validate complete paired comparisons and replay source certificates
+        run: |
+          set -euo pipefail
+          test "$(find r176 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r176_certified_mixed_benchmark.py audit | tee r176/audit.log
+          grep -q '^R176_FINAL ' r176/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          a=json.loads(pathlib.Path("r176/report.json").read_text())
+          assert a["status"]=="R176_FROZEN_PAIRED_SOURCE_PROOF_PASS_NOT_BLIND"
+          assert a["formulas"]==4 and a["attempts"]==24
+          assert a["independent_source_gaussian_proof"] and a["SAT_originals_checked"]
+          print("R176_THREE_ARM_CERTIFIED_AUDIT_PASS")
+          PY
+          cat r176/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R176-MIXED-BRIDGE-24-FINAL
+          retention-days: 90
+          path: |
+            r176/report.json
+            r176/summary.md
+            r176/audit.log
