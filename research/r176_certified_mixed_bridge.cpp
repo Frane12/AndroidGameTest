@@ -755,9 +755,7 @@ static int r162_run(const string& mode,const string& src,
     R162Clock clock(cap_s,bridge,mode);
     solver.connect_terminator(&clock);
     cout<<"R166X_START mode="<<mode<<" source_rows="<<source_rows
-        <<" derived_rows="<<derived<<" r176_pairs="<<r176_pairs
-         <<" r176_triples="<<r176_triples<<" r176_cross_clauses="<<r176_mixed_edges
-         <<" r176_traces="<<r176_traces<<" clauses="<<cnf.size()
+        <<" derived_rows="<<derived<<" clauses="<<cnf.size()
         <<" cap_s="<<cap_s<<"\n"<<flush;
     auto start=chrono::steady_clock::now();
     const int result=solver.solve();
