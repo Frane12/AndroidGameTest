@@ -30,14 +30,14 @@ def prepare_48(out, extra_count):
     cobra_model, base_genes, rules, wild, sha, n_and, n_or, examples = prepare_r3(out)
     if not 1 <= extra_count <= 24:
         raise ValueError("R5 extra genes must be 1..24")
-    remaining = [g for g in cobra_model.genes if g.id not in base_genes and g.reactions]
+    # BiGG s0001 denotes spontaneous reactions, NOT an experimentally KO-able gene.\n    # Restrict candidate interventions to E. coli b-numbered locus IDs.\n    remaining = [g for g in cobra_model.genes if g.id not in base_genes\n                 and g.reactions and g.id.startswith("b")\n                 and len(g.id)==5 and g.id[1:].isdigit()]
     def score(g):
         c = sum((" and " in r.gene_reaction_rule or " or " in r.gene_reaction_rule)
                 for r in g.reactions)
         return (-c, -len(g.reactions), g.id)
     extra = [g.id for g in sorted(remaining,key=score)[:extra_count]]
     genes = base_genes + extra
-    if len(genes) != len(set(genes)) or len(extra) != extra_count:
+    if any(not (g.startswith("b") and len(g)==5 and g[1:].isdigit()) for g in genes):\n        raise AssertionError("Pseudogene/spontaneous s0001 must not be selectable")\n    if len(genes) != len(set(genes)) or len(extra) != extra_count:
         raise AssertionError("Insufficient extra source GPR genes")
     return cobra_model, genes, rules, wild, sha, n_and, n_or, examples, extra
 
