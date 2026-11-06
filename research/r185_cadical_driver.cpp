@@ -37,6 +37,9 @@ int main(int argc,char **argv){
       }
     }
   }
-  cout<<"R185_STATS_BEGIN\\n"<<flush;\n  solver.statistics();\n  cout<<"R185_STATS_END\\n"<<flush;\n  return 0;
+  cout<<"R185_STATS_BEGIN\n"<<flush;
+  solver.statistics();
+  cout<<"R185_STATS_END\n"<<flush;
+  return 0;
  }catch(const exception&e){cerr<<"R182_DRIVER_FAIL "<<e.what()<<"\n";return 2;}
 }
