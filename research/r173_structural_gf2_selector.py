@@ -131,8 +131,9 @@ def trial(c,mode,rep,prep,binary):
     if gate:
         need(gate["selected"]==(execute=="direct_two_way_budget"),
              "gate/solver routing mismatch")
-    need(stats.get("conflicts") is not None and stats.get("decisions") is not None,
-         "missing native CaDiCaL counters")
+    if c["tier"]=="hard":
+        need(stats.get("conflicts") is not None and stats.get("decisions") is not None,
+             "missing native CaDiCaL counters on hard CNF")
     return dict(protocol=PROTO,id=c["id"],source_sha256=c["sha256"],
        tier=c["tier"],cohort=c["cohort"],mode=mode,native_mode=execute,
        repeat=rep,cap_s=cap,status=status,elapsed_s=round(wall,6),
@@ -141,7 +142,7 @@ def trial(c,mode,rep,prep,binary):
        screen=gate,source_rows=source_rows,derived_rows=derived,
        used_reasons=used,proposals=proposals,sweeps=sweeps,
        GF2_processing_ns=int(native["two_way_ns"]),
-       cdcl_conflicts=int(stats["conflicts"]),cdcl_decisions=int(stats["decisions"]),
+       cdcl_conflicts=stats.get("conflicts"),cdcl_decisions=stats.get("decisions"),
        proof=("SOURCE_SAT_MODEL_CHECKED" if status=="SAT" else
          "UNSAT_NATIVE_NO_INDEPENDENT_LRAT" if status=="UNSAT" else "TIMEOUT"))
 def shard(index,binary):
@@ -209,7 +210,8 @@ def audit():
                 used_reasons=sum(r["used_reasons"] for r in a),
                 selected=sum(bool(r["screen"] and r["screen"]["selected"]) for r in a),
                 screen_ms=round(1000*sum(r["screen"]["screen_s"] for r in a if r["screen"]),4),
-                cdcl_conflicts=sum(r["cdcl_conflicts"] for r in a))
+                cdcl_conflicts=sum(r["cdcl_conflicts"] or 0 for r in a),
+                trials_with_unavailable_cdcl_stats=sum(r["cdcl_conflicts"] is None for r in a))
     missed=[];paired=[]
     for c in cases:
         for rep in range(REPS):
@@ -256,6 +258,7 @@ def audit():
                 "Hard timeouts cannot be used to infer real solve-time speedups.",
                 "Budget and selector reuse exact R172 native binary without code changes.",
                 "Small SATLIB instances may be dominated by process startup and screening overhead.",
+        "For immediate easy solves, unavailable CaDiCaL counters stay null, not imputed as measured zero.",
                 "Native UNSAT without independent LRAT/FRAT proof."])
     save(ROOT/"report.json",report)
     with (ROOT/"summary.md").open("w") as f:
