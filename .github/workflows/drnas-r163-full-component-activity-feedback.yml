@@ -1,0 +1,175 @@
+name: DRNAS R163 full GF2 CDCL gated productivity 30s mixed original CNF
+on:
+  push:
+    branches: [experiment/drnas-r163-full-component-activity-feedback-20261106]
+    paths:
+      - '.github/workflows/drnas-r163-full-component-activity-feedback.yml'
+      - 'research/r163_component_feedback.cpp'
+      - 'research/r163_component_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r163-full-gated-8-original-80-pairs
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Compile ONCE pinned CaDiCaL and R163; immutable source and GF2 reasons selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the single common source-locked R163/CaDiCaL native binary
+        run: |
+          set -euo pipefail
+          mkdir -p r163
+          python3 -m py_compile research/r163_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r163-cadical
+          cd /tmp/r163-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r163/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r163_component_feedback.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r163/r163-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r163/r163-native selftest | tee r163/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r163/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r163/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r163/native-selftest.log
+          grep -q '^R163_COMPONENT_GATE_SELFTEST_PASS' r163/native-selftest.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          p=pathlib.Path("r163/r163-native")
+          obj=dict(binary_sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+            commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            cadical_source_commit=pathlib.Path("r163/cadical-source-commit.txt").read_text().strip(),
+            compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0])
+          pathlib.Path("r163/build-pin.json").write_text(json.dumps(obj,sort_keys=True,indent=2))
+          print("R163_SINGLE_BINARY_PIN_PASS",json.dumps(obj,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r163-single-frozen-binary-and-source-commit
+          path: |
+            r163/r163-native
+            r163/build-pin.json
+            r163/cadical-source-commit.txt
+            r163/native-selftest.log
+          retention-days: 90
+  paired:
+    needs: build
+    name: Five-mode ORIGINAL CNF 30s mixed and 5s controls same-binary paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r163-single-frozen-binary-and-source-commit
+          path: r163
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r163
+      - name: Enforce SAME precompiled native SHA and record paired CPU source
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x r163/r163-native
+          python3 - <<'PY'
+          import pathlib,hashlib,json,os,subprocess
+          pin=json.loads(pathlib.Path("r163/build-pin.json").read_text())
+          check=hashlib.sha256(pathlib.Path("r163/r163-native").read_bytes()).hexdigest()
+          assert check==pin["binary_sha256"],"R163 NATIVE BINARY DRIFT"
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["commit"]
+          pin["cpu"]=next((v for v in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if v.startswith("model name")),"unknown")
+          pin["shard"]=int(os.environ["SHARD"])
+          pathlib.Path("r163/pin-"+os.environ["SHARD"]+".json").write_text(json.dumps(pin,sort_keys=True))
+          print("R163_COMMON_BINARY_SHA_PASS",check,"shard",os.environ["SHARD"])
+          PY
+      - name: Independently replay source-certified GF2 rows and 5 modes on original sources
+        run: |
+          set -euo pipefail
+          python3 -u research/r163_component_benchmark.py shard --shard ${{ matrix.shard }} --binary r163/r163-native | tee r163/shard-${{ matrix.shard }}.log
+          grep -q '^R163_SHARD_PASS ' r163/shard-${{ matrix.shard }}.log
+          test -s r163/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r163-causal-shard-${{ matrix.shard }}
+          path: |
+            r163/shard-${{ matrix.shard }}.json
+            r163/shard-${{ matrix.shard }}.log
+            r163/pin-${{ matrix.shard }}.json
+            r163/prep-*.json
+            r163/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Audit 80 SHA-paired native conflict decision GF2 source proof and true SAT models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r163-single-frozen-binary-and-source-commit
+          path: r163
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r163
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r163-causal-shard-*
+          merge-multiple: true
+          path: r163
+      - name: Final source-specific causal and regression correctness audit
+        run: |
+          set -euo pipefail
+          test "$(find r163 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/r163_component_benchmark.py audit | tee r163/audit.log
+          grep -q '^R163_FINAL ' r163/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.loads(pathlib.Path("r163/report.json").read_text())
+          with open(pathlib.Path("r163/report-summary.md"),"w") as f:
+           f.write("# DRNAS R163: component-conditioned GF2/CDCL feedback metrics\n\n")
+           f.write("8 development SHA CNFs; five modes; two repetitions; 80 trials; mixed cap 30s.\n\n")
+           f.write("| Mode | Solved | PAR2 s | Conflicts | Decisions | Learned | GF2 proposals | Full reasons |\n")
+           f.write("|---|---:|---:|---:|---:|---:|---:|---:|\n")
+           for key,d in x["summary"]["all"].items():
+            f.write(f'| {key} | {d["solved"]}/{d["trials"]} | {d["PAR2_s"]:.4f} | {d["conflicts"]} | {d["decisions"]} | {d["learned_clauses"]} | {d["proposed_GF2"]} | {d["completed_reason_clauses"]} |\n')
+           f.write("\nRESEARCH ONLY. Same R154 development set; non-blind; no independent UNSAT LRAT.\n")
+          PY
+          cat r163/report-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R163-FULL-GF2-GATED-30S-8-ORIGINAL-80-PAIRED-AUDIT-FINAL
+          path: |
+            r163/report.json
+            r163/audit.log
+            r163/report-summary.md
+          if-no-files-found: warn
+          retention-days: 90
