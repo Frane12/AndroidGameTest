@@ -12,6 +12,7 @@ No false "GF2 proposal = useful new conflict" inference.
 import argparse,collections,hashlib,json,os,pathlib,random,re,statistics,subprocess,sys,time
 sys.path.insert(0,str(pathlib.Path("research").resolve()))
 import r157_source_certified_xor as cert
+import r166x_certified_gauss as gaussian
 ROOT=pathlib.Path("r166x");FROZEN=ROOT/"frozen"
 PROTO="DRNAS-R166X-COMPONENT-FEEDBACK-CAUSAL-20261106-v1"
 MODES=("clean","direct_full","direct_full_feedback","direct_incremental","direct_watchlazy","direct_cooldown","gauss_full","gauss_watchlazy","gauss_cooldown")
@@ -98,9 +99,21 @@ def prepare(c):
  bfile=ROOT/("boundary-"+c["id"]+".tsv")
  bfile.write_text(render(b))
  need(f.read_text()==render(ev["selected"]),"frozen full rows serialization mismatch")
+ gstart=time.perf_counter()
+ gdir=ROOT/("gauss-"+c["id"])
+ g=gaussian.prepare(src,ev,gdir,max_derived=120)
+ need(gaussian.replay(src,ev,g["certificate"],g["tsv"],g["units_tsv"]),
+      "R166X derived GF2 source replay failed")
  info=dict(id=c["id"],source_sha256=c["sha256"],full_rows=len(ev["selected"]),
            boundary_rows=len(b),full_tsv_sha=h(f),boundary_tsv_sha=h(bfile),
-           certificate_sha=h(evfile),preprocessing_s=round(time.perf_counter()-t,6),
+           certificate_sha=h(evfile),preprocessing_s=round(gstart-t,6),
+            gauss_preprocessing_s=round(time.perf_counter()-t,6),
+            gauss_source_rows=ev["selected_rows"]+g["derived_short_rows"],
+            gauss_units=g["derived_units"],gauss_source_unsat=g["contradiction_found"],
+            gauss_rows_sha=g["rows_sha256"],gauss_units_sha=g["unit_sha256"],
+            gauss_certificate_sha=g["certificate_sha256"],
+            gauss_multiway_candidates=g["multiway_candidates"],
+            gauss_multiway_selected=g["multiway_selected"],
            diverse_boundary_vars=len(set(v for e in b for v in e["vars"])))
  wr(ROOT/("prep-"+c["id"]+".json"),info)
  print("R166X_SOURCE_PROOF_PASS",json.dumps(info,sort_keys=True),flush=True)
