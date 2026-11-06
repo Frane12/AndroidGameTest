@@ -437,7 +437,7 @@ def final_audit(inputs,out):
     print("R9_FINAL",json.dumps(result,sort_keys=True),flush=True)
 
 def selftest():
-    expected={24:2324,48:18472,96:147536,192:1181952,384:9408384}
+    expected={24:2324,48:18472,96:147536,192:1179808,384:9437504}
     for n,v in expected.items():
         need(ncomb(n)==v,f"C(n,1..3) count mismatch {n} {ncomb(n)} expected{v}")
     from gmispy_r7_audit import unit_test
