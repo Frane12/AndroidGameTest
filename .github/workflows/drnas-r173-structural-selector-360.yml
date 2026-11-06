@@ -1,0 +1,156 @@
+name: DRNAS R173 structural GF2 source-only selector 360 paired benchmarks
+on:
+  push:
+    branches: [experiment/drnas-r173-structural-gf2-selector-20261106]
+    paths:
+      - '.github/workflows/drnas-r173-structural-selector-360.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r173-precommitted-source-structural-selector
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: Freeze 25 hard source originals plus 20 easy and native R172 binary
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r173/hard
+      - uses: actions/download-artifact@v4
+        with:
+          name: R171-EASY-FROZEN-20-ORIGINAL-AND-CONTROL-NATIVE
+          run-id: 42168686099
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r173/easy
+      - uses: actions/download-artifact@v4
+        with:
+          name: R172-PINNED-NATIVE-BINARY-AND-SELFTEST
+          run-id: 42168803325
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r173/bin
+      - name: Fail-closed SHA provenance, complete original source checking and selector compile
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r173_structural_gf2_selector.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          python3 - <<'PY'
+          import hashlib,importlib.util,json,pathlib
+          p=pathlib.Path("research/r173_structural_gf2_selector.py")
+          spec=importlib.util.spec_from_file_location("r173",p)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          cases=m.all_cases()
+          assert len(cases)==45
+          assert sum(c["tier"]=="hard" for c in cases)==25
+          assert sum(c["tier"]=="easy" for c in cases)==20
+          pin=json.loads(pathlib.Path("r173/bin/build-pin.json").read_text())
+          assert pin["source_commit"]==m.EXPECTED_R172_BINARY_COMMIT
+          assert hashlib.sha256(pathlib.Path("r173/bin/r172-native").read_bytes()).hexdigest()==pin["binary_sha256"]
+          print("R173_PINNED_ORIGINAL_SHA_PASS",45,pin["binary_sha256"],flush=True)
+          PY
+          chmod +x r173/bin/r172-native
+          ./r173/bin/r172-native selftest | tee r173/native-selftest.log
+          grep -q '^R172_BUDGET_SELFTEST_PASS' r173/native-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R173-45-FROZEN-SOURCES-AND-R172-BINARY
+          path: |
+            r173/hard/frozen
+            r173/easy/frozen
+            r173/bin/r172-native
+            r173/bin/build-pin.json
+            r173/native-selftest.log
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: prepare
+    timeout-minutes: 25
+    name: R173 4-way selector vs Gaussian 45 original/synthetic shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R173-45-FROZEN-SOURCES-AND-R172-BINARY
+          path: r173
+      - name: Compare clean newonly utility-budget and structural selector, two repeats
+        run: |
+          set -euo pipefail
+          chmod +x r173/bin/r172-native
+          python3 -u research/r173_structural_gf2_selector.py shard --shard ${{ matrix.shard }} --binary r173/bin/r172-native | tee r173/shard-${{ matrix.shard }}.log
+          grep -q '^R173_SHARD_PASS' r173/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R173-SHARD-${{ matrix.shard }}
+          path: |
+            r173/shard-${{ matrix.shard }}.json
+            r173/shard-${{ matrix.shard }}.log
+            r173/prep-*.json
+            r173/cert-*.json
+            r173/full-*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit selector decisions, source certificates and all 360 paired timings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R173-45-FROZEN-SOURCES-AND-R172-BINARY
+          path: r173
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-R173-SHARD-*
+          merge-multiple: true
+          path: r173
+      - name: Audit 45 formula proofs, 360 trials, GF2 reason preservation and timing
+        run: |
+          set -euo pipefail
+          test "$(find r173 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r173_structural_gf2_selector.py audit | tee r173/audit.log
+          grep -q '^R173_FINAL' r173/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          j=json.loads(Path("r173/report.json").read_text())
+          assert j["attempts"]==360 and j["source_sha_verified"]
+          assert j["status"]=="R173_STRUCTURAL_SELECTOR_RESEARCH_AUDIT_PASS"
+          assert j["all_budget_GF2_reasons_preserved"]
+          print("R173_STRICT_SOURCE_SELECTOR_AUDIT_PASS")
+          PY
+          cat r173/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R173-SELECTOR-360-ORIGINALS-STRICT-RESEARCH-AUDIT
+          path: |
+            r173/report.json
+            r173/summary.md
+            r173/audit.log
+          if-no-files-found: warn
+          retention-days: 90
