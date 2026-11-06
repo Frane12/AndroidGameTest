@@ -755,6 +755,33 @@ int main(int argc,char**argv) {
                     throw runtime_error("R174_C_WAKE_FAIL");
                 cout<<"R174_C_UTILITY_WAKE_SELFTEST_PASS\n";
             }
+            {
+                // Three deterministic causal controls on the same verified XOR reason.
+                auto probe=[](int kind) {
+                    R162Bridge b({{{1,2,3},0}},3,R162Bridge::DIRECT);
+                    b.feedback_clauses=true;b.watchlazy_enabled=true;
+                    b.feedback_shadow=(kind==0);
+                    b.feedback_max_width=(kind==1?2:0);
+                    b.feedback_max_clauses=(kind==2?0:64);
+                    b.notify_new_decision_level();
+                    b.notify_assignment({1,2,3});
+                    if(b.cb_propagate()!=0 || b.feedback_candidates!=1)
+                        throw runtime_error("R175_CANDIDATE_FAIL");
+                    bool forgettable=false;
+                    if(b.cb_has_external_clause(forgettable))
+                        throw runtime_error("R175_ABLATION_LEAKED_CLAUSE");
+                    if(b.feedback_clauses_consumed!=0)
+                        throw runtime_error("R175_UNEXPECTED_DELIVERY");
+                    if(kind==0 && b.feedback_shadow_admitted!=1)
+                        throw runtime_error("R175_SHADOW_NOT_COMPUTED");
+                    if(kind==1 && b.feedback_rejected_width!=1)
+                        throw runtime_error("R175_WIDTH_GATE_FAIL");
+                    if(kind==2 && b.feedback_rejected_budget!=1)
+                        throw runtime_error("R175_BUDGET_GATE_FAIL");
+                };
+                probe(0);probe(1);probe(2);
+                cout<<"R175_SHADOW_SHORT4_BUDGET8_SELFTEST_PASS\n";
+            }
             return 0;
         }
         if(argc!=5 && argc!=6) {
