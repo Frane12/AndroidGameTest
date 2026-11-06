@@ -1,0 +1,161 @@
+name: DRNAS R174 GF2 dynamic boundary feedback 25-source mixed paired ablation
+on:
+  push:
+    branches: [experiment/drnas-r174-dynamic-boundary-feedback-20261106]
+    paths:
+      - 'research/r174_dynamic_boundary_gf2_cdcl.cpp'
+      - 'research/r174_dynamic_boundary_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r174-dynamic-feedback-25-original-paired
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Build single SHA-pinned R174 native GF2 CDCL and certify reason/backtrack selftests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build frozen CaDiCaL 2.1.0 and instrumented R174
+        run: |
+          set -euo pipefail
+          mkdir -p r174
+          python3 -m py_compile research/r174_dynamic_boundary_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r170-cadical
+          cd /tmp/r170-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r174/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r174_dynamic_boundary_gf2_cdcl.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r174/r174-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r174/r174-native selftest | tee r174/selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R172_BUDGET_SELFTEST_PASS' r174/selftest.log
+          grep -q '^R174_DYNAMIC_FEEDBACK_SELFTEST_PASS' r174/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          binary=pathlib.Path("r174/r174-native")
+          pin=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0],
+                   cadical_commit=pathlib.Path("r174/cadical-source-commit.txt").read_text().strip(),
+                   benchmark_protocol="DRNAS-R174-DYNAMIC-BOUNDARY-25-SHA-PAIRED-20261106-v1")
+          pathlib.Path("r174/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R174_PINNED_BINARY_SELFTEST_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R174-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: |
+            r174/r174-native
+            r174/build-pin.json
+            r174/selftest.log
+            r174/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    name: R174 dynamic boundary CDCL GF2 mixed paired shard ${{ matrix.shard }}
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R174-PINNED-NATIVE-BINARY-AND-SELFTEST
+          path: r174
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r174
+      - name: Solve original SHA CNFs for 60s mixed / 15s other per mode and record first consumed GF2 reason
+        run: |
+          set -euo pipefail
+          chmod +x r174/r174-native
+          python3 -u research/r174_dynamic_boundary_benchmark.py shard --shard ${{ matrix.shard }} --binary r174/r174-native | tee r174/shard-${{ matrix.shard }}.log
+          grep -q '^R174_SHARD_PASS ' r174/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r174-first-used-shard-${{ matrix.shard }}
+          path: |
+            r174/shard-${{ matrix.shard }}.json
+            r174/shard-${{ matrix.shard }}.log
+            r174/prep-*.json
+            r174/cert-*.json
+            r174/full-*.tsv
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit 200 matched SHA GF2 CDCL dynamic-boundary runs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r174
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r174-first-used-shard-*
+          merge-multiple: true
+          path: r174
+      - name: Independent source GF2 certificate replay and complete paired audit
+        run: |
+          set -euo pipefail
+          test "$(find r174 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r174_dynamic_boundary_benchmark.py audit | tee r174/audit.log
+          grep -q '^R174_FINAL ' r174/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("r174/report.json").read_text())
+          assert r["status"]=="R174_RESEARCH_PAIRED_AUDIT_PASS_NOT_BLIND"
+          assert r["original_formulas"]==25 and r["attempts"]==200
+          assert len(r["paired_comparisons"]) == 150
+          assert all(p["finite_speedup"] is None for p in r["paired_comparisons"] if p["baseline_status"]=="TIMEOUT" or p["variant_status"]=="TIMEOUT")
+          assert r["source_certificates_replayed"] and r["original_sha_verified"]
+          assert r["results"]["clean"]["two_way_sweeps"]==0
+          assert r["results"]["clean"]["two_way_used_reasons"]==0
+          print("R174_STRICT_GENERAL_SOURCE_PAIRED_AUDIT_PASS")
+          PY
+          cat r174/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R174-25-ORIGINALS-200-PAIRED-DYNAMIC-AUDIT
+          path: |
+            r174/report.json
+            r174/summary.md
+            r174/audit.log
+          if-no-files-found: warn
+          retention-days: 90
