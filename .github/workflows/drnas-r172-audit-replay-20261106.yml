@@ -1,0 +1,68 @@
+name: DRNAS R172 independent audit replay 150 existing paired trials
+on:
+  push:
+    branches: [experiment/drnas-r172-audit-replay-20261106]
+    paths:
+      - '.github/workflows/drnas-r172-audit-replay-20261106.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check independent audit source code
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r172_utility_budget_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r172
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r172-first-used-shard-*
+          run-id: 42168803325
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: r172
+      - name: Replay unchanged original CNF SHA provenance and audit all five shards
+        run: |
+          set -euo pipefail
+          test "$(find r172 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/r172_utility_budget_benchmark.py audit | tee r172/audit.log
+          grep -q '^R172_FINAL ' r172/audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("r172/report.json").read_text())
+          assert d["status"]=="R172_RESEARCH_PAIRED_AUDIT_PASS_NOT_BLIND"
+          assert d["original_formulas"]==25 and d["attempts"]==150
+          assert len(d["paired_comparisons"])==100
+          assert d["source_certificates_replayed"] and d["original_sha_verified"]
+          assert d["results"]["clean"]["two_way_sweeps"]==0
+          assert d["results"]["clean"]["two_way_used_reasons"]==0
+          assert all(p["finite_speedup"] is None for p in d["paired_comparisons"]
+            if p["baseline_status"]=="TIMEOUT" or p["variant_status"]=="TIMEOUT")
+          print("R172_FIVE_SHARD_REPLAY_AUDIT_PASS")
+          PY
+          cat r172/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R172-150-PAIRED-AUDIT-REPLAY-5-SHARDS
+          path: |
+            r172/report.json
+            r172/summary.md
+            r172/audit.log
+          if-no-files-found: warn
+          retention-days: 90
