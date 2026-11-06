@@ -1,0 +1,155 @@
+name: DRNAS R170 405 paired causal GF2 first-used reasons 25 originals plus long focus
+on:
+  push:
+    branches: [experiment/drnas-r170-causal-scale-20261106]
+    paths:
+      - 'research/r170_causal_gf2_timed.cpp'
+      - 'research/r170_causal_scale_benchmark.py'
+      - '.github/workflows/drnas-r170-causal-scale-405.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r170-405-sha-original-causal
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: Build pinned R170 native CaDiCaL GF2 and first used reason telemetry
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile single native solver, unit/self tests, freeze binary SHA
+        run: |
+          set -euo pipefail
+          mkdir -p r170
+          python3 -m py_compile research/r170_causal_scale_benchmark.py research/r165_component_benchmark.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r170-cadical
+          cd /tmp/r170-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r170/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r170_causal_gf2_timed.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r170/r170-native"
+          cd "$GITHUB_WORKSPACE"
+          ./r170/r170-native selftest | tee r170/selftest.log
+          grep -q '^R169_CAUSAL_GAUSSIAN_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R168_TWO_WAY_SELFTEST_PASS' r170/selftest.log
+          grep -q '^R165_INCREMENTAL_SELFTEST_PASS' r170/selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          b=pathlib.Path("r170/r170-native")
+          record=dict(binary_sha256=hashlib.sha256(b.read_bytes()).hexdigest(),
+             source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+             compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0],
+             cadical_commit=pathlib.Path("r170/cadical-source-commit.txt").read_text().strip(),
+             protocol="DRNAS-R170-TIMED-CAUSAL-405-20261106-v1")
+          pathlib.Path("r170/build-pin.json").write_text(json.dumps(record,indent=2,sort_keys=True))
+          print("R170_NATIVE_PIN_PASS",json.dumps(record,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r170-native-binary-pinned
+          path: |
+            r170/r170-native
+            r170/build-pin.json
+            r170/selftest.log
+            r170/cadical-source-commit.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    runs-on: ubuntu-24.04
+    needs: build
+    timeout-minutes: 55
+    name: R170 ${{ matrix.tier }} original-SHA paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {tier: broad, shard: 0}
+          - {tier: broad, shard: 1}
+          - {tier: broad, shard: 2}
+          - {tier: broad, shard: 3}
+          - {tier: focus, shard: 0}
+          - {tier: focus, shard: 1}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r170-native-binary-pinned
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - name: Paired same original SHA 3 repeats all arms with independent source proof
+        run: |
+          set -euo pipefail
+          chmod +x r170/r170-native
+          python3 -u research/r170_causal_scale_benchmark.py shard --tier ${{ matrix.tier }} --shard ${{ matrix.shard }} --binary r170/r170-native | tee r170/shard-${{ matrix.tier }}-${{ matrix.shard }}.log
+          grep -q '^R170_SHARD_PASS' r170/shard-${{ matrix.tier }}-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r170-${{ matrix.tier }}-shard-${{ matrix.shard }}
+          path: |
+            r170/shard-${{ matrix.tier }}-${{ matrix.shard }}.json
+            r170/shard-${{ matrix.tier }}-${{ matrix.shard }}.log
+            r170/cert-*.json
+            r170/prep-*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    runs-on: ubuntu-24.04
+    needs: benchmark
+    timeout-minutes: 15
+    name: Audit 405 paired results, source certificates, actual used CDCL reasons
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          name: r170-native-binary-pinned
+          path: r170
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r170-*-shard-*
+          merge-multiple: true
+          path: r170
+      - name: Validate 25 SHA originals 2 focus formulas 405 attempts & fair PAR2
+        run: |
+          set -euo pipefail
+          test "$(find r170 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 6
+          python3 -u research/r170_causal_scale_benchmark.py audit | tee r170/audit.log
+          grep -q '^R170_FINAL ' r170/audit.log
+          cat r170/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R170-405-PAIRED-GF2-CDCL-STRICT-CAUSAL-AUDIT
+          path: |
+            r170/report.json
+            r170/summary.md
+            r170/audit.log
+          if-no-files-found: warn
+          retention-days: 90
