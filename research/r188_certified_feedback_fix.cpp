@@ -974,6 +974,16 @@ static int r162_run(const string& mode,const string& src,
     bridge.feedback_max_clauses=(mode=="gauss_budget8"||mode=="direct_full_feedback_budget8"||
         mode=="direct_full_feedback_shadow8")?8:64;
     bridge.utility_gate=mode=="gauss_utility"||mode=="gauss_feedback_utility";
+    if(r188_feedback) {
+        cout<<"R188_FEEDBACK_CONFIG mode="<<mode
+            <<" enabled="<<bridge.feedback_clauses
+            <<" shadow="<<bridge.feedback_shadow
+            <<" width="<<bridge.feedback_max_width
+            <<" budget="<<bridge.feedback_max_clauses
+            <<" watchlazy="<<bridge.watchlazy_enabled
+            <<" cooldown="<<bridge.cooldown_enabled<<"\n"<<flush;
+        if(!bridge.feedback_clauses)throw runtime_error("R188_FEEDBACK_CONFIG_NOT_ENABLED");
+    }
     if(bridge.incremental_enabled)bridge.initialize_incremental();
     if(!clean && !bridge.rows.empty()){
         solver.connect_external_propagator(&bridge);
