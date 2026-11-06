@@ -12,7 +12,7 @@ No false "GF2 proposal = useful new conflict" inference.
 import argparse,collections,hashlib,json,os,pathlib,random,re,statistics,subprocess,sys,time
 sys.path.insert(0,str(pathlib.Path("research").resolve()))
 import r157_source_certified_xor as cert
-ROOT=pathlib.Path("r163");FROZEN=ROOT/"frozen"
+ROOT=pathlib.Path("r164");FROZEN=ROOT/"frozen"
 PROTO="DRNAS-R164-COMPONENT-FEEDBACK-CAUSAL-20261106-v1"
 MODES=("clean","direct_full","direct_full_feedback","direct_incremental")
 SHARDS=4;REPS=2
