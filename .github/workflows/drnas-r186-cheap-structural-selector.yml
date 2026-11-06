@@ -1,0 +1,137 @@
+name: DRNAS R186 cheap structural selective XOR 5s 774 paired
+on:
+  push:
+    branches: [experiment/drnas-r186-cheap-structural-selector-20261106]
+    paths:
+      - 'research/r186_cheap_selector.py'
+      - '.github/workflows/drnas-r186-cheap-structural-selector.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r186-short-diverse
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: R186 cheap source gate + certified GF2 source selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r186_cheap_selector.py research/r183_external_mixed.py research/r182_mixed_engine.py
+          python3 -u research/r186_cheap_selector.py selftest
+      - name: Download EXACT R185 previously frozen source SHAs and pinned CaDiCaL binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r186
+          gh run download 42215628832 --repo Frane12/AndroidGameTest -n r185-pinned-129-sources-native -D r186
+          python3 -u research/r186_cheap_selector.py verify | tee r186/source-verify.log
+          grep -q '^R186_VERIFY_PASS 129' r186/source-verify.log
+          chmod +x r186/r185-driver
+          cp r186/r185-driver r186/r186-driver
+          python3 - <<'PY'
+          import hashlib,pathlib,json
+          p=pathlib.Path("r186")
+          pin=json.loads((p/"pin.json").read_text())
+          assert hashlib.sha256((p/"r186-driver").read_bytes()).hexdigest()==pin["binary_sha256"]
+          print("R186_PINNED_BINARY_AND_SOURCES_PASS")
+          PY
+      - name: Snapshot R186 precommitted structural screening decisions, no outcome selection
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,sys,collections
+          sys.path.insert(0,"research")
+          import r186_cheap_selector as b
+          rows=b.verify()
+          result=collections.Counter()
+          for c in rows:
+              chosen,reason,elapsed=b.cheap_gate(b.FROZEN/(c["id"]+".cnf"))
+              result[(c["origin"],"selected" if chosen else "abstained",reason)]+=1
+          print("R186_SOURCE_ONLY_PRECOMMITTED_SCREEN",json.dumps(
+              [{"origin":k[0],"state":k[1],"reason":k[2],"count":v}
+               for k,v in sorted(result.items())],sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r186-exact-r185-pinned-129-source-native
+          retention-days: 90
+          path: |
+            r186/frozen/
+            r186/manifest.json
+            r186/pin.json
+            r186/r186-driver
+            r186/source-verify.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: R186 short selective 5s paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r186-exact-r185-pinned-129-source-native
+          path: r186
+      - name: Same SHA randomized paired clean vs full GF2 vs precommitted selector
+        run: |
+          set -euo pipefail
+          chmod +x r186/r186-driver
+          python3 -u research/r186_cheap_selector.py verify
+          python3 -u research/r186_cheap_selector.py shard --shard ${{ matrix.shard }} --binary r186/r186-driver | tee r186/shard-${{ matrix.shard }}.log
+          grep -q '^R186_SHARD_PASS ' r186/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r186-paired-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r186/shard-${{ matrix.shard }}.json
+            r186/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r186-exact-r185-pinned-129-source-native
+          path: r186
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r186-paired-shard-*
+          merge-multiple: true
+          path: r186
+      - name: Audit 774 paired source-SHA SAT-witness and GF2-proof results
+        run: |
+          set -euo pipefail
+          test "$(find r186 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r186_cheap_selector.py audit | tee r186/audit.log
+          grep -q '^R186_FINAL ' r186/audit.log
+          cat r186/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R186-CHEAP-SELECTOR-774-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r186/report.json
+            r186/summary.md
+            r186/audit.log
