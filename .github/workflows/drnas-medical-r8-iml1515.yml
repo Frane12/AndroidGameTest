@@ -1,0 +1,132 @@
+name: DRNAS Medical R8 iML1515 genome-scale flux-witness SAT vs gMCSpy
+on:
+  push:
+    branches: [experiment/drnas-medical-r8-iml1515-flux-20261106]
+    paths:
+      - 'research/drnas_medical/gmispy_r8_iml1515.py'
+      - '.github/workflows/drnas-medical-r8-iml1515.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r8-iml1515-20261106
+  cancel-in-progress: false
+jobs:
+  freeze-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    name: Freeze unseen BiGG iML1515 source, strict model and gene IDs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned COBRA model parser and R7 GPR dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r8_iml1515.py
+          python3 research/drnas_medical/gmispy_r8_iml1515.py selftest
+      - name: Fetch model once and freeze complete SBML plus model-graph selected genes
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r8_iml1515.py freeze \
+            --freeze medical-results/r8-frozen | tee r8-model-freeze.log
+          python3 research/drnas_medical/gmispy_r8_iml1515.py verify \
+            --freeze medical-results/r8-frozen
+          grep -q '^DRNAS_MEDICAL_R8_FREEZE ' r8-model-freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-r8-frozen-iml1515-source-sbml
+          retention-days: 90
+          path: |
+            medical-results/r8-frozen/iML1515.xml
+            medical-results/r8-frozen/manifest.json
+            r8-model-freeze.log
+  compare:
+    needs: freeze-model
+    name: R8 iML1515 original solver comparison ${{ matrix.cohort }} genes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [24,48]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install original pinned gMCSpy/Gurobi, PySAT and COBRA GLPK
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 gurobipy==12.0.3 \
+            beartype joblib bidict scipy tqdm
+          python3 -m pip install --disable-pip-version-check --no-deps \
+            'git+https://github.com/PlanesLab/gMCSpy.git@4567a6d14bd2e5517e7a86b17aebefb0f285544c'
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-r8-frozen-iml1515-source-sbml
+          path: medical-results/r8-frozen
+      - name: Verify model SHA before any solver calls and execute paired study
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r8_iml1515.py verify \
+            --freeze medical-results/r8-frozen
+          python3 -u research/drnas_medical/gmispy_r8_iml1515.py benchmark \
+            --freeze medical-results/r8-frozen \
+            --cohort ${{ matrix.cohort }} --repeats 3 --cap 120 \
+            --out medical-results/r8-${{ matrix.cohort }} \
+            ${{ matrix.cohort == 24 && '--reference-exhaustive' || '' }} \
+            | tee r8-${{ matrix.cohort }}.log
+          grep -q '^DRNAS_MEDICAL_R8_SUMMARY ' r8-${{ matrix.cohort }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-medical-r8-cohort-${{ matrix.cohort }}
+          retention-days: 90
+          path: |
+            medical-results/r8-${{ matrix.cohort }}/
+            r8-${{ matrix.cohort }}.log
+  audit:
+    needs: compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    name: Independent source and complete-vs-incomplete scientific audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r8-cohort-24
+          path: audit/24
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-medical-r8-cohort-48
+          path: audit/48
+      - name: Audit exact model SHA, distinct gene subsets and complete solution claims
+        run: |
+          set -euo pipefail
+          mapfile -t p24 < <(find audit/24 -type f -name summary.json | sort)
+          mapfile -t p48 < <(find audit/48 -type f -name summary.json | sort)
+          test "${#p24[@]}" -eq 1
+          test "${#p48[@]}" -eq 1
+          mkdir -p audit/final
+          python3 -u research/drnas_medical/gmispy_r8_iml1515.py audit \
+            --cohort24 "${p24[0]}" --cohort48 "${p48[0]}" \
+            --out audit/final/certificate.json | tee audit/final/log.txt
+          grep -q '^DRNAS_MEDICAL_R8_AUDIT ' audit/final/log.txt
+          cat audit/final/log.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R8-IML1515-EXACT-INDEPENDENT-AUDIT
+          retention-days: 90
+          path: audit/final/
