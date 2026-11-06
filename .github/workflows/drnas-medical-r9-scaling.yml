@@ -1,0 +1,134 @@
+name: DRNAS Medical R9 Scaling Law iML1515 24 48 96 192 384 genes k3
+on:
+  push:
+    branches: [experiment/drnas-medical-r9-scaling-iml1515-20261106]
+    paths:
+      - 'research/drnas_medical/gmispy_r9_scaling.py'
+      - '.github/workflows/drnas-medical-r9-scaling.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r9-scaling-iml1515-20261106
+  cancel-in-progress: false
+jobs:
+  source-freeze:
+    name: R9 freeze existing R8 original-SBML SHA and nested gene cohorts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Pinned biological and SAT source dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r9_scaling.py
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py selftest
+      - name: Download SAME R8 original BiGG iML1515 SBML source, pinned SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r9/source
+          gh run download 42236485395 --repo Frane12/AndroidGameTest \
+            -n drnas-r8-frozen-iml1515-source-sbml -D r9/source
+          python3 -u research/drnas_medical/gmispy_r8_iml1515.py verify --freeze r9/source
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py freeze \
+            --source r9/source --freeze r9/frozen | tee r9-freeze.log
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r9/source --freeze r9/frozen
+          grep -q '^R9_FREEZE ' r9-freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS
+          path: r9/
+          retention-days: 90
+          if-no-files-found: warn
+  scaling:
+    name: R9 ${{ matrix.n }} genes exactly <=3 KO, triple repeat capped
+    needs: source-freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24,48,96,192,384]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Identical PySAT CaDiCaL and independent COBRA GLPK stack
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS
+          path: r9
+      - name: Verify original model SHA and execute R9 cohort
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r9/source --freeze r9/frozen
+          mkdir -p r9-results/${{ matrix.n }}
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py cohort \
+            --source r9/source --freeze r9/frozen \
+            --n ${{ matrix.n }} --out r9-results/${{ matrix.n }} \
+            | tee r9-results/${{ matrix.n }}/cohort.log
+          grep -q '^R9_COHORT_FINAL ' r9-results/${{ matrix.n }}/cohort.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R9-IML1515-COHORT-${{ matrix.n }}-RAW
+          retention-days: 90
+          if-no-files-found: warn
+          path: r9-results/${{ matrix.n }}/
+  audit:
+    name: R9 independent completion, exactness and scaling-law audit
+    needs: scaling
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-R9-IML1515-COHORT-*-RAW
+          path: all-r9
+          merge-multiple: false
+      - name: Require five source-identical cohorts, 3 trials each, fail-closed
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r9/DRNAS-R9-IML1515-COHORT-${n}-RAW"
+            mapfile -t f < <(find "$d" -type f -name summary.json | sort)
+            test "${#f[@]}" -eq 1
+            inputs+=("${f[0]}")
+          done
+          mkdir -p final-r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py audit \
+            --inputs "${inputs[@]}" --out final-r9/certified-scaling.json \
+            | tee final-r9/audit.log
+          grep -q '^R9_FINAL ' final-r9/audit.log
+          cat final-r9/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R9-CERTIFIED-SCALING-FINAL
+          retention-days: 90
+          path: final-r9/
