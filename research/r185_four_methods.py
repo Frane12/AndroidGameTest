@@ -224,7 +224,7 @@ def trial(c,method,rep,arm,driver,live_bin):
     path=FROZEN/(c["id"]+".cnf")
     need(sha(path)==c["sha256"],"SHA changed after source freeze")
     begun=time.perf_counter()
-    proof="NONE";stats={};added=0;xorrows=0;derived_count=0
+    proof="NONE";stats={"conflicts":-1,"decisions":-1,"propagations":-1,"learned":-1};added=0;xorrows=0;derived_count=0
     n,original=gf.dimacs(path)
     if arm=="clean":
         cmd=[str(driver.resolve()),str(path.resolve()),str(CAP)]
