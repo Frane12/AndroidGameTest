@@ -1,0 +1,261 @@
+name: DRNAS R158x SHORT NEW-SHA prospective six-original 36-paired 6s causal benchmark
+on:
+  push:
+    branches: [experiment/drnas-r158x-short-newsha-20261106]
+    paths: ['.github/workflows/drnas-r158x-short-newsha.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r158x-short-newsha-6orig-prospective
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Preregister and SHA-freeze SIX never-before-tested source originals before any solver time
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate selection scripts and establish prior-source SHA exclusion ledger
+        run: |
+          set -euo pipefail
+          mkdir -p prior r158short
+          python3 -m py_compile research/r158x_short_newsha_freeze.py research/r158x_short_newsha_benchmark.py research/r154_unseen_freeze.py research/r152_lightsout_unseen.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r115-world-frozen
+          run-id: 42039762548
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r115
+      - uses: actions/download-artifact@v4
+        with:
+          name: r152-new-lightsout-frozen-originals-and-provenance
+          run-id: 42102227483
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r152
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-400-PROSPECTIVE-CNF-VERIFIED-COMPLETE
+          run-id: 42060553799
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/400
+      - uses: actions/download-artifact@v4
+        with:
+          name: r132-frozen-prospective-sha-excluded
+          run-id: 42050320220
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r132
+      - uses: actions/download-artifact@v4
+        with:
+          name: r135-frozen-sha-disjoint-real
+          run-id: 42061956160
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r135
+      - uses: actions/download-artifact@v4
+        with:
+          name: r148blind-fixed-previously-unmeasured-real-cnfs
+          run-id: 42087820632
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r148
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R150-NEW-EXTERNAL-PROSPECTIVE-FINAL
+          run-id: 42088721067
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r150
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R151-INDEPENDENT-SHA-PAR2-REGRESSIONS-FINAL
+          run-id: 42094754907
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r151
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R154-SHA-FRESH-R153-15S-PAR2-FINAL
+          run-id: 42107642696
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r154
+      - uses: actions/download-artifact@v4
+        with:
+          name: r154-mix-short-new-source-frozen
+          run-id: 42112341909
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r154mix
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28full-2025-2026-multifamily-frozen-originals
+          run-id: 42105963889
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior/r28full
+      - name: Source-only GBD family selection and six original content SHA freeze (NO SOLVER RUNS)
+        run: |
+          set -euo pipefail
+          python3 -u research/r158x_short_newsha_freeze.py freeze | tee r158short/freeze.log
+          grep -q '^R158X_SHORT_NEW_SHA_FREEZE_PASS ' r158short/freeze.log
+          test "$(find r158short/frozen -maxdepth 1 -name '*.cnf' | wc -l)" -eq 6
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r158x-short-newsha-six-original-source-freeze
+          path: |
+            r158short/frozen/
+            r158short/freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+  build:
+    name: Single-source native CaDiCaL build; six-mode GF2 reason selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile ONE frozen native binary and verify original-source reason invariants
+        run: |
+          set -euo pipefail
+          mkdir -p r158short
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r158short-cadical
+          cd /tmp/r158short-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/r158short/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/r158x_causal_cdcl_bridge.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/r158short/native"
+          cd "$GITHUB_WORKSPACE"
+          ./r158short/native selftest | tee r158short/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' r158short/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' r158short/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' r158short/native-selftest.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path('r158short/native')
+          x=dict(binary_sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+                 commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                 cadical_source_commit=pathlib.Path('r158short/cadical-source-commit.txt').read_text().strip(),
+                 cpp_source_sha256=hashlib.sha256(pathlib.Path('research/r158x_causal_cdcl_bridge.cpp').read_bytes()).hexdigest())
+          pathlib.Path('r158short/build-pin.json').write_text(json.dumps(x,sort_keys=True,indent=2))
+          print('R158X_SHORT_NATIVE_BUILD_PASS',json.dumps(x,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r158x-short-common-native-binary
+          path: |
+            r158short/native
+            r158short/build-pin.json
+            r158short/cadical-source-commit.txt
+          retention-days: 90
+  paired:
+    needs: [freeze, build]
+    name: SHA-frozen six-origin 6s direct_full versus direct_boundary versus pure CDCL shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r158x-short-newsha-six-original-source-freeze
+          path: r158short
+      - uses: actions/download-artifact@v4
+        with:
+          name: r158x-short-common-native-binary
+          path: r158short
+      - name: Verify immutable binary & SHA source manifest
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x r158short/native
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          p=pathlib.Path('r158short/build-pin.json');obj=json.loads(p.read_text())
+          assert hashlib.sha256(pathlib.Path('r158short/native').read_bytes()).hexdigest()==obj['binary_sha256']
+          assert hashlib.sha256(pathlib.Path('research/r158x_causal_cdcl_bridge.cpp').read_bytes()).hexdigest()==obj['cpp_source_sha256']
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==obj['commit']
+          obj['cpu']=next((s for s in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if s.startswith('model name')),'unknown')
+          obj['shard']=int(os.environ['SHARD'])
+          pathlib.Path('r158short/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(obj,sort_keys=True))
+          PY
+          python3 research/r158x_short_newsha_freeze.py verify
+      - name: Run six-new-CNF native causal full and selective GF2 controls 36 paired trials total
+        run: |
+          set -euo pipefail
+          python3 -u research/r158x_short_newsha_benchmark.py shard --shard ${{ matrix.shard }} --binary r158short/native | tee r158short/shard-${{ matrix.shard }}.log
+          grep -q '^R158X_SHARD_PASS ' r158short/shard-${{ matrix.shard }}.log
+          test -s r158short/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r158x-short-newsha-shard-${{ matrix.shard }}
+          path: |
+            r158short/shard-${{ matrix.shard }}.json
+            r158short/shard-${{ matrix.shard }}.log
+            r158short/pin-${{ matrix.shard }}.json
+            r158short/prep-*.json
+            r158short/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Six new original SHA 36-trial independent source GF2 and SAT native-PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r158x-short-newsha-six-original-source-freeze
+          path: r158short
+      - uses: actions/download-artifact@v4
+        with:
+          name: r158x-short-common-native-binary
+          path: r158short
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r158x-short-newsha-shard-*
+          merge-multiple: true
+          path: r158short
+      - name: Reject missing trials, source SHA collisions and incomplete native metrics
+        run: |
+          set -euo pipefail
+          test "$(find r158short -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 3
+          python3 -u research/r158x_short_newsha_benchmark.py audit | tee r158short/audit.log
+          grep -q '^R158X_SHORT_FINAL ' r158short/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          r=json.loads(pathlib.Path('r158short/report.json').read_text())
+          print('R158X_SHORT_NEW_SHA_FINAL_COUNT',r['formulas'],r['attempts'],r['summary']['all'])
+          PY
+          cat r158short/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R158X-SHORT-PROSPECTIVE-SIX-NEW-SHA-36-TRIAL-FINAL
+          path: |
+            r158short/report.json
+            r158short/audit.log
+            r158short/frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
