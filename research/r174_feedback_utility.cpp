@@ -34,6 +34,12 @@ public:
     std::deque<std::vector<int>> feedback_pending;
     std::set<std::vector<int>> feedback_published;
     long feedback_conflicts_detected=0,feedback_clauses_consumed=0;
+    // R174-C: utility measured per 256 scanned certified rows, not CDCL conflicts.
+    bool utility_gate=false;
+    long utility_windows=0,utility_bad_windows=0,utility_sleeps=0,utility_wakes=0,utility_skipped=0;
+    long utility_last_scans=0,utility_last_reasons=0,utility_last_export=0;
+    uint64_t utility_last_ns=0;
+    long utility_sleep_until=0,utility_episodes=0;
     bool adaptive_gate=false;
     long adaptive_gate_events=0;
     long reason_clauses_completed=0;
@@ -203,6 +209,42 @@ public:
         } scope{propagate_ns,chrono::steady_clock::now()};
         ++propagate_calls;
         if ((mode!=DIRECT && mode!=SHADOW) || disabled || budget_off) return 0;
+        if(utility_gate) {
+            if(utility_sleep_until) {
+                if(notifications<utility_sleep_until) {
+                    ++utility_skipped;
+                    dirty.clear();next_dirty=0;
+                    fill(queued.begin(),queued.end(),0);
+                    return 0;
+                }
+                utility_sleep_until=0;utility_bad_windows=0;++utility_wakes;
+                utility_last_scans=rows_scanned;
+                utility_last_reasons=reason_clauses_completed;
+                utility_last_export=feedback_clauses_consumed;
+                utility_last_ns=propagate_ns;
+            }
+            if(rows_scanned-utility_last_scans>=256) {
+                ++utility_windows;
+                const long useful=(reason_clauses_completed-utility_last_reasons)
+                                  +(feedback_clauses_consumed-utility_last_export);
+                const uint64_t cost=propagate_ns-utility_last_ns;
+                if(useful==0 && cost>=100000)++utility_bad_windows;
+                else utility_bad_windows=0;
+                utility_last_scans=rows_scanned;
+                utility_last_reasons=reason_clauses_completed;
+                utility_last_export=feedback_clauses_consumed;
+                utility_last_ns=propagate_ns;
+                if(utility_bad_windows>=3) {
+                    // No permanent disabling: reawaken after bounded new assignments.
+                    const long shift=std::min(5L,utility_episodes);
+                    utility_sleep_until=notifications+(4096L<<shift);
+                    ++utility_episodes;++utility_sleeps;
+                    dirty.clear();next_dirty=0;
+                    fill(queued.begin(),queued.end(),0);
+                    return 0;
+                }
+            }
+        }
         while(next_dirty<dirty.size()) {
             const size_t idx=dirty[next_dirty++];
             if(idx>=rows.size()) {disabled=true;return 0;}
@@ -508,6 +550,7 @@ static int r162_run(const string& mode,const string& src,
     bridge.watchlazy_enabled=bridge.watchlazy_enabled ||
         mode=="gauss_feedback"||mode=="gauss_utility"||mode=="gauss_feedback_utility";
     bridge.feedback_clauses=mode=="gauss_feedback"||mode=="gauss_feedback_utility";
+    bridge.utility_gate=mode=="gauss_utility"||mode=="gauss_feedback_utility";
     if(bridge.incremental_enabled)bridge.initialize_incremental();
     if(!clean && !bridge.rows.empty()){
         solver.connect_external_propagator(&bridge);
@@ -586,6 +629,10 @@ static int r162_run(const string& mode,const string& src,
         <<" incremental_upd_ns="<<bridge.incremental_upd_ns
         <<" feedback_conflicts_detected="<<bridge.feedback_conflicts_detected
         <<" feedback_clauses_consumed="<<bridge.feedback_clauses_consumed
+        <<" utility_windows="<<bridge.utility_windows
+        <<" utility_sleeps="<<bridge.utility_sleeps
+        <<" utility_wakes="<<bridge.utility_wakes
+        <<" utility_skipped="<<bridge.utility_skipped
         <<" source_sat_witness_checked="<<(result==10?1:0)
         <<" disabled="<<bridge.disabled<<"\n"<<flush;
     // On 2.1.0 these native statistics include actual CDCL conflicts,
