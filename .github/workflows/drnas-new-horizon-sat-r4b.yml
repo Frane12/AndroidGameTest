@@ -1,0 +1,152 @@
+name: DRNAS New Horizon SAT R4b — single-pass source proof 1808 paired
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-sat-r4b-single-pass-20261107]
+    paths:
+      - 'research/new_horizon_r4b.py'
+      - 'research/new_horizon_r4b_benchmark.py'
+      - '.github/workflows/drnas-new-horizon-sat-r4b.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-new-horizon-sat-r4b
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Audit exact-source single-pass and deceptive-suffix selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_r4b.py research/new_horizon_r4b_benchmark.py
+          python3 -u research/new_horizon_r4b_benchmark.py selftest | tee nh-r4b-selftest.log
+          grep -q '^NEW_HORIZON_R4B_GENERATOR_SELFTEST_PASS' nh-r4b-selftest.log
+      - name: Freeze original R4 SHA corpus and reuse exact native binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon_r4b/source
+          gh run download 42325396082 --repo Frane12/AndroidGameTest -n new-horizon-r4-frozen-native-pin -D new_horizon_r4b/source
+          test -s new_horizon_r4b/source/new_horizon_r4/frozen/manifest.json
+          test -s new_horizon_r4b/source/new_horizon_r4/r190-driver
+          python3 -u research/new_horizon_r4b_benchmark.py freeze | tee nh-r4b-freeze.log
+          python3 -u research/new_horizon_r4b_benchmark.py verify
+          cp new_horizon_r4b/source/new_horizon_r4/r190-driver new_horizon_r4b/r190-driver
+          chmod +x new_horizon_r4b/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          d=pathlib.Path("new_horizon_r4b")
+          old=json.loads((d/"source/new_horizon_r4/pin.json").read_text())
+          original_manifest_hash="a827987192ffb6e02d9428ede63e036a7a9362aceb115720dff6bafdb4340026"
+          assert old["manifest_sha256"]==original_manifest_hash
+          assert hashlib.sha256((d/"source/new_horizon_r4/frozen/manifest.json").read_bytes()).hexdigest()==original_manifest_hash
+          binary_sha=hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()
+          assert binary_sha==old["binary_sha256"]=="d3e17f52ee77be0df090da28710a10ba9543576e8ca12e9b2555288a02a077ed"
+          assert old["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pin=dict(original_r4_sha=original_manifest_hash,
+                   r4b_manifest_sha=hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest(),
+                   binary_sha=binary_sha,cadical_commit=old["cadical_commit"],
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip())
+          (d/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("NEW_HORIZON_R4B_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon_r4b/smoke.cnf
+          new_horizon_r4b/r190-driver new_horizon_r4b/smoke.cnf 2 default | tee new_horizon_r4b/smoke.log
+          grep -q '^R182_STATUS status=SAT' new_horizon_r4b/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: new-horizon-r4b-frozen-and-native
+          retention-days: 90
+          path: |
+            new_horizon_r4b/frozen/
+            new_horizon_r4b/r190-driver
+            new_horizon_r4b/pin.json
+            new_horizon_r4b/smoke.log
+            nh-r4b-selftest.log
+            nh-r4b-freeze.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: R4b clean R4 pure-only R4b SHA-paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-r4b-frozen-and-native
+          path: .
+      - name: Check full source freeze and exact shared native binary SHA
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon_r4b/r190-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          d=pathlib.Path("new_horizon_r4b")
+          pin=json.loads((d/"pin.json").read_text())
+          assert hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()==pin["binary_sha"]
+          assert hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest()==pin["r4b_manifest_sha"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["source_commit"]
+          print("NEW_HORIZON_R4B_SAME_BINARY_SHA_PASS")
+          PY
+      - name: Run SHA matched four-arm with all observer/proof time counted
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r4b_benchmark.py shard --shard ${{ matrix.shard }} --binary new_horizon_r4b/r190-driver | tee new_horizon_r4b/shard-${{ matrix.shard }}.log
+          grep -q '^NEW_HORIZON_R4B_SHARD_PASS ' new_horizon_r4b/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: new-horizon-r4b-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon_r4b/shard-${{ matrix.shard }}.json
+            new_horizon_r4b/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-r4b-frozen-and-native
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: new-horizon-r4b-shard-*
+          merge-multiple: true
+          path: new_horizon_r4b
+      - name: Validate 1808 SHA paired trials, proof-gate and PAR2
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon_r4b -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/new_horizon_r4b_benchmark.py audit | tee new_horizon_r4b/audit.log
+          grep -q '^NEW_HORIZON_R4B_FINAL ' new_horizon_r4b/audit.log
+          cat new_horizon_r4b/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NEW-HORIZON-SAT-R4B-FINAL
+          retention-days: 90
+          path: |
+            new_horizon_r4b/report.json
+            new_horizon_r4b/trials.json
+            new_horizon_r4b/trials.csv
+            new_horizon_r4b/summary.md
+            new_horizon_r4b/audit.log
