@@ -405,10 +405,6 @@ def measure_one(source,freeze,family,n,out):
            "err":row.get("error","")[-150:]},sort_keys=True),flush=True)
     successful=[r for r in report["trials"] if r["status"]=="SOLVED"]
     complete=(len(successful)==REPEATS and
-         len({r["LP_calls"] for r in successful})==1 and
-         len({tuple(sorted(tuple(g) for g in s))
-             for r in successful for s in []})==1 if False else
-         len(successful)==REPEATS and
          successful[0]["LP_calls"]==successful[1]["LP_calls"] and
          {tuple(v) for v in successful[0]["solutions"]}==
          {tuple(v) for v in successful[1]["solutions"]})
