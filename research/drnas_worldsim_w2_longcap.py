@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
+import threading
 from pathlib import Path
 import random
 import statistics
@@ -87,7 +89,7 @@ def prep(directory):
            "stage180_cap_s": 180, "stage600_cap_s": 600,
            "stage180_modes": S180, "stage600_modes": S600,
            "cases": cases, "exploratory_single_rep": True,
-           "proof_output": "devnull_no_independent_UNSAT_verification"}
+           "proof_output": "discarded_or_bounded_no_independent_UNSAT_verification"}
     save(ROOT / "freeze.json", obj)
     print("W2_FREEZE_PASS", json.dumps({"unresolved":len(cases),
           "w1_report_sha256":obj["w1_report_sha256"]}), flush=True)
@@ -97,7 +99,15 @@ def run_one(c, mode, cap, stage, shard):
     require(sha(source) == c["sha256"], "source hash changed")
     # Generating long DRAT files can exhaust the runner disk. /dev/null
     # preserves proof-writing codepaths but deliberately does not certify UNSAT.
-    proof = Path("/dev/null")
+    scratch = None
+    if mode == "satsuma_iter_kissat_2026":
+        # Submitted run.sh creates temp.cnf beside its proof destination.
+        # /dev/null as an argument would wrongly place temp.cnf under /dev.
+        scratch = ROOT / stage / "scratch" / str(shard) / c["id"] / mode
+        scratch.mkdir(parents=True, exist_ok=True)
+        proof = scratch / "solver.proof"
+    else:
+        proof = Path("/dev/null")
     started = time.perf_counter()
     selected, reason, profile = mode, "fixed", 0.0
     if mode == "ta3_portfolio":
@@ -108,8 +118,33 @@ def run_one(c, mode, cap, stage, shard):
         cwd = None
     else:
         command, cwd = w1.command_for(mode, source, proof)
-    rc, output, timed_out = w1.timed_process(
-        command, started, cwd=cwd, env={"W1_PROOF_FILE": "/dev/null"}, cap=cap)
+    stopping = threading.Event()
+    def prune_proofs():
+        # Keep a regular proof file for the submitted run.sh's file checks,
+        # but bound disk use; no independently verifiable proof is retained.
+        while not stopping.wait(0.5):
+            if scratch is None:
+                return
+            for p in (scratch / "proof.out", scratch / "solver.proof"):
+                try:
+                    if p.is_file() and p.stat().st_size > 128*1024*1024:
+                        with p.open("r+b") as handle:
+                            handle.truncate(0)
+                except FileNotFoundError:
+                    pass
+    janitor = None
+    if scratch is not None:
+        janitor = threading.Thread(target=prune_proofs, daemon=True)
+        janitor.start()
+    try:
+        rc, output, timed_out = w1.timed_process(
+            command, started, cwd=cwd, env={"W1_PROOF_FILE": str(proof)}, cap=cap)
+    finally:
+        stopping.set()
+        if janitor is not None:
+            janitor.join(timeout=2)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     elapsed = min(cap, time.perf_counter() - started)
     status, evidence = "TIMEOUT", "CAP_TIMEOUT"
     if stage == "smoke":
@@ -133,7 +168,7 @@ def run_one(c, mode, cap, stage, shard):
             "par2_s":round(2*cap if status=="TIMEOUT" else elapsed, 6),
             "selected":selected, "reason":reason, "profile_s":round(profile,6),
             "evidence":evidence, "stdout_sha256":hashlib.sha256(output.encode()).hexdigest(),
-            "proof_file":"/dev/null", "command":list(map(str, command))}
+            "proof_file":str(proof), "command":list(map(str, command))}
 
 def smoke():
     original()
