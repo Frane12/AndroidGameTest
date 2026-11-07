@@ -187,7 +187,7 @@ def selftest():
                  "".join(" ".join(map(str,c))+" 0\n" for c in clauses))
             return path
         # Tiny Horn should be avoided at metadata stage, not sampled.
-        small=make("small_horn.cnf",80,[(1,)]+[(-i,i+1) for i in range(1,80)])
+        small=make("small_horn.cnf",80,[(1,)]+[(-i,i+1) for i in range(1,79)])
         p=sniff(small)
         need(p["route"]=="clean" and p["sampled"]==0,"small Horn should abstain")
         # First-clause disqualification of both exact classes -> no wasted scan.
