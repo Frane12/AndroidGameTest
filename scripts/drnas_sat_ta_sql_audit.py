@@ -38,7 +38,24 @@ def validate():
     s=db.execute("SELECT * FROM benchmark_t_frontier WHERE cohort_id='ultimate_t_phase1_20261107' AND scope='all' AND mode='t_derived'").fetchone()
     assert s is not None and s["candidate_proposals"]==108 and s["completed_reasons"]==40
     ta=db.execute("SELECT status FROM build_status WHERE version='TA new-to-R1/R2/R193 20261107'").fetchone()
-    assert ta is not None and ta["status"].startswith("IN_PROGRESS_")
+    assert ta is not None
+    ta_final=ta["status"]=="TA_FINAL_AUDIT_PASS_NOT_GLOBAL_BLIND"
+    assert ta_final or ta["status"].startswith("IN_PROGRESS_"),ta["status"]
+    if ta_final:
+        checked={
+          "r153": (60,12,2957.183758),
+          "r1a": (60,10,3066.988472),
+          "r2_clean": (60,8,3201.353495),
+          "r2_portfolio": (60,8,3154.929632),
+          "r2_binary": (60,8,3154.981717),
+        }
+        for mode,expected_ta in checked.items():
+            assert metric("ultimate_ta_disjoint_20261107",mode)==expected_ta,(mode,metric("ultimate_ta_disjoint_20261107",mode))
+        cohort=db.execute("SELECT original_formulas,total_attempts,audit_status FROM benchmark_cohorts WHERE cohort_id='ultimate_ta_disjoint_20261107'").fetchone()
+        assert cohort is not None and tuple(cohort)==(30,300,"TA_30_ORIGINAL_SHA_DISJOINT_AUDIT_PASS_NOT_GLOBAL_BLIND")
+        p=db.execute("SELECT paired_wins,paired_losses,paired_ties,total_par2_gain_s FROM benchmark_paired_comparisons WHERE cohort_id=? AND candidate=? AND reference=?",
+              ("ultimate_ta_disjoint_20261107","r2_portfolio","r153")).fetchone()
+        assert p is not None and tuple(p)==(0,12,48,-197.745874),p
     return [db.execute("SELECT COUNT(*) FROM "+t).fetchone()[0]
             for t in ("benchmark_cohorts","benchmark_modes","research_findings",
                       "benchmark_mode_telemetry","benchmark_paired_comparisons",
@@ -47,5 +64,6 @@ db.executescript(sql)
 first=validate()
 db.executescript(sql)
 assert validate()==first,"idempotency failed: duplicate rows after replay"
-print("DRNAS_TA_SQL_AUDIT_PASS",json.dumps(dict(rows=first,TA="pending",
+ta_status=db.execute("SELECT status FROM build_status WHERE version='TA new-to-R1/R2/R193 20261107'").fetchone()[0]
+print("DRNAS_TA_SQL_AUDIT_PASS",json.dumps(dict(rows=first,TA=ta_status,
       T="AUDIT_PASS",R2T="AUDIT_PASS"),sort_keys=True),flush=True)
