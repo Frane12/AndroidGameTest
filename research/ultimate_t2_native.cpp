@@ -465,7 +465,8 @@ static int r162_run(const string& mode,const string& src,
     const size_t source_rows=certified.size();
     const bool t_source=(mode=="t_shadow"||mode=="t_source"||mode=="t_adaptive"||
         mode=="t2_derived_rows"||mode=="t2_derived_incremental"||
-        mode=="t2_derived_units"||mode=="t2_derived_shadow");
+        mode=="t2_derived_units"||mode=="t2_derived_shadow"||
+         mode=="td_lazy_source");
     const bool extend=!clean&&!gauss&&!t_source;
     const size_t max_extra=(mode=="direct_full"||mode=="direct_full_feedback"||
                             mode=="direct_incremental"||mode=="direct_watchlazy"||
@@ -480,9 +481,10 @@ static int r162_run(const string& mode,const string& src,
     bridge.adaptive_gate=(mode=="direct_boundary");
     bridge.component_feedback=(mode=="direct_feedback"||mode=="direct_full_feedback");
     bridge.component_scan_gate=(mode=="direct_full_feedback"?32768:4096);
-    bridge.incremental_enabled=(mode=="direct_incremental"||t_source);
+    bridge.incremental_enabled=(mode=="direct_incremental"||(t_source&&mode!="td_lazy_source"));
     bridge.watchlazy_enabled=(mode=="direct_watchlazy"||mode=="direct_cooldown"||
-                              mode=="gauss_watchlazy"||mode=="gauss_cooldown");
+                              mode=="gauss_watchlazy"||mode=="gauss_cooldown"||
+                              mode=="td_lazy_source");
     bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown"||mode=="t_adaptive");
     if(bridge.incremental_enabled)bridge.initialize_incremental();
     if(!clean && !bridge.rows.empty()){
@@ -616,7 +618,8 @@ int main(int argc,char**argv) {
            mode!="gauss_full"&&mode!="gauss_watchlazy"&&mode!="gauss_cooldown"&&
            mode!="t_clean"&&mode!="t_shadow"&&mode!="t_source"&&mode!="t_adaptive"&&
            mode!="t2_derived_rows"&&mode!="t2_derived_units"&&
-           mode!="t2_derived_incremental"&&mode!="t2_derived_shadow")
+           mode!="t2_derived_incremental"&&mode!="t2_derived_shadow"&&
+            mode!="td_lazy_source")
             throw runtime_error("R166X_BAD_MODE");
         const double cap=stod(argv[4]);
         if(!(cap>=1.0&&cap<=120.0))
