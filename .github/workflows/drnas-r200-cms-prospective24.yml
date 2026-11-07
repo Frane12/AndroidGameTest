@@ -1,0 +1,164 @@
+name: DRNAS R200 — 24 fresh SAT2026 submissions CMS/R28/GF2, 216 paired
+on:
+  push:
+    branches: [experiment/drnas-r200-cms-prospective24-20261107]
+    paths:
+      - 'research/r200_cms_prospective24.py'
+      - 'r200/candidates.json'
+      - '.github/workflows/drnas-r200-cms-prospective24.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r200-24source-prospective-cms
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact previously tested R194 binaries and method source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42386841737 --repo Frane12/AndroidGameTest -n r194-source-binary-pins -D .
+          test -s r194-source-locked38-and-binaries.tar.gz
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test -s r189/frozen/manifest.json
+      - name: Materialize precommitted 24 original unused SAT 2026 submissions without outcome-based selection
+        run: |
+          set -euo pipefail
+          python3 -u research/r200_cms_prospective24.py fetch | tee r200/fetch.log
+          grep -q '^R200_HOLDOUT_FROZEN' r200/fetch.log
+      - name: Freeze exact solver SHA, original source SHA and code before any evaluation
+        run: |
+          set -euo pipefail
+          mkdir -p r200
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          paths = [
+            'r189/frozen/manifest.json', 'r190_cms_mixed/r28',
+            'built/bin/kissat_4_0_4', 'r192/cms_single.sh',
+            'r192/cms_gauss_forced.sh', 'r192/pins.json',
+            'research/r200_cms_prospective24.py',
+            'r200/candidates.json', 'r200/manifest.json',
+            'research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py',
+            'research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py',
+            'research/r190_cms_mixed_benchmark.py',
+            'research/r182_mixed_engine.py',
+            'research/r183_external_mixed.py',
+          ]
+          pins = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('r200/pins.json').write_text(json.dumps(pins, sort_keys=True, indent=2) + '\n')
+          print('R200_SOURCE_BINARY_PIN', json.dumps(pins, sort_keys=True))
+          PY
+          python3 -m py_compile research/r200_cms_prospective24.py
+          python3 -u research/r200_cms_prospective24.py smoke | tee r200/smoke.log
+          grep -q '^R200_SELFTEST_PASS' r200/smoke.log
+          tar czf r200-frozen24-original-sources-and-binaries.tar.gz r189/frozen r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh r200/candidates.json r200/manifest.json r200/pins.json r200/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r200-24source-binary-frozen
+          retention-days: 90
+          path: r200-frozen24-original-sources-and-binaries.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R200 CMS prospective original-SAT2026 shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r200-24source-binary-frozen
+      - name: Restore 24 SHA-locked original CNFs and identical solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r200-frozen24-original-sources-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import json, hashlib, pathlib
+          for p, expected in json.loads(pathlib.Path('r200/pins.json').read_text()).items():
+            assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() == expected, p
+          print('R200_FROZEN_SHA_AUDIT_PASS')
+          PY
+      - name: Three-arm randomized paired original-CNF benchmark with SAT witness verification
+        run: |
+          set -euo pipefail
+          python3 -u research/r200_cms_prospective24.py shard --shard ${{ matrix.shard }} | tee r200/shard-${{ matrix.shard }}.log
+          grep -q '^R200_SHARD_PASS ' r200/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r200-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r200/shard-${{ matrix.shard }}.json
+            r200/shard-${{ matrix.shard }}.log
+            r200/proofs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r200-24source-binary-frozen
+      - name: Restore sources and combine exactly six disjoint shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf r200-frozen24-original-sources-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p r200/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r200-shard-*' -D r200/raw-shards
+          test "$(find r200/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 6
+          find r200/raw-shards -type f -name 'shard-*.json' -exec cp '{}' r200/ \;
+          test "$(find r200 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 6
+      - name: Fail-closed paired source, witness, formula-truth and PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r200_cms_prospective24.py audit | tee r200/audit.log
+          grep -q '^R200_FINAL ' r200/audit.log
+          cat r200/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R200-UNSEEN-MIXED40-216-FINAL
+          retention-days: 90
+          path: |
+            r200/report.json
+            r200/all-trials.json
+            r200/summary.md
+            r200/audit.log
+            r200/pins.json
+            r200/candidates.json
+            r200/manifest.json
+            r200/raw-shards/
