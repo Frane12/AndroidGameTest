@@ -1,0 +1,112 @@
+name: DRNAS Medical R21 — fresh independent FBA oracle vs R20 stall
+on:
+  push:
+    branches: [experiment/drnas-medical-r21-fresh-oracle-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r21_fresh_oracle.py'
+      - '.github/workflows/drnas-medical-r21-fresh-oracle.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r21-fresh-oracle
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        arm: [r9_baseline, share_12_control, share_12_memo_k3]
+    name: R21 independent fresh-GLPK oracle n384 ${{ matrix.arm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install unchanged frozen R16 dependencies and validate script
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r21_fresh_oracle.py
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py selftest
+      - name: Verify published source SHA and frozen biological minima
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r21/r9 r21/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r21/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-384-RAW -D r21/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r21/r9/source --freeze r21/r9/frozen
+          test -s r21/reference/summary.json
+      - name: Source-locked original SAT/FBA, 170 checks on isolated fresh metabolic model
+        run: |
+          set -uo pipefail
+          timeout -k 10s 320s python3 -u research/drnas_medical/gmispy_r21_fresh_oracle.py \
+            --source r21/r9/source --frozen r21/r9/frozen --reference r21/reference/summary.json \
+            --n 384 --arm ${{ matrix.arm }} --out r21/paired-${{ matrix.arm }}.json \
+            2>&1 | tee r21/paired-${{ matrix.arm }}.log
+          code=${PIPESTATUS[0]}
+          echo "R21_PROCESS_EXIT=${code}"
+          if [ "${code}" -ne 0 ]; then
+            echo "::error::R21 isolated biological oracle failed or timed out; inspect phase markers"
+            exit "${code}"
+          fi
+          grep -q '^R21_PASS ' r21/paired-${{ matrix.arm }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R21-FRESH-ORACLE-${{ matrix.arm }}
+          retention-days: 90
+          path: |
+            r21/paired-${{ matrix.arm }}.json
+            r21/paired-${{ matrix.arm }}.log
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R21-FRESH-ORACLE-*
+          path: r21-raw
+      - name: Strict all-arm biological oracle audit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib
+          arms=('r9_baseline','share_12_control','share_12_memo_k3')
+          results={}
+          for arm in arms:
+              paths=list(pathlib.Path('r21-raw').rglob('paired-'+arm+'.json'))
+              assert len(paths)==1,(arm,paths)
+              d=json.loads(paths[0].read_text())
+              assert d['complete'] and d['n']==384 and d['arm']==arm
+              r=d['result']
+              assert r['reference_match'] and r['independent_FBA_sound']
+              assert r['physical_LP_calls']+r['physical_LP_avoided']==r['LP_requests']
+              assert sum(x['phase']=='oracle_lp_exit' for x in d['events'])==170
+              results[arm]={'wall_s':r['wall_s'],'LP':r['LP_requests'],
+                  'physical_LP':r['physical_LP_calls'],
+                  'avoided':r['physical_LP_avoided']}
+          pathlib.Path('r21-final').mkdir(exist_ok=True)
+          pathlib.Path('r21-final/report.json').write_text(
+              json.dumps({'status':'R21_FRESH_ORACLE_AUDIT_PASS','results':results,
+              'repetitions_per_arm':1,'blind_holdout':False,
+              'scope':'same frozen iML1515 source; original biological reference'},
+              indent=2,sort_keys=True)+'\n')
+          print('R21_FINAL',json.dumps(results,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R21-FRESH-ORACLE-FINAL
+          retention-days: 90
+          path: r21-final/
