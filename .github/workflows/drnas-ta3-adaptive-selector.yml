@@ -1,0 +1,167 @@
+name: DRNAS TA3 — 24 unseen SAT2025 structural portfolio 384 paired
+on:
+  push:
+    branches: [experiment/drnas-ta3-adaptive-selector-20261107]
+    paths:
+      - 'research/drnas_ta3_adaptive_selector.py'
+      - 'research/drnas_ta2_structural_profile.py'
+      - 'ta3/candidates.json'
+      - '.github/workflows/drnas-ta3-adaptive-selector.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta3-source-locked-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore R194 pinned binaries and original development SHA exclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42386841737 --repo Frane12/AndroidGameTest -n r194-source-binary-pins -D .
+          test -s r194-source-locked38-and-binaries.tar.gz
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test -s r189/frozen/manifest.json
+          test -s r199/candidates.json
+      - name: Freeze 24 source-new SAT2025 CNFs and reject prior SHA overlap
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ta2_structural_profile.py research/drnas_ta3_adaptive_selector.py
+          python3 -u research/drnas_ta3_adaptive_selector.py fetch | tee ta3/fetch.log
+          grep -q '^TA3_SOURCE_FROZEN ' ta3/fetch.log
+      - name: Freeze exact code, original CNFs, solvers and source-file SHAs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          paths=[
+              'r189/frozen/manifest.json',
+              'r199/candidates.json',
+              'ta3/candidates.json',
+              'ta3/manifest.json',
+              'r190_cms_mixed/r28',
+              'built/bin/kissat_4_0_4',
+              'r192/pins.json','r192/cms_single.sh','r192/cms_gauss_forced.sh',
+              'research/drnas_ta2_structural_profile.py',
+              'research/drnas_ta3_adaptive_selector.py',
+              'research/r199_unseen_mixed40_crossbackend.py',
+              'research/r193_certified_gauss_cms.py',
+              'research/r192_gauss_first_cms_hybrid.py',
+              'research/r189_short_inference.py',
+              'research/r188_feedback_benchmark.py',
+              'research/r190_cms_mixed_benchmark.py',
+              'research/r182_mixed_engine.py',
+              'research/r183_external_mixed.py',
+          ]
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('ta3/pins.json').write_text(json.dumps(pins,indent=2,sort_keys=True)+'\n')
+          print('TA3_BINARY_SOURCE_CODE_PIN',json.dumps(pins,sort_keys=True))
+          PY
+          python3 -u research/drnas_ta3_adaptive_selector.py smoke | tee ta3/smoke.log
+          grep -q '^TA3_SMOKE_PASS ' ta3/smoke.log
+          tar czf ta3-frozen24-binaries.tar.gz r189/frozen/manifest.json r199/candidates.json r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh ta3/candidates.json ta3/manifest.json ta3/pins.json ta3/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta3-original24-frozen-source-binary
+          retention-days: 90
+          path: ta3-frozen24-binaries.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: TA3 eight-arm source-paired shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta3-original24-frozen-source-binary
+      - name: Restore exact original CNFs and pinned host binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for name,expected in json.loads(pathlib.Path('ta3/pins.json').read_text()).items():
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==expected,name
+          print('TA3_FROZEN_SHA_AUDIT_PASS')
+          PY
+      - name: Run randomized eight-arm paired original-source trials
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta3_adaptive_selector.py shard --shard ${{ matrix.shard }} | tee ta3/shard-${{ matrix.shard }}.log
+          grep -q '^TA3_SHARD_PASS ' ta3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta3-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ta3/shard-${{ matrix.shard }}.json
+            ta3/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta3-original24-frozen-source-binary
+      - name: Collect exactly eight source-disjoint paired shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p ta3/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'ta3-shard-*' -D ta3/raw-shards
+          test "$(find ta3/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 8
+          find ta3/raw-shards -type f -name 'shard-*.json' -exec cp '{}' ta3/ \;
+          test "$(find ta3 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+      - name: Audit all 384 paired trials, witness proofs, PAR2 and decisions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta3_adaptive_selector.py audit | tee ta3/audit.log
+          grep -q '^TA3_FINAL ' ta3/audit.log
+          cat ta3/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA3-STRUCTURAL-PORTFOLIO-384-FINAL
+          retention-days: 90
+          path: |
+            ta3/report.json
+            ta3/all_trials.json
+            ta3/summary.md
+            ta3/audit.log
+            ta3/pins.json
+            ta3/manifest.json
+            ta3/candidates.json
+            ta3/raw-shards/
