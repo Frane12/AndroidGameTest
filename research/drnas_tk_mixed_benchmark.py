@@ -53,13 +53,21 @@ def run_case(c, rep):
     order=list(MODES);random.Random(c["sha256"]+str(rep)).shuffle(order)
     for mode in order:
         status,elapsed,raw,gate,native,killed,started,progress=t.run_one(p,mode,CAP,c["sha256"])
-        if not gate or gate.get("source_sha256")!=c["sha256"] or not gate.get("eligible"):
+        if not gate or gate.get("source_sha256")!=c["sha256"]:
+            raise RuntimeError("Missing or mismatched source gate for "+c["id"])
+        # Clean is the negative control and deliberately reports eligible=False.
+        # Shadow/active must certify the source and actually start their requested mode.
+        if gate.get("native_expected")!=mode or started!=mode:
+            raise RuntimeError("Native mode did not match requested arm for "+c["id"]+" mode="+mode)
+        if mode!="t_clean" and not gate.get("eligible"):
             raise RuntimeError("XOR source gate did not activate for "+c["id"]+" gate="+json.dumps(gate,sort_keys=True))
+        if status not in ("SAT","TIMEOUT"):
+            raise RuntimeError("Known-SAT planted source returned "+status+" for "+c["id"])
         if status=="SAT": t.prior.helper.gf.sat_check(t.prior.helper.gf.dimacs(p)[1],t.prior.model(raw))
         # Independently validate generated witness too.
         assignment={abs(x):x>0 for x in c["witness"]}
         _,dimacs=t.prior.helper.gf.dimacs(p);t.prior.helper.gf.sat_check(dimacs,assignment)
-        out.append(dict(id=c["id"],sha256=c["sha256"],profile=c["profile"],rep=rep,mode=mode,status=status,elapsed_s=round(elapsed,7),prep_s=gate.get("prep_s",0),proposals=int(native.get("direct_proposals",0)),reasons=int(native.get("reason_clauses_completed",0)),progress=progress,activated=started==mode))
+        out.append(dict(id=c["id"],sha256=c["sha256"],profile=c["profile"],rep=rep,mode=mode,status=status,elapsed_s=round(min(elapsed,CAP),7),par2_s=round(2*CAP if status=="TIMEOUT" else elapsed,7),prep_s=gate.get("prep_s",0),proposals=int(native.get("direct_proposals",0)),reasons=int(native.get("reason_clauses_completed",0)),progress=progress,activated=started==mode))
     return out
 
 def shard(i):
@@ -87,9 +95,10 @@ def audit():
     for c in m["cases"]:
         pairs=[by[(c["sha256"],r)] for r in range(REPS)]
         means={mode:statistics.mean(p[mode]["elapsed_s"] for p in pairs) for mode in MODES}
+        scores={mode:sum(p[mode]["par2_s"] for p in pairs) for mode in MODES}
         clean=means["t_clean"]
-        formula.append(dict(id=c["id"],profile=c["profile"],clean_mean_s=round(clean,7),shadow_mean_s=round(means["c1_lazy_shadow"],7),active_mean_s=round(means["c1_lazy_cooldown"],7),active_vs_clean_pct=round((clean/means["c1_lazy_cooldown"]-1)*100,2),shadow_vs_clean_pct=round((clean/means["c1_lazy_shadow"]-1)*100,2)))
-    summary={mode:dict(solved=sum(x["status"]=="SAT" for x in allrows if x["mode"]==mode),elapsed_s=round(sum(x["elapsed_s"] for x in allrows if x["mode"]==mode),6),reasons=sum(x["reasons"] for x in allrows if x["mode"]==mode),proposals=sum(x["proposals"] for x in allrows if x["mode"]==mode)) for mode in MODES}
+        formula.append(dict(id=c["id"],profile=c["profile"],clean_mean_s=round(clean,7),shadow_mean_s=round(means["c1_lazy_shadow"],7),active_mean_s=round(means["c1_lazy_cooldown"],7),active_vs_clean_pct=round((clean/means["c1_lazy_cooldown"]-1)*100,2),shadow_vs_clean_pct=round((clean/means["c1_lazy_shadow"]-1)*100,2),par2_s=scores,active_par2_reduction_pct=round((1-scores["c1_lazy_cooldown"]/scores["t_clean"])*100,2),shadow_par2_reduction_pct=round((1-scores["c1_lazy_shadow"]/scores["t_clean"])*100,2)))
+    summary={mode:dict(solved=sum(x["status"]=="SAT" for x in allrows if x["mode"]==mode),elapsed_s=round(sum(x["elapsed_s"] for x in allrows if x["mode"]==mode),6),par2_s=round(sum(x["par2_s"] for x in allrows if x["mode"]==mode),6),timeouts=sum(x["status"]=="TIMEOUT" for x in allrows if x["mode"]==mode),reasons=sum(x["reasons"] for x in allrows if x["mode"]==mode),proposals=sum(x["proposals"] for x in allrows if x["mode"]==mode)) for mode in MODES}
     report=dict(status="TK_MIXED_AUDIT_PASS",scope="12 deterministic planted SAT mixed formulas; generated cohort; not external blind benchmark",attempts=len(allrows),formulas=12,repetitions=REPS,cap_s=CAP,summary=summary,per_formula=formula)
     (ROOT/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     print("TK_MIXED_FINAL",json.dumps(report,sort_keys=True),flush=True)
