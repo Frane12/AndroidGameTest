@@ -1,0 +1,76 @@
+name: DRNAS Medical R19 — trace R16 post-solve 384 stall
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r19-postsolve-trace-20261107
+    paths:
+      - 'research/drnas_medical/gmispy_r19_postsolve_trace.py'
+      - '.github/workflows/drnas-medical-r19-postsolve-trace.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r19-postsolve-20261107
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {n: 96, arm: share_12_control}
+          - {n: 384, arm: r9_baseline}
+          - {n: 384, arm: share_12_control}
+          - {n: 384, arm: share_12_memo_k3}
+    name: R19 trace n${{ matrix.n }} ${{ matrix.arm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install same R16 biomedical environment and validate diagnostic syntax
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r19_postsolve_trace.py research/drnas_medical/gmispy_r16_reaction_memo.py
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py selftest
+      - name: Recover frozen biological source and independent published minima
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r19/source r19/r9 r19/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r19/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW -D r19/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r19/r9/source --freeze r19/r9/frozen
+          test -s r19/reference/summary.json
+      - name: Instrument solver exit, coordinator cleanup and independent LP verification (hard 7m cap)
+        run: |
+          set -uo pipefail
+          timeout -k 10s 420s python3 -u research/drnas_medical/gmispy_r19_postsolve_trace.py \
+            --source r19/r9/source --frozen r19/r9/frozen \
+            --reference r19/reference/summary.json \
+            --n ${{ matrix.n }} --arm ${{ matrix.arm }} \
+            --out r19/diagnostic-${{ matrix.n }}-${{ matrix.arm }}.json \
+            2>&1 | tee r19/diagnostic-${{ matrix.n }}-${{ matrix.arm }}.log
+          code=${PIPESTATUS[0]}
+          echo "R19_PROCESS_EXIT=${code}"
+          if [ "${code}" -ne 0 ]; then
+            echo "::error::R19 bounded diagnostic exit ${code}; inspect R19_PHASE and faulthandler stack in artifact"
+            exit "${code}"
+          fi
+          grep -q '^R19_DIAG_PASS ' r19/diagnostic-${{ matrix.n }}-${{ matrix.arm }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R19-TRACE-${{ matrix.n }}-${{ matrix.arm }}
+          retention-days: 90
+          path: |
+            r19/diagnostic-${{ matrix.n }}-${{ matrix.arm }}.json
+            r19/diagnostic-${{ matrix.n }}-${{ matrix.arm }}.log
