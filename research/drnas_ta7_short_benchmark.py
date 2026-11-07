@@ -53,7 +53,8 @@ def existing():
     ids = set()
     for path in ("r189/frozen/manifest.json", "r199/candidates.json",
                  "ta3_2026/manifest.json", "ta3/candidates.json",
-                 "r200/manifest.json", "ta6/manifest.json"):
+                 "r200/manifest.json", "ta6/manifest.json",
+                 "ta7exclusions/ta7-manifest.json"):
         p = pathlib.Path(path)
         if not p.exists():
             if path == "ta3/candidates.json":
