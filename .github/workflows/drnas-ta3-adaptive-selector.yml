@@ -71,7 +71,101 @@ jobs:
           print('TA3_BINARY_SOURCE_CODE_PIN',json.dumps(pins,sort_keys=True))
           PY
           python3 -u research/drnas_ta3_adaptive_selector.py smoke | tee ta3/smoke.log
-          grep -q '^TA3_SMOKE_PASS ' ta3/smoke.log
+          grep -q '^TA3_SMOKE_PASS
+          tar czf ta3-frozen24-binaries.tar.gz r189/frozen/manifest.json r199/candidates.json r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh ta3/candidates.json ta3/manifest.json ta3/pins.json ta3/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta3-original24-frozen-source-binary
+          retention-days: 90
+          path: ta3-frozen24-binaries.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    name: TA3 eight-arm source-paired shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta3-original24-frozen-source-binary
+      - name: Restore exact original CNFs and pinned host binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for name,expected in json.loads(pathlib.Path('ta3/pins.json').read_text()).items():
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==expected,name
+          print('TA3_FROZEN_SHA_AUDIT_PASS')
+          PY
+      - name: Run randomized eight-arm paired original-source trials
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta3_adaptive_selector.py shard --shard ${{ matrix.shard }} | tee ta3/shard-${{ matrix.shard }}.log
+          grep -q '^TA3_SHARD_PASS ' ta3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta3-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ta3/shard-${{ matrix.shard }}.json
+            ta3/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta3-original24-frozen-source-binary
+      - name: Collect exactly eight source-disjoint paired shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p ta3/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'ta3-shard-*' -D ta3/raw-shards
+          test "$(find ta3/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 8
+          find ta3/raw-shards -type f -name 'shard-*.json' -exec cp '{}' ta3/ \;
+          test "$(find ta3 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+      - name: Audit all 384 paired trials, witness proofs, PAR2 and decisions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta3_adaptive_selector.py audit | tee ta3/audit.log
+          grep -q '^TA3_FINAL ' ta3/audit.log
+          cat ta3/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA3-STRUCTURAL-PORTFOLIO-384-FINAL
+          retention-days: 90
+          path: |
+            ta3/report.json
+            ta3/all_trials.json
+            ta3/summary.md
+            ta3/audit.log
+            ta3/pins.json
+            ta3/manifest.json
+            ta3/candidates.json
+            ta3/raw-shards/
+ ta3/smoke.log
           tar czf ta3-frozen24-binaries.tar.gz r189/frozen/manifest.json r199/candidates.json r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh ta3/candidates.json ta3/manifest.json ta3/pins.json ta3/sources
       - uses: actions/upload-artifact@v4
         with:
