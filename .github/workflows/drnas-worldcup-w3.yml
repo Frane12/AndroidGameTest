@@ -1,0 +1,109 @@
+name: DRNAS WorldCup W3 — short SAT2026 24 originals 7 solvers 336 paired 10s
+on:
+  push:
+    branches: [experiment/drnas-worldcup-short-w3-20261108]
+    paths: ['.github/workflows/drnas-worldcup-w3.yml', 'research/drnas_worldcup_w3.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: worldcup-w3-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore pinned W1 official sources and six solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42397824391 -R Frane12/AndroidGameTest -n worldsim-w1-frozen-official24-six-solvers -D .
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          mkdir -p worldcup_w3
+          python3 -m py_compile research/drnas_worldcup_w3.py
+          python3 -u research/drnas_worldcup_w3.py prepare | tee worldcup_w3/prepare.log
+          grep -q '^W3_PREPARE_PASS' worldcup_w3/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w3-input
+          path: |
+            worldsim-w1-frozen.tar.gz
+            worldcup_w3/manifest.json
+            worldcup_w3/pins.json
+            worldcup_w3/prepare.log
+          retention-days: 90
+          if-no-files-found: error
+  paired:
+    name: W3 seven solvers 10s paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w3-input}
+      - name: Run sequential randomized single CPU comparisons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          python3 -u research/drnas_worldcup_w3.py shard --shard ${{ matrix.shard }} | tee worldcup_w3/shard-${{ matrix.shard }}.log
+          grep -q '^W3_SHARD_PASS' worldcup_w3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w3-shard-${{ matrix.shard }}
+          path: |
+            worldcup_w3/shard-${{ matrix.shard }}.json
+            worldcup_w3/shard-${{ matrix.shard }}.log
+            worldsim_w1/raw/${{ matrix.shard }}/**/stdout.log
+          retention-days: 90
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w3-input}
+      - name: Audit complete 336 paired attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'w3-shard-*' -D worldcup_w3/collected
+          find worldcup_w3/collected -name 'shard-*.json' -type f -exec cp '{}' worldcup_w3/ \;
+          python3 -u research/drnas_worldcup_w3.py audit | tee worldcup_w3/audit.log
+          grep -q '^W3_FINAL' worldcup_w3/audit.log
+          cat worldcup_w3/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-WORLDCUP-W3-336-SHORT-FINAL
+          path: worldcup_w3/
+          retention-days: 90
