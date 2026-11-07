@@ -1,0 +1,211 @@
+name: DRNAS WorldSim W2 — 17 unsolved 180s and 600s
+on:
+  push:
+    branches: [experiment/drnas-worldsim-w2-longcap-20261107]
+    paths: ['.github/workflows/drnas-worldsim-w2-longcap.yml', 'research/drnas_worldsim_w2_longcap.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: worldsim-w2-${{ github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  prep:
+    name: Freeze W1 unsolved sources and smoke-test 6 solvers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore W1 original files, audit and binary pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          mkdir -p worldsim_w2/w1_frozen worldsim_w2/w1_final
+          gh run download 42397824391 -R Frane12/AndroidGameTest -n worldsim-w1-frozen-official24-six-solvers -D worldsim_w2/w1_frozen
+          gh run download 42397824391 -R Frane12/AndroidGameTest -n DRNAS-WORLDSIM-W1-432-FINAL -D worldsim_w2/w1_final
+          f="$(find worldsim_w2/w1_frozen -name worldsim-w1-frozen.tar.gz -type f | head -1)"
+          test -n "$f"
+          cp "$f" worldsim-w1-frozen.tar.gz
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          python3 -m py_compile research/drnas_worldsim_w2_longcap.py
+          python3 -u research/drnas_worldsim_w2_longcap.py smoke | tee worldsim_w2/smoke.log
+          grep -q '^W2_SMOKE_PASS' worldsim_w2/smoke.log
+          python3 -u research/drnas_worldsim_w2_longcap.py prepare --w1dir worldsim_w2/w1_final | tee worldsim_w2/freeze.log
+          grep -q '^W2_FREEZE_PASS' worldsim_w2/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: w2-input-pinned
+          path: |
+            worldsim-w1-frozen.tar.gz
+            worldsim_w2/freeze.json
+            worldsim_w2/smoke.log
+            worldsim_w2/freeze.log
+          retention-days: 90
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: w2-prep-diagnostics
+          path: worldsim_w2/*.log
+          retention-days: 14
+
+  s180:
+    name: All 6 backends 180s shard ${{ matrix.shard }}
+    needs: prep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w2-input-pinned}
+      - name: Sequential single-CPU 180s experiments
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          python3 -u research/drnas_worldsim_w2_longcap.py stage180 --shard ${{ matrix.shard }} | tee worldsim_w2/stage180-${{ matrix.shard }}.log
+          grep -q '^W2_SHARD_PASS stage180' worldsim_w2/stage180-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w2-180-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            worldsim_w2/stage180/shard-${{ matrix.shard }}.json
+            worldsim_w2/stage180-${{ matrix.shard }}.log
+            worldsim_w2/stage180/stdout/${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  a180:
+    name: Complete 180s audit and SHA-freeze remaining cases
+    needs: s180
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w2-input-pinned}
+      - name: Audit 102 complete source-paired attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf worldsim-w1-frozen.tar.gz
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'w2-180-shard-*' -D worldsim_w2/received180
+          mkdir -p worldsim_w2/stage180
+          find worldsim_w2/received180 -name 'shard-*.json' -type f -exec cp '{}' worldsim_w2/stage180/ \;
+          test "$(find worldsim_w2/stage180 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_worldsim_w2_longcap.py audit180 | tee worldsim_w2/a180.log
+          grep -q '^W2_180_FINAL' worldsim_w2/a180.log
+          cat worldsim_w2/stage180/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: w2-stage180-audited
+          path: |
+            worldsim_w2/stage180/shard-*.json
+            worldsim_w2/stage180/report.json
+            worldsim_w2/stage600/cohort.json
+            worldsim_w2/a180.log
+          retention-days: 90
+          if-no-files-found: error
+
+  s600:
+    name: Four diverse backends 600s shard ${{ matrix.shard }}
+    needs: a180
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w2-input-pinned}
+      - uses: actions/download-artifact@v4
+        with:
+          name: w2-stage180-audited
+          path: worldsim_w2
+      - name: Sequential single-CPU 600s experiments on still-unsolved
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          python3 -u research/drnas_worldsim_w2_longcap.py stage600 --shard ${{ matrix.shard }} | tee worldsim_w2/stage600-${{ matrix.shard }}.log
+          grep -q '^W2_SHARD_PASS stage600' worldsim_w2/stage600-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w2-600-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            worldsim_w2/stage600/shard-${{ matrix.shard }}.json
+            worldsim_w2/stage600-${{ matrix.shard }}.log
+            worldsim_w2/stage600/stdout/${{ matrix.shard }}/
+          if-no-files-found: warn
+
+  final:
+    name: Audit 180s and 600s and report new formulas solved
+    needs: s600
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w2-input-pinned}
+      - uses: actions/download-artifact@v4
+        with:
+          name: w2-stage180-audited
+          path: worldsim_w2
+      - name: Verify all attempts and publish final report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf worldsim-w1-frozen.tar.gz
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'w2-600-shard-*' -D worldsim_w2/received600
+          mkdir -p worldsim_w2/stage600
+          find worldsim_w2/received600 -name 'shard-*.json' -type f -exec cp '{}' worldsim_w2/stage600/ \;
+          test "$(find worldsim_w2/stage600 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_worldsim_w2_longcap.py audit600 | tee worldsim_w2/a600.log
+          grep -q '^W2_FINAL' worldsim_w2/a600.log
+          cat worldsim_w2/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-WORLDSIM-W2-LONGCAP-FINAL
+          retention-days: 90
+          path: |
+            worldsim_w2/report.json
+            worldsim_w2/freeze.json
+            worldsim_w2/stage180/report.json
+            worldsim_w2/stage180/shard-*.json
+            worldsim_w2/stage600/cohort.json
+            worldsim_w2/stage600/shard-*.json
+            worldsim_w2/a180.log
+            worldsim_w2/a600.log
+          if-no-files-found: warn
