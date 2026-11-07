@@ -1,0 +1,174 @@
+name: DRNAS TA4 — 15 source-disjoint SAT2025 early CDCL pilot 240 paired
+on:
+  push:
+    branches: [experiment/drnas-ta4-dual-cdcl-pilot-20261107]
+    paths:
+      - 'research/drnas_ta4_cdcl_pilot.py'
+      - 'research/drnas_ta3_adaptive_selector.py'
+      - 'research/drnas_ta2_structural_profile.py'
+      - 'ta4/candidates.json'
+      - '.github/workflows/drnas-ta4-cdcl-pilot.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta4-cdcl-pilot-holdout-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore SHA-frozen R194 Kissat/R28 binaries and CMS version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42386841737 --repo Frane12/AndroidGameTest -n r194-source-binary-pins -D .
+          test -s r194-source-locked38-and-binaries.tar.gz
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test -s r189/frozen/manifest.json
+          test -s r199/candidates.json
+          test -s ta3/candidates.json
+      - name: Restore 15 precommitted new-to-R189/R199/TA3 SAT2025 originals
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ta2_structural_profile.py research/drnas_ta3_adaptive_selector.py research/drnas_ta4_cdcl_pilot.py
+          python3 -u research/drnas_ta4_cdcl_pilot.py fetch | tee ta4/fetch.log
+          grep -Fq TA4_HOLDOUT_FROZEN ta4/fetch.log
+      - name: Freeze source and code SHA, test bounded Kissat conflict diagnostic
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          paths=[
+              'r189/frozen/manifest.json',
+              'r199/candidates.json',
+              'ta3/candidates.json',
+              'ta4/candidates.json',
+              'ta4/manifest.json',
+              'r190_cms_mixed/r28',
+              'built/bin/kissat_4_0_4',
+              'r192/pins.json','r192/cms_single.sh','r192/cms_gauss_forced.sh',
+              'research/drnas_ta2_structural_profile.py',
+              'research/drnas_ta3_adaptive_selector.py',
+              'research/drnas_ta4_cdcl_pilot.py',
+              'research/r199_unseen_mixed40_crossbackend.py',
+              'research/r193_certified_gauss_cms.py',
+              'research/r192_gauss_first_cms_hybrid.py',
+              'research/r189_short_inference.py',
+              'research/r188_feedback_benchmark.py',
+              'research/r190_cms_mixed_benchmark.py',
+              'research/r182_mixed_engine.py',
+              'research/r183_external_mixed.py',
+          ]
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+                for p in paths}
+          pathlib.Path('ta4/pins.json').write_text(
+              json.dumps(pins,indent=2,sort_keys=True)+'\n')
+          print('TA4_SOURCE_BINARY_PIN',json.dumps(pins,sort_keys=True))
+          PY
+          python3 -u research/drnas_ta4_cdcl_pilot.py smoke | tee ta4/smoke.log
+          grep -Fq TA4_SMOKE_PASS ta4/smoke.log
+          tar czf ta4-original15-frozen-solver-bundle.tar.gz             r189/frozen/manifest.json             r190_cms_mixed/r28 built/bin/kissat_4_0_4             r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh             ta4/candidates.json ta4/manifest.json ta4/pins.json ta4/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta4-15source-original-binary-pins
+          retention-days: 90
+          path: ta4-original15-frozen-solver-bundle.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    name: TA4 source-locked eight-arm early-CDCL shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta4-15source-original-binary-pins
+      - name: Restore exact originals and compare pinned code/binary SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf ta4-original15-frozen-solver-bundle.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for path,digest in json.loads(
+              pathlib.Path('ta4/pins.json').read_text()).items():
+              assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()==digest,path
+          print('TA4_FROZEN_SHA_AUDIT_PASS')
+          PY
+      - name: Compare frozen TA3, TA4 static, bounded-pilot and matched shadow
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta4_cdcl_pilot.py shard --shard ${{ matrix.shard }} | tee ta4/shard-${{ matrix.shard }}.log
+          grep -Fq TA4_SHARD_PASS ta4/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta4-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ta4/shard-${{ matrix.shard }}.json
+            ta4/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta4-15source-original-binary-pins
+      - name: Collect exactly five source-disjoint paired shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta4-original15-frozen-solver-bundle.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p ta4/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'ta4-shard-*' -D ta4/raw-shards
+          test "$(find ta4/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 5
+          find ta4/raw-shards -type f -name 'shard-*.json' -exec cp '{}' ta4/ \;
+          test "$(find ta4 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+      - name: Fail closed on 240 paired results, SHA, SAT witnesses and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta4_cdcl_pilot.py audit | tee ta4/audit.log
+          grep -Fq TA4_FINAL ta4/audit.log
+          cat ta4/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA4-15-SOURCE-240-FINAL
+          retention-days: 90
+          path: |
+            ta4/report.json
+            ta4/all_trials.json
+            ta4/summary.md
+            ta4/audit.log
+            ta4/pins.json
+            ta4/candidates.json
+            ta4/manifest.json
+            ta4/raw-shards/
