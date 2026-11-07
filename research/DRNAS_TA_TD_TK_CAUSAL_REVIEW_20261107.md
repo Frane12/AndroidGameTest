@@ -14,7 +14,17 @@ As of 2026-11-07, all six TA shards, all 300 paired attempts and the independent
 | R2 Portfolio | 8/60 | 6 | 2 | 3154.929632 |
 | R2 Binary | 8/60 | 6 | 2 | 3154.981717 |
 
-Matched Portfolio vs R153: 0 wins, 12 losses, 48 ties, **-197.745874 seconds PAR-2 gain** (negative is worse). Portfolio vs R1A: 0 wins, 10 losses, 50 ties, -87.941160 seconds. Portfolio vs Clean: 4 wins, 6 losses, 50 ties, **+46.423863 seconds**, but equal 8/60 solved. Portfolio selected 52/60 R1A routes and 8/60 structural Clean routes; Binary has the same aggregate route totals, not necessarily identical per case. These results **falsify transfer of the previously promising R2T source-selector gain to this exact new cohort**; no broad SAT performance claim and no same-TA threshold retuning are justified. SAT witnesses were checked; native UNSAT still lacks independent machine-checked LRAT/FRAT certificates.
+Matched Portfolio vs R153: 0 wins, 12 losses, 48 ties, **-197.745874 seconds PAR-2 gain** (negative is worse).
+
+**Per-source failure localization from original `trials.json`, not merely FINAL summary:**
+
+| Frozen source ID prefix | R153 (two reps PAR2 s) | R1A | Clean | Portfolio | Portfolio route / observed cause |
+|---|---:|---:|---:|---:|---|
+| `8117a2ac` | 10.054536 | 120.000000 | 30.588897 | 120.000000 | Chose R1A and lost both SAT solves that R153 (and Clean) could complete |
+| `15e666a4` | 32.857900 | 32.720879 | 120.000000 | 120.000000 | Chose Clean and lost both UNSAT solves of R153/R1A |
+
+The two paired source rows explain **197.087564 / 197.745874 = 99.67%** of the observed portfolio-vs-R153 aggregate loss. This is a diagnosis, NOT permission to hard-code source IDs/hashes, retune the locked holdout or claim better-than-R153 causal performance. More than a timing discrepancy, the two cases reveal different gating failure modes: a clean-route false positive for UNSAT, and a fallback-to-R1A false negative for a source where R153 performs well. A new source/family-disjoint evaluation is mandatory after any modified gate.
+ Portfolio vs R1A: 0 wins, 10 losses, 50 ties, -87.941160 seconds. Portfolio vs Clean: 4 wins, 6 losses, 50 ties, **+46.423863 seconds**, but equal 8/60 solved. Portfolio selected 52/60 R1A routes and 8/60 structural Clean routes; Binary has the same aggregate route totals, not necessarily identical per case. These results **falsify transfer of the previously promising R2T source-selector gain to this exact new cohort**; no broad SAT performance claim and no same-TA threshold retuning are justified. SAT witnesses were checked; native UNSAT still lacks independent machine-checked LRAT/FRAT certificates.
 
 Evidence: https://github.com/Frane12/AndroidGameTest/actions/runs/42353551967. Latest SQL cumulative record is `research/drnas_sat_benchmark_history_20261107_ta.sql` on the TA experimental branch, including five exact mode scores, six paired deltas, and two research findings. Next test design: analyze mistakes only on a separately designated development set, then use a newly disjoint holdout; never use the completed TA results to tune and then rebrand TA as blind.
 
