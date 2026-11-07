@@ -1,4 +1,4 @@
--- DRNAS SAT: kumulativni audit rezultata do R175, 2026-11-06.
+-- DRNAS SAT: kumulativni audit izvornih kohorti od R166x do R178 te dopune za R194, R197, Ultimate R1, R2 i R2x (7. studenoga 2026.).
 -- IZVORI: verified GitHub Actions FINAL audit logs. PAR-2 sums are comparable ONLY within the same cohort_id.
 -- Censored timeout times are NOT finite speedups; use solved count + within-cohort PAR2. No external competition ranking claimed.
 PRAGMA foreign_keys = ON;
