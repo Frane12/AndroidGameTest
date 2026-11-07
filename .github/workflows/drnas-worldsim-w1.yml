@@ -1,0 +1,177 @@
+name: DRNAS WorldSim W1 — official SAT2026 24 CNFs 6 solvers 432 paired
+on:
+  push:
+    branches: [experiment/drnas-worldsim-w1-20261107]
+    paths:
+      - '.github/workflows/drnas-worldsim-w1.yml'
+      - 'research/drnas_worldsim_w1.py'
+      - 'research/drnas_worldsim_w1_snapshot_20261107.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-worldsim-w1-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze official 2026 cohort and six exact solver configurations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore already frozen 24 official CNFs and pinned R28 and Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat cmake libboost-program-options-dev zlib1g-dev libgmp-dev
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42396350093 --repo Frane12/AndroidGameTest -n ta326-original24-frozen-source-binary -D .
+          tar xzf ta326-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          gh run download 41684183452 --repo Frane12/AndroidGameTest -n r52-three-pinned-solvers -D worldsim_w1/reference/bin
+          (cd worldsim_w1/reference/bin && sha256sum -c binaries.sha256)
+          chmod +x worldsim_w1/reference/bin/cadical_3_0_1
+          cmp built/bin/kissat_4_0_4 worldsim_w1/reference/bin/kissat_4_0_4
+      - name: Build exact submitted 2026 Satsuma-iter plus Kissat entrant
+        run: |
+          set -euo pipefail
+          mkdir -p worldsim_w1/official
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/satcompetition/2026/main/downloads/solvers/anders.tar.xz \
+            --output worldsim_w1/anders.tar.xz
+          test "$(git hash-object worldsim_w1/anders.tar.xz)" = 5ec9be607fbf762329176beb7068d574cd528b5b
+          tar -xJf worldsim_w1/anders.tar.xz -C worldsim_w1/official
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path('worldsim_w1/official')
+          choices=[p for p in sorted(root.rglob('run.sh')) if 'satsuma-iter' in str(p).lower() and 'kissat' in str(p).lower() and 'mab' not in str(p).lower() and 'ae-' not in str(p).lower() and 'ae_' not in str(p).lower()]
+          assert len(choices)==1,[str(p) for p in choices]
+          p=choices[0]
+          meta={'label':'Official SAT Competition 2026 entrant satsuma-iter+kissat; no champion label inferred',
+                'archive_url':'https://raw.githubusercontent.com/satcompetition/2026/main/downloads/solvers/anders.tar.xz',
+                'archive_git_blob_sha':'5ec9be607fbf762329176beb7068d574cd528b5b',
+                'run_script':str(p),'submitted_run_script_text':p.read_text(),
+                'proof_policy':'Use submitted run.sh INSTANCE PROOF_DIRECTORY; comparison is not claimed proof-normalized'}
+          pathlib.Path('worldsim_w1/official.json').write_text(json.dumps(meta,indent=2)+'\n')
+          pathlib.Path('worldsim_w1/official-script.txt').write_text(str(p)+'\n')
+          print('W1_OFFICIAL_ENTRANT_SELECTED',str(p))
+          print(p.read_text())
+          PY
+          script="$(cat worldsim_w1/official-script.txt)"
+          (cd "$(dirname "$script")" && chmod +x build.sh run.sh && bash ./build.sh)
+          rm worldsim_w1/anders.tar.xz
+      - name: Verify unchanged TA3 method, pin all code and binaries, smoke all six arms
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_worldsim_w1.py
+          python3 -u research/drnas_worldsim_w1.py selftest
+          python3 -u research/drnas_worldsim_w1.py freeze | tee worldsim_w1/freeze.log
+          grep -q '^W1_FREEZE_SMOKE_PASS ' worldsim_w1/freeze.log
+          lscpu > worldsim_w1/prepare-cpu.txt
+          tar czf worldsim-w1-frozen.tar.gz \
+            ta3_2026 r189/frozen/manifest.json r199/candidates.json \
+            r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json \
+            r192/cms_single.sh r192/cms_gauss_forced.sh \
+            worldsim_w1/manifest.json worldsim_w1/pins.json worldsim_w1/official.json \
+            worldsim_w1/official worldsim_w1/reference worldsim_w1/freeze.log worldsim_w1/prepare-cpu.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worldsim-w1-frozen-official24-six-solvers
+          retention-days: 90
+          path: worldsim-w1-frozen.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: worldsim-w1-prepare-diagnostic
+          path: |
+            worldsim_w1/official.json
+            worldsim_w1/freeze.log
+            worldsim_w1/raw/-1/
+          retention-days: 14
+  paired:
+    name: W1 six-arm 60s source-paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: worldsim-w1-frozen-official24-six-solvers
+      - name: Restore exact source and solver pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh worldsim_w1/reference/bin/cadical_3_0_1
+      - name: Sequential randomized paired trials on a single inherited CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_worldsim_w1.py shard --shard ${{ matrix.shard }} | tee worldsim_w1/shard-${{ matrix.shard }}.log
+          grep -q '^W1_SHARD_PASS ' worldsim_w1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worldsim-w1-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            worldsim_w1/shard-${{ matrix.shard }}.json
+            worldsim_w1/shard-${{ matrix.shard }}.log
+            worldsim_w1/raw/${{ matrix.shard }}/**/stdout.log
+          if-no-files-found: warn
+  audit:
+    name: Complete 432-pair audit and formula-cluster uncertainty
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: worldsim-w1-frozen-official24-six-solvers
+      - name: Collect all eight complete paired shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf worldsim-w1-frozen.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'worldsim-w1-shard-*' -D worldsim_w1/shards
+          test "$(find worldsim_w1/shards -name 'shard-*.json' | wc -l)" -eq 8
+          find worldsim_w1/shards -name 'shard-*.json' -exec cp '{}' worldsim_w1/ \;
+          python3 -u research/drnas_worldsim_w1.py audit | tee worldsim_w1/audit.log
+          grep -q '^W1_FINAL ' worldsim_w1/audit.log
+          cat worldsim_w1/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-WORLDSIM-W1-432-FINAL
+          retention-days: 90
+          path: |
+            worldsim_w1/report.md
+            worldsim_w1/report.json
+            worldsim_w1/all_trials.json
+            worldsim_w1/manifest.json
+            worldsim_w1/pins.json
+            worldsim_w1/official.json
+            worldsim_w1/audit.log
+            research/drnas_worldsim_w1_snapshot_20261107.md
+          if-no-files-found: warn
