@@ -1,0 +1,137 @@
+name: DRNAS Medical R12 pinned R195 native on frozen iML1515 SAT snapshots
+on:
+  push:
+    branches: [experiment/drnas-medical-r12-native-sat-snapshots-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r12_native_sat_snapshots.py'
+      - '.github/workflows/drnas-medical-r12-native-sat-snapshots.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned R195 native driver and CaDiCaL
+        run: |
+          set -euo pipefail
+          mkdir -p r12
+          git fetch --no-tags --depth=1 origin 9d19a4ab2da1dc87ddc8a61156c2742078628642
+          test "$(git rev-parse FETCH_HEAD)" = 9d19a4ab2da1dc87ddc8a61156c2742078628642
+          git show FETCH_HEAD:research/r195_dualkeep_real_driver.cpp > r12/r195-native.cpp
+          test -s r12/r195-native.cpp
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/cadical-r12
+          cd /tmp/cadical-r12
+          git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/cadical-r12/src r12/r195-native.cpp /tmp/cadical-r12/build/libcadical.a -o r12/r12-native
+          chmod +x r12/r12-native
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r12/sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > r12/unsat.cnf
+          for mode in default dual_keep_default dual_keep_guarded; do
+            r12/r12-native r12/sat.cnf 2 "$mode" 0 11 > r12/smoke-sat-$mode.log
+            grep -q '^R182_STATUS status=SAT' r12/smoke-sat-$mode.log
+            r12/r12-native r12/unsat.cnf 2 "$mode" 0 11 > r12/smoke-unsat-$mode.log
+            grep -q '^R182_STATUS status=UNSAT' r12/smoke-unsat-$mode.log
+          done
+          sha256sum r12/r12-native | tee r12/binary-sha256.txt
+          echo R12_BUILD_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R12-PINNED-NATIVE
+          path: r12/
+          retention-days: 90
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24, 48, 96, 192, 384]
+    name: R12 ${{ matrix.n }} genes three native R195 policies
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R12-PINNED-NATIVE
+          path: r12
+      - name: Verify runtime and original source model
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r12_native_sat_snapshots.py
+          python3 -u research/drnas_medical/gmispy_r12_native_sat_snapshots.py selftest
+          mkdir -p r12/r9 r12/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r12/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW -D r12/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r12/r9/source --freeze r12/r9/frozen
+          test -s r12/reference/summary.json
+          chmod +x r12/r12-native
+          sha256sum -c r12/binary-sha256.txt
+      - name: Freeze real R9 SAT and independently confirm each original SHA CNF
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r12_native_sat_snapshots.py freeze --source r12/r9/source --frozen r12/r9/frozen --reference r12/reference/summary.json --n ${{ matrix.n }} --out r12/case-${{ matrix.n }} | tee r12/freeze-${{ matrix.n }}.log
+          grep -q '^R12_FREEZE_PASS ' r12/freeze-${{ matrix.n }}.log
+      - name: Pair native original CaDiCaL vs DRNAS dual keep on identical SAT formula and seed
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r12_native_sat_snapshots.py paired --case-dir r12/case-${{ matrix.n }} --binary r12/r12-native --out r12/case-${{ matrix.n }}/native-results.json | tee r12/paired-${{ matrix.n }}.log
+          grep -q '^R12_COHORT_FINAL ' r12/paired-${{ matrix.n }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R12-COHORT-${{ matrix.n }}-RAW
+          path: |
+            r12/case-${{ matrix.n }}/
+            r12/freeze-${{ matrix.n }}.log
+            r12/paired-${{ matrix.n }}.log
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R12-COHORT-*-RAW
+          path: all-r12
+          merge-multiple: false
+      - name: Check full five-cohort evidence and common native binary SHA
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r12/DRNAS-MEDICAL-R12-COHORT-${n}-RAW"
+            mapfile -t f < <(find "$d" -type f -name native-results.json | sort)
+            test "${#f[@]}" -eq 1
+            inputs+=("${f[0]}")
+          done
+          mkdir -p r12-final
+          python3 -u research/drnas_medical/gmispy_r12_native_sat_snapshots.py audit --inputs "${inputs[@]}" --out r12-final/report.json | tee r12-final/audit.log
+          grep -q '^R12_FINAL ' r12-final/audit.log
+          cat r12-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R12-NATIVE-SAT-PAIRED-FINAL
+          path: r12-final/
+          retention-days: 90
