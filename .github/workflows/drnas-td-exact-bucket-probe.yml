@@ -1,0 +1,87 @@
+name: DRNAS TD — exact bucket XOR source diagnostic
+on:
+  push:
+    branches: [experiment/drnas-td-exact-bucket-probe-20261107]
+    paths:
+      - research/ultimate_td_bucket_probe.py
+      - .github/workflows/drnas-td-exact-bucket-probe.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: td-source-bucket-20261107
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    name: TD exact-bucket detection ablation 20 original CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require successful immutable T2 final 400-trial source audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42352823564 --jq .conclusion)" = "success"
+          gh run download 42352823564 --repo Frane12/AndroidGameTest -n DRNAS-ULTIMATE-T2-400-FACTORIAL-FINAL -D /tmp/td-t2-final
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("/tmp/td-t2-final")
+          files=list(p.rglob("report.json"))
+          assert len(files)==1,("missing or ambiguous T2 audit report",files)
+          x=json.loads(files[0].read_text())
+          assert x["status"]=="ULTIMATE_T2_PHASE2_AUDIT_PASS_NONBLIND"
+          assert x["attempts"]==400 and x["original_cnfs_unchanged"]
+          print("TD_FROZEN_T2_AUDIT_GUARD_PASS")
+          PY
+      - name: Freeze unchanged 20 original source CNFs from successful T2 prepare artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42352823564 --repo Frane12/AndroidGameTest -n ultimate-t2-frozen-400-source-native-pins -D .
+          python3 - <<'PY'
+          import pathlib,hashlib
+          p=pathlib.Path("ultimate_r2/frozen/manifest.json")
+          assert p.is_file()
+          digest=hashlib.sha256(p.read_bytes()).hexdigest()
+          assert digest=="2e6169009e985555e43e81d9b534f3bb307cef93963329694ef42459bef3c2e2",digest
+          print("TD_ORIGINAL_SHA_MANIFEST_PASS",digest)
+          PY
+      - name: Test exact bounded-memory partition scan on interleaved and negative sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ultimate_t2_probe.py research/ultimate_t2_benchmark.py research/ultimate_td_bucket_probe.py
+          python3 -u research/ultimate_td_bucket_probe.py selftest | tee td-selftest.log
+          grep -q '^TD_BUCKETED_SELFTEST_PASS' td-selftest.log
+      - name: Compare T2 streaming versus exact partitioned scan on 20 original source SHA
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_td_bucket_probe.py run | tee td-source-audit.log
+          grep -q '^TD_BUCKETED_FINAL' td-source-audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("ultimate_td_probe")
+          x=json.loads((p/"report.json").read_text())
+          a=json.loads((p/"cases.json").read_text())
+          assert x["status"]=="TD_BUCKETED_DIAGNOSTIC_AUDIT_PASS"
+          assert x["source_count"]==20 and len(a)==20
+          assert len(set(z["sha256"] for z in a))==20
+          assert x["same_frozen_20"] and x["solver_unchanged"] and not x["solver_par2_measured"]
+          for z in a:
+              assert (z["exact"]["total_hits"] >= 0) if "total_hits" in z["exact"] else not z["exact"]["complete"]
+          print("TD_BUCKETED_CROSS_SOURCE_CHECK_PASS",x["new_source_cases"],x["inconclusive_cases"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TD-20-SOURCE-EXACT-BUCKET-DIAGNOSTIC
+          retention-days: 90
+          path: |
+            ultimate_td_probe/
+            td-selftest.log
+            td-source-audit.log
