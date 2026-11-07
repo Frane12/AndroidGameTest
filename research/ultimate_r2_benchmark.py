@@ -9,7 +9,6 @@ import argparse, collections, csv, hashlib, json, os, pathlib, random
 import re, signal, subprocess, sys, tempfile, time, platform
 import ultimate_r1_benchmark as prior
 import r195_dualkeep_real_benchmark as official
-import r197_state_blind_benchmark as old
 import r188_feedback_benchmark as helper
 import ultimate_r2_fallback as bridge
 
