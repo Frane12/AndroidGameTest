@@ -1,0 +1,227 @@
+name: DRNAS New Horizon NMR R4 — bounded exploration 480 paired
+on:
+  push:
+    branches: [experiment/drnas-nmr-r4-calibrated-explore-20261107]
+    paths:
+      - 'research/nmr_r4_driver.cpp'
+      - 'research/nmr_r4_policy.py'
+      - 'research/nmr_r4_benchmark.py'
+      - '.github/workflows/drnas-nmr-r4.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-nmr-r4-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static checks, cost policy and persistent-memory selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/nmr_online.py research/nmr_r3_policy.py research/nmr_r4_policy.py research/nmr_r4_benchmark.py
+          python3 -u research/nmr_r4_benchmark.py selftest | tee nmr4-selftest.log
+          grep -q '^NMR4_BENCH_SELFTEST_PASS' nmr4-selftest.log
+      - name: Download R3 SHA-frozen originals and native controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42324794049 --repo Frane12/AndroidGameTest -n nmr-r3-frozen-build -D .
+          test -f nmr_r2/split.json
+          test -f nmr_r3/nmr3-driver
+          test -f new_horizon/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=json.loads(pathlib.Path("nmr_r3/build-pin.json").read_text())
+          for name in ("nmr_r3/nmr3-driver","new_horizon/r190-driver",
+                       "nmr_r2/split.json","new_horizon/frozen/manifest.json"):
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==p[name],name
+          assert p["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          print("NMR4_R3_PIN_VERIFIED")
+          PY
+          python3 -u research/nmr_r4_benchmark.py prepare
+          python3 -u research/nmr_r4_benchmark.py verify
+      - name: Build three-expert callback driver from pinned CaDiCaL
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/nmr4-cadical
+          (cd /tmp/nmr4-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/nmr4-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          mkdir -p nmr_r4
+          g++ -std=c++17 -O2 -I/tmp/nmr4-cadical/src research/nmr_r4_driver.cpp /tmp/nmr4-cadical/build/libcadical.a -o nmr_r4/nmr4-driver
+          chmod +x nmr_r4/nmr4-driver new_horizon/r190-driver nmr_r3/nmr3-driver
+          printf 'p cnf 3 3\n1 0\n-1 2 0\n-2 3 0\n' > nmr_r4/smoke.cnf
+          printf 'ACTIVATE 1\nFINISH 1\n' | nmr_r4/nmr4-driver nmr_r4/smoke.cnf 2 | tee nmr_r4/smoke-sat.log
+          printf 'ACTIVATE 2\nFINISH 2\n' | nmr_r4/nmr4-driver nmr_r4/smoke.cnf 2 | tee nmr_r4/smoke-unsat.log
+          printf 'WATCH 0 256\nFINISH 0\n' | nmr_r4/nmr4-driver nmr_r4/smoke.cnf 2 | tee nmr_r4/smoke-callback.log
+          grep -q '^NMR4_STATUS status=SAT' nmr_r4/smoke-sat.log
+          grep -q '^NMR4_STATUS status=SAT' nmr_r4/smoke-unsat.log
+          grep -q '^NMR4_STATUS status=SAT' nmr_r4/smoke-callback.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          paths=["nmr_r4/nmr4-driver","nmr_r3/nmr3-driver",
+                 "new_horizon/r190-driver","nmr_r2/split.json",
+                 "new_horizon/frozen/manifest.json","nmr_r4/exploration-plan.json"]
+          pin={x:hashlib.sha256(pathlib.Path(x).read_bytes()).hexdigest() for x in paths}
+          pin["cadical_commit"]="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pathlib.Path("nmr_r4/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("NMR4_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmr-r4-frozen-build
+          retention-days: 90
+          path: |
+            new_horizon/frozen/
+            new_horizon/r190-driver
+            nmr_r2/split.json
+            nmr_r3/nmr3-driver
+            nmr_r4/nmr4-driver
+            nmr_r4/exploration-plan.json
+            nmr_r4/build-pin.json
+            nmr_r4/smoke-*.log
+            nmr4-selftest.log
+  train:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r4-frozen-build
+          path: .
+      - uses: actions/cache/restore@v4
+        with:
+          path: nmr_r4/model.sqlite
+          key: nmr-r4-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            nmr-r4-${{ runner.os }}-${{ github.ref_name }}-
+      - name: Warm-start R4 from existing R3 memory if no prior R4 model
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p nmr_r4
+          if ! test -f nmr_r4/model.sqlite; then
+            gh run download 42324794049 --repo Frane12/AndroidGameTest -n nmr-r3-trained-memory -D nmr_r4
+            test -f nmr_r4/model.sqlite
+            test "$(sha256sum nmr_r4/model.sqlite | cut -d' ' -f1)" = "$(cat nmr_r4/model.sha256)"
+            echo NMR4_R3_PERSISTENT_WARM_START_PASS
+          else
+            echo NMR4_PERSISTENT_MODEL_RESTORED
+          fi
+      - name: Train actual source-paired SAT and UNSAT utility rewards
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r4/nmr4-driver nmr_r3/nmr3-driver new_horizon/r190-driver
+          python3 -u research/nmr_r4_benchmark.py verify
+          python3 -u research/nmr_r4_benchmark.py train --driver nmr_r4/nmr4-driver --clean new_horizon/r190-driver --r3driver nmr_r3/nmr3-driver --memory nmr_r4/model.sqlite | tee nmr_r4/train.log
+          grep -q '^NMR4_TRAIN_PASS' nmr_r4/train.log
+          sha256sum nmr_r4/model.sqlite | cut -d' ' -f1 > nmr_r4/model.sha256
+      - uses: actions/cache/save@v4
+        with:
+          path: nmr_r4/model.sqlite
+          key: nmr-r4-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r4-trained-memory
+          retention-days: 90
+          path: |
+            nmr_r4/model.sqlite
+            nmr_r4/model.sha256
+            nmr_r4/training.json
+            nmr_r4/training-trials.json
+            nmr_r4/train.log
+  evaluate:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: NMR R4 preregistered six-arm paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r4-frozen-build
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r4-trained-memory
+          path: nmr_r4
+      - name: Evaluate SHA-frozen heldouts without persistent updates
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r4/nmr4-driver nmr_r3/nmr3-driver new_horizon/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          pin=json.loads(pathlib.Path("nmr_r4/build-pin.json").read_text())
+          for name,s in pin.items():
+              if name=="cadical_commit":continue
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==s,name
+          got=hashlib.sha256(pathlib.Path("nmr_r4/model.sqlite").read_bytes()).hexdigest()
+          assert got==pathlib.Path("nmr_r4/model.sha256").read_text().strip()
+          print("NMR4_FROZEN_EVAL_CHECKPOINT_PASS",got)
+          PY
+          python3 -u research/nmr_r4_benchmark.py shard --shard ${{ matrix.shard }} --driver nmr_r4/nmr4-driver --clean new_horizon/r190-driver --r3driver nmr_r3/nmr3-driver --memory nmr_r4/model.sqlite | tee nmr_r4/shard-${{ matrix.shard }}.log
+          grep -q '^NMR4_SHARD_PASS ' nmr_r4/shard-${{ matrix.shard }}.log
+          test "$(sha256sum nmr_r4/model.sqlite | cut -d' ' -f1)" = "$(cat nmr_r4/model.sha256)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r4-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            nmr_r4/shard-${{ matrix.shard }}.json
+            nmr_r4/shard-${{ matrix.shard }}.log
+  audit:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r4-frozen-build
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nmr-r4-shard-*
+          merge-multiple: true
+          path: nmr_r4
+      - name: Audit all 480 SHA-matched, answer-checked benchmark attempts
+        run: |
+          set -euo pipefail
+          test "$(find nmr_r4 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/nmr_r4_benchmark.py audit | tee nmr_r4/audit.log
+          grep -q '^NMR4_FINAL ' nmr_r4/audit.log
+          cat nmr_r4/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NMR-R4-FINAL
+          retention-days: 90
+          path: |
+            nmr_r4/report.json
+            nmr_r4/trials.json
+            nmr_r4/trials.csv
+            nmr_r4/summary.md
+            nmr_r4/audit.log
