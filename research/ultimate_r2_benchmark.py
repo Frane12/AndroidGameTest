@@ -42,6 +42,28 @@ def selftest():
         f.write_text("p cnf 3 102\n1 2 0\n-1 -2 0\n1 3 0\n"+"1 3 0\n"*99)
         yes,_=bridge.cheap_probe(f)
         need(yes,"complete source parity prefix not detected")
+    # DIMACS regression: source complete parity across 2..6 widths and formatting.
+    for width in (2, 3, 4, 5, 6):
+        with tempfile.TemporaryDirectory() as t:
+            f=pathlib.Path(t)/"wide.cnf"
+            clauses=[" ".join(str(-v if mask>>i&1 else v)
+                             for i,v in enumerate(range(1,width+1)))+" 0"
+                     for mask in range(1<<width) if mask.bit_count()%2==0]
+            header="c "+"x"*350+"\n"+f"p cnf {width} {len(clauses)}\n"
+            for body in ("\n".join(clauses), " ".join(clauses),
+                         "\n".join(c.replace(" 0","\n 0") for c in clauses)):
+                f.write_text(header+body+"\n")
+                need(bridge.cheap_probe(f)[0],f"width-{width} wrapped DIMACS missed")
+            f.write_text(header+"\n".join(clauses[:-1])+"\n")
+            need(not bridge.cheap_probe(f)[0],f"width-{width} incomplete parity accepted")
+    # On Linux, expensive full-source proof work must be preemptible.
+    if hasattr(signal,"setitimer"):
+        try:
+            with bridge.preparation_budget(0.005): time.sleep(0.030)
+        except bridge.PreparationBudgetExceeded:
+            pass
+        else:
+            need(False,"preparation budget failed to preempt")
     print("ULTIMATE_R2_SELFTEST_PASS",flush=True)
 def freeze():
     old_cases=get(OLD_MANIFEST)["cases"]
@@ -132,8 +154,16 @@ def run_one(src,mode,cap,sha0):
     watchdog=False
     try:out,err=p.communicate(timeout=cap)
     except subprocess.TimeoutExpired:
-        watchdog=True;os.killpg(p.pid,signal.SIGKILL);out,err=p.communicate()
+        watchdog=True
+        try:
+            os.killpg(p.pid,signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # The process group exited just before our kill.
+        out,err=p.communicate()
     elapsed=time.perf_counter()-t
+    if not watchdog and p.returncode not in (0,10,20):
+        need(False,f"solver/process failure {mode} rc={p.returncode}: "+
+             err[-900:].decode(errors="replace"))
     if watchdog or elapsed>=cap:
         status="TIMEOUT"
     elif p.returncode==10:status="SAT"
@@ -151,9 +181,14 @@ def run_one(src,mode,cap,sha0):
     res=re.search(rb"R166X_RESULT ([^\r\n]+)",out)
     counters=dict(re.findall(rb"(\w+)=([^\s]+)",res[1])) if res else {}
     parsed={k.decode():v.decode(errors="replace") for k,v in counters.items()}
-    if gate and gate.get("eligible") and mode=="r2_live":
-        need(parsed.get("mode")=="gauss_cooldown" or status=="TIMEOUT",
-             "eligible GF2 bridge did not activate native CDCL")
+    if gate and mode.startswith("r2_"):
+        expected_native=("gauss_cooldown" if mode=="r2_live" and gate.get("eligible")
+                         else "clean")
+        if parsed.get("mode") is not None:
+            need(parsed["mode"]==expected_native,
+                 f"native mode mismatch: expected {expected_native}, got {parsed['mode']}")
+        elif status!="TIMEOUT":
+            need(False,"native result telemetry missing for completed R2 fallback")
     return status,elapsed,out,gate,parsed,watchdog
 def model(out):
     truth={}
@@ -238,7 +273,10 @@ def audit():
               sat=sum(r["status"]=="SAT" for r in sample),
               unsat=sum(r["status"]=="UNSAT" for r in sample),
               par2_s=round(sum(r["par2_s"] for r in sample),6),
-              live_activated=sum(r["r2_gate"].get("eligible",False) and r["mode"]=="r2_live" for r in sample),
+              live_selected=sum(r["r2_gate"].get("eligible",False) and r["mode"]=="r2_live" for r in sample),
+              live_activated=sum(r["mode"]=="r2_live" and r["native_mode"]=="gauss_cooldown" for r in sample),
+              native_result_missing=sum(r["mode"]=="r2_live" and r["r2_gate"].get("eligible",False)
+                                        and r["native_mode"] is None for r in sample),
               derived_rows=sum(r["r2_gate"].get("derived_rows",0) for r in sample),
               delivered_reasons=sum(int(r["native_reasons"] or 0) for r in sample))
     comparisons={}
@@ -250,9 +288,10 @@ def audit():
     result=dict(status="ULTIMATE_R2_SOURCE_PAIRED_AUDIT_PASS_NOT_GLOBAL_BLIND",
         sources=DEV+NEW,original_SHA_verified=True,
         source_disjoint_to_r1=NEW,globally_blind=False,attempts=len(rows),
-        two_way_ipasirup="R166x native source-certified GF2 reasons delivered on demand",
+        two_way_ipasirup="R166x native reasons available only on confirmed live paths",
         generated_unit_and_row_proofs_replayed=True,models_checked_original=True,
-        independent_LRAT_for_native_UNSAT=False,non_active_control="r2_shadow",
+        independent_LRAT_for_native_UNSAT=False,
+        non_active_control="r2_shadow: certified-preparation-only; clean native CDCL, no shadow row scanning",
         source_provenance_sha=sha(FROZEN/"manifest.json"),
         results=report,comparisons=comparisons)
     put(ROOT/"report.json",result);put(ROOT/"trials.json",rows)
@@ -263,9 +302,9 @@ def audit():
     with (ROOT/"summary.md").open("w") as fh:
         fh.write("# Ultimate R2 — source-certified GF2 / CDCL experiment\n\n")
         fh.write("12 official original CNFs new to R1; eight development controls; 2 repeats; 5 arms = 200 trials. Not globally blind.\n\n")
-        fh.write("| Cohort | Arm | Solved | PAR2 (s) | Active | Reason clauses |\n|---|---|---:|---:|---:|---:|\n")
+        fh.write("| Cohort | Arm | Solved | PAR2 (s) | Live selected | Native confirmed | Missing native telemetry | Reason clauses |\n|---|---|---:|---:|---:|---:|---:|---:|\n")
         for cohort,x in report.items():
-            for mode,v in x.items():fh.write(f"| {cohort} | {mode} | {v['solved']}/{v['n']} | {v['par2_s']} | {v['live_activated']} | {v['delivered_reasons']} |\n")
+            for mode,v in x.items():fh.write(f"| {cohort} | {mode} | {v['solved']}/{v['n']} | {v['par2_s']} | {v['live_selected']} | {v['live_activated']} | {v['native_result_missing']} | {v['delivered_reasons']} |\n")
         fh.write("\n"+json.dumps(comparisons,indent=2)+"\n\nSAT models checked against unchanged originals. No independent native LRAT.\n")
     print("ULTIMATE_R2_FINAL",json.dumps(dict(status=result["status"],results=report,
           comparisons=comparisons),sort_keys=True),flush=True)
