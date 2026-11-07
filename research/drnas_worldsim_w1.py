@@ -138,6 +138,23 @@ def command_for(mode, source, proof_file):
         return selected_command("kissat_r28", source, proof_file), None
     raise ValueError(mode)
 
+def discard_incomplete_timeout_proofs(proofdir, status):
+    """Only TIMEOUT proof outputs are incomplete; preserve stdout and all solved proofs.
+
+    Record sizes before invoking this. Every deletion is confined to this
+    individual trial's output directory; never touch the frozen source CNF.
+    """
+    if status != "TIMEOUT":
+        return 0, 0
+    deleted_bytes = deleted_files = 0
+    for candidate in Path(proofdir).rglob("*"):
+        if candidate.is_file() and candidate.name != "stdout.log":
+            deleted_bytes += candidate.stat().st_size
+            candidate.unlink()
+            deleted_files += 1
+    return deleted_bytes, deleted_files
+
+
 def trial(case, mode, rep, shard, *, cap=CAP, emit=True):
     source = SOURCE / (case["id"] + ".cnf")
     need(digest(source) == case["sha256"], "source changed before trial")
@@ -179,6 +196,9 @@ def trial(case, mode, rep, shard, *, cap=CAP, emit=True):
         standard_proof_file_present=proof_file.is_file(),
         stdout_sha256=hashlib.sha256(raw.encode()).hexdigest(),
         command=[str(x) for x in command])
+    removed_bytes, removed_files = discard_incomplete_timeout_proofs(proofdir, status)
+    row["timeout_proof_discarded_bytes"] = removed_bytes
+    row["timeout_proof_discarded_files"] = removed_files
     if emit:
         print("W1_TRIAL", json.dumps(row, sort_keys=True), flush=True)
     return row
@@ -368,6 +388,20 @@ def selftest():
     need(not timeout and parse_answer(raw, rc)[0] == "UNSAT", "process result")
     _, _, timeout = timed_process([sys.executable, "-c", "import time; time.sleep(10)"], time.perf_counter(), cap=.1)
     need(timeout, "process deadline")
+    with tempfile.TemporaryDirectory() as tmp:
+        proofdir = Path(tmp)
+        proof = proofdir / "proof.out"
+        stdout = proofdir / "stdout.log"
+        proof.write_bytes(b"incomplete proof" * 10)
+        stdout.write_text("TIMEOUT\n")
+        size = proof.stat().st_size
+        need(discard_incomplete_timeout_proofs(proofdir, "UNSAT") == (0, 0),
+             "do not remove potential UNSAT certificates")
+        need(proof.exists(), "UNSAT proof unexpectedly deleted")
+        need(discard_incomplete_timeout_proofs(proofdir, "TIMEOUT") == (size, 1),
+             "wrong timeout proof cleanup accounting")
+        need(not proof.exists() and stdout.exists(),
+             "proof cleanup must preserve stdout metadata")
     print("W1_SELFTEST_PASS", flush=True)
 
 if __name__ == "__main__":
