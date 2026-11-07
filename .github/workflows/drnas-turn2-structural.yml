@@ -1,0 +1,188 @@
+name: DRNAS TURN2 — structural bijection 12 fresh SAT2026 216 paired 60s
+on:
+  push:
+    branches: [experiment/drnas-turn2-structural-20261107]
+    paths:
+      - '.github/workflows/drnas-turn2-structural.yml'
+      - 'research/drnas_turn2_structural.py'
+      - 'research/TURN2_PREREGISTRATION_AND_DESIGN.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-turn2-representation-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore historical SHA exclusions and pinned native Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42417190893 --repo Frane12/AndroidGameTest -n turn1-frozen-original12 -D .
+          test -s turn1-frozen.tar.gz
+          tar xzf turn1-frozen.tar.gz
+          test -s turn1/manifest.json
+          chmod +x built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_turn1_representation.py research/drnas_turn2_structural.py
+          python3 -u research/drnas_turn2_structural.py smoke
+      - name: Freeze 12 next eligible original CNFs before any benchmark
+        run: |
+          set -euo pipefail
+          mkdir -p turn2
+          python3 -u research/drnas_turn2_structural.py fetch | tee turn2/fetch.log
+          grep -q '^TURN2_SOURCE_FROZEN 12 ' turn2/fetch.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,platform,subprocess,sys
+          sys.path.insert(0,'research')
+          import drnas_turn2_representation as t
+          files=list(t.EXCLUSIONS)+['ta3_2026/excluded_hashes.json','ta3_2026/preregistration.json',
+            'turn2/manifest.json','research/drnas_turn2_structural.py',
+            'built/bin/kissat_4_0_4','/usr/bin/cryptominisat5']
+          t.save('turn2/pins.json',{p:t.sha(p) for p in files})
+          t.save('turn2/preregistration.json',dict(protocol=t.PROTO,cap_s=t.CAP,reps=t.REPS,modes=t.MODES,
+            primary='kissat_struct_both versus kissat_plain',primary_signal_rule='ratio > 1.05, source-bootstrap low95 > 1, <= 1 formula regressing > 10%, solved >= baseline',
+            secondary_exploratory=True,one_CPU=True,one_solver=True,all_preparation_charged=True,
+            independent_UNSAT_proof=False,promotion_allowed=False,seed_policy='deterministic source degree/polarity and clause order; no outcome or SHA dependent seed',diagnostics_unscored_after_audit=True))
+          t.save('turn2/environment-prepare.json',dict(platform=platform.platform(),python=platform.python_version(),cms=subprocess.check_output(['cryptominisat5','--version'],text=True)))
+          t.verify()
+          print('TURN2_ALL_PINS_PASS',flush=True)
+          PY
+          tar czf turn2-frozen.tar.gz turn2/manifest.json turn2/pins.json turn2/preregistration.json turn2/environment-prepare.json turn2/sources turn1/manifest.json \
+            ta3_2026/preregistration.json ta3_2026/excluded_hashes.json ta3_2026/manifest.json \
+            r189/frozen/manifest.json r199/candidates.json ta3/candidates.json r200/manifest.json ta6/manifest.json \
+            ta7exclusions/ta7-manifest.json ta7h_exclusions/ta7h-manifest.json ta8/manifest.json built/bin/kissat_4_0_4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turn2-frozen-original12
+          path: turn2-frozen.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: turn2-prepare-diagnostics
+          path: turn2/
+          retention-days: 14
+  paired:
+    needs: prepare
+    name: TURN2 one original six arms three reps 60s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2-frozen-original12
+      - name: Verify source and binaries and execute serial paired experiment
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4
+          lscpu > turn2/cpu-${{ matrix.shard }}.txt
+          python3 -u research/drnas_turn2_structural.py shard --shard ${{ matrix.shard }} | tee turn2/shard-${{ matrix.shard }}.log
+          grep -q '^TURN2_SHARD_PASS ' turn2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: turn2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            turn2/shard-${{ matrix.shard }}.json
+            turn2/features-${{ matrix.shard }}.json
+            turn2/shard-${{ matrix.shard }}.log
+            turn2/cpu-${{ matrix.shard }}.txt
+            turn2/raw/**/worker.log
+            turn2/raw/**/solver.log
+            turn2/raw/**/model.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2-frozen-original12
+      - name: Audit 216 complete trials and preregistered structural primary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf turn2-frozen.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'turn2-shard-*' -D turn2/collected
+          test "$(find turn2/collected -name 'shard-*.json' -type f | wc -l)" -eq 12
+          test "$(find turn2/collected -name 'features-*.json' -type f | wc -l)" -eq 12
+          find turn2/collected -name 'shard-*.json' -exec cp '{}' turn2/ \;
+          find turn2/collected -name 'features-*.json' -exec cp '{}' turn2/ \;
+          python3 -u research/drnas_turn2_structural.py audit | tee turn2/audit.log
+          grep -q '^TURN2_FINAL ' turn2/audit.log
+          cat turn2/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN2-STRUCTURAL-216-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            turn2/report.json
+            turn2/report.md
+            turn2/all-trials.json
+            turn2/audit.log
+            turn2/manifest.json
+            turn2/pins.json
+            turn2/preregistration.json
+            turn2/features-*.json
+
+  dynamics:
+    needs: audit
+    name: Post-audit observational Kissat conflict and restart telemetry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2-frozen-original12
+      - name: Fixed 5000-conflict snapshots on original and transformed sources
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4
+          python3 -u research/drnas_turn2_structural.py diagnose | tee turn2/dynamics.log
+          grep -q '^TURN2_DIAG_PASS 36' turn2/dynamics.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN2-POST-AUDIT-CDCL-DYNAMICS
+          retention-days: 90
+          path: |
+            turn2/diagnostics.json
+            turn2/dynamics.log
