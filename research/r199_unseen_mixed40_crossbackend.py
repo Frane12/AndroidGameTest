@@ -159,9 +159,26 @@ def trial(case, mode, rep, shard):
     status = "TIMEOUT"
     proof = "CAP_TIMEOUT"
     if mode.endswith("_gf2_hybrid4"):
-        work, extra, decision = certified.certified_preprocess(
-            source, "r193_hybrid4", rep, shard, started)
-        meta.update(extra)
+        # A non-interruptible Python GF(2) preprocessing loop may otherwise hang
+        # the entire shard on unseen large inputs. Enforce the SAME overall cap.
+        import signal
+        class PreprocessBudgetExceeded(TimeoutError):
+            pass
+        def expire(_signum, _frame):
+            raise PreprocessBudgetExceeded("R199 bounded GF2 preprocessing")
+        old_handler = signal.signal(signal.SIGALRM, expire)
+        try:
+            remaining = max(0.001, CAP - (time.perf_counter() - started) - 0.10)
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            work, extra, decision = certified.certified_preprocess(
+                source, "r193_hybrid4", rep, shard, started)
+            meta.update(extra)
+        except PreprocessBudgetExceeded:
+            work, decision = source, "TIMEOUT"
+            meta["preprocess_budget_exhausted"] = True
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, old_handler)
         if decision == "UNSAT":
             status = "UNSAT"
             proof = "SOURCE_GF2_CONTRADICTION_REPLAYED"
@@ -332,9 +349,9 @@ def audit():
                 out.write("| %s | %s | %d/%d | %.3f | %.3f | %s |\n" %
                           (cohort, mode, m["solved"], m["attempts"],
                            m["PAR2_s"], m["preprocess_s"], pair_text))
-        out.write("\\n## Four host-vs-DRNAS comparisons (PAR-2)\\n\\n")
-        out.write("| CMS + R28 | CMS + GF2 Hybrid4 | Kissat + R28 | Kissat + GF2 Hybrid4 |\\n")
-        out.write("|---|---|---|---|\\n")
+        out.write("\n## Four host-vs-DRNAS comparisons (PAR-2)\n\n")
+        out.write("| CMS + R28 | CMS + GF2 Hybrid4 | Kissat + R28 | Kissat + GF2 Hybrid4 |\n")
+        out.write("|---|---|---|---|\n")
         comparisons = (("cms_r28", "cms_plain"), ("cms_gf2_hybrid4", "cms_plain"),
                        ("kissat_r28", "kissat_plain"), ("kissat_gf2_hybrid4", "kissat_plain"))
         tiles = []
@@ -342,11 +359,11 @@ def audit():
             host = totals["all"]["modes"][base]["PAR2_s"]
             candidate = totals["all"]["modes"][mode]["PAR2_s"]
             gain = 100.0 * (host - candidate) / host if host else 0.0
-            tiles.append(("🟢 +" if gain > 0.0001 else "🔴 " if gain < -0.0001
+            tiles.append(("🟢 " if gain > 0.0001 else "🔴 " if gain < -0.0001
                           else "⚪ ") + f"{gain:+.2f}%".replace("++", "+"))
-        out.write("| " + " | ".join(tiles) + " |\\n\\n")
+        out.write("| " + " | ".join(tiles) + " |\n\n")
         out.write("Positive means lower PAR-2 than plain host; negative means worse. "
-                  "This is NOT a percent speedup on successful runtime alone.\\n\\n")
+                  "This is NOT a percent speedup on successful runtime alone.\n\n")
         out.write("\nInterpret with solved counts, paired wins/losses and formula-family breakdown, "
                   "not just aggregate PAR2. Do not claim a general win from this prospective cohort.\n")
     print("R199_FINAL", json.dumps({
