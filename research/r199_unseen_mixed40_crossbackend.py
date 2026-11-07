@@ -152,6 +152,7 @@ def trial(case, mode, rep, shard):
     started = time.perf_counter()
     meta = {"preprocess_s": 0.0, "added_total_clauses": 0,
             "gf2_units": 0, "derived_candidates": 0,
+            "xor_rows": 0, "covered_clauses": 0, "residual_clauses": 0,
             "source_GF2_contradiction": False}
     route = None
     model = {}
@@ -196,6 +197,9 @@ def trial(case, mode, rep, shard):
         "par2_s": round(2 * CAP if status == "TIMEOUT" else elapsed, 6),
         "route": route, "proof": proof,
         "gf2_units": meta.get("gf2_units", 0),
+        "xor_rows": meta.get("xor_rows", 0),
+        "covered_clauses": meta.get("covered_clauses", 0),
+        "residual_clauses": meta.get("residual_clauses", 0),
         "added_total_clauses": meta.get("added_total_clauses", 0),
         "source_GF2_contradiction": meta.get("source_GF2_contradiction", False),
         "preprocess_s": meta.get("preprocess_s", 0),
@@ -328,8 +332,23 @@ def audit():
                 out.write("| %s | %s | %d/%d | %.3f | %.3f | %s |\n" %
                           (cohort, mode, m["solved"], m["attempts"],
                            m["PAR2_s"], m["preprocess_s"], pair_text))
+        out.write("\\n## Four host-vs-DRNAS comparisons (PAR-2)\\n\\n")
+        out.write("| CMS + R28 | CMS + GF2 Hybrid4 | Kissat + R28 | Kissat + GF2 Hybrid4 |\\n")
+        out.write("|---|---|---|---|\\n")
+        comparisons = (("cms_r28", "cms_plain"), ("cms_gf2_hybrid4", "cms_plain"),
+                       ("kissat_r28", "kissat_plain"), ("kissat_gf2_hybrid4", "kissat_plain"))
+        tiles = []
+        for mode, base in comparisons:
+            host = totals["all"]["modes"][base]["PAR2_s"]
+            candidate = totals["all"]["modes"][mode]["PAR2_s"]
+            gain = 100.0 * (host - candidate) / host if host else 0.0
+            tiles.append(("🟢 +" if gain > 0.0001 else "🔴 " if gain < -0.0001
+                          else "⚪ ") + f"{gain:+.2f}%".replace("++", "+"))
+        out.write("| " + " | ".join(tiles) + " |\\n\\n")
+        out.write("Positive means lower PAR-2 than plain host; negative means worse. "
+                  "This is NOT a percent speedup on successful runtime alone.\\n\\n")
         out.write("\nInterpret with solved counts, paired wins/losses and formula-family breakdown, "
-                  "not just aggregate PAR2. Never claim a general win from these reused sources.\n")
+                  "not just aggregate PAR2. Do not claim a general win from this prospective cohort.\n")
     print("R199_FINAL", json.dumps({
         "status": report["status"], "attempts": report["attempts"],
         "counts_by_shard": report["counts_by_shard"],
