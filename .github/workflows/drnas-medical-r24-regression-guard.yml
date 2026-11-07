@@ -1,0 +1,171 @@
+name: DRNAS Medical R24 — frozen regression guard 54 prospective SAT-FBA
+on:
+  push:
+    branches: [experiment/drnas-medical-r24-regression-guard-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r24_regression_guard.py'
+      - '.github/workflows/drnas-medical-r24-regression-guard.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r24-frozen-regression-guard-20261107
+  cancel-in-progress: false
+jobs:
+  preregister:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    name: R24 precommit historical router and unseen paired cohorts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen original scientific backend and validate code
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r24_regression_guard.py
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - name: Get immutable R9 model and R23 source-only training family/audit artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r24/r9 r24/r23/frozen r24/r23/audit r24/frozen
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r24/r9
+          gh run download 42420380424 --repo Frane12/AndroidGameTest \
+            -n DRNAS-MEDICAL-R23-PREDECLARED-FAMILIES-FROZEN -D r24/r23/frozen
+          gh run download 42420380424 --repo Frane12/AndroidGameTest \
+            -n DRNAS-MEDICAL-R23-36-TRIAL-FOREIGN-GENE-COHORT-AUDIT -D r24/r23/audit
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r24/r9/source --freeze r24/r9/frozen
+          test -s r24/r23/frozen/cohorts.json
+          test -s r24/r23/audit/report.json
+      - name: Freeze conservative source GPR gate and two non-overlapping prospective test groups
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py freeze \
+            --source r24/r9/source --r9-frozen r24/r9/frozen \
+            --r23-manifest r24/r23/frozen/cohorts.json \
+            --r23-report r24/r23/audit/report.json \
+            --out r24/frozen/router-and-holdouts.json \
+            | tee r24/frozen/precommit.log
+          grep -q '^R24_PRECOMMIT ' r24/frozen/precommit.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          retention-days: 90
+          path: r24/frozen/
+  paired:
+    needs: preregister
+    runs-on: ubuntu-24.04
+    timeout-minutes: 21
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        family: [unseen_sha_mix, unseen_degree_mix]
+        n: [96, 192, 384]
+        rep: [0, 1, 2]
+    name: R24 ${{ matrix.family }} N${{ matrix.n }} rep${{ matrix.rep }} R9 vs share12 vs gated
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Match frozen scientific environment and selftest
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          path: r24/frozen
+      - name: Verify source-frozen bacterial model and cohort manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r24/r9 r24/output
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r24/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r24/r9/source --freeze r24/r9/frozen
+          test -s r24/frozen/router-and-holdouts.json
+      - name: Prospective 3-arm paired exact SAT/FBA with mandatory fresh independent GLPK oracle
+        run: |
+          set -uo pipefail
+          timeout -k 10s 900s python3 -u research/drnas_medical/gmispy_r24_regression_guard.py paired \
+            --source r24/r9/source --r9-frozen r24/r9/frozen \
+            --manifest r24/frozen/router-and-holdouts.json \
+            --family '${{ matrix.family }}' \
+            --n ${{ matrix.n }} --rep ${{ matrix.rep }} \
+            --out r24/output/paired.json \
+            2>&1 | tee r24/output/paired.log
+          code=${PIPESTATUS[0]}
+          echo "R24_PROCESS_EXIT=${code}"
+          if [ "${code}" -ne 0 ]; then
+            echo "::error::R24 failed/timeout, no unverified speedup is accepted"
+            exit "${code}"
+          fi
+          grep -q '^R24_PAIR_PASS ' r24/output/paired.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R24-${{ matrix.family }}-${{ matrix.n }}-rep${{ matrix.rep }}
+          retention-days: 90
+          path: r24/output/
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    name: R24 strict 54-trial independent-FBA and regression audit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Same dependencies and protocol selftest
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          path: r24-locked
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-R24-*
+          path: all-r24
+          merge-multiple: false
+      - name: Fail-closed 18-pair frozen, original-SAT, GLPK oracle and regression analysis
+        run: |
+          set -euo pipefail
+          mkdir -p r24-final
+          mapfile -d '' -t inputs < <(find all-r24 -type f -name paired.json -print0)
+          echo "R24_SOURCE_PAIRED_FILES=${#inputs[@]}"
+          test "${#inputs[@]}" -eq 18
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py audit \
+            --manifest r24-locked/router-and-holdouts.json \
+            --inputs "${inputs[@]}" --out r24-final/report.json \
+            | tee r24-final/audit.log
+          grep -q '^R24_FINAL ' r24-final/audit.log
+          cat r24-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R24-FROZEN-REGRESSION-AUDIT-FINAL
+          retention-days: 90
+          path: r24-final/
