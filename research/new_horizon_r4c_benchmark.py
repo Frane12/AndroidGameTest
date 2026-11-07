@@ -47,8 +47,8 @@ def new_example(family,i):
         n=(96+(i%4)*8 if family!="sparse_late" else 128+(i%4)*8)
         clauses=[(1,)]+[(-j,j+1) for j in range(1,n)]
         if family=="sparse_2sat":
-            clauses += [(-1,j) for j in range(2,10)]
-            # SAT by assignment ALL TRUE; is_2cnf, sparse m/n~1.08.
+            clauses += [(-1,j) for j in range(2,10)] + [(1,10+i)]
+            # Unique source per seed; SAT under all-true, sparse m/n~1.09.
         elif family=="sparse_late":
             clauses += [(1,2,3),(10+i,11+i,12+i)]
             # First n clauses 2CNF, ending disqualifies source-wide family.
