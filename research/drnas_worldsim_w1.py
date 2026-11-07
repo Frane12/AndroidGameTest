@@ -4,8 +4,9 @@
 The TA3 decision and R28 implementation are unchanged. All 24 sources from the
 already frozen TA3-2026 cohort are used, without consulting its trial outcomes.
 Generic UNSAT is consistency-checked, not independently certificate-checked.
-The official entrant uses its submitted wrapper, including its proof policy;
-that policy is recorded rather than silently claiming identical proof settings.
+All CDCL backends request proof output, including the submitted entrant wrapper.
+The R28 algebraic fast path may terminate without a standard DRAT certificate;
+that fact is recorded, and generic UNSAT is not independently proof-checked.
 """
 from __future__ import annotations
 import argparse
@@ -25,7 +26,7 @@ import time
 
 ROOT = Path("worldsim_w1")
 SOURCE = Path("ta3_2026/sources")
-PROTO = "DRNAS-WORLDSIM-W1-SAT2026-24x6x3-60s-v1"
+PROTO = "DRNAS-WORLDSIM-W1-SAT2026-24x6x3-60s-proof-v2"
 CAP = 60.0
 REPS = 3
 SHARDS = 8
@@ -109,20 +110,32 @@ def selector():
     import drnas_ta3_adaptive_selector as ta3
     return ta3
 
-def command_for(mode, source, proofdir):
+def selected_command(selected, source, proof_file):
+    source, proof_file = source.resolve(), proof_file.resolve()
+    if selected == "kissat_plain":
+        return [Path("built/bin/kissat_4_0_4").resolve(), source, proof_file]
+    if selected == "cms_plain":
+        return ["/usr/bin/cryptominisat5", "--threads=1", source, proof_file]
+    if selected in ("kissat_r28", "cms_r28"):
+        backend = "kissat" if selected.startswith("kissat") else "cms"
+        return [Path("r190_cms_mixed/r28").resolve(), source,
+                (ROOT / "wrappers" / (backend + ".sh")).resolve()]
+    raise ValueError(selected)
+
+def command_for(mode, source, proof_file):
     source = source.resolve()
     if mode == "kissat_404":
-        return [Path("built/bin/kissat_4_0_4").resolve(), source], None
+        return selected_command("kissat_plain", source, proof_file), None
     if mode == "cadical_301":
-        return [Path("worldsim_w1/reference/bin/cadical_3_0_1").resolve(), source], None
+        return [Path("worldsim_w1/reference/bin/cadical_3_0_1").resolve(), source, proof_file.resolve()], None
     if mode == "cms_51115":
-        return ["/usr/bin/cryptominisat5", "--threads=1", source], None
+        return selected_command("cms_plain", source, proof_file), None
     if mode == "satsuma_iter_kissat_2026":
         meta = json.loads((ROOT / "official.json").read_text())
         script = Path(meta["run_script"]).resolve()
-        return ["bash", script, source, proofdir.resolve()], script.parent
+        return ["bash", script, source, proof_file.resolve()], script.parent
     if mode == "r28_kissat":
-        return selector().command("kissat_r28", source), None
+        return selected_command("kissat_r28", source, proof_file), None
     raise ValueError(mode)
 
 def trial(case, mode, rep, shard, *, cap=CAP, emit=True):
@@ -130,6 +143,7 @@ def trial(case, mode, rep, shard, *, cap=CAP, emit=True):
     need(digest(source) == case["sha256"], "source changed before trial")
     proofdir = ROOT / "raw" / str(shard) / case["id"] / str(rep) / mode
     proofdir.mkdir(parents=True, exist_ok=True)
+    proof_file = proofdir / "proof.out"
     selected, reason, profile_s = mode, "fixed", 0.0
     started = time.perf_counter()
     if mode == "ta3_portfolio":
@@ -137,10 +151,11 @@ def trial(case, mode, rep, shard, *, cap=CAP, emit=True):
         features = ta3.fast_features(source)
         selected, reason = ta3.decision(features, "ta2_portfolio")
         profile_s = time.perf_counter() - started
-        command, cwd = ta3.command(selected, source), None
+        command, cwd = selected_command(selected, source, proof_file), None
     else:
-        command, cwd = command_for(mode, source, proofdir)
-    rc, raw, timeout = timed_process(command, started, cwd=cwd, cap=cap)
+        command, cwd = command_for(mode, source, proof_file)
+    rc, raw, timeout = timed_process(command, started, cwd=cwd,
+        env={"W1_PROOF_FILE": str(proof_file.resolve())}, cap=cap)
     elapsed = min(cap, time.perf_counter() - started)
     status, evidence = "TIMEOUT", "CAP_TIMEOUT"
     if not timeout and elapsed < cap:
@@ -160,7 +175,8 @@ def trial(case, mode, rep, shard, *, cap=CAP, emit=True):
         status=status, elapsed_s=round(elapsed, 6),
         par2_s=round(2 * cap if status == "TIMEOUT" else elapsed, 6),
         profile_s=round(profile_s, 6), evidence=evidence,
-        submitted_wrapper_proof_bytes=proof_bytes,
+        proof_bytes=proof_bytes, proof_requested=True,
+        standard_proof_file_present=proof_file.is_file(),
         stdout_sha256=hashlib.sha256(raw.encode()).hexdigest(),
         command=[str(x) for x in command])
     if emit:
@@ -183,6 +199,15 @@ def freeze():
         need(digest(filename) == expected, "TA326 original pin drift " + filename)
     for case in cases:
         need(digest(SOURCE / (case["id"] + ".cnf")) == case["sha256"], "source drift")
+    wrappers = ROOT / "wrappers"
+    wrappers.mkdir(parents=True, exist_ok=True)
+    for backend, body in {
+        "kissat": '#!/bin/sh\nexec "$(dirname "$0")/../../built/bin/kissat_4_0_4" "$1" "$W1_PROOF_FILE"\n',
+        "cms": '#!/bin/sh\nexec /usr/bin/cryptominisat5 --threads=1 "$1" "$W1_PROOF_FILE"\n',
+    }.items():
+        script = wrappers / (backend + ".sh")
+        script.write_text(body)
+        script.chmod(0o755)
     save(ROOT / "manifest.json", dict(protocol=PROTO,
         cases=sorted(cases, key=lambda c: c["sha256"]), modes=MODES,
         repetitions=REPS, cap_s=CAP, shards=SHARDS, expected_trials=432,
@@ -192,11 +217,12 @@ def freeze():
         new_global_blind_holdout=False,
         tuning_on_TA326_outcomes=False, official_competition_ranking=False,
         verification_off_timing_for_all_modes=True,
-        proof_policy="controls use default no-proof commands; official entrant uses submitted wrapper; report proof bytes and do not equate proof policies",
+        proof_policy="all CDCL backends request proof output; official entrant uses submitted run.sh INSTANCE PROOF_FILE; R28 algebraic fast path may have no standard certificate",
         independent_generic_UNSAT_certificate=False))
     paths = set(Path("research").glob("*.py"))
     paths.update(Path("experiments/drnas_v16").glob("*.py"))
     paths.update(Path("worldsim_w1/official").rglob("*"))
+    paths.update(wrappers.rglob("*.sh"))
     paths.update(map(Path, ["r190_cms_mixed/r28", "built/bin/kissat_4_0_4",
         "r192/cms_single.sh", "r192/cms_gauss_forced.sh", "/usr/bin/cryptominisat5",
         "worldsim_w1/reference/bin/cadical_3_0_1", "worldsim_w1/official.json",
@@ -279,7 +305,8 @@ def audit():
             SAT=sum(r["status"] == "SAT" for r in rr), UNSAT=sum(r["status"] == "UNSAT" for r in rr),
             elapsed_s=round(sum(r["elapsed_s"] for r in rr),6),
             PAR2_s=round(sum(r["par2_s"] for r in rr),6),
-            submitted_wrapper_proof_bytes=sum(r["submitted_wrapper_proof_bytes"] for r in rr))
+            proof_bytes=sum(r["proof_bytes"] for r in rr),
+            standard_proof_files=sum(r["standard_proof_file_present"] for r in rr))
     candidate = totals["ta3_portfolio"]["PAR2_s"]
     comparisons = {}
     ordered_sha = sorted(cases)
@@ -300,7 +327,7 @@ def audit():
         limitations=["24 resource-bounded sources, 60s cap; official sequential competition uses 5000s",
             "Repeated frozen evaluation cohort, not a new globally blind holdout",
             "Generic UNSAT consistency only; independent submitted proof verification absent",
-            "Official entrant uses submitted wrapper/proof policy; inspect proof bytes before treating its ratio as proof-normalized",
+            "All CDCL backends request proofs; R28 fast path may omit a standard certificate; proof output is not independent verification",
             "No official rank, world record, or general SAT speedup claim"])
     save(ROOT / "report.json", result)
     save(ROOT / "all_trials.json", rows)
