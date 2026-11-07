@@ -1,0 +1,184 @@
+name: DRNAS Ultimate R1 45 original CNFs 630 paired GF2 structural dual
+on:
+  push:
+    branches: [experiment/drnas-ultimate-r1-gf2-r160-r194-20261107]
+    paths:
+      - 'research/ultimate_r1_dispatch.cpp'
+      - 'research/ultimate_r1_dual_compat.cpp'
+      - 'research/ultimate_r1_benchmark.py'
+      - '.github/workflows/drnas-ultimate-r1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ultimate-r1-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Frozen original archives, no duplicates and source SHA audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ultimate_r1_benchmark.py
+          python3 -u research/ultimate_r1_benchmark.py selftest
+          mkdir -p ultimate_r1/source_r153 ultimate_r1/source_r195 ultimate_r1/source_r197 built/bin
+          gh run download 42128549081 --repo Frane12/AndroidGameTest -n r153repeat-original25-frozen-source-and-binaries -D ultimate_r1/source_r153
+          gh run download 42332923725 --repo Frane12/AndroidGameTest -n r195-real-frozen-native -D ultimate_r1/source_r195
+          gh run download 42340570480 --repo Frane12/AndroidGameTest -n r197-originals-native-protocol-frozen -D ultimate_r1/source_r197
+          gh run download 41684183452 --repo Frane12/AndroidGameTest -n r52-three-pinned-solvers -D built/bin
+          (cd ultimate_r1/source_r153 && sha256sum -c native-hashes.txt)
+          (cd built/bin && sha256sum -c binaries.sha256)
+          python3 -u research/ultimate_r1_benchmark.py freeze | tee ultimate_r1/freeze.log
+          grep -q '^ULTIMATE_FREEZE_PASS' ultimate_r1/freeze.log
+      - name: Build pinned original R160 and Ultimate dispatchers
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 'https://raw.githubusercontent.com/Frane12/AndroidGameTest/b14abe967589f0dc9941fa76d553c320480101a5/research/r160_r153_r135_dispatch.cpp' -o ultimate_r1/r160-original-pinned.cpp
+          test "$(git hash-object ultimate_r1/r160-original-pinned.cpp)" = 8a4edc3b9127799b0c3d3e267ab5a8d8b3749a04
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror ultimate_r1/r160-original-pinned.cpp -o ultimate_r1/r160-dispatch
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror research/ultimate_r1_dispatch.cpp -o ultimate_r1/ultimate-dispatch
+      - name: Build pinned CaDiCaL 2.1 and untouched R194 dual algorithm with adapter
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/ultimate-r1-cadical
+          (cd /tmp/ultimate-r1-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/ultimate-r1-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/ultimate-r1-cadical/src research/ultimate_r1_dual_compat.cpp /tmp/ultimate-r1-cadical/build/libcadical.a -o ultimate_r1/r194-compat
+          chmod +x ultimate_r1/r194-compat ultimate_r1/source_r153/r153 ultimate_r1/r160-dispatch ultimate_r1/ultimate-dispatch built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+      - name: Native integration smoke, source-derived SAT and UNSAT
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,pathlib,subprocess
+          p=pathlib.Path("ultimate_r1")
+          a=p/"smoke-sat.cnf";a.write_text("p cnf 2 2\n1 -2 0\n-1 2 0\n")
+          b=p/"smoke-unsat.cnf";b.write_text("p cnf 2 4\n1 -2 0\n-1 2 0\n1 0\n-2 0\n")
+          c=p/"smoke-fallback.cnf";c.write_text("p cnf 4 2\n1 2 3 0\n1 4 0\n")
+          d=p/"smoke-dual.cnf";d.write_text("p cnf 3 1200\n"+"1 2 3 0\n"*1200)
+          r=str(p/"source_r153"/"r153")
+          for f,code in ((a,10),(b,20)):
+              z=subprocess.run([r,str(f),"built/bin/kissat_4_0_4"],capture_output=True,timeout=12)
+              assert z.returncode==code and b"R28_ROUTE certified_" in z.stdout,(z.returncode,z.stderr[-300:])
+          z=subprocess.run([r,str(c),str(p/"r160-dispatch")],capture_output=True,timeout=12)
+          assert z.returncode==10 and b"R160_SELECTOR" in z.stdout,(z.returncode,z.stderr[-300:])
+          env=os.environ.copy();env.update(ULTIMATE_CAP_S="5",ULTIMATE_SEED="11",ULTIMATE_PARITY="0")
+          z=subprocess.run([r,str(d),str(p/"ultimate-dispatch")],capture_output=True,env=env,timeout=12)
+          assert z.returncode==10 and b"ULTIMATE_R1_SELECTOR route=R194_DUAL" in z.stdout and b"R193_DUAL" in z.stdout,(z.returncode,z.stderr[-300:],z.stdout[-300:])
+          for mode in ("default","dual_keep_default"):
+              z=subprocess.run([str(p/"r194-compat"),str(c),"5",mode,"0","11"],capture_output=True,timeout=12)
+              assert z.returncode==10 and b"R182_STATUS status=SAT" in z.stdout
+          print("ULTIMATE_SMOKE_PASS")
+          PY
+      - name: Pin all binaries, original CNF manifest and research commit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path("ultimate_r1")
+          paths=["ultimate_r1/source_r153/r153","ultimate_r1/r194-compat","ultimate_r1/r160-dispatch","ultimate_r1/ultimate-dispatch","built/bin/kissat_4_0_4","built/bin/cadical_3_0_1"]
+          sha=lambda x:hashlib.sha256(pathlib.Path(x).read_bytes()).hexdigest()
+          pins=dict(protocol="DRNAS-ULTIMATE-R1-FROZEN-45-7ARM-2REP-SHA-20261107-v1",binaries={f:sha(f) for f in paths},manifest_sha=sha("ultimate_r1/frozen/manifest.json"),source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),cadical21_commit="31f9aae44947c673dc6190c9beb399acb9ffec6a",expected_trials=630)
+          (p/"pin.json").write_text(json.dumps(pins,indent=2,sort_keys=True)+"\n")
+          print("ULTIMATE_BUILD_PIN_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-r1-45originals-pinned-binaries
+          retention-days: 90
+          path: |
+            ultimate_r1/frozen/
+            ultimate_r1/source_r153/r153
+            ultimate_r1/r194-compat
+            ultimate_r1/r160-dispatch
+            ultimate_r1/ultimate-dispatch
+            ultimate_r1/pin.json
+            ultimate_r1/freeze.log
+            built/bin/kissat_4_0_4
+            built/bin/cadical_3_0_1
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    name: Ultimate R1 source-matched seven-arm shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ultimate-r1-45originals-pinned-binaries
+          path: .
+      - name: Verify original source SHA and pinned binaries
+        run: |
+          set -euo pipefail
+          chmod +x ultimate_r1/source_r153/r153 ultimate_r1/r194-compat ultimate_r1/r160-dispatch ultimate_r1/ultimate-dispatch built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          python3 -u research/ultimate_r1_benchmark.py verify
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=json.loads(pathlib.Path("ultimate_r1/pin.json").read_text())
+          for n,s in p["binaries"].items():assert hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()==s,n
+          assert hashlib.sha256(pathlib.Path("ultimate_r1/frozen/manifest.json").read_bytes()).hexdigest()==p["manifest_sha"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==p["source_commit"]
+          print("ULTIMATE_SHA_CHECKPOINT_PASS")
+          PY
+      - name: All seven solvers randomized same-original paired benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_r1_benchmark.py shard --shard ${{ matrix.shard }} | tee ultimate_r1/shard-${{ matrix.shard }}.log
+          grep -q '^ULTIMATE_SHARD_PASS' ultimate_r1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ultimate-r1-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ultimate_r1/shard-${{ matrix.shard }}.json
+            ultimate_r1/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ultimate-r1-45originals-pinned-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ultimate-r1-shard-*
+          merge-multiple: true
+          path: ultimate_r1
+      - name: Strict 630-trial SHA model GF2 UNSAT PAR2 audit
+        run: |
+          set -euo pipefail
+          test "$(find ultimate_r1 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 9
+          python3 -u research/ultimate_r1_benchmark.py audit | tee ultimate_r1/audit.log
+          grep -q '^ULTIMATE_FINAL ' ultimate_r1/audit.log
+          cat ultimate_r1/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ULTIMATE-R1-45ORIGINALS-630-FINAL
+          retention-days: 90
+          path: |
+            ultimate_r1/report.json
+            ultimate_r1/all-trials.json
+            ultimate_r1/all-trials.csv
+            ultimate_r1/summary.md
+            ultimate_r1/audit.log
