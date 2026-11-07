@@ -1,0 +1,50 @@
+name: DRNAS R194 artifact-only final audit recovery (no rerun)
+on:
+  push:
+    branches: [experiment/drnas-r194-artifact-audit-recovery-20261107]
+    paths:
+      - research/r194_dual_live_repro.py
+      - .github/workflows/drnas-r194-artifact-audit-recovery.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download unchanged pinned original and all 8 already-finished source-matched shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r194
+          gh run download 42305088778 --repo Frane12/AndroidGameTest -n r194-pinned-original-and-seeded-native -D r194
+          for i in 0 1 2 3 4 5 6 7; do
+            gh run download 42305088778 --repo Frane12/AndroidGameTest -n "r194-replay-shard-$i" -D r194
+          done
+          test "$(find r194 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          test -s r194/pin.json
+          python3 -m py_compile research/r194_dual_live_repro.py
+          echo "R194_ARTIFACTS_RECOVERED 8"
+      - name: Independently replay original 96 completed trials without re-benchmarking
+        run: |
+          set -euo pipefail
+          python3 -u research/r194_dual_live_repro.py verify | tee r194/source-verification.log
+          python3 -u research/r194_dual_live_repro.py audit | tee r194/audit.log
+          grep -q '^R194_FINAL ' r194/audit.log
+          cat r194/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo 'R194_ARTIFACT_ONLY_AUDIT_PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R194-96-ARTIFACT-ONLY-AUDIT-RECOVERED
+          retention-days: 90
+          path: |
+            r194/report.json
+            r194/summary.md
+            r194/audit.log
+            r194/source-verification.log
