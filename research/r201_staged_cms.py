@@ -24,8 +24,8 @@ import r164_pure_exact_gf2 as exact
 import r166x_certified_gauss as gf
 
 ROOT=pathlib.Path("r201")
-PROTO="DRNAS-R201-CMS-INCREMENTAL-2ROW-SOURCE-VERIFIED-PILOT-v1"
-CAP=5.0
+PROTO="DRNAS-R201-CMS-INCREMENTAL-2ROW-SOURCE-VERIFIED-PILOT-v2"
+CAP=12.0
 REPS=2
 MODES=("plain","shadow","stage","static")
 FAMILIES=("complete_xor","xor_plus_units","mixed_residual","nonxor_control")
@@ -58,24 +58,38 @@ def bits(mask):
         mask^=q
     return tuple(out)
 
-def independently_verify_source(clauses,vs,rhs):
-    """Check each forbidden XOR assignment has its entire falsifying CNF clause."""
-    vs=tuple(vs)
-    existing={tuple(sorted(c,key=abs)) for c in clauses if len(c)==len(vs)}
-    for assignment in itertools.product((0,1),repeat=len(vs)):
-        if (sum(assignment)&1)==rhs:
+def independent_clause_index(clauses):
+    """Build one original-clause signature index; O(source clauses), not per row."""
+    index=collections.defaultdict(set)
+    for clause in clauses:
+        if not 2<=len(clause)<=6:
             continue
-        clause=tuple(sorted((-v if a else v for v,a in zip(vs,assignment)),key=abs))
-        if clause not in existing:return False
-    return True
+        vs=tuple(sorted(abs(lit) for lit in clause))
+        if len(set(vs))!=len(vs):
+            continue
+        negatives={abs(lit) for lit in clause if lit<0}
+        signmask=sum(1<<i for i,v in enumerate(vs) if v in negatives)
+        index[vs].add(signmask)
+    return index
+
+def independently_verify_source(clauses,vs,rhs,index=None):
+    """Every forbidden assignment must have its exact original falsifying clause."""
+    vs=tuple(vs)
+    if index is None:
+        index=independent_clause_index(clauses)
+    need(len(vs)<=6 and 2<=len(vs),"unbounded source parity")
+    forbidden={mask for mask in range(1<<len(vs))
+               if (mask.bit_count()&1)!=rhs}
+    return forbidden.issubset(index.get(vs,set()))
 
 def source_candidates(clauses):
     eq,_,_=gf.source_equations(clauses)
+    index=independent_clause_index(clauses)
     unique={}
     for vs,rhs in eq:
         if 2<=len(vs)<=6:
             vs=tuple(vs)
-            if independently_verify_source(clauses,vs,rhs):
+            if independently_verify_source(clauses,vs,rhs,index):
                 unique[(vs,rhs)]=None
     return sorted(unique,key=lambda t:(len(t[0]),t[0],t[1]))
 
@@ -84,6 +98,7 @@ def export(source,outstem):
     source=pathlib.Path(source)
     n,clauses=exact.parse_dimacs(source)
     verified=source_candidates(clauses)
+    independent_index=independent_clause_index(clauses)
     selected=verified[:MAX_SOURCE]
     originals={(vars_mask(vs),rhs) for vs,rhs in verified}
     proposed={}
@@ -102,8 +117,8 @@ def export(source,outstem):
         i,j=proposed[(mask,rhs)]
         va,ra=selected[i];vb,rb=selected[j]
         need(vars_mask(va)^vars_mask(vb)==mask and ra^rb==rhs,"XOR replay mismatch")
-        need(independently_verify_source(clauses,va,ra) and
-             independently_verify_source(clauses,vb,rb),"source parity not certified")
+        need(independently_verify_source(clauses,va,ra,independent_index) and
+             independently_verify_source(clauses,vb,rb,independent_index),"source parity not certified")
         derived.append(dict(vars=bits(mask),rhs=rhs,parents=(i,j)))
     stem=pathlib.Path(outstem);stem.parent.mkdir(parents=True,exist_ok=True)
     tsv=stem.with_suffix(".tsv")
@@ -128,8 +143,9 @@ def replay(source,stem):
     n,clauses=exact.parse_dimacs(source)
     need(cert["variables"]==n and cert["source_clauses"]==len(clauses),"CNF changed")
     parents=cert["parents"]
+    independent_index=independent_clause_index(clauses)
     for p in parents:
-        need(independently_verify_source(clauses,tuple(p["vars"]),p["rhs"]),
+        need(independently_verify_source(clauses,tuple(p["vars"]),p["rhs"],independent_index),
              "parent XOR not logically implied by original CNF")
     rows=[]
     for d in cert["derived"]:
