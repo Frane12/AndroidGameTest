@@ -20,32 +20,42 @@ def need(ok, msg):
 def source_sha(p): return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 
 def cheap_probe(source):
-    """Source-only, deliberately incomplete *eligibility* filter; never a proof."""
+    """Source-only, proof-free XOR eligibility hint; full replay remains mandatory."""
     if source.stat().st_size > 8_000_000 or source.stat().st_size < 300:
         return False, "size_gate"
-    # A cheap prefix test; full certification is mandatory after this gate.
     groups = {}
-    for line in source.open("r", errors="replace"):
-        if line.startswith(("c", "p", "%")): continue
-        try: lits = [int(x) for x in line.split()]
-        except ValueError: continue
-        if not lits or lits[-1] != 0: continue
-        a = lits[:-1]
-        if not 2 <= len(a) <= 6 or len({abs(x) for x in a}) != len(a):
-            continue
-        a.sort(key=abs)
-        vs = tuple(abs(x) for x in a)
-        bitmask = sum(1 << i for i, x in enumerate(a) if x < 0)
-        masks = groups.setdefault(vs, set())
-        new_mask = bitmask not in masks
-        masks.add(bitmask)
-        k = len(vs)
-        if new_mask and len(masks) >= (1 << (k - 1)):
-            for p in (0, 1):
-                if {j for j in range(1 << k) if j.bit_count() % 2 == p} <= masks:
-                    return True, "prefix_complete_xor"
-        if len(groups) >= 5000: break
-    return False, "no_prefix_complete_xor"
+    clause = []
+    # DIMACS permits clauses across lines and multiple clauses on one line.
+    with source.open("r", errors="replace") as fh:
+        for line in fh:
+            if line.lstrip().startswith(("c", "p", "%")):
+                continue
+            for tok in line.split():
+                try:
+                    lit = int(tok)
+                except ValueError:
+                    return False, "invalid_dimacs_token"
+                if lit:
+                    if len(clause) <= 6:
+                        clause.append(lit)  # 7th literal marks an oversize clause
+                    continue
+                if 2 <= len(clause) <= 6 and len({abs(x) for x in clause}) == len(clause):
+                    a = sorted(clause, key=abs)
+                    vs = tuple(abs(x) for x in a)
+                    mask = sum(1 << i for i, x in enumerate(a) if x < 0)
+                    masks = groups.setdefault(vs, set())
+                    if mask not in masks:
+                        masks.add(mask)
+                        k = len(vs)
+                        if len(masks) >= (1 << (k - 1)):
+                            for parity in (0, 1):
+                                if all(j in masks for j in range(1 << k)
+                                       if j.bit_count() % 2 == parity):
+                                    return True, "source_complete_xor"
+                    if len(groups) >= 5000:
+                        return False, "probe_group_cap"
+                clause = []
+    return False, "no_source_complete_xor"
 
 class PreparationBudgetExceeded(Exception):
     """Cost-only abstention. Never treat this as a GF2 proof failure."""
@@ -60,8 +70,7 @@ def preparation_budget(seconds):
     if seconds <= 0:
         raise PreparationBudgetExceeded("no preparation budget")
     if not hasattr(signal, "setitimer"):
-        yield
-        return
+        raise PreparationBudgetExceeded("wall timer unsupported; abstain safely")
     previous = signal.signal(signal.SIGALRM, _preparation_alarm)
     try:
         signal.setitimer(signal.ITIMER_REAL, seconds)
@@ -84,7 +93,14 @@ def main():
     selected = derived = implied = 0
     started = time.monotonic()
     if mode != "clean":
-        yes, reason = cheap_probe(src)
+        yes = False
+        try:
+            probe_budget_s = min(1.2 - (time.monotonic() - started),
+                                 (deadline - time.monotonic_ns()) / 1e9 - 1.5)
+            with preparation_budget(probe_budget_s):
+                yes, reason = cheap_probe(src)
+        except PreparationBudgetExceeded:
+            reason = "probe_budget_preempted"
         if yes and (deadline - time.monotonic_ns()) > 2_000_000_000:
             with tempfile.TemporaryDirectory(prefix="ultimate-r2-certs-") as t:
                 d = pathlib.Path(t)
@@ -149,12 +165,12 @@ def execute(src, sha, mode, reason, eligible, rows, units,
            str(src), str(rows.resolve()), str(min(120.,remaining))]
     if mode=="live" and eligible and units is not None:
         cmd.append(str(units.resolve()))
+    # Stream native progress so a forced timeout cannot erase all telemetry.
+    sys.stdout.flush()
     try:
-        proc=subprocess.run(cmd,capture_output=True,timeout=remaining+0.5)
+        proc=subprocess.run(cmd,timeout=remaining+0.5)
     except subprocess.TimeoutExpired:
         print("ULTIMATE_R2_TIMEOUT watchdog",flush=True);return 0
-    sys.stdout.buffer.write(proc.stdout);sys.stdout.flush()
-    sys.stderr.buffer.write(proc.stderr);sys.stderr.flush()
     need(proc.returncode in (0,10,20), "native CDCL failure " + str(proc.returncode))
     return proc.returncode
 
