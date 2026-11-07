@@ -1,0 +1,157 @@
+name: DRNAS Medical R23 — two R22-disjoint prospective gene families 36 paired
+on:
+  push:
+    branches: [experiment/drnas-medical-r23-prospective-cohorts-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r23_prospective_cohorts.py'
+      - '.github/workflows/drnas-medical-r23-prospective-cohorts.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r23-source-disjoint-prospective-20261107
+  cancel-in-progress: false
+jobs:
+  preregister:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    name: R23 freeze gene sets before any R23 SAT/FBA solve
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Frozen source-only selection environment and selftest
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r23_prospective_cohorts.py
+          python3 -u research/drnas_medical/gmispy_r23_prospective_cohorts.py selftest
+      - name: Retrieve published frozen source before cohort selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r23/r9 r23/frozen
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r23/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r23/r9/source --freeze r23/r9/frozen
+      - name: Predeclare two R22-disjoint families without any knockout phenotype
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r23_prospective_cohorts.py freeze \
+            --source r23/r9/source --frozen r23/r9/frozen \
+            --out r23/frozen/cohorts.json | tee r23/frozen/preregister.log
+          grep -q '^R23_PRECOMMIT ' r23/frozen/preregister.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R23-PREDECLARED-FAMILIES-FROZEN
+          retention-days: 90
+          path: r23/frozen/
+  paired:
+    needs: preregister
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        family: [sha_disjoint_from_r22, degree_disjoint_from_r22]
+        n: [96, 192, 384]
+        rep: [0, 1, 2]
+    name: R23 ${{ matrix.family }} N${{ matrix.n }} rep${{ matrix.rep }} R9 vs share12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install identical frozen R9 and R15 PySAT/GLPK environment
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -u research/drnas_medical/gmispy_r23_prospective_cohorts.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R23-PREDECLARED-FAMILIES-FROZEN
+          path: r23/frozen
+      - name: Recover same published model and source-lock R9 gene exclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r23/r9 r23/output
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r23/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r23/r9/source --freeze r23/r9/frozen
+          test -s r23/frozen/cohorts.json
+      - name: Complete original R9 vs share12 with independent fresh-model FBA check
+        run: |
+          set -uo pipefail
+          timeout -k 10s 850s python3 -u research/drnas_medical/gmispy_r23_prospective_cohorts.py paired \
+            --source r23/r9/source --frozen r23/r9/frozen \
+            --manifest r23/frozen/cohorts.json \
+            --family '${{ matrix.family }}' \
+            --n ${{ matrix.n }} --rep ${{ matrix.rep }} \
+            --out r23/output/paired.json \
+            2>&1 | tee r23/output/paired.log
+          result=${PIPESTATUS[0]}
+          echo "R23_PROCESS_EXIT=${result}"
+          if [ "${result}" -ne 0 ]; then
+            echo "::error::R23 fail-closed on a timeout, mismatch, or FBA oracle failure"
+            exit "${result}"
+          fi
+          grep -q '^R23_PAIRED_PASS ' r23/output/paired.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R23-${{ matrix.family }}-${{ matrix.n }}-rep${{ matrix.rep }}
+          retention-days: 90
+          path: r23/output/
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    name: R23 strict 36-trial paired biological and regression audit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install same dependencies for validating original comparison code
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -u research/drnas_medical/gmispy_r23_prospective_cohorts.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R23-PREDECLARED-FAMILIES-FROZEN
+          path: r23-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-R23-*
+          path: all-r23
+          merge-multiple: false
+      - name: Fail-closed frozen SHA and exact 18 paired cohorts audit
+        run: |
+          set -euo pipefail
+          mkdir -p r23-final
+          mapfile -d '' -t inputs < <(find all-r23 -name paired.json -type f -print0)
+          echo "R23_PAIRED_FILES=${#inputs[@]}"
+          test "${#inputs[@]}" -eq 18
+          python3 -u research/drnas_medical/gmispy_r23_prospective_cohorts.py audit \
+            --manifest r23-frozen/cohorts.json --inputs "${inputs[@]}" \
+            --out r23-final/report.json | tee r23-final/audit.log
+          grep -q '^R23_FINAL ' r23-final/audit.log
+          cat r23-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R23-36-TRIAL-FOREIGN-GENE-COHORT-AUDIT
+          retention-days: 90
+          path: r23-final/
