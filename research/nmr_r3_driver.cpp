@@ -14,15 +14,43 @@ using Clock=chrono::steady_clock;
 struct Deadline : CaDiCaL::Terminator {
   Clock::time_point start;
   double seconds;
+  const bool *callback_pending=nullptr;
   Deadline(Clock::time_point s,double n):start(s),seconds(n){}
   bool terminate() override {
-    return chrono::duration<double>(Clock::now()-start).count()>=seconds;
+    return chrono::duration<double>(Clock::now()-start).count()>=seconds ||
+           (callback_pending&&*callback_pending);
   }
 };
 struct Observer : CaDiCaL::Learner {
   long long offers=0,short3=0,small2=0,literals=0;
+  long long callback_checks=0,callback_events=0;
+  int window_offers=0,window_short=0,previous_short=-1;
+  bool watch_armed=false,callback_pending=false;
+  void begin_watch(){
+    window_offers=window_short=0;
+    previous_short=-1;
+    callback_pending=false;
+    watch_armed=true;
+  }
+  void end_watch(){watch_armed=false;callback_pending=false;}
   bool learning(int n) override {
-    offers++; literals+=n; if(n<=3)short3++; if(n<=2)small2++;
+    ++offers; literals+=n; if(n<=3)++short3; if(n<=2)++small2;
+    // O(1) event aggregation; NO neural inference inside callback.
+    if(watch_armed && !callback_pending){
+      ++window_offers;
+      if(n<=3)++window_short;
+      if(window_offers==64){
+        ++callback_checks;
+        if(previous_short>=0 &&
+           (window_short-previous_short>=24 ||
+            previous_short-window_short>=24)){
+          callback_pending=true;
+          ++callback_events;
+        }
+        previous_short=window_short;
+        window_offers=window_short=0;
+      }
+    }
     return false; // Observe only; never export guessed clauses.
   }
   void learn(int) override {}
@@ -75,18 +103,28 @@ int main(int argc,char**argv){
         if(deadline.terminate())throw runtime_error("activation after deadline");
         open(1);
         cout<<"NMR3_ACTIVATED n="<<agents[1].n<<"\n"<<flush;
-      }else if(command.rfind("STEP ",0)==0){
+      }else if(command.rfind("STEP ",0)==0 || command.rfind("WATCH ",0)==0){
         int arm=-1,budget=-1;
-        if(sscanf(command.c_str(),"STEP %d %d",&arm,&budget)!=2 ||
+        const bool watch=command.rfind("WATCH ",0)==0;
+        if(sscanf(command.c_str(),watch?"WATCH %d %d":"STEP %d %d",&arm,&budget)!=2 ||
            arm<0||arm>1||budget<32||budget>16384 || ++count>32 ||
            !agents[arm].s)
           throw runtime_error("invalid step");
         auto &a=agents[arm];
         long long before[4]={a.o.offers,a.o.short3,a.o.small2,a.o.literals};
+        long long before_cb=a.o.callback_events;
+        long long before_checks=a.o.callback_checks;
         auto begin=Clock::now();
         if(!a.s->limit("conflicts",budget))
           throw runtime_error("unsupported conflict limit");
+        if(watch){
+          a.o.begin_watch();
+          deadline.callback_pending=&a.o.callback_pending;
+        }
         int result=deadline.terminate()?0:a.s->solve();
+        const bool callback_requested=a.o.callback_pending;
+        deadline.callback_pending=nullptr;
+        a.o.end_watch();
         if(result!=0&&result!=10&&result!=20)
           throw runtime_error("invalid code");
         a.steps++;
@@ -99,6 +137,9 @@ int main(int argc,char**argv){
             <<" small2="<<a.o.small2-before[2]
             <<" literals="<<a.o.literals-before[3]
             <<" active="<<a.s->active()
+            <<" callback_checks="<<a.o.callback_checks-before_checks
+            <<" callback_events="<<a.o.callback_events-before_cb
+            <<" wakeup="<<(callback_requested?"callback":watch?"budget":"manual")
             <<" result="<<(result==10?"SAT":result==20?"UNSAT":"UNKNOWN")
             <<"\n"<<flush;
         if(result!=0||deadline.terminate()) {
