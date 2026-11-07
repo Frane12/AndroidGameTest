@@ -25,14 +25,18 @@ NATIVE = ROOT / "t-native"
 EMPTY = ROOT / "empty.tsv"
 ALLOWED = {"clean", "shadow", "source", "adaptive", "derived",
            "t2_derived_rows", "t2_derived_units",
-           "t2_derived_incremental", "t2_derived_shadow", "td_lazy_source"}
+           "t2_derived_incremental", "t2_derived_shadow", "td_lazy_source",
+           "c1_lazy_cooldown", "c1_lazy_fastwake", "c1_lazy_shadow"}
 NATIVE_MODES = {"clean": "t_clean", "shadow": "t_shadow",
                 "source": "t_source", "adaptive": "t_adaptive",
                 "derived": "gauss_cooldown", "t2_derived_rows": "t2_derived_rows",
                  "t2_derived_units": "t2_derived_units",
                  "t2_derived_incremental": "t2_derived_incremental",
                  "t2_derived_shadow": "t2_derived_shadow",
-                 "td_lazy_source": "td_lazy_source"}
+                 "td_lazy_source": "td_lazy_source",
+                 "c1_lazy_cooldown": "c1_lazy_cooldown",
+                 "c1_lazy_fastwake": "c1_lazy_fastwake",
+                 "c1_lazy_shadow": "c1_lazy_shadow"}
 
 def need(ok, detail):
     if not ok:
