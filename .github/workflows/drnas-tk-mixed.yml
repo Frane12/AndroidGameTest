@@ -1,0 +1,123 @@
+name: DRNAS TK — easier mixed XOR paired percentage benchmark
+on:
+  push:
+    branches: [experiment/drnas-tk-xor-cdcl-diagnostics-20261107]
+    paths: [.github/workflows/drnas-tk-mixed.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-tk-mixed-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore audited solver binaries and native XOR bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42358062002 --jq .conclusion)" = success
+          gh run download 42358062002 --repo Frane12/AndroidGameTest -n c1-frozen-600-source-native-pins -D .
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t2/t-native built/bin/kissat_4_0_4 research/ultimate_t2_fallback.py
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          pin=json.loads(pathlib.Path("ultimate_c1/build-pin.json").read_text())
+          for p in ("ultimate_t2/t-native","ultimate_r1/source_r153/r153","built/bin/kissat_4_0_4","research/ultimate_t2_native.cpp","research/ultimate_t2_fallback.py","research/ultimate_t2_probe.py","research/ultimate_t2_benchmark.py"):
+              assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==pin["files"][p],p
+          print("TK_FROZEN_SOLVER_PINS_PASS")
+          PY
+      - name: Generate and hash 12 known-SAT mixed XOR plus residual CNFs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_tk_mixed_benchmark.py
+          python3 -u research/drnas_tk_mixed_benchmark.py freeze | tee tk-freeze.log
+          grep -q '^TK_MIX_FREEZE_PASS' tk-freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tk-mixed-frozen-inputs-and-pinned-solver
+          retention-days: 30
+          path: |
+            ultimate_r1/
+            ultimate_r2/
+            ultimate_t2/
+            ultimate_ta/frozen/
+            ultimate_c1/
+            built/bin/kissat_4_0_4
+            tk-mixed/
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    name: TK mixed paired shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tk-mixed-frozen-inputs-and-pinned-solver
+          path: .
+      - name: Run three paired arms on identical frozen generated formulas
+        run: |
+          set -euo pipefail
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t2/t-native built/bin/kissat_4_0_4 research/ultimate_t2_fallback.py
+          python3 -u research/drnas_tk_mixed_benchmark.py shard --shard ${{ matrix.shard }} | tee tk-mixed/shard-${{ matrix.shard }}.log
+          grep -q '^TK_MIX_SHARD_PASS' tk-mixed/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tk-mixed-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            tk-mixed/shard-${{ matrix.shard }}.json
+            tk-mixed/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tk-mixed-frozen-inputs-and-pinned-solver
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tk-mixed-shard-*
+          merge-multiple: true
+          path: tk-mixed
+      - name: Audit all 108 attempts and compute per-formula percentage differences
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_tk_mixed_benchmark.py audit | tee tk-mixed/audit.log
+          grep -q '^TK_MIXED_FINAL' tk-mixed/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          r=json.loads(pathlib.Path("tk-mixed/report.json").read_text())
+          assert r["status"]=="TK_MIXED_AUDIT_PASS" and r["attempts"]==108
+          assert all(x["solved"]==36 for x in r["summary"].values())
+          print("TK_MIXED_AUDIT_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TK-MIXED-PAIRED-108-FINAL
+          retention-days: 30
+          path: |
+            tk-mixed/report.json
+            tk-mixed/manifest.json
+            tk-mixed/audit.log
