@@ -1,0 +1,223 @@
+name: DRNAS New Horizon NMR R3 — cost-aware callback feedback
+on:
+  push:
+    branches: [experiment/drnas-nmr-r3-utility-feedback-20261107]
+    paths:
+      - 'research/nmr_r3_driver.cpp'
+      - 'research/nmr_r3_policy.py'
+      - 'research/nmr_r3_benchmark.py'
+      - '.github/workflows/drnas-nmr-r3.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: nmr-r3-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile-check and controller unit tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/nmr_online.py research/nmr_r3_policy.py research/nmr_r3_benchmark.py
+          python3 -u research/nmr_r3_benchmark.py selftest | tee nmr3-selftest.log
+          grep -q '^NMR3_BENCH_SELFTEST_PASS' nmr3-selftest.log
+      - name: Reuse exact R2 frozen 34 training and 40 holdout sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42322672422 --repo Frane12/AndroidGameTest -n nmr-r2-pinned-suite -D .
+          python3 -u research/nmr_r3_benchmark.py verify
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=json.loads(pathlib.Path("nmr_r2/build-pin.json").read_text())
+          for path in ("nmr_r2/split.json","new_horizon/r190-driver"):
+              assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()==p[path]
+          print("NMR3_FROZEN_SOURCE_PASS",p["nmr_r2/split.json"])
+          PY
+      - name: Build exact pinned CaDiCaL native callback driver
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/nmr3-cadical
+          (cd /tmp/nmr3-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/nmr3-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          mkdir -p nmr_r3
+          g++ -std=c++17 -O2 -I/tmp/nmr3-cadical/src research/nmr_r3_driver.cpp /tmp/nmr3-cadical/build/libcadical.a -o nmr_r3/nmr3-driver
+          chmod +x nmr_r3/nmr3-driver new_horizon/r190-driver
+          printf 'p cnf 3 3\n1 0\n-1 2 0\n-2 3 0\n' > nmr_r3/smoke.cnf
+          printf 'WATCH 0 512\nFINISH 0\n' | nmr_r3/nmr3-driver nmr_r3/smoke.cnf 2 | tee nmr_r3/smoke.log
+          grep -q '^NMR3_READY ' nmr_r3/smoke.log
+          grep -q '^NMR3_STATUS status=SAT ' nmr_r3/smoke.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          paths=["nmr_r3/nmr3-driver","new_horizon/r190-driver",
+                 "nmr_r2/split.json","new_horizon/frozen/manifest.json"]
+          p={x:hashlib.sha256(pathlib.Path(x).read_bytes()).hexdigest() for x in paths}
+          p["cadical_commit"]="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pathlib.Path("nmr_r3/build-pin.json").write_text(json.dumps(p,indent=2,sort_keys=True))
+          print("NMR3_BUILD_PASS",json.dumps(p,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmr-r3-frozen-build
+          retention-days: 90
+          path: |
+            new_horizon/frozen/
+            new_horizon/r190-driver
+            nmr_r2/split.json
+            nmr_r3/nmr3-driver
+            nmr_r3/build-pin.json
+            nmr_r3/smoke.log
+            nmr3-selftest.log
+  train:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-frozen-build
+          path: .
+      - uses: actions/cache/restore@v4
+        with:
+          path: nmr_r3/model.sqlite
+          key: nmr-r3-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            nmr-r3-${{ runner.os }}-${{ github.ref_name }}-
+      - name: Load prior R2 learning if this is the first R3 training
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p nmr_r3
+          if ! test -f nmr_r3/model.sqlite; then
+            gh run download 42322672422 --repo Frane12/AndroidGameTest -n nmr-r2-trained-memory -D nmr_r3
+            test -f nmr_r3/model.sqlite
+            test "$(sha256sum nmr_r3/model.sqlite | cut -d' ' -f1)" = "$(cat nmr_r3/model.sha256)"
+            echo 'NMR3_R2_WARM_START_PASS'
+          else
+            echo 'NMR3_R3_LONG_TERM_MEMORY_RESTORED'
+          fi
+      - name: Train utility calibration on 34 sources ONLY
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r3/nmr3-driver new_horizon/r190-driver
+          python3 -u research/nmr_r3_benchmark.py train --driver nmr_r3/nmr3-driver --clean new_horizon/r190-driver --memory nmr_r3/model.sqlite | tee nmr_r3/train.log
+          grep -q '^NMR3_TRAIN_PASS' nmr_r3/train.log
+          sha256sum nmr_r3/model.sqlite | cut -d' ' -f1 > nmr_r3/model.sha256
+          python3 - <<'PY'
+          import json,pathlib,sqlite3
+          p=pathlib.Path("nmr_r3/model.sqlite")
+          con=sqlite3.connect("file:"+str(p.resolve())+"?mode=ro",uri=True)
+          n=con.execute("SELECT trials FROM utility WHERE key='global'").fetchone()
+          assert n is not None
+          print("NMR3_UTILITY_MEMORY_PASS",n[0])
+          con.close()
+          PY
+      - uses: actions/cache/save@v4
+        with:
+          path: nmr_r3/model.sqlite
+          key: nmr-r3-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r3-trained-memory
+          retention-days: 90
+          path: |
+            nmr_r3/model.sqlite
+            nmr_r3/model.sha256
+            nmr_r3/training.json
+            nmr_r3/training-trials.json
+            nmr_r3/train.log
+  evaluate:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    name: NMR R3 callback-feedback paired shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-frozen-build
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-trained-memory
+          path: nmr_r3
+      - name: Verify pinned binaries and freeze checkpoint during evaluation
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r3/nmr3-driver new_horizon/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=json.loads(pathlib.Path("nmr_r3/build-pin.json").read_text())
+          for name in ("nmr_r3/nmr3-driver","new_horizon/r190-driver",
+                       "nmr_r2/split.json","new_horizon/frozen/manifest.json"):
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==p[name]
+          got=hashlib.sha256(pathlib.Path("nmr_r3/model.sqlite").read_bytes()).hexdigest()
+          assert got==pathlib.Path("nmr_r3/model.sha256").read_text().strip()
+          print("NMR3_EVALUATION_FREEZE_PASS",got)
+          PY
+          python3 -u research/nmr_r3_benchmark.py shard --shard ${{ matrix.shard }} --driver nmr_r3/nmr3-driver --clean new_horizon/r190-driver --memory nmr_r3/model.sqlite | tee nmr_r3/shard-${{ matrix.shard }}.log
+          grep -q '^NMR3_SHARD_PASS' nmr_r3/shard-${{ matrix.shard }}.log
+          test "$(sha256sum nmr_r3/model.sqlite | cut -d' ' -f1)" = "$(cat nmr_r3/model.sha256)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r3-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            nmr_r3/shard-${{ matrix.shard }}.json
+            nmr_r3/shard-${{ matrix.shard }}.log
+  audit:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-frozen-build
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nmr-r3-shard-*
+          merge-multiple: true
+          path: nmr_r3
+      - name: Verify paired controls and output quantitative summary
+        run: |
+          set -euo pipefail
+          test "$(find nmr_r3 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/nmr_r3_benchmark.py audit | tee nmr_r3/audit.log
+          grep -q '^NMR3_FINAL ' nmr_r3/audit.log
+          cat nmr_r3/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NMR-R3-FINAL
+          retention-days: 90
+          path: |
+            nmr_r3/report.json
+            nmr_r3/trials.json
+            nmr_r3/trials.csv
+            nmr_r3/summary.md
+            nmr_r3/audit.log
