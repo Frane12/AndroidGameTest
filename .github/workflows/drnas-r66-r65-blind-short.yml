@@ -1,0 +1,138 @@
+name: DRNAS R66 short blind R65 XOR-CNF vs pinned Kissat
+
+on:
+  push:
+    branches: [experiment/drnas-r66-r65-blind-short-20261103]
+    paths:
+      - '.github/workflows/drnas-r66-r65-blind-short.yml'
+      - 'experiments/drnas_v16/r66_r65_blind_short_holdout.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r66-r65-blind-short-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze previously unseen official Main2026 sources before measurement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify unchanged R65 parity logic and R66 protocol syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r65_xor_cnf_feedback.py experiments/drnas_v16/r66_r65_blind_short_holdout.py
+          python3 -u experiments/drnas_v16/r66_r65_blind_short_holdout.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R63-REAL2026-XOR-PREVALENCE-FALLBACK-FINAL
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Independently salt/select and SHA-freeze new verified official CNFs
+        run: |
+          set -euo pipefail
+          test -s prior/r63-final.json
+          python3 -u experiments/drnas_v16/r66_r65_blind_short_holdout.py freeze --prior prior --out new | tee r66-freeze.log
+          (cd new && sha256sum -c source.sha256)
+          test -s new/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r66-frozen-new-official-sources
+          path: |
+            new/
+            r66-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: r66-shard-${{ matrix.shard }} pinned Kissat v R65
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify all original DIMACS and pinned R28/Kissat executables
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Matched randomized two-repeat 20s cap R65 vs unchanged Kissat
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r66_r65_blind_short_holdout.py measure --sources new --shard "$SHARD" --kissat compiled/kissat --gf2 compiled/r28_gf2 --out results | tee r66-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r66-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r66-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R66 fail-closed paired speedup and XOR-CNF activation audit
+    needs: [freeze, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r66-shard-*
+          path: combined
+      - name: Require every new source and exactly matched pinned solver measurements
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r66_r65_blind_short_holdout.py audit --sources new --combined combined --json r66-final.json --md r66-final.md
+          cat r66-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R66-R65-BLIND-SHORT-FINAL
+          path: |
+            r66-final.json
+            r66-final.md
+            new/manifest.json
+          if-no-files-found: error
+          retention-days: 90

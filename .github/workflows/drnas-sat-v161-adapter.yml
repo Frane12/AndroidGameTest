@@ -1,0 +1,41 @@
+name: DRNAS SAT v16.1 adapter smoke
+on:
+  push:
+    branches:
+      - 'experiment/drnas-v16-adaptive-general-20261101'
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile C++ structure classifier
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic experiments/drnas_v16/structure_probe_test.cpp -o /tmp/drnas_v16_probe
+          /tmp/drnas_v16_probe
+      - name: Verify Python benchmark adapter with deterministic stub
+        run: |
+          mkdir -p /tmp/drnas-cnf
+          python3 - <<'PY'
+          from pathlib import Path
+          folder=Path("/tmp/drnas-cnf")
+          (folder/"sample_sat.cnf").write_text("p cnf 2 35\n"+("1 -2 0\n"*35))
+          (folder/"sample_unsat.cnf").write_text("p cnf 1 35\n"+("-1 0\n"*35))
+          Path("/tmp/drnas-solver-stub.py").write_text('import sys\nsys.exit(20 if "unsat" in sys.argv[-1] else 10)\n')
+          PY
+          python3 experiments/drnas_v16/benchmark_v161.py --cnf-dir /tmp/drnas-cnf --solver python3 /tmp/drnas-solver-stub.py --timeout 10 --repeats 3 --out /tmp/v161.csv
+          python3 - <<'PY'
+          import csv
+          with open("/tmp/v161.csv") as f: rows=list(csv.DictReader(f))
+          assert len(rows)==18
+          assert {x["result"] for x in rows}=={"SAT","UNSAT"}
+          assert all(x["experimental_gate"]=="False" for x in rows)
+          for filename in {x["file"] for x in rows}:
+              assert len({x["result"] for x in rows if x["file"]==filename})==1
+          PY
+      - name: Upload smoke test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v161-smoke-results
+          path: /tmp/v161.csv

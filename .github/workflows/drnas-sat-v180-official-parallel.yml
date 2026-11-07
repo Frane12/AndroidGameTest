@@ -1,0 +1,100 @@
+name: DRNAS SAT V18.0 Official 2026 moderate 90s five-solvers parallel
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-v180-official-moderate-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v180-official-parallel.yml'
+      - 'experiments/drnas_v16/official_parallel_v180.py'
+      - 'experiments/drnas_v16/v180_official_seeds.json'
+permissions:
+  contents: read
+jobs:
+  official_batch:
+    name: Official 2026 moderate shard ${{ matrix.batch }} five solvers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        batch: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen experiment and pinned source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/official_parallel_v180.py
+          python3 -m py_compile experiments/drnas_v16/predict_conflict_patch_v177.py
+          test -s research/drnas-sat-v7-8/v1531_nohang.cpp
+          python3 - <<'PY'
+          import json
+          x=json.load(open('experiments/drnas_v16/v180_official_seeds.json'))
+          assert len(x['shards'])==4 and all(len(z)==3 for z in x['shards'])
+          assert len({a['gbd_hash'] for z in x['shards'] for a in z})==12
+          assert sum(a['official_kissat']['result']=='sat' for z in x['shards'] for a in z)==6
+          assert sum(a['official_kissat']['result']=='unsat' for z in x['shards'] for a in z)==6
+          print('V180_FROZEN_2026_SELECTION_PASS')
+          PY
+      - name: Compile stable V15.3.1 No-Hang reference
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+      - name: Compile exact pinned Kissat with frozen in-process V17.7 instrument
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v180
+          git -C /tmp/kissat-v180 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v180 rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v180
+          (cd /tmp/kissat-v180 && ./configure && make -j2)
+          /tmp/kissat-v180/build/kissat --version
+      - name: Build external CaDiCaL 3.0.1 (pinned upstream; not an exact competition submission)
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/cadical.git /tmp/cadical-v180
+          git -C /tmp/cadical-v180 checkout --detach c60730422e758ef1cebe7aeddf2dda31c996bf04
+          test "$(git -C /tmp/cadical-v180 rev-parse HEAD)" = "c60730422e758ef1cebe7aeddf2dda31c996bf04"
+          (cd /tmp/cadical-v180 && ./configure && make -j2)
+          /tmp/cadical-v180/build/cadical --version
+      - name: Download pinned moderate official CNFs; test five strategies 90s cap paired per runner
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_parallel_v180.py --batch "${{ matrix.batch }}"
+      - name: Publish hashes, sources and complete or partial timing data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch_${{ matrix.batch }}
+          path: |
+            drnas-v180-official-results/batch_${{ matrix.batch }}/manifest.json
+            drnas-v180-official-results/batch_${{ matrix.batch }}/official_track_uri_sha256.txt
+            drnas-v180-official-results/batch_${{ matrix.batch }}/frozen_v177_rule.txt
+            drnas-v180-official-results/batch_${{ matrix.batch }}/measurements.partial.csv
+            drnas-v180-official-results/batch_${{ matrix.batch }}/measurements.csv
+            drnas-v180-official-results/batch_${{ matrix.batch }}/summary.json
+          if-no-files-found: warn
+  aggregate:
+    name: Combined official-instance PAR-2 and formula-cluster uncertainty
+    needs: official_batch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all four parallel shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batch_*
+          path: drnas-v180-official-results
+      - name: Independently consolidate paired official results
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_parallel_v180.py --aggregate
+      - name: Publish combined summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V180-Official-2026-Combined
+          path: drnas-v180-official-results/aggregate.json
+          if-no-files-found: warn

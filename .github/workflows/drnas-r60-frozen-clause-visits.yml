@@ -1,0 +1,152 @@
+name: DRNAS R60 frozen clause-visits savings prospective SAT2026
+on:
+  push:
+    branches: [experiment/drnas-r60-frozen-up-clause-visits-20261103]
+    paths:
+      - '.github/workflows/drnas-r60-frozen-clause-visits.yml'
+      - 'experiments/drnas_v16/r60_frozen_clause_visits_prospective.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r60-source-disjoint-frozen-visits-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Freeze old-source exclusions and source-only R58 clause visit savings BEFORE any new timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight R58 maths and R60 source selection
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r60_frozen_clause_visits_prospective.py
+          python3 -u experiments/drnas_v16/r58_implication_graph_propagation.py selftest
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior52
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55b-prospectively-frozen-real2026
+          run-id: 41691243486
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior55
+      - uses: actions/download-artifact@v4
+        with:
+          name: r57-new-source-and-precommitted-structural-gate
+          run-id: 41694594541
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior57
+      - name: Strict SHA verification of all previous sources
+        run: |
+          set -euo pipefail
+          (cd prior52/originals && sha256sum -c source.sha256)
+          (cd prior55/fresh && sha256sum -c source.sha256)
+          (cd prior57/new && sha256sum -c source.sha256)
+      - name: Choose independent official 2026 CNFs by frozen source features, never DRNAS outcomes
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r60_frozen_clause_visits_prospective.py freeze \
+            --prior52 prior52/originals \
+            --prior55 prior55/fresh \
+            --prior57 prior57/new \
+            --out new | tee r60-freeze.log
+          (cd new && sha256sum -c source.sha256)
+          test -s new/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r60-frozen-new-2026-originals-and-clause-visits
+          path: |
+            new/
+            r60-freeze.log
+          if-no-files-found: warn
+  matched:
+    name: r60-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r60-frozen-new-2026-originals-and-clause-visits
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: binaries
+      - name: Verify official original source and pinned Kissat binary hashes
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          (cd binaries && sha256sum -c binaries.sha256)
+          chmod +x binaries/kissat_pinned
+      - name: Four randomized same-core methods x two reps, all analysis included in 40s wall
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r60_frozen_clause_visits_prospective.py measure \
+            --sources new --shard "$SHARD" --kissat binaries/kissat_pinned \
+            --out results | tee r60-trials.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r60-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r60-trials.log
+          if-no-files-found: warn
+  audit:
+    name: R60 frozen-clause-visit predictor audit and measured analysis overhead on new formulas
+    needs: [freeze, matched]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r60-frozen-new-2026-originals-and-clause-visits
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r60-shard-*
+          path: combined
+      - name: Verify complete pairing, SHA, binary, PAR2 and separately report selected and abstaining groups
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r60_frozen_clause_visits_prospective.py audit \
+            --sources new --combined combined \
+            --json r60-final.json --md r60-final.md
+          cat r60-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R60-CLAUSE-VISITS-FROZEN-NEW2026-FINAL
+          path: |
+            r60-final.json
+            r60-final.md
+            new/manifest.json
+          if-no-files-found: error

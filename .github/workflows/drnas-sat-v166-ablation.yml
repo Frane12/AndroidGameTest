@@ -1,0 +1,78 @@
+name: DRNAS SAT v16.6 isolate target vs restart performance
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'experiment/drnas-v166-target-restart-ablation-20261101'
+    paths:
+      - 'experiments/drnas_v16/ablate_v166.py'
+      - '.github/workflows/drnas-sat-v166-ablation.yml'
+jobs:
+  ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile exact Kissat 4.0.4 pinned upstream
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Preflight all four configurations and statistics support
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          p=Path("/tmp/drnas-v166-preflight.cnf")
+          p.write_text("p cnf 2 2\n1 2 0\n-1 2 0\n",encoding="ascii")
+          binary="/tmp/kissat-upstream/build/kissat"
+          options=[(),("--target=2",),("--restartint=50",),("--sat",)]
+          for flags in options:
+              r=subprocess.run([binary,"-s",*flags,str(p)],
+                               capture_output=True,text=True,timeout=10)
+              print("PREFLIGHT",flags,"exit",r.returncode,flush=True)
+              assert r.returncode==10,(flags,r.stdout[-1500:],r.stderr[-1500:])
+          PY
+      - name: Real independent factor ablation (2 replay and 4 unseen formulas)
+        run: |
+          python3 -u experiments/drnas_v16/ablate_v166.py \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --root drnas_v166_results --repeats 2 --timeout 25
+      - name: Audit 48 outcomes and compare matching configurations
+        run: |
+          python3 - <<'PY'
+          import csv
+          from collections import defaultdict
+          from pathlib import Path
+          root=Path("drnas_v166_results")
+          with (root/"measurements.csv").open(newline="") as f: rows=list(csv.DictReader(f))
+          with (root/"features.csv").open(newline="") as f: feats=list(csv.DictReader(f))
+          assert len(rows)==48,len(rows)
+          assert len(feats)==6,len(feats)
+          assert sum(f["group"]=="holdout" for f in feats)==4
+          assert {int(f["seed"]) for f in feats if f["group"]=="holdout"}=={166000,166001,166002,166003}
+          grouped=defaultdict(dict)
+          for r in rows:
+              assert r["status"] in ("SAT","UNSAT","TIMEOUT"),r
+              grouped[(r["seed"],r["repeat"])][r["mode"]]=r
+          for key,modes in grouped.items():
+              assert set(modes)=={"baseline","target-only","restart-only","sat-both"},key
+              answers={r["status"] for r in modes.values() if r["status"] in ("SAT","UNSAT")}
+              assert len(answers)<=1,(key,answers)
+          assert (root/"summary.txt").exists()
+          print("V166_HOLDOUT_AUDIT_PASSED",len(rows),"runs")
+          PY
+      - name: Upload feature, performance and detailed Kissat statistics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v166-target-restart-causal-ablation
+          path: |
+            drnas_v166_results/measurements.csv
+            drnas_v166_results/features.csv
+            drnas_v166_results/summary.txt
+            drnas_v166_results/stats/
+          if-no-files-found: warn

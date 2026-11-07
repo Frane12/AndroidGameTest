@@ -1,0 +1,214 @@
+name: DRNAS R19 blind early-dynamics vs 1024-state predictor
+on:
+  push:
+    branches: [experiment/drnas-r19-early-dynamics-blind-20261102]
+    paths:
+      - '.github/workflows/drnas-r19-dynamics.yml'
+      - 'experiments/drnas_v16/r19_frozen_protocol.json'
+      - 'experiments/drnas_v16/r19_trajectory_benchmark.py'
+      - 'experiments/drnas_v16/r19_blind_analysis.py'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: r19-early-dynamics-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  development:
+    name: R19 new dev native trials / ${{ matrix.category }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1,
+                   n220_development0, n220_development1,
+                   n240_development0, n240_development1,
+                   community_n220_development0, community_n240_development0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen source identities and fresh formula seeds
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r19_trajectory_benchmark.py experiments/drnas_v16/r19_blind_analysis.py
+          test "$(git hash-object experiments/drnas_v16/r16_historical_sha256.txt)" = d6e7e3eeef2032c8d9fb07af07df292b17991588
+          test "$(git hash-object experiments/drnas_v16/r16-results/current/results.json)" = 2b6f10b778b566debf83f2c07f86bc8639b1d251
+          test "$(git hash-object experiments/drnas_v16/r17-results/current/results.json)" = c1dff80bde422116f511a89901f54b634a06adb8
+          test "$(git hash-object experiments/drnas_v16/r18-results/current/results.json)" = aab7cd45cf1d4fef5a308dac43e681b5a7d24646
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r19_trajectory_benchmark as b
+          c=b.config()
+          assert len(b.history())==2574 and c['experiment']['attempts']==1920
+          assert c['models']['snapshot']['lambda']==c['models']['trajectory']['lambda']==30
+          print('R19_SOURCE_FROZEN_AND_HISTORIC_SHA_PASS')
+          PY
+      - name: Build original Kissat and same pinned version with native early telemetry
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r16_live_ridge.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Collect 120 real native development attempts and 1024-conflict landmarks
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r19_trajectory_benchmark.py --category '${{ matrix.category }}'
+          test -s 'drnas-r19-results/${{ matrix.category }}/measurements.csv'
+          test -s 'drnas-r19-results/${{ matrix.category }}/traces.jsonl'
+          test -s 'drnas-r19-results/${{ matrix.category }}/manifest.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r19-dev-${{ matrix.category }}
+          path: drnas-r19-results/${{ matrix.category }}/
+          retention-days: 90
+          if-no-files-found: warn
+  freeze:
+    name: Freeze two equal-ridge models from NEW development ONLY
+    needs: development
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r19-dev-*
+          path: r19-download
+          merge-multiple: false
+      - name: Fit 1024 snapshot and 128/256/512/1024 dynamics models, pre-test
+        run: |
+          set -euo pipefail
+          python3 -m venv .r19venv
+          .r19venv/bin/pip -q install numpy==2.1.3
+          .r19venv/bin/python -u experiments/drnas_v16/r19_blind_analysis.py --freeze
+          test -s r19-frozen/r19_frozen_models.json
+          python3 - <<'PY'
+          import json,hashlib
+          m=json.load(open('r19-frozen/r19_frozen_models.json'))
+          assert m['training_fold']=='random3_development'
+          assert m['training_formula_count']>=20
+          assert len(m['models']['snapshot']['names'])==10
+          assert len(m['models']['trajectory']['names'])==25
+          assert m['models']['snapshot']['lambda_ridge']==m['models']['trajectory']['lambda_ridge']==30
+          print('R19_FROZEN_MODEL_READY_BEFORE_ANY_TEST')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R19-DEV-FROZEN-MODELS
+          path: r19-frozen/
+          retention-days: 90
+          if-no-files-found: error
+  test:
+    name: R19 unseen native test after model freeze / ${{ matrix.category }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_test0, n200_test1,
+                   n220_test0, n220_test1,
+                   n240_test0, n240_test1,
+                   community_n220_test0, community_n240_test0]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: R19-DEV-FROZEN-MODELS
+          path: r19-frozen
+      - name: Validate frozen model source restrictions
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          m=json.load(open('r19-frozen/r19_frozen_models.json'))
+          assert m['training_fold']=='random3_development'
+          assert len(m['training_sha256'])==m['training_formula_count']
+          assert m['models']['snapshot']['lambda_ridge']==m['models']['trajectory']['lambda_ridge']==30
+          print('R19_BLIND_HOLDOUT_MODEL_CHECK_PASS')
+          PY
+      - name: Compile pinned original and instrumented Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r16_live_ridge.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Run 120 real native untouched formula SAT attempts and audit witnesses
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r19_trajectory_benchmark.py --category '${{ matrix.category }}'
+          test -s 'drnas-r19-results/${{ matrix.category }}/measurements.csv'
+          test -s 'drnas-r19-results/${{ matrix.category }}/traces.jsonl'
+          test -s 'drnas-r19-results/${{ matrix.category }}/manifest.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r19-test-${{ matrix.category }}
+          path: drnas-r19-results/${{ matrix.category }}/
+          retention-days: 90
+          if-no-files-found: warn
+  evaluate:
+    name: R19 complete 1920 native attempts, frozen test MSE and formula-bootstrap
+    needs: test
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r19-dev-*
+          path: r19-download
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r19-test-*
+          path: r19-download
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R19-DEV-FROZEN-MODELS
+          path: r19-frozen
+      - name: Verify all 16 matched native shards, SHA, prefix, model freeze and test benefit
+        run: |
+          set -euo pipefail
+          python3 -m venv .r19venv
+          .r19venv/bin/pip -q install numpy==2.1.3
+          .r19venv/bin/python -u experiments/drnas_v16/r19_blind_analysis.py --evaluate
+          test -s drnas-r19-results/aggregate/results.json
+          test -s drnas-r19-results/aggregate/predictions.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R19-Blind-Snapshot-vs-Dynamics-Results
+          path: drnas-r19-results/aggregate/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Archive ONLY fully verified R19 observations
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'experiment/drnas-r19-early-dynamics-blind-20261102'
+          mkdir -p experiments/drnas_v16/r19-results/current/
+          cp -a drnas-r19-results/aggregate/. experiments/drnas_v16/r19-results/current/
+          cp r19-frozen/r19_training_audit.json experiments/drnas_v16/r19-results/current/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/drnas_v16/r19-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m 'data: R19 blind snapshot vs early dynamics frozen native SAT [skip ci]'
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

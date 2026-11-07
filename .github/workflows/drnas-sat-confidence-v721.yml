@@ -1,0 +1,99 @@
+name: DRNAS SAT V7.2.1 Confidence Gate — 204 New CNFs
+on:
+  push:
+    branches:
+      - research/drnas-sat-confidence-v7-2-1
+    paths:
+      - research/drnas-sat-v7-2-1/**
+      - .github/workflows/drnas-sat-confidence-v721.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-v721-confidence
+  cancel-in-progress: false
+jobs:
+  v721:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build pinned unchanged CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+      - name: Compile native O(128) confidence gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            -I cadical-src/src research/drnas-sat-v7-2-1/confidence_bench.cpp \
+            cadical-src/build/libcadical.a -o confidence_bench -pthread -ldl -lz
+      - name: Pilot 24 new formulas, 5 methods x 3 repeats
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-2/generate_v72.py \
+            --seed 20261129 --each 2 --outdir "$GITHUB_WORKSPACE/v721_pilot"
+          ./confidence_bench \
+            "$GITHUB_WORKSPACE/v721_pilot/manifest.csv" \
+            "$GITHUB_WORKSPACE/v721_pilot/measurements.csv" 3 20261129
+          python research/drnas-sat-v7-2-1/summarize_confidence.py \
+            --csv "$GITHUB_WORKSPACE/v721_pilot/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v721_pilot/summary.json" > v721_pilot/summary_stdout.txt
+      - name: Frozen unseen holdout 204 CNFs, 5 methods x 3 repeats
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/drnas-sat-v7-2/generate_v72.py \
+            --seed 20261201 --each 17 --outdir "$GITHUB_WORKSPACE/v721_holdout"
+          ./confidence_bench \
+            "$GITHUB_WORKSPACE/v721_holdout/manifest.csv" \
+            "$GITHUB_WORKSPACE/v721_holdout/measurements.csv" 3 20261201
+          python research/drnas-sat-v7-2-1/summarize_confidence.py \
+            --csv "$GITHUB_WORKSPACE/v721_holdout/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/v721_holdout/summary.json" > v721_holdout/summary_stdout.txt
+      - name: Publish full evaluation
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path('v721_holdout/summary.json').read_text())
+          lines=[
+            '# DRNAS SAT V7.2.1 — Confidence Gate',
+            f"New untouched seed, {s['cases']} independent CNFs, {s['repetitions']} repeats",
+            f"SAT/UNSAT matched and all SAT models checked: {s['verified_sat_unsat']}/{s['cases']}",
+            '',
+            '| Method | Sum of instance medians (ms) | Speedup vs plain | Faster cases |',
+            '|---|---:|---:|---:|',
+          ]
+          for key,label in [('plain','Plain CaDiCaL'),('majority','Always majority'),('selective','Old V7.2 gate'),('confidence','New V7.2.1 confidence gate'),('confidence_random','New gate with random phases')]:
+            x=s['methods'][key]
+            lines.append(f"| {label} | {x['sum_of_case_medians_ms']:.3f} | {x['speedup_plain_over_method']:.4f}x | {x['faster_cases']} |")
+          lines.extend(['','| Gate | Selected | False positives | Precision >=5% | Mean analysis overhead µs |',
+                        '|---|---:|---:|---:|---:|'])
+          for k in ['selective','confidence']:
+            g=s['selector'][k];t=s['analysis_overhead_us'][k]
+            lines.append(f"| {k} | {g['selected']} | {g['false_positive']} | {g['precision']:.4f} | {t['mean_analysis_us']:.3f} |")
+          lines+=['','**Unchanged CaDiCaL 3.0.1 C++ API**, unchanged CNF and fixed gate from past datasets.',
+                  'Synthetic test family; small per-instance times are noisy; no general SAT performance claim.']
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - name: Upload raw CSV, CNFs, JSON, sources ID
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v721-confidence-holdout
+          path: |
+            cadical-source-commit.txt
+            v721_pilot/
+            v721_holdout/
+          if-no-files-found: warn

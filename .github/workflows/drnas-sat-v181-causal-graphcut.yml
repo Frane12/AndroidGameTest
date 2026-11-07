@@ -1,0 +1,139 @@
+name: DRNAS SAT V18.1 Causal Graph-Cut Parallel 2026
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-v181-causal-graphcut-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v181-causal-graphcut.yml'
+      - 'experiments/drnas_v16/patch_causal_graph_v181.py'
+      - 'experiments/drnas_v16/official_causal_v181.py'
+      - 'experiments/drnas_v16/analyze_causal_v181.py'
+      - 'experiments/drnas_v16/v181_frozen_official_cases.json'
+permissions:
+  contents: read
+jobs:
+  instrument_smoke:
+    name: Build and 1-UIP graph-cut instrumentation smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate code and frozen 24 holdout candidates
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_causal_graph_v181,official_causal_v181,analyze_causal_v181,official_parallel_v180}.py
+          python3 - <<'PY'
+          import json
+          d=json.load(open("experiments/drnas_v16/v181_frozen_official_cases.json"))
+          assert len(d["policies"])==10
+          assert len(d["stages"]["diagnostic"])==4
+          assert len(d["stages"]["holdout_candidates"])==4
+          old={x["gbd_hash"] for g in d["stages"]["diagnostic"] for x in g}
+          new={x["gbd_hash"] for g in d["stages"]["holdout_candidates"] for x in g}
+          assert len(old)==12 and len(new)==24 and not old.intersection(new)
+          print("V181_PRECOMMIT_AUDIT_PASS")
+          PY
+      - name: Compile original pinned Kissat with original 1-UIP behavior
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v181
+          git -C /tmp/kissat-v181 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v181 rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 experiments/drnas_v16/patch_causal_graph_v181.py --kissat-root /tmp/kissat-v181
+          (cd /tmp/kissat-v181 && ./configure && make -j2)
+          /tmp/kissat-v181/build/kissat --version
+      - name: Correctness smoke
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/v181_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/v181_unsat.cnf
+          set +e
+          DRNAS_V181_MODE=trace /tmp/kissat-v181/build/kissat -s /tmp/v181_sat.cnf >/tmp/v181_sat.log 2>&1
+          sat=$?
+          DRNAS_V181_MODE=trace /tmp/kissat-v181/build/kissat -s /tmp/v181_unsat.cnf >/tmp/v181_unsat.log 2>&1
+          unsat=$?
+          set -e
+          test "$sat" -eq 10
+          test "$unsat" -eq 20
+          echo V181_SMOKE_PASS
+  paired:
+    name: Causal ${{ matrix.stage }} shard ${{ matrix.shard }}
+    needs: instrument_smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        stage: [diagnostic, holdout]
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile exact pinned Kissat with cut instrumentation
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v181
+          git -C /tmp/kissat-v181 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v181 rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 experiments/drnas_v16/patch_causal_graph_v181.py --kissat-root /tmp/kissat-v181
+          (cd /tmp/kissat-v181 && ./configure && make -j2)
+      - name: Ten policies with graph-cut snapshots and formula-paired checks
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_causal_v181.py --stage "${{ matrix.stage }}" --shard "${{ matrix.shard }}"
+      - name: Preserve raw, partial and final traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v181_${{ matrix.stage }}_${{ matrix.shard }}
+          path: |
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/manifest.json
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/track_uris_sha256.txt
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/measurements.partial.csv
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/measurements.csv
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/checkpoints.csv
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/events.csv
+            drnas-v181-causal-results/${{ matrix.stage }}_${{ matrix.shard }}/summary.json
+          retention-days: 30
+          if-no-files-found: warn
+  aggregate:
+    name: Causal graph, divergence, holdout validation
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v181_*
+          path: /tmp/v181-download
+      - name: Reassemble paired shard artifacts
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          root=Path("drnas-v181-causal-results")
+          root.mkdir(exist_ok=True)
+          artifacts=sorted(Path("/tmp/v181-download").glob("v181_*"))
+          assert len(artifacts)==8,len(artifacts)
+          for folder in artifacts:
+              dest=root/folder.name.removeprefix("v181_")
+              shutil.copytree(folder,dest)
+              assert (dest/"measurements.csv").exists(),dest
+          print("V181_ARTIFACTS_LOADED",len(artifacts))
+          PY
+      - name: Bootstrap by formula and reconstruct 1-UIP causal graph
+        run: |
+          set -euo pipefail
+          PYTHONPATH=experiments/drnas_v16 python3 -u experiments/drnas_v16/analyze_causal_v181.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V181-Graphcut-Causal-2026-Aggregate
+          path: |
+            drnas-v181-causal-results/aggregate_diagnostic/
+            drnas-v181-causal-results/aggregate_holdout/
+            drnas-v181-causal-results/combined.json
+          retention-days: 60
+          if-no-files-found: warn

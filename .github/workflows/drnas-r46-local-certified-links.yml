@@ -1,0 +1,131 @@
+name: DRNAS R46 certified local XOR links vs pinned Kissat on real SATComp26
+on:
+  push:
+    branches: [experiment/drnas-r46-certified-local-links-20261103]
+    paths:
+      - 'experiments/drnas_v16/r46_local_certified_links.py'
+      - '.github/workflows/drnas-r46-local-certified-links.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r46-local-links-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and verify certificate self-test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r46_local_certified_links.py
+          python3 experiments/drnas_v16/r46_local_certified_links.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32p-official-2026-size-bounded-frozen-originals
+          run-id: 41656883104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32p-kissat-pinned-binaries
+          run-id: 41656883104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify original sources and identical pinned clean solver
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 - <<'PY'
+          import json
+          j=json.load(open("frozen/manifest.json"))
+          assert j["protocol"].startswith("DRNAS-R32P-REAL-SATCOMP2026")
+          assert len(j["cases"])>=3
+          print("R46_PRECOMMITTED_ORIGINAL_SOURCE_PASS",len(j["cases"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r46-frozen-original-sources
+          path: frozen/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r46-pinned-solver
+          path: compiled/
+          retention-days: 30
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    name: r46-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r46-frozen-original-sources
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r46-pinned-solver
+          path: compiled
+      - name: Recheck SHA256 and run paired clean/shadow/active
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 -u experiments/drnas_v16/r46_local_certified_links.py measure \
+            --frozen frozen --clean compiled/clean --shard "$SHARD" --out results | tee r46-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r46-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r46-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r46-frozen-original-sources
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r46-shard-*
+          path: combined
+      - name: Aggregate all results and check paired SAT/UNSAT consistency
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r46_local_certified_links.py aggregate \
+            --frozen frozen --combined combined \
+            --output r46-results.json --report r46-results.md
+          cat r46-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R46-CERTIFIED-LOCAL-LINKS-REAL-SATCOMP26
+          path: |
+            r46-results.json
+            r46-results.md
+          if-no-files-found: warn

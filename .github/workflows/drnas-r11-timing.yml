@@ -1,0 +1,163 @@
+name: DRNAS SAT R11 2880-run prospective restart timing experiment
+on:
+  push:
+    branches: [experiment/drnas-r11-restart-timing-frozen-20261102]
+    paths:
+      - '.github/workflows/drnas-r11-timing.yml'
+      - 'experiments/drnas_v16/patch_r11_restart_sweep.py'
+      - 'experiments/drnas_v16/r11_restart_timing.py'
+      - 'experiments/drnas_v16/r11_historical_sha256.txt'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-r11-timing-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: Frozen source, pinned patch compile, SAT/UNSAT smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax, source pins, frozen V15.3.1
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{r11_restart_timing,patch_r11_restart_sweep,r7_large,patch_r6_trace,patch_r5_multisignal,patch_r4_restart_gate,predict_conflict_patch_v177}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          test "$(git hash-object experiments/drnas_v16/r7_large.py)" = 0444a8938827d49c4b065af5acc512449f9db9ab
+          test "$(git hash-object experiments/drnas_v16/patch_r6_trace.py)" = ce9896a7b846404a6d6a169fbe2b7bf37c132718
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r11_restart_timing as r
+          assert len(r.SHARDS)==12 and len(r.MODES)==8 and len(r.INTERVENTIONS)==5
+          assert r.CAP==12 and r.REPEATS==3
+          assert sum(len(x)==64 for x in r.REGISTRY.read_text().split())>1300
+          print("R11_FROZEN_PROTOCOL_AUDIT_OK")
+          PY
+      - name: Compile patched pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r11_restart_sweep.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq 'R6_TRACE'
+      - name: SAT and UNSAT correctness of all R11 policies
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/r11-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/r11-unsat.cnf
+          for mode in r5_monitor r11_512_25 r11_1024_25 r11_2048_25 r11_4096_25 r11_2048_50; do
+            set +e
+            DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r11-sat.cnf > /tmp/r11-sat.log 2>&1
+            sat=$?
+            DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r11-unsat.cnf > /tmp/r11-unsat.log 2>&1
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          echo R11_ALL_POLICY_CORRECTNESS_SMOKE_PASS
+  benchmark:
+    name: R11 paired timing ${{ matrix.category }}
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile original pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Compile R11 instrumented Kissat, same single-run restart mechanism
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r11_restart_sweep.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Compile frozen, unmodified V15.3.1 reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Run 240 paired attempts on 10 prospective formulas, pin one CPU
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r11_restart_timing.py --category "${{ matrix.category }}"
+          test -s "drnas-r11-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r11-results/${{ matrix.category }}/manifest.json"
+          test -s "drnas-r11-results/${{ matrix.category }}/traces.jsonl"
+      - name: Preserve raw inputs, logs, telemetry, seed and SHA provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r11-${{ matrix.category }}
+          path: drnas-r11-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+  aggregate:
+    name: 2880-attempt R11 paired PAR-2, prefix audit, confidence and scatter
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r11-*
+          path: r11-download
+          merge-multiple: false
+      - name: Aggregate only complete, validated real SAT execution shards
+        run: |
+          set -euo pipefail
+          python3 -m venv .r11venv
+          .r11venv/bin/pip -q install matplotlib
+          .r11venv/bin/python experiments/drnas_v16/r11_restart_timing.py --aggregate
+          test -s drnas-r11-results/aggregate/results.json
+          test -s drnas-r11-results/aggregate/paired.csv
+          test -s drnas-r11-results/aggregate/formula_features.csv
+          test -s drnas-r11-results/aggregate/r11_scatter_development.png
+          test -s drnas-r11-results/aggregate/r11_scatter_test.png
+      - name: Upload analysis, including failed/incomplete shards for audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R11-Timing-Real-Results
+          path: drnas-r11-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Archive verified results only to isolated experiment branch
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/drnas-r11-restart-timing-frozen-20261102"
+          mkdir -p experiments/drnas_v16/r11-results/current
+          for f in results.json paired.csv formula_features.csv r11_scatter_development.png r11_scatter_test.png; do
+            test -s "drnas-r11-results/aggregate/$f"
+            cp "drnas-r11-results/aggregate/$f" "experiments/drnas_v16/r11-results/current/$f"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/drnas_v16/r11-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: verified R11 restart-timing timing sweep [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

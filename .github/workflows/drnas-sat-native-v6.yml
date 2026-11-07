@@ -1,0 +1,100 @@
+name: DRNAS SAT v6 Native API vs CaDiCaL
+on:
+  push:
+    branches:
+      - research/drnas-sat-native-v6
+    paths:
+      - research/drnas-sat-v6/**
+      - .github/workflows/drnas-sat-native-v6.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-native-v6
+  cancel-in-progress: false
+jobs:
+  native-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build official CaDiCaL 3.0.1 C++ static library
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          (cd cadical-src && ./configure && make -j2)
+          test -s cadical-src/build/libcadical.a
+      - name: Compile exact matched native C++ benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra \
+            -I cadical-src/src \
+            research/drnas-sat-v6/native_bench.cpp \
+            cadical-src/build/libcadical.a \
+            -o native_bench -pthread -ldl -lz
+      - name: Freeze independent instances
+        run: |
+          python research/drnas-sat-v6/generate_instances.py \
+            --seed 20261117 --small 16 --each 7 \
+            --outdir "$GITHUB_WORKSPACE/bench_native_v6"
+      - name: Test CaDiCaL vs DRNAS native hybrid vs incremental cut assumptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./native_bench \
+            "$GITHUB_WORKSPACE/bench_native_v6/manifest.csv" \
+            "$GITHUB_WORKSPACE/bench_native_v6/measurements.csv" \
+            5 20261117
+          python research/drnas-sat-v6/summarize.py \
+            --csv "$GITHUB_WORKSPACE/bench_native_v6/measurements.csv" \
+            --out "$GITHUB_WORKSPACE/bench_native_v6/summary.json" \
+            > bench_native_v6/summary_stdout.json
+      - name: Report unbiased comparison
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json
+          from pathlib import Path
+          data=json.loads(Path('bench_native_v6/summary.json').read_text())
+          sums=data['method_stats']
+          plain=sums['cadical_plain']
+          hybrid=sums['native_hybrid']
+          inc=sums['cut_assumptions']
+          rows=[
+            '## DRNAS v6: native C++ API benchmark',
+            f"{data['cases']} new synthetic CNFs; {data['repetitions']} paired repetitions",
+            f"**SAT/UNSAT agreement: {data['cases']}/{data['cases']}**",
+            '',
+            '| Method | Sum of per-case median time, ms | Speedup vs plain |',
+            '|---|---:|---:|',
+            f"| Plain CaDiCaL 3.0.1 C++ | {plain['sum_of_case_medians_ms']:.5f} | 1.000x |",
+            f"| DRNAS native separator + CaDiCaL | {hybrid['sum_of_case_medians_ms']:.5f} | {hybrid['aggregate_speed_ratio_plain_over_method']:.3f}x |",
+            f"| Incremental CaDiCaL assumptions | {inc['sum_of_case_medians_ms']:.5f} | {inc['aggregate_speed_ratio_plain_over_method']:.3f}x |",
+            '',
+            f"Selected separators: {data['selected_cases']}/{data['cases']}.",
+            f"Hybrid faster on {hybrid['cases_faster_than_plain']}/{data['cases']} individual instances.",
+            f"Incremental faster on {inc['cases_faster_than_plain']}/{data['cases']} individual instances.",
+            '',
+            "**Timing includes** cut detection, conditioning, renumbering, API object setup, and solving.",
+            "**Not included in any strategy's time:** DIMACS reading from disk.",
+            "Synthetic instances; no SAT Competition or general SAT speedup claim.",
+          ]
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+            f.write('\n'.join(rows)+'\n')
+          PY
+      - name: Save CNF, raw timings, build identity and full report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v6-native-cadical-3-0-1-results
+          path: |
+            bench_native_v6/
+            cadical-source-commit.txt
+          if-no-files-found: warn

@@ -1,0 +1,81 @@
+name: DRNAS SAT v5 Hybrid vs CaDiCaL 3.0.1
+on:
+  push:
+    branches:
+      - research/drnas-sat-hybrid-v5
+    paths:
+      - research/drnas-sat-v5/**
+      - .github/workflows/drnas-sat-hybrid-v5.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-hybrid-v5
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build official CaDiCaL v3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          cd cadical-src
+          ./configure
+          make -j2
+          test -x build/cadical
+          ./build/cadical --version || true
+      - name: Compare exact DRNAS+CaDiCaL vs unmodified CaDiCaL
+        run: |
+          python -u research/drnas-sat-v5/hybrid_benchmark.py \
+            --seed 20261113 \
+            --count 40 \
+            --reps 3 \
+            --timeout 30 \
+            --cadical "$GITHUB_WORKSPACE/cadical-src/build/cadical" \
+            --outdir "$GITHUB_WORKSPACE/bench_hybrid_v5"
+      - name: Publish measured results
+        if: success()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path("bench_hybrid_v5/summary.json").read_text())
+          a=d["summary"]["cadical_plain"]["sum_case_medians_ms"]
+          b=d["summary"]["drnas_hybrid"]["sum_case_medians_ms"]
+          lines=[
+            "## DRNAS SAT v5: structural hybrid vs plain CaDiCaL 3.0.1",
+            f"Identical CNFs; {d['cases']} new synthetic instances; {d['repetitions']} repetitions; seed={d['seed']}",
+            "",
+            "| Method | Sum of per-instance median wall times (ms) |",
+            "|---|---:|",
+            f"| Plain CaDiCaL | {a:.3f} |",
+            f"| DRNAS separator + CaDiCaL | {b:.3f} |",
+            "",
+            f"Hybrid speedup (plain/hybrid): {a/b:.3f}x",
+            f"Hybrid faster per-case: {d['hybrid_faster_cases']}/{d['cases']}",
+            f"Selected separators: {d['selected_cases']}/{d['cases']}",
+            f"SAT/UNSAT agreement: {d['verified']}/{d['cases']}",
+            "",
+            "All preprocessing, CNF writes, process launches and solving are timed.",
+            "CNF files, raw timings, and per-family breakdown are in artifact.",
+            "Synthetic formula benchmark. No SAT Competition claim."
+          ]
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fp:fp.write("\n".join(lines)+"\n")
+          PY
+      - name: Upload raw timings and input CNF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v5-hybrid-cadical-results
+          path: |
+            bench_hybrid_v5/
+            cadical-source-commit.txt
+          if-no-files-found: warn

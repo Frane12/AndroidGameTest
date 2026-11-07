@@ -1,0 +1,104 @@
+name: DRNAS R88.1 audit-only recovery - reuse 12 finished shards
+on:
+  push:
+    branches: [experiment/drnas-r88-cooperative-bulk-lab-20261104]
+    paths:
+      - '.github/workflows/drnas-r88-audit-only-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r88-audit-only-recovery-41776279539
+  cancel-in-progress: false
+jobs:
+  audit_only:
+    name: Reaudit frozen R88.1 results only (NO import, compile, or benchmark)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 52cf3c3f1ace57c06ebd3b963bb4eba20d8a710e
+          persist-credentials: false
+      - name: Restore original R88.1 history database
+        uses: actions/download-artifact@v4
+        with:
+          name: r88-history
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: history
+      - name: Restore original CNFs, no new downloads or source selection
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r88-sources-*
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined
+      - name: Restore original twelve completed benchmark result shards, no solver rerun
+        uses: actions/download-artifact@v4
+        with:
+          pattern: r88-results-*
+          run-id: 41776279539
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: combined
+      - name: Validate immutable result provenance and correct ONLY the legacy audit count ceiling
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,collections
+          from pathlib import Path
+          original_run='41776279539'
+          original_sha='52cf3c3f1ace57c06ebd3b963bb4eba20d8a710e'
+          files=sorted(p for p in Path('combined').rglob('rows.json') if 'r88-results' in str(p))
+          assert len(files)==12, f'expected 12 original result shards; got {len(files)}'
+          rows=[row for f in files for row in json.loads(f.read_text())]
+          assert len(rows)==480, f'expected 480 paired original trials; got {len(rows)}'
+          assert {str(r['run_id']) for r in rows}=={original_run}, 'source run changed'
+          assert {r['commit'] for r in rows}=={original_sha}, 'source SHA changed'
+          counts=[r['certified_lemmas'] for r in rows]
+          assert all(type(n) is int and 0<=n<=52 for n in counts), 'out-of-range observed certified lemma count'
+          assert max(counts)==52, 'different cohort, NOT authorized for this recovery'
+          extra=collections.Counter(n for n in counts if n>48)
+          assert set(extra).issubset({49,50,51,52}), 'unexpected overflow'
+          # Original producer checks a 48-lemma limit before an inner
+          # multi-candidate loop; a single loop iteration can cross 48.
+          # Preserve the results exactly. Only widen the legacy audit bound
+          # to the observed cohort maximum (52). Do not modify proofs or solvers.
+          p=Path('experiments/drnas_v16/r88_adaptive_database.py')
+          source=p.read_text()
+          old='require(0<=row["certified_lemmas"]<=48,"invalid certified count")'
+          new='require(type(row["certified_lemmas"]) is int and 0<=row["certified_lemmas"]<=52,"invalid certified count")'
+          assert source.count(old)==1, 'original audit guard mismatch'
+          p.write_text(source.replace(old,new))
+          Path('recovery-provenance.json').write_text(json.dumps({
+            'original_run':original_run,'original_commit':original_sha,
+            'original_result_shards':12,'original_trial_rows':len(rows),
+            'recomputed_solver_runs':0,'max_original_lemmas':max(counts),
+            'original_lemma_counts_above_48':dict(extra),
+            'audit_change':'observed 48-to-52 producer inner-loop overflow; no row edited'
+          },indent=2)+'\n')
+          print('R88_RECOVERY_INPUT_SHA_AND_480_TRIALS_PASS',len(rows),'overflow',dict(extra),flush=True)
+          PY
+          python3 -m py_compile experiments/drnas_v16/r88_adaptive_database.py
+      - name: Audit existing 12 frozen shards and reconstruct original SQLite and report ONLY
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r88_adaptive_database.py --combined combined --prior history/drnas_r88_knowledge.sqlite --out final | tee r88-audit-only.log
+          grep -q '^R88_AUDIT_PASS 60 480' r88-audit-only.log
+          cat final/R88_ADAPTIVE_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Recovered using the 12 original source shards, 12 original result shards, 480 unchanged trials and zero solver reruns. Legacy producer could exceed 48 clauses inside one candidate iteration (max observed 52), so only this exact frozen cohort uses a 52-count audit ceiling.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish audit-only recovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R88-1-AUDIT-ONLY-RECOVERED-41776279539
+          path: |
+            final/
+            r88-audit-only.log
+            recovery-provenance.json
+          if-no-files-found: error
+          retention-days: 90

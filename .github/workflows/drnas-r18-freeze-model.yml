@@ -1,0 +1,67 @@
+name: DRNAS R18 frozen direct benefit regression trained on R17 dev ONLY
+on:
+  push:
+    branches: [experiment/drnas-r18-uncertainty-netbenefit-20261102]
+    paths:
+      - 'experiments/drnas_v16/r18_train_direct_gain.py'
+      - '.github/workflows/drnas-r18-freeze-model.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-r18-freeze-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify development data pin and fit direct effect + uncertainty
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r18_train_direct_gain.py
+          python3 -u experiments/drnas_v16/r18_train_direct_gain.py
+      - name: Freeze and independently check dimension, source and allowed data
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, math,hashlib
+          from pathlib import Path
+          root=Path("r18-frozen-model")
+          m=json.loads((root/"netbenefit_model.json").read_text())
+          a=json.loads((root/"model_audit.json").read_text())
+          assert m["trained_fold"]=="R17 random3_development ONLY"
+          assert m["trained_count"]==40
+          assert len(m["trained_sha256"])==len(set(m["trained_sha256"]))==40
+          assert m["bootstrap_count"]==31 and len(m["bootstrap_coefficients"])==31
+          assert len(m["features"])==5
+          assert len(m["feature_mean"])==len(m["feature_sd"])==5
+          assert len(m["full_coefficients"])==6
+          assert all(len(c)==6 for c in m["bootstrap_coefficients"])
+          assert m["preregistered_rules"]["r18_lcb"]=={
+           "predicted_mean_min":0.05,"uncertainty_multiplier":0.75,"lower_bound_min":0.0}
+          assert m["preregistered_rules"]["r18_mean"]=={
+           "predicted_mean_min":0.08,"uncertainty_multiplier":0.0,"lower_bound_min":-999.0}
+          assert math.isfinite(m["loo_residual_rmse"]) and m["loo_residual_rmse"]>0
+          assert hashlib.sha256((root/"netbenefit_model.json").read_bytes()).hexdigest()==a["model_sha256"]
+          print("R18_DEV_ONLY_FROZEN_MODEL_PASS",a)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R18-DevOnly-Direct-Benefit-Uncertainty-Frozen-Model
+          path: r18-frozen-model/
+          retention-days: 90
+      - name: Commit frozen coefficients before any R18 benchmark
+        run: |
+          set -euo pipefail
+          mkdir -p experiments/drnas_v16/r18-frozen-model
+          cp -a r18-frozen-model/. experiments/drnas_v16/r18-frozen-model/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/drnas_v16/r18-frozen-model/
+          if ! git diff --cached --quiet; then
+            git commit -m 'data: R18 direct paired effect ensemble frozen before prospective holdout [skip ci]'
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

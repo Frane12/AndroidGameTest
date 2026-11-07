@@ -1,0 +1,138 @@
+name: DRNAS SAT V9.8 — Phase-Selective Replay on External 2025 Structural Controls
+on:
+  push:
+    branches: [experiment/drnas-sat-v98-phase-selective-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-v98-phase-selective.yml'
+      - 'research/drnas-sat-v7-8/v98_structural_selective.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: Freeze six external archived CNFs before measurements
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v96-frozen-causal-input-manifest
+          run-id: 41239481557
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior-v96
+      - name: Validate pinned V9.6 input and archived 2025 source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v98_structural_selective.py
+          (cd prior-v96 && sha256sum -c v96_manifest.sha256)
+      - name: Freeze post-hoc selector and external 2025 challenge cases
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v98_structural_selective.py freeze \
+            --v96 prior-v96/v96_manifest.json \
+            --source2025 research/drnas-sat-real-2025/frozen_sources.json \
+            --out v98_manifest.json
+          sha256sum v98_manifest.json > v98_manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v98-frozen-inputs
+          path: |
+            v98_manifest.json
+            v98_manifest.sha256
+          if-no-files-found: warn
+  test:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    name: v98-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v98-frozen-inputs
+          path: frozen
+      - name: Compile pinned CaDiCaL and identical V9.6 instrumentation
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v98_manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert s.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(s.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/v98-build.log 2>&1) \
+            || { tail -100 /tmp/v98-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v96_causal_telemetry.cpp \
+            cadical-src/build/libcadical.a -o v98_causal_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Paired replay with per-CNF seeded and randomized ordering
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v98_structural_selective.py run \
+            --manifest frozen/v98_manifest.json --exe ./v98_causal_probe \
+            --shard "$SHARD" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v98-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v98-frozen-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v98-shard-*
+          path: combined
+      - name: Fail-closed audit of 76 unique matched attempts
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v98_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v98_structural_selective.py audit \
+            --manifest frozen/v98_manifest.json --combined combined \
+            --out v98_report.json --md v98_report.md
+          cat v98_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-v98-76-phase-selective-prospective-audit
+          path: |
+            frozen/
+            combined/
+            v98_report.json
+            v98_report.md
+          if-no-files-found: warn

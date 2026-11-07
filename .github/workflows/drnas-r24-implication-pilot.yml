@@ -1,0 +1,67 @@
+name: DRNAS R24 implication telemetry pilot
+on:
+  push:
+    branches: [experiment/drnas-r24-implication-pilot-20261103]
+    paths: ['.github/workflows/drnas-r24-implication-pilot.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check syntax
+        run: python3 -m py_compile experiments/drnas_v16/{patch_r24_dynamics,patch_r24b_graph,r24_live_pilot,r24_overhead_pilot,r24b_validate}.py
+      - name: Build pinned upstream and three instrumented binaries
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r24-upstream
+          git -C /tmp/r24-upstream checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cp -a /tmp/r24-upstream kissat-clean
+          cp -a /tmp/r24-upstream kissat-r22
+          cp -a /tmp/r24-upstream kissat-r24b
+          python3 experiments/drnas_v16/patch_r24_dynamics.py --kissat-root kissat-clean
+          python3 experiments/drnas_v16/patch_r22_conflict_chain.py --kissat-root kissat-r22
+          python3 experiments/drnas_v16/patch_r24b_graph.py --kissat-root kissat-r24b
+          for dir in kissat-clean kissat-r22 kissat-r24b; do
+            (cd "$dir" && ./configure && make -j2 > /tmp/"$dir"-build.log)
+          done
+      - name: Stream paired R24 pilot and persist measurements
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r24_live_pilot.py --binary kissat-clean/build/kissat --cases-per-family-fold 8 | tee r24-live.log
+          test -s drnas-r24-pilot/summary.json
+      - name: Measure telemetry overhead on development formulas
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r24_overhead_pilot.py | tee r24-overhead.log
+          test -s drnas-r24-pilot/overhead.json
+      - name: Verify R24b graph tracing on development formulas
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r24b_validate.py | tee r24b-validation.log
+          test -s drnas-r24-pilot/r24b_validation.json
+      - name: Evaluate frozen R24 selector on fresh paired formulas
+        run: |
+          set -euo pipefail
+          cp experiments/drnas_v16/r24-results/local/frozen_shadow_model.json drnas-r24-pilot/frozen_shadow_model.json
+          echo '4b5e9d6f17e705cb729431f1c62fffc0629fff5034659750b551f259d60588b4  drnas-r24-pilot/frozen_shadow_model.json' | sha256sum -c -
+          python3 -u experiments/drnas_v16/r24_live_pilot.py --binary kissat-clean/build/kissat --cases-per-family-fold 8 --seed-offset 2000000 --output drnas-r24-fresh | tee r24-fresh-live.log
+          python3 -u experiments/drnas_v16/r24_shadow_selector.py evaluate | tee r24-shadow.log
+          test -s drnas-r24-fresh/shadow_results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R24-live-implication-pilot
+          path: |
+            drnas-r24-pilot/
+            drnas-r24-fresh/
+            r24-live.log
+            r24-overhead.log
+            r24b-validation.log
+            r24-fresh-live.log
+            r24-shadow.log
+          if-no-files-found: warn
+          retention-days: 90

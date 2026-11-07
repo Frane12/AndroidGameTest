@@ -1,0 +1,322 @@
+// DRNAS V13.9 experimental native GF(2) exact fast path with V7.6 fallback.
+// Structured SAT: strict full 3-XOR encoding, not filename/label dependent.
+// Outputs SAT assignment or UNSAT linear-combination proof, both verified.
+// Non-XOR inputs are exec'd into ORIGINAL V7.6 adaptive_plain (no copies).
+// Theorem is known polynomial GF(2) elimination, not general polynomial SAT.
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <sys/stat.h>
+#include <unistd.h>
+using namespace std;
+
+struct Cnf {
+ int n=0;
+ vector<vector<int>> clauses;
+};
+Cnf parse(const string& path) {
+ ifstream in(path);
+ if(!in)throw runtime_error("Cannot open DIMACS");
+ Cnf f; string line; long long expected=-1; vector<int> pending;
+ bool header=false;
+ while(getline(in,line)) {
+   istringstream iss(line);string token;
+   if(!(iss>>token))continue;
+   if(token=="c"||token=="%")continue;
+   if(token=="p") {
+     string kind,extra;
+     long long n,m;
+     if(header||!(iss>>kind>>n>>m)||kind!="cnf"||
+        n<1||n>100000||m<1||m>100000||iss>>extra)
+       throw runtime_error("Bad DIMACS header");
+     f.n=int(n);expected=m;header=true;continue;
+   }
+   if(!header)throw runtime_error("DIMACS missing header");
+   do {
+     if(token=="c")break;
+     char* end=nullptr;errno=0;
+     long value=strtol(token.c_str(),&end,10);
+     if(errno||!end||*end||value>f.n||value< -f.n)
+       throw runtime_error("Invalid DIMACS literal");
+     if(value==0) {
+       if(pending.empty())throw runtime_error("Empty clause unsupported");
+       f.clauses.push_back(move(pending));pending={};
+       if(static_cast<long long>(f.clauses.size())>expected)throw runtime_error("Excess clauses");
+     } else {
+       pending.push_back(int(value));
+       if(pending.size()>100000)throw runtime_error("Excessive clause");
+     }
+   } while(iss>>token);
+ }
+ if(!header||!pending.empty()||static_cast<long long>(f.clauses.size())!=expected)
+   throw runtime_error("Incomplete DIMACS");
+ return f;
+}
+struct Eq {
+ vector<uint64_t> bits;
+ int rhs=0;
+};
+inline int bit(const vector<uint64_t>& x,int b) {
+ return (x[b/64]>>(b%64))&1ULL;
+}
+inline void xor_inplace(vector<uint64_t>& a,const vector<uint64_t>& b) {
+ for(size_t j=0;j<a.size();j++)a[j]^=b[j];
+}
+// Every sign pattern identifies the single assignment that falsifies its clause.
+// A complete XOR encoding forbids exactly all even or all odd assignments.
+bool xor_extract(const Cnf &f, vector<Eq>& out, bool allow_mixed_widths=false) {
+ if(f.n>4096 || (!allow_mixed_widths && f.clauses.size()%4!=0))return false;
+ map<array<int,4>,uint16_t> groups;
+ for(const auto &cl:f.clauses) {
+   if(allow_mixed_widths ? (cl.size()<2 || cl.size()>4) : cl.size()!=3)
+     return false;
+   array<int,4> support{};
+   auto literals=cl;
+   sort(literals.begin(),literals.end(),[](int a,int b){return abs(a)<abs(b);});
+   unsigned mask=0;
+   for(size_t j=0;j<cl.size();++j) {
+     support[j]=abs(literals[j]);
+     if(j>0 && support[j]==support[j-1])return false;
+     if(literals[j]<0)mask|=1u<<j;
+   }
+   auto &patterns=groups[support];
+   const unsigned pattern=1u<<mask;
+   if(patterns & pattern)return false;
+   patterns|=pattern;
+   if(allow_mixed_widths && groups.size()>4096)return false;
+ }
+ const int words=(f.n+63)/64;
+ for(const auto &[support,patterns]:groups) {
+   int width=0;
+   while(width<4 && support[width])++width;
+   // Bit 0 is the all-zero assignment (even). Its exclusion fixes RHS=1.
+   const int rhs=patterns & 1u;
+   for(unsigned mask=0; mask<(1u<<width);++mask) {
+     const bool forbidden=bool(patterns & (1u<<mask));
+     if(forbidden != ((__builtin_popcount(mask)&1)!=rhs))return false;
+   }
+   Eq equation;
+   equation.bits.assign(words,0);
+   equation.rhs=rhs;
+   for(int j=0;j<width;++j) {
+     int b=support[j]-1;
+     equation.bits[b/64]|=1ULL<<(b%64);
+   }
+   out.push_back(move(equation));
+ }
+ return true;
+}
+int highest(const vector<uint64_t> &b) {
+ for(int j=int(b.size())-1;j>=0;j--)
+   if(b[j])return 64*j+63-__builtin_clzll(b[j]);
+ return -1;
+}
+struct Answer {
+ string status;
+ vector<int> model, proof_rows;
+};
+Answer solve_exact(const Cnf& f,const vector<Eq>& equations) {
+ const int n=f.n,m=int(equations.size()),proof_words=(m+63)/64;
+ struct Pivot {
+   vector<uint64_t> bits,combo;
+   int rhs=0;
+ };
+ vector<Pivot> pivots(n);
+ vector<char> present(n,0);
+ for(int i=0;i<m;i++) {
+   vector<uint64_t> bits=equations[i].bits,combo(proof_words,0);
+   combo[i/64]|=1ULL<<(i%64);
+   int rhs=equations[i].rhs;
+   for(;;) {
+     int hi=highest(bits);
+     if(hi<0)break;
+     if(!present[hi]) {
+       present[hi]=1;pivots[hi]={move(bits),move(combo),rhs};
+       goto next_equation;
+     }
+     xor_inplace(bits,pivots[hi].bits);
+     xor_inplace(combo,pivots[hi].combo);
+     rhs^=pivots[hi].rhs;
+   }
+   if(rhs) {
+     vector<uint64_t> proof(f.n?equations[0].bits.size():0,0);
+     int rhs_sum=0; Answer a;a.status="UNSAT";
+     for(int j=0;j<m;j++)if(bit(combo,j)) {
+       a.proof_rows.push_back(j);
+       xor_inplace(proof,equations[j].bits);
+       rhs_sum^=equations[j].rhs;
+     }
+     if(highest(proof)!=-1||rhs_sum!=1||a.proof_rows.empty())
+       throw runtime_error("Unsound GF(2) UNSAT proof");
+     return a;
+   }
+   next_equation:;
+ }
+ vector<uint8_t> assign(n,0);
+ // Lower pivots cannot depend on higher pivots after descending-bit elimination.
+ for(int col=0;col<n;col++)if(present[col]) {
+   const auto &p=pivots[col];
+   int parity=p.rhs;
+   for(int j=0;j<col;j++)if(bit(p.bits,j))parity^=assign[j];
+   assign[col]=parity;
+ }
+ for(const auto &eq:equations) {
+   int p=0;for(int j=0;j<n;j++)if(bit(eq.bits,j))p^=assign[j];
+   if(p!=eq.rhs)throw runtime_error("GF(2) assignment failed");
+ }
+ for(const auto &cl:f.clauses) {
+   bool ok=false;
+   for(int lit:cl)if(bool(assign[abs(lit)-1])==(lit>0)){ok=true;break;}
+   if(!ok)throw runtime_error("SAT model failed CNF clause verification");
+ }
+ Answer a;a.status="SAT";
+ for(int i=0;i<n;i++)a.model.push_back(assign[i]?i+1:-(i+1));
+ return a;
+}
+void json_answer(const Answer &a,int n,int m,const char *path="affine_exact") {
+ cout<<"DRNAS_HYBRID_RESULT\t{\"status\":\""<<a.status
+     <<"\",\"path\":\""<<path<<"\",\"verified\":true,\"variables\":"
+     <<n<<",\"equations\":"<<m;
+ if(a.status=="SAT") {
+   cout<<",\"model\":[";
+   for(size_t i=0;i<a.model.size();i++)cout<<(i?",":"")<<a.model[i];
+   cout<<"]";
+ } else {
+   cout<<",\"proof_rows\":[";
+   for(size_t i=0;i<a.proof_rows.size();i++)
+     cout<<(i?",":"")<<a.proof_rows[i];
+   cout<<"]";
+ }
+ cout<<"}\n";
+}
+
+// Strict proof-complete canonical-positive pigeonhole CNF recognition.
+// No metadata labels, family names, or filename can affect this check.
+// Every variable occurs exactly once among bird clauses, and every negative
+// edge belongs to exactly one full hole clique with one variable per bird.
+struct UnionFind {
+ vector<int> parent,rank;
+ explicit UnionFind(int n):parent(n+1),rank(n+1,0){
+   for(int i=0;i<=n;i++)parent[i]=i;
+ }
+ int find(int a){while(parent[a]!=a){parent[a]=parent[parent[a]];a=parent[a];}return a;}
+ void join(int a,int b){
+   a=find(a);b=find(b);if(a==b)return;
+   if(rank[a]<rank[b])swap(a,b);
+   parent[b]=a;if(rank[a]==rank[b])rank[a]++;
+ }
+};
+bool complete_php_proof(const Cnf &f,int &holes,int &birds) {
+ // Bound recognition complexity; all other structures fall back to V7.6.
+ if(f.n>4096 || f.clauses.size()>100000)return false;
+ vector<vector<int>> positive;
+ vector<array<int,2>> negative;
+ for(const auto &cl:f.clauses) {
+   if(cl.size()>=3 &&
+      all_of(cl.begin(),cl.end(),[](int x){return x>0;}))
+     positive.push_back(cl);
+   else if(cl.size()==2 && cl[0]<0 && cl[1]<0 && cl[0]!=cl[1])
+     negative.push_back({-cl[0],-cl[1]});
+   else return false;
+ }
+ birds=int(positive.size());
+ if(birds<4)return false;
+ holes=int(positive[0].size());
+ if(holes<3||birds!=holes+1||f.n!=birds*holes)return false;
+ const size_t required=size_t(holes)*size_t(birds)*size_t(birds-1)/2;
+ if(negative.size()!=required || positive.size()+negative.size()!=f.clauses.size())
+   return false;
+ vector<int> bird_of(f.n+1,-1);
+ for(int b=0;b<birds;b++) {
+   if(int(positive[b].size())!=holes)return false;
+   for(int v:positive[b]) {
+     if(v<1||v>f.n||bird_of[v]!=-1)return false;
+     bird_of[v]=b;
+   }
+ }
+ for(int v=1;v<=f.n;v++)if(bird_of[v]<0)return false;
+ UnionFind uf(f.n);
+ vector<int> degree(f.n+1,0);
+ // Duplicate-free collection uses ordered pairs with compact 64-bit key.
+ vector<uint64_t> edges;edges.reserve(negative.size());
+ for(auto e:negative) {
+   const int a=e[0],b=e[1];
+   if(a<1||a>f.n||b<1||b>f.n||a==b||
+      bird_of[a]==bird_of[b])return false;
+   uf.join(a,b);degree[a]++;degree[b]++;
+   uint32_t lo=uint32_t(min(a,b)),hi=uint32_t(max(a,b));
+   edges.push_back((uint64_t(lo)<<32)|uint64_t(hi));
+ }
+ sort(edges.begin(),edges.end());
+ if(adjacent_find(edges.begin(),edges.end())!=edges.end())return false;
+ for(int v=1;v<=f.n;v++)if(degree[v]!=birds-1)return false;
+ map<int,vector<int>> components;
+ for(int v=1;v<=f.n;v++)components[uf.find(v)].push_back(v);
+ if(int(components.size())!=holes)return false;
+ for(const auto &part:components) {
+   if(int(part.second.size())!=birds)return false;
+   vector<char> seen(birds,0);
+   for(int v:part.second) {
+     if(seen[bird_of[v]])return false;
+     seen[bird_of[v]]=1;
+   }
+   if(any_of(seen.begin(),seen.end(),[](char x){return !x;}))return false;
+ }
+ // Above proves exactly h mutually exclusive hole cliques and h+1
+ // independently required positive bird clauses -> contradiction.
+ return true;
+}
+void json_php(int holes,int birds) {
+ cout<<"DRNAS_HYBRID_RESULT\t{\"status\":\"UNSAT\","
+     <<"\"path\":\"pigeonhole_exact\",\"verified\":true,"
+     <<"\"holes\":"<<holes<<",\"pigeons\":"<<birds<<"}\n";
+}
+
+int main(int argc,char**argv) {
+ if(argc!=4 && !(argc==5 && string(argv[4])=="--classify-only")) {
+   cerr<<"Usage: native_hybrid INPUT_CNF ORIGINAL_V76_BINARY SEED\n";
+   return 2;
+ }
+ try {
+   const string input=argv[1];
+   struct stat st{};
+   if(stat(input.c_str(),&st)!=0)throw runtime_error("Input stat failed");
+   if(st.st_size<=32*1024*1024) {
+     try {
+       Cnf f=parse(input);
+     vector<Eq> equations;
+     if(xor_extract(f,equations)) {
+       Answer a=solve_exact(f,equations);
+       json_answer(a,f.n,int(equations.size()));
+       return 0;
+     }
+     int holes=0,birds=0;
+     if(complete_php_proof(f,holes,birds)) {
+       json_php(holes,birds);
+       return 0;
+     }
+     } catch(const std::runtime_error& /*unsupported DIMACS*/ ) {
+       // Safe fallback for noncanonical, oversized, or unsupported DIMACS.
+       // Never report SAT/UNSAT based on a partial or failed structural parse.
+     }
+   }
+   // General SAT fallback: original C++ V7.6, bypass Python on non-XOR input.
+   cout<<"DRNAS_HYBRID_ROUTE\tfallback_v76\n"<<flush;
+   char *av[]={argv[2],const_cast<char*>("adaptive_plain"),argv[1],argv[3],nullptr};
+   if(argc==5)return 0; // structural-only audit; never invoke fallback solver
+   execv(argv[2],av);
+   throw runtime_error("execv fallback failed (ensure absolute binary path)");
+ } catch(const exception& e) {
+   cerr<<"DRNAS_NATIVE_HYBRID_ERROR "<<e.what()<<"\n";return 3;
+ }
+}
+

@@ -1,0 +1,144 @@
+name: DRNAS SAT V10.1 - Graded Confidence / Identical First 256 Conflicts
+on:
+  push:
+    branches: [experiment/drnas-sat-v101-graded-confidence-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-v101-graded-confidence.yml'
+      - 'research/drnas-sat-v7-8/v101_graded_confidence_probe.cpp'
+      - 'research/drnas-sat-v7-8/v101_graded_confidence.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v100-frozen-protocol-and-inputs
+          run-id: 41245906965
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: v100
+      - uses: actions/download-artifact@v4
+        with:
+          name: v98-frozen-inputs
+          run-id: 41243419636
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: v98
+      - name: Pin previous experiments and SHA-verified 2025 external inputs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v101_graded_confidence.py
+          (cd v100 && sha256sum -c v100_manifest.sha256)
+          (cd v98 && sha256sum -c v98_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v101_graded_confidence.py freeze \
+            --v100 v100/v100_manifest.json --v98 v98/v98_manifest.json \
+            --source2025 research/drnas-sat-real-2025/frozen_sources.json \
+            --out v101_manifest.json
+          sha256sum v101_manifest.json > v101_manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v101-frozen-protocol-and-inputs
+          path: |
+            v101_manifest.json
+            v101_manifest.sha256
+          if-no-files-found: warn
+  replay:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    name: v101-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v101-frozen-protocol-and-inputs
+          path: frozen
+      - name: Build frozen CaDiCaL 3.0.1 with predeclared V10.1 signal gates
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v101_manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert s.count(marker)==1
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(s.split(marker,1)[0]+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/v101-build.log 2>&1) \
+            || { tail -140 /tmp/v101-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v101_graded_confidence_probe.cpp \
+            cadical-src/build/libcadical.a -o v101_probe -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Run 2 CNFs x 11 arms x 2 repeats with identical 256-conflict checkpoints
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/v101_graded_confidence.py run \
+            --manifest frozen/v101_manifest.json \
+            --exe ./v101_probe --shard "$SHARD" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v101-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  audit:
+    needs: [freeze,replay]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: v101-frozen-protocol-and-inputs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v101-shard-*
+          path: combined
+      - name: Strict failure if any early trajectory differs or gate misfires
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c v101_manifest.sha256)
+          python3 -u research/drnas-sat-v7-8/v101_graded_confidence.py audit \
+            --manifest frozen/v101_manifest.json --combined combined \
+            --out v101_report.json --md v101_report.md
+          cat v101_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V101-264-Graded-Confidence-Audit
+          path: |
+            frozen/
+            combined/
+            v101_report.json
+            v101_report.md
+          if-no-files-found: warn

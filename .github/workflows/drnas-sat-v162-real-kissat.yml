@@ -1,0 +1,73 @@
+name: DRNAS SAT v16.2 real Kissat baseline comparison
+on:
+  push:
+    branches:
+      - 'experiment/drnas-v16-adaptive-general-20261101'
+    paths:
+      - 'experiments/drnas_v16/**'
+      - '.github/workflows/drnas-sat-v162-real-kissat.yml'
+  workflow_dispatch:
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone pinned upstream Kissat
+        run: |
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-upstream
+          cd /tmp/kissat-upstream
+          git checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          echo "Kissat upstream commit: $(git rev-parse HEAD)"
+          ./configure
+          make -j2
+          ./build/kissat --version
+      - name: Generate independent seeded benchmark suite
+        run: python3 experiments/drnas_v16/generate_v162_cnf.py /tmp/drnas-v162-cnf
+      - name: Run three-mode benchmark with real Kissat
+        run: |
+          python3 experiments/drnas_v16/benchmark_v161.py \
+            --cnf-dir /tmp/drnas-v162-cnf \
+            --solver /tmp/kissat-upstream/build/kissat \
+            --timeout 5 --repeats 3 --out drnas_v162_real_kissat.csv
+      - name: Check known-answer formulas, mode parity and report medians
+        run: |
+          python3 - <<'PY'
+          import csv
+          import statistics
+          from collections import defaultdict
+          with open("drnas_v162_real_kissat.csv", newline="") as f:
+              rows=list(csv.DictReader(f))
+          assert len(rows)==36*3*3, len(rows)
+          for row in rows:
+              fname=row["file"].split("/")[-1]
+              expected="SAT" if fname.startswith("sat_planted") else "UNSAT" if fname.startswith("unsat_units") else None
+              if expected and row["result"]!=expected:
+                  raise SystemExit(f"Unexpected result: {fname} expected {expected} got {row['result']}")
+              if row["result"]=="ERROR":
+                  raise SystemExit(f"Solver error: {fname}, mode={row['mode']}")
+              assert row["experimental_gate"]=="False"
+          pairs=defaultdict(dict)
+          for row in rows:
+              pairs[(row["file"],row["repeat"])][row["mode"]]=row
+          for key,modes in pairs.items():
+              solved={r["result"] for r in modes.values() if r["result"] in ("SAT","UNSAT")}
+              if len(solved)>1: raise SystemExit(f"Mode disagreement: {key}")
+          with open("drnas_v162_summary.txt","w") as out:
+              for mode in ("baseline","control","adaptive"):
+                  values=[float(r["total_sec"]) for r in rows if r["mode"]==mode]
+                  solved=sum(r["result"] in ("SAT","UNSAT") for r in rows if r["mode"]==mode)
+                  timeouts=sum(r["result"]=="TIMEOUT" for r in rows if r["mode"]==mode)
+                  line=f"{mode}: median wall seconds={statistics.median(values):.6f}; solved={solved}; timeouts={timeouts}; samples={len(values)}"
+                  print(line); out.write(line+"\n")
+              out.write("Adaptive gate OFF: no solver-level speedup can be claimed from this run.\n")
+          PY
+      - name: Upload CSV and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v162-real-kissat-metrics
+          path: |
+            drnas_v162_real_kissat.csv
+            drnas_v162_summary.txt
+          if-no-files-found: warn

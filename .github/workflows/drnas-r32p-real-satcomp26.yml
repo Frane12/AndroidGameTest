@@ -1,0 +1,151 @@
+name: DRNAS R32p real SATComp 2026 original CNF blind external validation
+on:
+  push:
+    branches: [experiment/drnas-r32p-external-satcomp26-20261103]
+    paths:
+      - '.github/workflows/drnas-r32p-real-satcomp26.yml'
+      - 'experiments/drnas_v16/r32p_real_satcomp26_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r32p-real-satcomp26-20261103-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Freeze pre-selected 2026 official GBD source SHAs and pinned native Kissat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r32p_real_satcomp26_benchmark.py
+      - name: Download and audit 14 precommitted canonical SATComp2026 GBD candidates
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32p_real_satcomp26_benchmark.py freeze --out frozen | tee r32p-freeze.log
+          (cd frozen && sha256sum -c source.sha256)
+          python3 - <<'PY'
+          import json
+          j=json.load(open("frozen/manifest.json"))
+          assert j["protocol"].startswith("DRNAS-R32P-REAL-SATCOMP2026")
+          assert len(j["precommitted_candidates"])==14
+          assert len(j["complete_download_log"])==14
+          assert len(j["cases"])>=3
+          assert len({x["sha256"] for x in j["cases"]})==len(j["cases"])
+          print("R32P_EXTERNAL_SOURCE_FREEZE_PASS",len(j["cases"]))
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32n-pinned-binaries
+          run-id: 41653089760
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify exact previous R32n native/clean binary and mode support
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          compiled/clean --version
+          compiled/native --version
+          echo R32P_PINNED_KISSAT_VERIFIED
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32p-official-2026-size-bounded-frozen-originals
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r32p-kissat-pinned-binaries
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32p-official-source-download-audit
+          path: |
+            r32p-freeze.log
+            frozen/manifest.json
+            frozen/source.sha256
+          if-no-files-found: warn
+  paired:
+    needs: freeze
+    name: r32p-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32p-official-2026-size-bounded-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32p-kissat-pinned-binaries
+          path: compiled
+      - name: Verify frozen official source and compiled solver SHA256
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean compiled/native
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+      - name: Run single-process matched 60-second timeout on real official CNFs
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32p_real_satcomp26_benchmark.py measure \
+            --inputs frozen --clean compiled/clean --native compiled/native \
+            --shard "$SHARD" --out results | tee r32p-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r32p-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r32p-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    name: Audit real 2026 original SAT verdicts, SHA proof safety and 60s PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32p-official-2026-size-bounded-frozen-originals
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r32p-shard-*
+          path: combined
+      - name: Validate paired original-CNF benchmark and report all exclusions
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r32p_real_satcomp26_benchmark.py aggregate \
+            --inputs frozen --combined combined --output r32p-official-results.json \
+            --report r32p-official-results.md
+          cat r32p-official-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R32P-REAL-SATCOMP2026-60S-FINAL
+          path: |
+            r32p-official-results.json
+            r32p-official-results.md
+            frozen/manifest.json
+          if-no-files-found: warn

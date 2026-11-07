@@ -1,0 +1,178 @@
+name: DRNAS R5 - guarded multivariate policy official 2025+2026 holdout
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-r5-multisignal-20261101]
+    paths:
+      - ".github/workflows/drnas-r5-multisignal.yml"
+      - "experiments/drnas_v16/patch_r5_multisignal.py"
+      - "experiments/drnas_v16/official_r5_crossyear.py"
+      - "experiments/drnas_v16/r5_frozen_crossyear_candidates.json"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r5-frozen-multisignal-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: Freeze audit and real in-process Kissat gate smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate frozen input, Python, policy and labels
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{patch_r4_restart_gate,official_r4_restart_gate,predict_conflict_patch_v177,official_parallel_v180}.py
+          python3 - <<'PY'
+          import json
+          d=json.load(open("experiments/drnas_v16/r5_frozen_crossyear_candidates.json"))
+          assert len(d["groups"])==4 and all(len(x)==16 for x in d["groups"])
+          x=[(e["year"],e["index"]) for g in d["groups"] for e in g]
+          assert len(x)==len(set(x))==64
+          assert d["cap_seconds"]==60 and d["repeats"]==2
+          assert d["frozen_rule"]["sample_at_conflict"]==512
+          assert d["frozen_rule"]["intervention_at_conflict"]==2048
+          assert d["frozen_rule"]["action_restartint"]==25
+          assert d["selection"]["max_formulas_per_shard_per_year"]==2
+          assert all(e["official_kissat"]["status"] in ("sat-verified","unsat-verified")
+               for g in d["groups"] for e in g if e["year"]==2026)
+          f=d["frozen_rule"]
+          accepted=[]
+          for e in d["known_development_cases"]:
+            r=e["early_restarts"];g=e["g"];p=e["p"];decision=e["d"]
+            good=(r<=f["early_restarts_max"] and g<f["lbd_ratio_lt"]
+                 and f["propagations_per_conflict_min"]<=p<=f["propagations_per_conflict_max"]
+                 and decision<=f["decisions_per_conflict_max"])
+            assert ("switch" if good else "no-op")==e["expected_decision"],e
+            accepted.append([e["index"],good])
+          print("R5_CONFIG_FROZEN_64_CANDIDATES",accepted)
+          PY
+      - name: Compile pinned truly original Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r5-original
+          git -C /tmp/kissat-r5-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r5-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r5-original && ./configure && make -j2)
+      - name: Compile exactly same source with frozen R5 C patch
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r5-patched
+          git -C /tmp/kissat-r5-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r5_multisignal.py --kissat-root /tmp/kissat-r5-patched
+          (cd /tmp/kissat-r5-patched && ./configure && make -j2)
+          strings /tmp/kissat-r5-patched/build/kissat > /tmp/r5_strings.txt
+          grep -Fq R5_EARLY /tmp/r5_strings.txt
+          grep -Fq DRNAS_V177_SWITCH /tmp/r5_strings.txt
+      - name: Check official SAT-UNSAT correctness on synthetic smoke
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/r5_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/r5_unsat.cnf
+          for solver in /tmp/kissat-r5-original/build/kissat /tmp/kissat-r5-patched/build/kissat; do
+            set +e
+            "$solver" -s /tmp/r5_sat.cnf > /tmp/r5_sat.log 2>&1
+            sat=$?
+            "$solver" -s /tmp/r5_unsat.cnf > /tmp/r5_unsat.log 2>&1
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          echo R5_SYNTHETIC_SAT_UNSAT_SMOKE_PASS
+      - name: Verify actual 512-conflict frozen R5 multi-signal decision on synthetic hard CNF
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import random
+          r=random.Random(4182301)
+          n=240;m=1040
+          with open("/tmp/r5_random_hard.cnf","w") as f:
+            print(f"p cnf {n} {m}",file=f)
+            for _ in range(m):
+              vs=r.sample(range(1,n+1),3)
+              print(*[(v if r.getrandbits(1) else -v) for v in vs],0,file=f)
+          PY
+          set +e
+          DRNAS_V177_MODE=r5_gate timeout 12s /tmp/kissat-r5-patched/build/kissat -s /tmp/r5_random_hard.cnf > /tmp/r5_gate_smoke.log 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 10 -o "$code" -eq 20 -o "$code" -eq 124
+          grep -F "c R5_EARLY" /tmp/r5_gate_smoke.log
+          grep -Eq "eligible=[01] action=[0-9]+" /tmp/r5_gate_smoke.log
+          echo R5_REAL_IN_PROCESS_GATE_SMOKE_PASS
+  holdout:
+    name: Frozen official 2025+2026 R5 shard ${{ matrix.shard }} paired six policies
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile real unmodified upstream Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r5-original
+          git -C /tmp/kissat-r5-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r5-original && ./configure && make -j2)
+      - name: Compile R5 patched in-process Kissat from fresh original source
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r5-patched
+          git -C /tmp/kissat-r5-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r5_multisignal.py --kissat-root /tmp/kissat-r5-patched
+          (cd /tmp/kissat-r5-patched && ./configure && make -j2)
+          strings /tmp/kissat-r5-patched/build/kissat > /tmp/r5_strings.txt
+          grep -Fq R5_EARLY /tmp/r5_strings.txt
+      - name: Compile stable V15.3.1 No-Hang comparator
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-v1531-r5
+      - name: Run frozen official 2025 and 2026 cohorts without performance-based re-selection
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_r5_crossyear.py --shard "${{ matrix.shard }}"
+      - name: Preserve complete or partial timings and input SHA-256
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r5_shard_${{ matrix.shard }}
+          path: |
+            drnas-r5-crossyear-holdout-results/shard_${{ matrix.shard }}/manifest.json
+            drnas-r5-crossyear-holdout-results/shard_${{ matrix.shard }}/measurements.partial.csv
+            drnas-r5-crossyear-holdout-results/shard_${{ matrix.shard }}/measurements.csv
+            drnas-r5-crossyear-holdout-results/shard_${{ matrix.shard }}/summary.json
+          retention-days: 60
+          if-no-files-found: warn
+  aggregate:
+    name: Aggregate paired official PAR-2, regression audit and original Kissat comparison
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r5_shard_*
+          path: /tmp/r5-download
+      - name: Reassemble four frozen official holdout shards
+        run: |
+          set -euo pipefail
+          mkdir -p drnas-r5-crossyear-holdout-results
+          for i in 0 1 2 3; do
+            test -s "/tmp/r5-download/r5_shard_${i}/measurements.csv"
+            cp -a "/tmp/r5-download/r5_shard_${i}" "drnas-r5-crossyear-holdout-results/shard_${i}"
+          done
+          python3 -u experiments/drnas_v16/official_r5_crossyear.py --aggregate
+      - name: Publish all six policy results and paired per-formula comparisons
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R5-Frozen-MultiSignal-Official-2025-2026-Holdout
+          path: drnas-r5-crossyear-holdout-results/aggregate.json
+          retention-days: 60

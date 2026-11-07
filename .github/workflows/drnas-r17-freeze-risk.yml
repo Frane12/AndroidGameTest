@@ -1,0 +1,62 @@
+name: DRNAS R17 freeze dev-only harm-risk model
+
+on:
+  push:
+    branches: [experiment/drnas-r17-risk-aware-frozen-20261102]
+    paths:
+      - 'experiments/drnas_v16/r17_train_risk.py'
+      - '.github/workflows/drnas-r17-freeze-risk.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-r17-dev-only-freeze-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Train fixed harm-risk model only on R16 random3 development
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact historical source hash and no training on test folds
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r17_train_risk.py
+          python3 -u experiments/drnas_v16/r17_train_risk.py
+          test -s r17-frozen-model/risk_model.json
+          test -s r17-frozen-model/train_audit.json
+      - name: Validate frozen model, seed-independent coefficients and data boundary
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,math
+          m=json.load(open("r17-frozen-model/risk_model.json"))
+          a=json.load(open("r17-frozen-model/train_audit.json"))
+          assert m["train_count"]==39 and m["training_fold"]=="R16 random3_development ONLY"
+          assert len(m["training_sha256"])==39 and len(set(m["training_sha256"]))==39
+          assert a["risk_positive"]==m["risk_label_positive"]
+          assert m["frozen_approved_risk_limits"]=={"r17_risk30":0.3,"r17_risk45":0.45}
+          assert len(m["feature_order"])==5 and len(m["coefficients"])==5
+          assert all(math.isfinite(v) for v in [m["intercept"],*m["coefficients"]])
+          print("R17_DEV_ONLY_MODEL_FROZEN_PASS",a)
+          PY
+      - name: Upload model artifact for provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R17-Dev-Only-Frozen-Harm-Risk-Model
+          path: r17-frozen-model/
+          retention-days: 90
+      - name: Commit immutable model before any R17 prospective bench execution
+        run: |
+          set -euo pipefail
+          mkdir -p experiments/drnas_v16/r17-frozen-model
+          cp -a r17-frozen-model/. experiments/drnas_v16/r17-frozen-model/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/drnas_v16/r17-frozen-model
+          if ! git diff --cached --quiet; then
+            git commit -m "data: freeze R17 dev-only harm probability model before blind benchmark"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

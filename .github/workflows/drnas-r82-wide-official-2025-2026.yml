@@ -1,0 +1,216 @@
+name: DRNAS R82 wide blind official SAT2025 SAT2026 vs Kissat CaDiCaL R28 R65 R80
+on:
+  push:
+    branches: [experiment/drnas-r82-wide-2025-2026-blind-20261104]
+    paths:
+      - '.github/workflows/drnas-r82-wide-official-2025-2026.yml'
+      - 'experiments/drnas_v16/r82_wide_official_2025_2026.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r82-wide-official2025-2026-20261104
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    name: Freeze up to 48 SHA-ranked real 2025-2026 originals with no solver or XOR screening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight Python syntax plus certified XOR and R65 soundness selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r82_wide_official_2025_2026.py
+          python3 -u experiments/drnas_v16/r63_real2026_xor_prevalence_fallback.py selftest
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r63-frozen-real2026-originals-and-xor-prevalence
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          run-id: 41717235335
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior66
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior67
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior73
+      - uses: actions/download-artifact@v4
+        with:
+          name: r81-fresh-originals-structural-holdout
+          run-id: 41752571755
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior81
+      - name: Randomly SHA-rank new 2025 and official 2026 sources without solving or structure selection
+        run: |
+          set -euo pipefail
+          test -s prior/fresh/manifest.json
+          test -s prior66/new/manifest.json
+          test -s prior67/new/manifest.json
+          test -s prior73/new/manifest.json
+          test -s prior81/world/manifest.json
+          python3 -u experiments/drnas_v16/r82_wide_official_2025_2026.py freeze \
+            --prior prior/fresh --prior66 prior66/new --prior67 prior67/new \
+            --prior73 prior73/new --prior81 prior81/world \
+            --out world | tee r82-freeze.log
+          (cd world && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          path: |
+            world/
+            r82-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  pinned:
+    name: Verify unchanged world reference solver binaries and original native GF2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - name: Verify SHA256 exact previous world and DRNAS artifacts
+        run: |
+          set -euo pipefail
+          (cd bins && sha256sum -c binaries.sha256)
+          (cd native && sha256sum -c binary.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          lscpu > reference-machine.txt
+          echo R82_SOLVER_SHA_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r82-original-solver-provenance
+          path: |
+            bins/*.sha256
+            native/*.sha256
+            reference-machine.txt
+
+  benchmark:
+    name: r82-shard-${{ matrix.shard }}
+    needs: [freeze,pinned]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - name: Matched two-repeat serial 30s end-to-end six-solver real-original benchmark
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          (cd native && sha256sum -c binary.sha256)
+          chmod +x bins/kissat_pinned bins/kissat_4_0_4 bins/cadical_3_0_1 native/kissat native/r28_gf2
+          python3 -u experiments/drnas_v16/r82_wide_official_2025_2026.py measure \
+            --sources world --bins bins --native native \
+            --shard "$SHARD" --out results | tee r82-live.log
+          test -s results/r82-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r82-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r82-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R82 final whole-sample and 2025/2026 XOR split PAR2 bootstrap precommitted claim
+    needs: [freeze,pinned,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r82-shard-*
+          path: combined
+      - name: Prove matched complete rows, original SHA, independent 2026 results and source-bootstrap confidence
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r82_wide_official_2025_2026.py audit \
+            --sources world --combined combined --out final | tee r82-audit.log
+          cat final/r82-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R82-WIDE-OFFICIAL-2025-2026-FINAL
+          path: |
+            final/
+            world/manifest.json
+            r82-audit.log
+          if-no-files-found: error
+          retention-days: 90

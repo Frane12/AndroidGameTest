@@ -1,0 +1,131 @@
+name: DRNAS SAT official 2026 short-long and static prediction (18 CNFs)
+on:
+  push:
+    branches: [experiment/drnas-sat-official-shortlong-predict-20261031]
+    paths:
+      - '.github/workflows/drnas-sat-official-shortlong-predict.yml'
+      - 'research/drnas-sat-v7-8/official_shortlong_*.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    name: freeze-official-18-train-holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify original SAT Competition 2026 public score table
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 90 \
+            https://raw.githubusercontent.com/satcompetition/2026/3e2dee7cf5aa643c77bf946280a3c1c520756ef9/downloads/scores.csv \
+            -o official_scores.csv
+          test "$(git hash-object official_scores.csv)" = 9c926b2bd35ac0fb4f3d0cf8f58c97178d43faef
+          python3 -m py_compile research/drnas-sat-v7-8/official_shortlong_select.py \
+            research/drnas-sat-v7-8/official_shortlong_run.py \
+            research/drnas-sat-v7-8/official_shortlong_predict.py
+      - name: Freeze 18 authentic input hashes and nine/nine split (no solver tested)
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_shortlong_select.py
+          sha256sum official_shortlong_manifest.json | tee manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          path: |
+            official_shortlong_manifest.json
+            manifest.sha256
+          if-no-files-found: error
+  benchmark:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    name: official-timing-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          path: official_manifest
+      - name: Verify pristine solver versions and compile common CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd official_manifest && sha256sum -c manifest.sha256)
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          test "$(git hash-object research/drnas-sat-v7-8/v80_hybrid_probe.cpp)" = 208c8641c311fcb0940259c4ff2bc1c1e0f23838
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 research/drnas-sat-v7-8/patch_cadical_v90.py cadical-src
+          (cd cadical-src && ./configure && make -j2 >/tmp/cadical-build.log 2>&1) \
+            || { tail -100 /tmp/cadical-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v92_early_structural.cpp \
+            cadical-src/build/libcadical.a -o v92_early_structural -pthread -ldl -lz
+          lscpu > cpu.txt
+      - name: Paired 2s & 15s cap, five modes, two repetitions on three official CNFs
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_shortlong_run.py \
+            --manifest official_manifest/official_shortlong_manifest.json \
+            --shard "$SHARD" \
+            --exe ./v92_early_structural \
+            --out results
+      - name: Preserve all raw results and any incomplete/invalid trials
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-shortlong-shard-${{ matrix.shard }}
+          path: |
+            results/
+            cpu.txt
+          if-no-files-found: warn
+  predictor:
+    needs: [freeze,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-shortlong-frozen-manifest
+          path: original_manifest
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: official-shortlong-shard-*
+          path: combined-official
+      - name: Fail closed on missing data; choose TRAIN-only rule, audit untouched holdout
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas-sat-v7-8/official_shortlong_predict.py combined-official
+          cat official_shortlong_report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve predictor, 2s & 15s results and error evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-Official-ShortLong-18-TrainHoldout-Results
+          path: |
+            official_shortlong_report.md
+            official_shortlong_prediction.json
+          if-no-files-found: warn

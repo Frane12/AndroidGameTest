@@ -1,0 +1,218 @@
+name: DRNAS R78 24-Source SAT2025 Frozen XOR Adaptive vs R28 R65 Kissat
+on:
+  push:
+    branches: [experiment/drnas-r78-xor-adaptive-prospective-20261104]
+    paths:
+      - '.github/workflows/drnas-r78-xor-adaptive-prospective.yml'
+      - 'experiments/drnas_v16/r78_xor_adaptive_prospective.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r78-adaptive-20261104
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: R78 freeze 24 unscreened original SAT2025 formulas excluding R63-77 histories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax, structural soundness and inherited parity selfchecks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r78_xor_adaptive_prospective.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R63-REAL2026-XOR-PREVALENCE-FALLBACK-FINAL
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r63
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          run-id: 41717235335
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r66
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r67
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r67-report
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r73
+      - uses: actions/download-artifact@v4
+        with:
+          name: r77-source-frozen
+          run-id: 41741289273
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r77
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-compiled
+      - name: Conservative SHA registry and prospective unscreened 2025 source selection
+        run: |
+          set -euo pipefail
+          test -s old-r73/new/manifest.json
+          test -s old-r77/world/manifest.json
+          (cd old-compiled && sha256sum -c binary.sha256)
+          chmod +x old-compiled/kissat
+          python3 -u experiments/drnas_v16/r78_xor_adaptive_prospective.py freeze \
+            --r63 old-r63/r63-final.json \
+            --r66 old-r66/new/manifest.json \
+            --r67 old-r67/new/manifest.json \
+            --r67final old-r67-report/r67-final.json \
+            --r73 old-r73 --r77 old-r77 \
+            --kissat old-compiled/kissat --out world | tee r78-freeze.log
+          (cd world && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r78-source-frozen
+          path: |
+            world/
+            r78-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  prepare:
+    name: Verify same pinned Kissat and R28 GF2 native binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify SHA256 and copy exact binaries
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+          test -x compiled/kissat
+          test -x compiled/r28_gf2
+          mkdir -p bin
+          cp compiled/kissat compiled/r28_gf2 bin/
+          chmod +x bin/kissat bin/r28_gf2
+          (cd bin && sha256sum kissat r28_gf2 > binary.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          lscpu > bin/runner_cpu.txt
+          echo "R78_BINARIES_PASS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r78-identical-binaries
+          path: bin/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r78-shard-${{ matrix.shard }}
+    needs: [freeze,prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 43
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r78-source-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r78-identical-binaries
+          path: bin
+      - name: 3 paired repeats per source, 4 policies, 30s cap incl adaptive overhead
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/r28_gf2
+          python3 -u experiments/drnas_v16/r78_xor_adaptive_prospective.py measure \
+            --sources world --binaries bin --shard "$SHARD" --out results | tee r78-live.log
+          test -s results/r78-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r78-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r78-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R78 final 288-run SHA correctness PAR2 paired scatter audit
+    needs: [freeze,prepare,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r78-source-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r78-shard-*
+          path: combined
+      - name: Fail closed on missing shards, paired answers and SHA/cpu drift
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r78_xor_adaptive_prospective.py audit \
+            --sources world --combined combined --out final
+          cat final/r78-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R78-ADAPTIVE-24FORMULAS-288TRIALS-FINAL
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90

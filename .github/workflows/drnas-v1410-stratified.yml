@@ -1,0 +1,60 @@
+name: DRNAS V14.10 Stratified native and external holdout B
+on:
+  push:
+    branches: [experiment/drnas-v147-xor4-robust-proof-20261101]
+    paths:
+      - 'research/drnas-sat-v7-8/v1410_xor4.cpp'
+      - 'research/tseitin-replay/v1410_regression_benchmark.py'
+      - 'research/tseitin-replay/v1410_public_holdout.py'
+      - '.github/workflows/drnas-v1410-stratified.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile all five DRNAS native baselines
+        run: |
+          set -euo pipefail
+          for version in 142 147 148 149 1410; do
+            source="research/drnas-sat-v7-8/v${version}_xor4.cpp"
+            g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra "$source" -o "/tmp/v${version}_xor4"
+            test -x "/tmp/v${version}_xor4"
+          done
+      - name: Compile pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Regression six native solvers on 72 development cases
+        run: |
+          python3 research/tseitin-replay/v1410_regression_benchmark.py
+      - name: Upload V14.10 regression
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1410-Regression-72
+          path: v1410-regression-results/
+          if-no-files-found: warn
+      - name: Fetch independent public holdout split B at pinned commit
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/Byt-wyze-technology/sat-instances-library.git /tmp/sat-external
+          test "$(git -C /tmp/sat-external rev-parse HEAD)" = "0a150d63fb86d0eb344d65c6b2cf94be24bbfd11"
+      - name: Benchmark six native solvers on unseen 12-case public holdout B
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v1410_public_holdout.py
+      - name: Upload independent public holdout B
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V1410-External-Unseen-12-B
+          path: v1410-public-holdout-results/
+          if-no-files-found: warn

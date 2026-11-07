@@ -1,0 +1,159 @@
+name: DRNAS V18.3 Hardware-Logic dynamics and Psi calibration replay
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-v183-hardware-logic-20261101
+    paths:
+      - ".github/workflows/drnas-sat-v183-hardware-logic.yml"
+      - "experiments/drnas_v16/patch_hardware_v183.py"
+      - "experiments/drnas_v16/official_hardware_v183.py"
+      - "experiments/drnas_v16/aggregate_hardware_v183.py"
+      - "experiments/drnas_v16/v183_hardware_calibration_cases.json"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-v183-hw-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: Two real binaries, patched CPU stage, SAT/UNSAT smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python scripts and frozen replay plan
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{official_parallel_v180,patch_neuroflow_v182,patch_hardware_v183,official_hardware_v183,aggregate_hardware_v183}.py
+          python3 - <<'PY'
+          import json
+          x=json.load(open('experiments/drnas_v16/v183_hardware_calibration_cases.json'))
+          assert x['kind'].startswith('replay NOT blind')
+          assert x['repeats']==2 and len(x['shards'])==2
+          assert set(x['policies'])=={'baseline','monitor','fixed25','adaptive_gate'}
+          assert len({c['official_index'] for shard in x['shards'] for c in shard})==4
+          print('V183_CALIBRATION_PLAN_VALID',flush=True)
+          PY
+      - name: Compile original pinned Kissat
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v183-original
+          git -C /tmp/kissat-v183-original checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v183-original rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-v183-original && ./configure && make -j2)
+      - name: Add V18.2 conflict + V18.3 preprocessing hardware snapshots
+        run: |
+          set -euo pipefail
+          # Independent fresh clone: patches must be applied BEFORE the first
+          # compilation. Copying a built tree left stale .o files (run 41314570659).
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v183-hardware
+          git -C /tmp/kissat-v183-hardware checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v183-hardware rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-v183-hardware && ./configure)
+          python3 experiments/drnas_v16/patch_neuroflow_v182.py --kissat-root /tmp/kissat-v183-hardware
+          python3 experiments/drnas_v16/patch_hardware_v183.py --kissat-root /tmp/kissat-v183-hardware
+          (cd /tmp/kissat-v183-hardware && make -j2)
+          # Check the executable, not merely the patched source.
+          strings /tmp/kissat-v183-hardware/build/kissat > /tmp/v183-binary-strings.txt
+          grep -Fq "V182_RESULT" /tmp/v183-binary-strings.txt
+          grep -Fq "V183_PREPROCESS_ROUND" /tmp/v183-binary-strings.txt
+          echo V183_BINARY_INSTRUMENTATION_PASS
+      - name: Check model and UNSAT control
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' > /tmp/v183_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/v183_unsat.cnf
+          for solver in /tmp/kissat-v183-original/build/kissat /tmp/kissat-v183-hardware/build/kissat; do
+            set +e
+            "$solver" -s /tmp/v183_sat.cnf > /tmp/v183_sat.out
+            sat=$?
+            "$solver" -s /tmp/v183_unsat.cnf > /tmp/v183_unsat.out
+            unsat=$?
+            set -e
+            test "$sat" -eq 10
+            test "$unsat" -eq 20
+          done
+          echo V183_SMOKE_PASS
+  shard:
+    name: Diagnostic CPU+logic shard ${{ matrix.shard }}
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build independent original and hardware-monitored solvers
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v183-original
+          git -C /tmp/kissat-v183-original checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-v183-original && ./configure && make -j2)
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v183-hardware
+          git -C /tmp/kissat-v183-hardware checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v183-hardware rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-v183-hardware && ./configure)
+          python3 experiments/drnas_v16/patch_neuroflow_v182.py --kissat-root /tmp/kissat-v183-hardware
+          python3 experiments/drnas_v16/patch_hardware_v183.py --kissat-root /tmp/kissat-v183-hardware
+          (cd /tmp/kissat-v183-hardware && make -j2)
+          strings /tmp/kissat-v183-hardware/build/kissat > /tmp/v183-binary-strings.txt
+          grep -Fq "V182_RESULT" /tmp/v183-binary-strings.txt
+          grep -Fq "V183_PREPROCESS_ROUND" /tmp/v183-binary-strings.txt
+          echo V183_SHARD_BINARY_INSTRUMENTATION_PASS
+      - name: Replay official problems with OS and preprocessing telemetry
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_hardware_v183.py --shard ${{ matrix.shard }}
+      - name: Preserve results, missingness and OS CPU counters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v183_shard_${{ matrix.shard }}
+          path: |
+            drnas-v183-hardware-logic/shard_${{ matrix.shard }}/manifest.json
+            drnas-v183-hardware-logic/shard_${{ matrix.shard }}/measurements.partial.csv
+            drnas-v183-hardware-logic/shard_${{ matrix.shard }}/measurements.csv
+            drnas-v183-hardware-logic/shard_${{ matrix.shard }}/events.csv
+            drnas-v183-hardware-logic/shard_${{ matrix.shard }}/derived_signals.json
+            drnas-v183-hardware-logic/shard_${{ matrix.shard }}/summary.json
+          retention-days: 30
+          if-no-files-found: warn
+  aggregate:
+    name: Audit CPU overhead and Psi observability across two runners
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download both calibration artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v183_shard_*
+          path: /tmp/v183-artifacts
+      - name: Aggregate real OS CPU counters without fake zeroes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          dest=Path('drnas-v183-hardware-logic')
+          dest.mkdir(exist_ok=True)
+          for i in range(2):
+              src=Path(f'/tmp/v183-artifacts/v183_shard_{i}')
+              assert (src/'measurements.csv').exists(),src
+              shutil.copytree(src,dest/f'shard_{i}')
+          print('V183_BOTH_SHARDS_READY',flush=True)
+          PY
+          python3 -u experiments/drnas_v16/aggregate_hardware_v183.py
+      - name: Publish calibration and hardware-logic audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V183-Hardware-Logic-Psi-Calibration
+          path: drnas-v183-hardware-logic/aggregate/
+          retention-days: 60
+          if-no-files-found: warn

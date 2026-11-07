@@ -1,0 +1,74 @@
+name: DRNAS V15.2 Hall XOR-equivalence mixed-CNF audit
+on:
+  push:
+    branches: [experiment/drnas-v147-xor4-robust-proof-20261101]
+    paths:
+      - 'research/drnas-sat-v7-8/v152_hall_xor.cpp'
+      - 'research/tseitin-replay/v152_proof_checker.py'
+      - 'research/tseitin-replay/v152_dev_benchmark.py'
+      - 'research/tseitin-replay/v152_satlib_holdout_e.py'
+      - '.github/workflows/drnas-v152-mixed-hall.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  proof_and_bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python benchmark and certificate syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/tseitin-replay/v152_proof_checker.py \
+            research/tseitin-replay/v152_dev_benchmark.py \
+            research/tseitin-replay/v152_satlib_holdout_e.py
+      - name: Compile DRNAS V14.8 V15.1 V15.2 with optimizations
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v148_xor4.cpp -o /tmp/v148_xor4
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v151_expanded.cpp -o /tmp/v151_expanded
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v152_hall_xor.cpp -o /tmp/v152_hall_xor
+          test -x /tmp/v152_hall_xor
+      - name: Build pinned Kissat 4.0.4
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/kissat-source
+          git -C /tmp/kissat-source fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/kissat-source checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-source rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          (cd /tmp/kissat-source && ./configure && make -j2)
+          cp /tmp/kissat-source/build/kissat /tmp/kissat_solver
+          /tmp/kissat_solver --version
+      - name: Development regression 168 cases 14 families with independent proof replay
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v152_dev_benchmark.py
+          echo 8af8e56f174b778aef3aa45af9f739b2a5f492c2 > v152-structural-dev/kissat-commit.txt
+      - name: Upload 168-case development results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V152-Development-168-14-Families
+          path: v152-structural-dev/
+          if-no-files-found: warn
+      - name: Checkout pinned external SATLIB at fixed SHA
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/mitchellh/go-sat.git /tmp/satlib-repo
+          git -C /tmp/satlib-repo fetch --depth 1 origin fc0e735aff48989326f256121b5ed6fc585858c3
+          git -C /tmp/satlib-repo checkout --detach fc0e735aff48989326f256121b5ed6fc585858c3
+          test "$(git -C /tmp/satlib-repo rev-parse HEAD)" = "fc0e735aff48989326f256121b5ed6fc585858c3"
+      - name: Frozen unseen SATLIB holdout E 48 cases six families
+        run: |
+          set -euo pipefail
+          python3 research/tseitin-replay/v152_satlib_holdout_e.py
+          echo fc0e735aff48989326f256121b5ed6fc585858c3 > v152-satlib-external-holdout-e/satlib-commit.txt
+      - name: Upload independent SATLIB E
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V152-SATLIB-48-Independent
+          path: v152-satlib-external-holdout-e/
+          if-no-files-found: warn

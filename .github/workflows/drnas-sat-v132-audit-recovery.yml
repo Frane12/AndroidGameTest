@@ -1,0 +1,54 @@
+name: DRNAS V13.2 - Recovery Audit Only, Six Frozen CNFs
+on:
+  push:
+    branches: [experiment/drnas-v132-pilot-auditfix-20261101]
+    paths:
+      - '.github/workflows/drnas-sat-v132-audit-recovery.yml'
+      - 'research/drnas-sat-v7-8/v132_lbd4_prospective.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas-sat-v7-8/v132_lbd4_prospective.py
+          python3 research/drnas-sat-v7-8/v132_lbd4_prospective.py selftest
+      - name: Download completed benchmarks from the failed final-audit run
+        uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-V132-prospective-LBD4-audit
+          run-id: 41256313918
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: original
+      - name: Verify frozen SHA, all three shards, and perform audit without rerunning solvers
+        run: |
+          set -euo pipefail
+          (cd original/frozen && sha256sum -c v132_manifest.sha256)
+          for shard in 0 1 2; do
+            test -s "original/combined/v132-shard-${shard}/meta.json"
+            test -s "original/combined/v132-shard-${shard}/rows.json"
+          done
+          python3 -u research/drnas-sat-v7-8/v132_lbd4_prospective.py audit \
+            --manifest original/frozen/v132_manifest.json \
+            --combined original/combined \
+            --out v132_report.json --md v132_report.md
+          cat v132_report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V132-six-case-verified-audit-only
+          path: |
+            v132_report.json
+            v132_report.md
+            original/frozen/
+          if-no-files-found: warn

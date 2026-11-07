@@ -1,0 +1,136 @@
+name: DRNAS R47 certified partial relation transfer real SATComp26
+on:
+  push:
+    branches: [experiment/drnas-r47-partial-links-20261103]
+    paths:
+      - '.github/workflows/drnas-r47-partial-links.yml'
+      - 'experiments/drnas_v16/r47_partial_links.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r47-partial-links-20261103-v1
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: R47 selftest and pinned official-source audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Selftest and static checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r47_partial_links.py
+          python3 -m py_compile experiments/drnas_v16/r46_local_certified_links.py
+          python3 experiments/drnas_v16/r47_partial_links.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r46-frozen-original-sources
+          run-id: 41667354345
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r46-pinned-solver
+          run-id: 41667354345
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Revalidate all 8 SHA-pinned original 2026 CNFs and pinned binary
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          chmod +x compiled/clean compiled/native
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 - <<'PY'
+          import json
+          m=json.load(open("frozen/manifest.json"))
+          assert m["protocol"].startswith("DRNAS-R32P-REAL-SATCOMP2026")
+          assert len(m["cases"])==8
+          print("R47_FROZEN_EIGHT_SOURCE_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r47-frozen-source
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r47-pinned-binary
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 30
+  paired:
+    needs: freeze
+    name: r47-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-frozen-source
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-pinned-binary
+          path: compiled
+      - name: Run paired original-Kissat / R46 / R47-shadow / R47-active benchmark
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x compiled/clean
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+          python3 -u experiments/drnas_v16/r47_partial_links.py measure \
+            --frozen frozen --clean compiled/clean \
+            --shard "$SHARD" --out results | tee r47-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r47-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r47-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r47-frozen-source
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r47-shard-*
+          path: combined
+      - name: Check complete paired measurements and prepare report
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r47_partial_links.py aggregate \
+            --frozen frozen --combined combined \
+            --output r47-results.json --report r47-results.md
+          cat r47-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R47-CERTIFIED-PARTIAL-RELATION-SATCOMP26
+          path: |
+            r47-results.json
+            r47-results.md
+          if-no-files-found: warn

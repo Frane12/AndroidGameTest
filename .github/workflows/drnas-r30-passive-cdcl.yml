@@ -1,0 +1,188 @@
+name: DRNAS R30 passive CDCL-vs-GF2 native trail and structural telemetry
+on:
+  push:
+    branches: [experiment/drnas-r30-passive-cdcl-gf2-20261103]
+    paths:
+      - '.github/workflows/drnas-r30-passive-cdcl.yml'
+      - 'experiments/drnas_v16/patch_r30_passive_cdcl.py'
+      - 'experiments/drnas_v16/r30_passive_monitor.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r30-passive-cdcl-20261103
+  cancel-in-progress: true
+jobs:
+  freeze_build:
+    name: Freeze fresh CNFs and pin two identical-policy Kissat executables
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify Python scripts compile
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/patch_r30_passive_cdcl.py experiments/drnas_v16/r30_passive_monitor.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: R28-original-18-cnf-sources
+          run-id: 41614909924
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: official_archive
+      - name: Validate official source archive and new input fingerprints
+        run: |
+          set -euo pipefail
+          (cd official_archive && sha256sum -c original_files.sha256)
+          python3 -u experiments/drnas_v16/r30_passive_monitor.py freeze \
+            --out frozen --official official_archive
+          (cd frozen && sha256sum -c cnf.sha256)
+          python3 - <<'PY'
+          import json
+          j=json.load(open('frozen/manifest.json'))
+          assert len(j['cases'])==28
+          assert len({c['sha256'] for c in j['cases']})==28
+          print('R30_SOURCE_HASHES_VERIFIED',len(j['cases']))
+          PY
+      - name: Build original pinned Kissat and instrumentation-only R30
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/r30-kissat-clean
+          git -C /tmp/r30-kissat-clean checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/r30-kissat-clean rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          cp -r /tmp/r30-kissat-clean /tmp/r30-kissat-passive
+          python3 -u experiments/drnas_v16/patch_r30_passive_cdcl.py --kissat-root /tmp/r30-kissat-passive
+          (cd /tmp/r30-kissat-clean && ./configure && make -j2 >/tmp/r30-clean-build.log)
+          (cd /tmp/r30-kissat-passive && ./configure && make -j2 >/tmp/r30-passive-build.log)
+          mkdir -p compiled
+          cp /tmp/r30-kissat-clean/build/kissat compiled/kissat_clean
+          cp /tmp/r30-kissat-passive/build/kissat compiled/kissat_passive
+          chmod +x compiled/*
+          (cd compiled && sha256sum kissat_clean kissat_passive > binaries.sha256 && sha256sum -c binaries.sha256)
+      - name: Local mathematical and native read-only preflight
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"experiments/drnas_v16")
+          import r30_passive_monitor as r
+          from pathlib import Path
+          data,f=r.inspect_formula(Path("frozen/parity_bridge_00.cnf"))
+          assert f["root_BCP_units"]>=4
+          assert f["root_GF2_extra_units"]>=4, f
+          assert f["root_BCP_conflict"] is False
+          assert r.inspect_formula(Path("frozen/xor3_hidden_00.cnf"))[1]["equations"]>0
+          decoy=r.inspect_formula(Path("frozen/xor_decoy_00.cnf"))[1]
+          assert decoy["equations"]==0, decoy
+          print("R30_STATIC_GF2_BCP_GAP_PREFLIGHT_PASS",f["root_GF2_extra_units"])
+          PY
+          set +e
+          compiled/kissat_passive frozen/random3_critical_00.cnf > r30-native-smoke.log
+          rc=$?
+          set -e
+          test "$rc" -eq 10 -o "$rc" -eq 20
+          grep -q '^c R30_TRACE mark=0 ' r30-native-smoke.log
+          grep -q '^c R30_TRAIL mark=0 ' r30-native-smoke.log
+          ! grep -q '^c DRNAS_V177_SWITCH' r30-native-smoke.log
+          echo R30_NATIVE_PASSIVE_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r30-frozen-28-identical-cnfs
+          path: frozen/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r30-original-and-passive-identical-policy-kissat
+          path: compiled/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r30-preflight-log
+          path: r30-native-smoke.log
+          if-no-files-found: warn
+  paired:
+    needs: freeze_build
+    name: r30-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r30-frozen-28-identical-cnfs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: r30-original-and-passive-identical-policy-kissat
+          path: compiled
+      - name: Guard all original inputs and native binaries
+        run: |
+          set -euo pipefail
+          chmod +x compiled/kissat_clean compiled/kissat_passive
+          (cd compiled && sha256sum -c binaries.sha256)
+          (cd frozen && sha256sum -c cnf.sha256)
+      - name: Run SHA-locked paired native baseline and passive no-action monitor
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r30_passive_monitor.py measure \
+            --inputs frozen --kissat compiled/kissat_clean \
+            --passive compiled/kissat_passive --outdir results \
+            --shard "$SHARD" | tee r30-live.log
+          test -s results/rows.json
+          test -s results/structure.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r30-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r30-live.log
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: [freeze_build,paired]
+    if: always()
+    name: Audit passive checkpoint gaps and solve overhead without policy changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r30-frozen-28-identical-cnfs
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r30-shard-*
+          path: combined
+      - name: Validate every result and generate full descriptive analysis
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r30_passive_monitor.py aggregate \
+            --inputs frozen --combined combined --outjson r30-results.json \
+            --report r30-results.md --csv r30-results.csv
+          cat r30-results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R30-PASSIVE-STRUCTURE-CDCL-GF2-AUDIT
+          path: |
+            r30-results.json
+            r30-results.md
+            r30-results.csv
+            frozen/manifest.json
+          if-no-files-found: warn
+          retention-days: 90

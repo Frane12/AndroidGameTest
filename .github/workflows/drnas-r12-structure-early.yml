@@ -1,0 +1,175 @@
+name: DRNAS SAT R12 frozen structure plus early dynamics 3240 attempts
+on:
+  push:
+    branches: [experiment/drnas-r12-structure-dynamics-holdout-20261102]
+    paths:
+      - '.github/workflows/drnas-r12-structure-early.yml'
+      - 'experiments/drnas_v16/patch_r12_hybrid.py'
+      - 'experiments/drnas_v16/r12_structure_dynamic_benchmark.py'
+      - 'experiments/drnas_v16/r12_frozen_structure_early_rule.json'
+      - 'experiments/drnas_v16/r12_historical_sha256.txt'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-r12-hybrid-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: Frozen source, rule, compiler and SAT/UNSAT smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit immutable V15.3.1, R11 source, and frozen R12 thresholds
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/{r12_structure_dynamic_benchmark,patch_r12_hybrid,r11_restart_timing,patch_r11_restart_sweep,r7_large,patch_r6_trace,patch_r5_multisignal,patch_r4_restart_gate,predict_conflict_patch_v177}.py
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          test "$(git hash-object experiments/drnas_v16/r11_restart_timing.py)" = ebb30a93222e23658ab248a7e4195f473b65530a
+          test "$(git hash-object experiments/drnas_v16/patch_r11_restart_sweep.py)" = a66269fc957e5d124d381ff19b5fd1e3f3bf4d06
+          test "$(git hash-object experiments/drnas_v16/r11-results/current/formula_features.csv)" = a1191f9a23f6dd8310ad461e29bc3b9d5daff43f
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'experiments/drnas_v16')
+          import r12_structure_dynamic_benchmark as r
+          rule=r.load_rule()
+          assert len(r.SHARDS)==12 and len(r.MODES)==9 and r.REPEATS==3
+          assert r.feature_rule(0.28,42,0.94)==(True,True)
+          assert r.selected("r12_hybrid",True,True) is True
+          assert not r.selected("r12_hybrid",True,False)
+          assert r.selected("r12_inverse",False,True)
+          assert sum(len(s)==64 for s in r.REGISTRY.read_text().split())>=1534
+          print("R12_FROZEN_RULE_AUDIT_PASS",rule["protocol"])
+          PY
+      - name: Compile pinned upstream Kissat with R12 patch
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r12_hybrid.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R12_CHOICE
+          strings /tmp/kissat-r6-patched/build/kissat | grep -Fq R6_TRACE
+      - name: SAT and UNSAT smoke in every R12 policy
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n2 0\n' >/tmp/r12-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/r12-unsat.cnf
+          for mode in r5_monitor r11_2048_25 r11_2048_50 r12_early r12_structure r12_hybrid r12_inverse; do
+            set +e
+            DRNAS_R12_DEGREE_CV=0.280 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r12-sat.cnf >/tmp/r12-sat.log 2>&1
+            sat=$?
+            DRNAS_R12_DEGREE_CV=0.280 DRNAS_V177_MODE="$mode" /tmp/kissat-r6-patched/build/kissat -s /tmp/r12-unsat.cnf >/tmp/r12-unsat.log 2>&1
+            unsat=$?
+            set -e
+            if [ "$sat" -ne 10 ] || [ "$unsat" -ne 20 ]; then
+              echo "R12_POLICY_SMOKE_FAIL $mode $sat $unsat"
+              cat /tmp/r12-sat.log /tmp/r12-unsat.log
+              exit 1
+            fi
+          done
+          echo R12_ALL_POLICY_CORRECTNESS_SMOKE_PASS
+  benchmark:
+    name: R12 dynamic structure paired ${{ matrix.category }}
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        category: [n200_development0, n200_development1, n200_test0, n200_test1,
+                   n220_development0, n220_development1, n220_test0, n220_test1,
+                   n240_development0, n240_development1, n240_test0, n240_test1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile original pinned Kissat for reference
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-original
+          git -C /tmp/kissat-r6-original checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-original rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat-r6-original && ./configure && make -j2)
+      - name: Compile same pinned Kissat with all R12/monitor/forced modes
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/kissat-r6-patched
+          git -C /tmp/kissat-r6-patched checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-r6-patched rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          python3 experiments/drnas_v16/patch_r12_hybrid.py --kissat-root /tmp/kissat-r6-patched
+          (cd /tmp/kissat-r6-patched && ./configure && make -j2)
+      - name: Build immutable V15.3.1 practical reference
+        run: |
+          set -euo pipefail
+          test "$(git hash-object research/drnas-sat-v7-8/v1531_nohang.cpp)" = d280a2ffa28d72aec183323bbea40544d676112d
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/drnas-r6-v1531
+      - name: Measure 270 paired executions, 10 unseen CNF, 9 modes, 3 repeats
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r12_structure_dynamic_benchmark.py --category "${{ matrix.category }}"
+          test -s "drnas-r12-results/${{ matrix.category }}/measurements.csv"
+          test -s "drnas-r12-results/${{ matrix.category }}/manifest.json"
+          test -s "drnas-r12-results/${{ matrix.category }}/traces.jsonl"
+      - name: Upload full or partial raw measurements, traces and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r12-${{ matrix.category }}
+          path: drnas-r12-results/${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 60
+  aggregate:
+    name: Audit 3240 R12 matched SAT attempts, PAR-2 and holdout scatterplots
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r12-*
+          path: r12-download
+          merge-multiple: false
+      - name: Verify all 12 shards and calculate independent formula-level stats
+        run: |
+          set -euo pipefail
+          python3 -m venv .r12venv
+          .r12venv/bin/pip -q install matplotlib
+          .r12venv/bin/python experiments/drnas_v16/r12_structure_dynamic_benchmark.py --aggregate
+          test -s drnas-r12-results/aggregate/results.json
+          test -s drnas-r12-results/aggregate/paired.csv
+          test -s drnas-r12-results/aggregate/formula_features.csv
+          for fold in development test; do
+            test -s "drnas-r12-results/aggregate/scatter_r12_early_$fold.png"
+            test -s "drnas-r12-results/aggregate/scatter_r12_structure_$fold.png"
+          done
+      - name: Upload scientific analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R12-Frozen-Hybrid-Analysis
+          path: drnas-r12-results/aggregate/
+          if-no-files-found: warn
+          retention-days: 60
+      - name: Archive verified output only on isolated R12 branch
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "experiment/drnas-r12-structure-dynamics-holdout-20261102"
+          mkdir -p experiments/drnas_v16/r12-results/current
+          for file in results.json paired.csv formula_features.csv scatter_r12_early_development.png scatter_r12_early_test.png scatter_r12_structure_development.png scatter_r12_structure_test.png; do
+            test -s "drnas-r12-results/aggregate/$file"
+            cp "drnas-r12-results/aggregate/$file" "experiments/drnas_v16/r12-results/current/$file"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/drnas_v16/r12-results/current/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: R12 prospective validated matched-holdout results [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

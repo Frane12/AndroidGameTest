@@ -1,0 +1,152 @@
+name: DRNAS R67 prospective XOR-CNF structural diagnostic (3 pinned modes)
+
+on:
+  push:
+    branches: [experiment/drnas-r67-xor-structural-20261103]
+    paths:
+      - '.github/workflows/drnas-r67-xor-structural.yml'
+      - 'experiments/drnas_v16/r67_xor_structural_diagnostics.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r67-xor-structural-20261103
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Exclude R63 and R66 attempts; SHA-freeze up to 30 new official formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and soundness self-tests before any benchmarks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r67_xor_structural_diagnostics.py
+          python3 -u experiments/drnas_v16/r67_xor_structural_diagnostics.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R63-REAL2026-XOR-PREVALENCE-FALLBACK-FINAL
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          run-id: 41717235335
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r66-prior
+      - name: Independent salted source selection, exact-XOR and passive CNF bridge features
+        run: |
+          set -euo pipefail
+          test -s prior/r63-final.json
+          test -s r66-prior/new/manifest.json
+          python3 -u experiments/drnas_v16/r67_xor_structural_diagnostics.py freeze \
+            --prior prior --r66 r66-prior --out new | tee r67-freeze.log
+          (cd new && sha256sum -c source.sha256)
+          test -s new/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r67-frozen-new-official-sources
+          path: |
+            new/
+            r67-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  benchmark:
+    name: r67-shard-${{ matrix.shard }} Kissat-R28-R65
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify source and executable hashes before matched solver timings
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Matched 2 repeats x 3 solvers (60s cap each) on one pinned core
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r67_xor_structural_diagnostics.py measure \
+            --sources new --shard "$SHARD" \
+            --kissat compiled/kissat --gf2 compiled/r28_gf2 \
+            --out results | tee r67-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r67-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r67-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: Fail-closed R67 paired PAR2 and structural activation audit
+    needs: [freeze, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r67-shard-*
+          path: combined
+      - name: Require all paired rows and exactly one binary SHA pair
+        run: |
+          set -euo pipefail
+          (cd new && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r67_xor_structural_diagnostics.py audit \
+            --sources new --combined combined \
+            --json r67-final.json --md r67-final.md
+          cat r67-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          path: |
+            r67-final.json
+            r67-final.md
+            new/manifest.json
+          if-no-files-found: error
+          retention-days: 90

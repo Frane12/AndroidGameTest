@@ -1,0 +1,219 @@
+name: DRNAS R77 Unofficial World Challenge 10 Fresh SAT2025 vs Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-r77-unofficial-world-challenge-20261104]
+    paths:
+      - '.github/workflows/drnas-r77-unofficial-world-challenge.yml'
+      - 'experiments/drnas_v16/r77_unofficial_world_challenge.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-r77-unofficial-world-challenge
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Exclude old sources; SHA freeze ten unscreened official 2025 original CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify syntax and inherited R65 soundness
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r77_unofficial_world_challenge.py
+          python3 -u experiments/drnas_v16/r65_xor_cnf_feedback.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R63-REAL2026-XOR-PREVALENCE-FALLBACK-FINAL
+          run-id: 41707669490
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r63
+      - uses: actions/download-artifact@v4
+        with:
+          name: r66-frozen-new-official-sources
+          run-id: 41717235335
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r66
+      - uses: actions/download-artifact@v4
+        with:
+          name: r67-frozen-new-official-sources
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r67
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-R67-STRUCTURAL-DIAGNOSTIC-FINAL
+          run-id: 41719704574
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r67-report
+      - uses: actions/download-artifact@v4
+        with:
+          name: r73-fresh-selected-sources
+          run-id: 41732483582
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: old-r73
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Freeze and verify all source SHA-256 with conservative no-reuse
+        run: |
+          set -euo pipefail
+          test -s old-r73/new/manifest.json
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat
+          python3 -u experiments/drnas_v16/r77_unofficial_world_challenge.py freeze \
+            --r63 old-r63/r63-final.json \
+            --r66 old-r66/new/manifest.json \
+            --r67 old-r67/new/manifest.json \
+            --r67final old-r67-report/r67-final.json \
+            --r73 old-r73 \
+            --kissat compiled/kissat --out world | tee r77-freeze.log
+          (cd world && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r77-source-frozen
+          path: |
+            world/
+            r77-freeze.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  prepare:
+    name: Pin clean Kissat and build verified CaDiCaL 3.0.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-identical-binaries
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Verify original Kissat SHA and build commit-pinned CaDiCaL
+        run: |
+          set -euo pipefail
+          (cd compiled && sha256sum -c binary.sha256)
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          test "$(git -C cadical-src rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          (cd cadical-src && ./configure && make -j2)
+          test -x cadical-src/build/cadical
+          mkdir -p bin
+          cp compiled/kissat bin/kissat
+          cp cadical-src/build/cadical bin/cadical
+          chmod +x bin/kissat bin/cadical
+          (cd bin && sha256sum kissat cadical > binary.sha256)
+          {
+            echo "CaDiCaL 3.0.1 commit c60730422e758ef1cebe7aeddf2dda31c996bf04"
+            echo "Original pinned r28-binary Kissat from run 41613064879"
+            uname -a
+            cat /etc/os-release
+            lscpu
+          } > bin/provenance.txt
+          (cd bin && sha256sum -c binary.sha256)
+          echo "R77_BUILD_PASS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r77-pinned-solver-binaries
+          path: |
+            bin/
+          if-no-files-found: error
+          retention-days: 90
+
+  benchmark:
+    name: r77-shard-${{ matrix.shard }}
+    needs: [freeze,prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r77-source-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r77-pinned-solver-binaries
+          path: bin
+      - name: Equal single-core paired 30s caps incl DRNAS preprocessing
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd bin && sha256sum -c binary.sha256)
+          chmod +x bin/kissat bin/cadical
+          python3 -u experiments/drnas_v16/r77_unofficial_world_challenge.py measure \
+            --sources world --binaries bin --shard "$SHARD" --out results | tee r77-live.log
+          test -s results/r77-shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r77-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r77-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R77 final paired correctness SHA and PAR2 audit unofficial
+    needs: [freeze,prepare,benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r77-source-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r77-shard-*
+          path: combined
+      - name: Fail closed if any paired run or original-source SHA is missing
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r77_unofficial_world_challenge.py audit \
+            --sources world --combined combined --out final
+          cat final/r77-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R77-UNOFFICIAL-WORLD-CHALLENGE-FINAL
+          path: |
+            final/
+            world/manifest.json
+          if-no-files-found: error
+          retention-days: 90

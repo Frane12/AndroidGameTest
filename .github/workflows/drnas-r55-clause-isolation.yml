@@ -1,0 +1,127 @@
+name: DRNAS R55 clause 17-24 causal isolation 216 SAT trials
+on:
+  push:
+    branches: [experiment/drnas-r55-clause-interactions-20261103]
+    paths:
+      - '.github/workflows/drnas-r55-clause-isolation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r55-clause-causal-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze R52 original and independently prove R55 17-to-24 clauses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight and original mathematical proof checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r55_clause_17_24_interactions.py
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-frozen-official-originals
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Verify unchanged original SHA and frozen clause identities before measurements
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r55_clause_17_24_interactions.py freeze \
+            --sources originals --out r55-frozen-design.json | tee r55-freeze.log
+          sha256sum r55-frozen-design.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r55-frozen-original-40proofs
+          path: |
+            originals/
+            r55-frozen-design.json
+            r55-freeze.log
+          if-no-files-found: error
+  ablation:
+    name: r55-shard-${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-original-40proofs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: bins
+      - name: Verify original 2026 CNF and original pinned Kissat binary before measuring
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd bins && sha256sum -c binaries.sha256)
+          chmod +x bins/kissat_pinned
+      - name: Within-runner randomized paired controls and causal 17–24 subsets
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r55_clause_17_24_interactions.py measure \
+            --sources originals --design r55-frozen-design.json \
+            --kissat bins/kissat_pinned --shard "$SHARD" \
+            --out results | tee r55-live.log
+          test -s results/rows.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r55-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r55-live.log
+          if-no-files-found: warn
+  audit:
+    name: R55 audit all 216 paired 17-to-24 causal SAT trials
+    needs: [freeze, ablation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r55-frozen-original-40proofs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r55-shard-*
+          path: combined
+      - name: Fail closed on missing shards, altered formulas, changed solver or wrong clause IDs
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r55_clause_17_24_interactions.py audit \
+            --design r55-frozen-design.json --combined combined \
+            --json r55-final.json --md r55-final.md
+          cat r55-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R55-216-CAUSAL-CLAUSE-INTERACTIONS-FINAL
+          path: |
+            r55-final.json
+            r55-final.md
+            r55-frozen-design.json
+          if-no-files-found: error

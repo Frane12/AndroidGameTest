@@ -1,0 +1,78 @@
+name: DRNAS SAT v4 vs CaDiCaL 3.0.1
+on:
+  push:
+    branches:
+      - research/drnas-sat-cadical-v4
+    paths:
+      - research/drnas-sat-v4/**
+      - .github/workflows/drnas-sat-cadical.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-sat-v4-cadical
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build official CaDiCaL v3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical-source-commit.txt
+          cd cadical-src
+          ./configure
+          make -j2
+          test -x build/cadical
+          ./build/cadical --version || true
+      - name: Benchmark identical SAT and UNSAT DIMACS instances
+        run: |
+          python -u research/drnas-sat-v4/benchmark_sat.py \
+            --seed 20261231 \
+            --count 40 \
+            --reps 5 \
+            --cadical "$GITHUB_WORKSPACE/cadical-src/build/cadical" \
+            --outdir "$GITHUB_WORKSPACE/bench_cadical"
+      - name: Publish comparison in step summary
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          x=json.loads(Path('bench_cadical/summary.json').read_text())
+          s=x['summary']
+          c=s['cadical_cli']['sum_medians_ms']
+          v=s['v4_fast']['sum_medians_ms']
+          d=s['dpll']['sum_medians_ms']
+          lines=[
+            '## DRNAS v4 vs CaDiCaL 3.0.1',
+            f"40 synthetic SAT/UNSAT problems, 5 repetitions, seed {x['seed']}",
+            '',
+            '| Solver | Sum of instance medians (ms) |',
+            '|---|---:|',
+            f"| CaDiCaL CLI | {c:.3f} |",
+            f"| DRNAS v4 Python | {v:.3f} |",
+            f"| Baseline DPLL Python | {d:.3f} |",
+            '',
+            f"CaDiCaL/DRNAS time ratio: {c/v:.3f} (greater than 1 = DRNAS faster)",
+            '',
+            'CAUTION: native C++ vs Python, and CaDiCaL subprocess startup included. This is not a SAT Competition comparison.'
+          ]
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - name: Save full CSV, JSON, CNF and CaDiCaL commit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-v4-vs-cadical-v3-0-1
+          path: |
+            bench_cadical/
+            cadical-source-commit.txt
+          if-no-files-found: warn

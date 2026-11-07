@@ -1,0 +1,82 @@
+name: DRNAS SAT V17.8 Official 2026 parallel paired strategies
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-v178-official-parallel-20261101
+    paths:
+      - '.github/workflows/drnas-sat-v178-official-parallel.yml'
+      - 'experiments/drnas_v16/official_parallel_v178.py'
+permissions:
+  contents: read
+jobs:
+  official_batch:
+    name: 2026 Main official CNFs shard ${{ matrix.batch }} paired policies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        batch: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen experiment and pinned source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/official_parallel_v178.py
+          python3 -m py_compile experiments/drnas_v16/predict_conflict_patch_v177.py
+          test -s research/drnas-sat-v7-8/v1531_nohang.cpp
+      - name: Compile stable V15.3.1 No-Hang reference
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/drnas-sat-v7-8/v1531_nohang.cpp -o /tmp/v1531_nohang
+      - name: Compile exact pinned Kissat with frozen in-process V17.7 instrument
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git /tmp/kissat-v178
+          git -C /tmp/kissat-v178 checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/kissat-v178 rev-parse HEAD)" = "8af8e56f174b778aef3aa45af9f739b2a5f492c2"
+          python3 experiments/drnas_v16/predict_conflict_patch_v177.py --kissat-root /tmp/kissat-v178
+          (cd /tmp/kissat-v178 && ./configure && make -j2)
+          /tmp/kissat-v178/build/kissat --version
+      - name: Fetch untouched official 2026 CNFs and test six frozen strategies on same runner
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_parallel_v178.py --batch "${{ matrix.batch }}"
+      - name: Publish hashes, sources and complete or partial timing data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch_${{ matrix.batch }}
+          path: |
+            drnas-v178-official-results/batch_${{ matrix.batch }}/manifest.json
+            drnas-v178-official-results/batch_${{ matrix.batch }}/official_track_uri_sha256.txt
+            drnas-v178-official-results/batch_${{ matrix.batch }}/frozen_v177_rule.txt
+            drnas-v178-official-results/batch_${{ matrix.batch }}/measurements.partial.csv
+            drnas-v178-official-results/batch_${{ matrix.batch }}/measurements.csv
+            drnas-v178-official-results/batch_${{ matrix.batch }}/summary.json
+          if-no-files-found: warn
+  aggregate:
+    name: Combined official-instance PAR-2 and formula-cluster uncertainty
+    needs: official_batch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all four parallel shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batch_*
+          path: drnas-v178-official-results
+      - name: Independently consolidate paired official results
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/official_parallel_v178.py --aggregate
+      - name: Publish combined summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-V178-Official-2026-Combined
+          path: drnas-v178-official-results/aggregate.json
+          if-no-files-found: warn

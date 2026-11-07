@@ -1,0 +1,156 @@
+name: DRNAS R83 native XOR CDCL actual-trail reasons wide test
+on:
+  push:
+    branches: [experiment/drnas-r83-live-xor-cdcl-wide-20261104]
+    paths: ['experiments/drnas_v16/r83_live_xor_cdcl_wide.py','.github/workflows/drnas-r83-native-active-xor-wide.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r83-native-xor-wide-20261104
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: SHA provenance, independent XOR certificate and native binary smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax, GF2 source span and gate tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r83_live_xor_cdcl_wide.py
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          run-id: 41683024261
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: world-solvers
+      - name: Verify original 48 SHA sources, native live engine, and world solver binaries
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd native && sha256sum -c baselines.sha256)
+          (cd world-solvers && sha256sum -c binaries.sha256)
+          chmod +x native/clean native/native world-solvers/kissat_4_0_4 world-solvers/cadical_3_0_1
+          python3 - <<'PY'
+          import json
+          m=json.load(open('world/manifest.json'))
+          assert len(m['cases'])==48 and m['protocol']=='DRNAS-R82-WIDE-OFFICIAL-2025-2026-NOSCREEN-20261104-v1'
+          print('R83_48_REAL_SOURCE_PRECHECK_PASS',m['year_counts'])
+          PY
+          echo R83_BINARY_SHA_PASS
+
+  benchmark:
+    name: r83-shard-${{ matrix.shard }}
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r32u-same-pinned-clean-native-reasons
+          run-id: 41683024261
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: world-solvers
+      - name: Exact SHA check and restore executable mode
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          (cd native && sha256sum -c baselines.sha256)
+          (cd world-solvers && sha256sum -c binaries.sha256)
+          chmod +x native/clean native/native world-solvers/kissat_4_0_4 world-solvers/cadical_3_0_1
+      - name: Six methods x two repeats, 35-second cap, actual native CDCL trail reason assignments
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py measure \
+            --sources world --compiled native --world world-solvers \
+            --shard "$SHARD" --out results | tee r83-live.log
+          grep -q '^R83_SHARD_PASS' r83-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r83-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r83-live.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  audit:
+    name: R83 final audit of 576 paired trials and independent XOR source proofs
+    if: always()
+    needs: [preflight,benchmark]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r82-frozen-originals-and-prospective-selection
+          run-id: 41756938173
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r83-shard-*
+          path: combined
+      - name: Fail on missing rows, changed source, unproved GF2, or contradictory verdict
+        run: |
+          set -euo pipefail
+          (cd world && sha256sum -c source.sha256)
+          python3 -u experiments/drnas_v16/r83_live_xor_cdcl_wide.py audit \
+            --sources world --combined combined --out final | tee r83-audit.log
+          cat final/r83-final.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R83-NATIVE-XOR-CDCL-WIDE-FINAL
+          path: |
+            final/
+            world/manifest.json
+            r83-audit.log
+          if-no-files-found: error
+          retention-days: 90

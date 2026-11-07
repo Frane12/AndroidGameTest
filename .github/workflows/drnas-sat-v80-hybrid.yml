@@ -1,0 +1,110 @@
+name: DRNAS SAT v8.0 NeuroFlow Hybrid Gate Audit
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/drnas-sat-v80-hybrid-gate-20261031
+    paths:
+      - '.github/workflows/drnas-sat-v80-hybrid.yml'
+      - 'research/drnas-sat-v7-8/v80_*'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paired-original-cnf:
+    name: original-2026-paired-shard-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 3, 4, 6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify original frozen code, prepare diagnostic and build CaDiCaL 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile research/drnas-sat-v7-8/v80_hybrid_benchmark.py
+          test "$(git hash-object research/drnas-sat-v7-6/v76_single.cpp)" = a254356a45b70f02f33b9506f1122dad33916ca7
+          test "$(git hash-object research/drnas-sat-v7-7/v77_single.cpp)" = 1bbb7fa035e62d5179de9243f672aed9bb9cbaca
+          sha256sum research/drnas-sat-v7-6/v76_single.cpp research/drnas-sat-v7-7/v77_single.cpp | tee frozen_hashes.txt
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('research/drnas-sat-v7-7/v77_single.cpp').read_text()
+          marker='\nint main(int argc,char**argv) {'
+          assert src.count(marker)==1, 'Unexpected v7.7 main signature'
+          pre=src.split(marker,1)[0]
+          assert 'static V77 solve77(' in pre
+          Path('research/drnas-sat-v7-7/v77_embedded_functions.inc').write_text(pre+'\n')
+          PY
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-src
+          git -C cadical-src rev-parse HEAD | tee cadical_sha.txt
+          (cd cadical-src && ./configure && make -j2)
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-src/src \
+            research/drnas-sat-v7-8/v80_hybrid_probe.cpp \
+            cadical-src/build/libcadical.a -o v80_hybrid_probe -pthread -ldl -lz
+          test -x v80_hybrid_probe
+      - name: Download pinned official 2026 source manifest from original run
+        uses: actions/download-artifact@v4
+        with:
+          name: drnas-satcomp2026-official-instance-mini-par2
+          run-id: 41204322891
+          github-token: ${{ github.token }}
+          path: previous_manifest
+      - name: Download and hash-check original official CNFs, no substitution
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-7/official26_v77_fetch.py \
+            --previous previous_manifest/satcomp26_official/source_manifest.csv \
+            --outdir original_official_sources --shard "$SHARD" --shards 10
+      - name: Run paired v7.6 v7.7 CaDiCaL and v8.0 on the same CNFs and seeds
+        run: |
+          set -euo pipefail
+          python -u research/drnas-sat-v7-8/v80_hybrid_benchmark.py \
+            --sources original_official_sources/selected.json \
+            --binary "$GITHUB_WORKSPACE/v80_hybrid_probe" \
+            --outdir results --repeats 2
+          cat results/v80_report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve verified dataset manifest, full traces and source hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-v80-original-shard-${{ matrix.shard }}
+          path: |
+            frozen_hashes.txt
+            cadical_sha.txt
+            original_official_sources/selected.json
+            results/
+          if-no-files-found: warn
+  consolidate:
+    needs: paired-original-cnf
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-v80-original-shard-*
+          path: all_cases
+      - name: Show all per-CNF results separately (not a blind holdout)
+        run: |
+          set -euo pipefail
+          count=0
+          for f in all_cases/*/results/v80_report.md; do
+            test -f "$f"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            count=$((count + 1))
+          done
+          test "$count" -eq 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-v80-Hybrid-Gate-Full-Audit
+          path: all_cases/
+          if-no-files-found: error

@@ -1,0 +1,136 @@
+name: DRNAS R51 four-method matched real SATComp2026 originals
+on:
+  push:
+    branches: [experiment/drnas-r51-real2026-fourmethod-20261103]
+    paths:
+      - '.github/workflows/drnas-r51-real2026-fourmethod.yml'
+      - 'experiments/drnas_v16/r51_real2026_fourmethod.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r51-real2026-fourmethod-20261103
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Pin eight original official CNFs, frozen methods and same Kissat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify R51 syntax and pinned GF2 source provenance
+        run: |
+          set -euo pipefail
+          python3 -m py_compile experiments/drnas_v16/r51_real2026_fourmethod.py
+          python3 -m py_compile experiments/drnas_v16/r49_pivot_coherence_gate.py
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/Frane12/AndroidGameTest/b29f106f12a6cfca1bd2c9f298466ce243f05271/experiments/drnas_v16/r32t_certified_short_xor.py \
+            -o experiments/drnas_v16/r32t_certified_short_xor.py
+          test "$(git hash-object experiments/drnas_v16/r32t_certified_short_xor.py)" = 18bdc239f1b76dc8835f25e66779a9f98feaaf9b
+          python3 -m py_compile experiments/drnas_v16/r32t_certified_short_xor.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-frozen-originals
+          run-id: 41676249421
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: originals
+      - uses: actions/download-artifact@v4
+        with:
+          name: r49-pinned-clean-binary
+          run-id: 41676249421
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Independent source SHA, binary SHA, R49 proofs and short GF2 proof audit
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+          chmod +x compiled/clean
+          python3 -u experiments/drnas_v16/r49_pivot_coherence_gate.py selftest
+          python3 -u experiments/drnas_v16/r51_real2026_fourmethod.py freeze \
+            --sources originals --out derived | tee r51-freeze.log
+          test -s derived/r51-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r51-frozen-all
+          path: |
+            originals/
+            compiled/
+            derived/
+            experiments/drnas_v16/r32t_certified_short_xor.py
+            r51-freeze.log
+          if-no-files-found: error
+  paired:
+    needs: freeze
+    name: r51-shard-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r51-frozen-all
+          path: .
+      - name: Reverify source originals and one identical pinned solver binary
+        run: |
+          set -euo pipefail
+          (cd originals && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binaries.sha256)
+          test "$(git hash-object experiments/drnas_v16/r32t_certified_short_xor.py)" = 18bdc239f1b76dc8835f25e66779a9f98feaaf9b
+          chmod +x compiled/clean
+      - name: Run paired 30-second wall-cap on same original 2026 CNF with 4 policies
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r51_real2026_fourmethod.py measure \
+            --sources originals --frozen derived --binary compiled/clean \
+            --shard "$SHARD" --out results | tee r51-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r51-shard-${{ matrix.shard }}
+          path: |
+            results/
+            r51-live.log
+          if-no-files-found: warn
+  audit:
+    needs: [freeze, paired]
+    if: always()
+    name: Verify 32 real paired records, official SHA, time and PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r51-frozen-all
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r51-shard-*
+          path: combined
+      - name: Fail closed on missing runs and publish per-formula seconds
+        run: |
+          set -euo pipefail
+          python3 -u experiments/drnas_v16/r51_real2026_fourmethod.py audit \
+            --frozen derived --combined combined --out r51-report.json \
+            --markdown r51-report.md
+          cat r51-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: DRNAS-R51-FOUR-METHOD-REAL-SATCOMP26-AUDITED
+          path: |
+            r51-report.json
+            r51-report.md
+            derived/r51-manifest.json
+          if-no-files-found: error
