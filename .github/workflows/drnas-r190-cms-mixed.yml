@@ -1,0 +1,148 @@
+name: DRNAS R190 — 38 mixed CNFs 9-arm vs CryptoMiniSat Gaussian 684 paired
+on:
+  push:
+    branches: [experiment/drnas-cms-mixed-38-20261107]
+    paths:
+      - 'research/r190_cms_mixed_benchmark.py'
+      - '.github/workflows/drnas-r190-cms-mixed.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r190-cms-mixed-source-pinned
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install CryptoMiniSat and check exact comparator version
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          cryptominisat5 --version | tee cms.version.txt
+          cryptominisat5 --hhelp 2>&1 | grep -E 'maxnummatrices|autodisablegauss' | head -20 || true
+      - name: Download old R189 frozen original 38 CNF sources and pinned R52 Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r189 built/bin r190_cms_mixed
+          gh run download 42228208905 --repo Frane12/AndroidGameTest -n r189-exact-source38-pinned-native -D r189
+          gh run download 41684183452 --repo Frane12/AndroidGameTest -n r52-three-pinned-solvers -D built/bin
+          test -s r189/frozen/manifest.json
+          test -s r189/r189-driver
+          chmod +x r189/r189-driver built/bin/kissat_4_0_4
+          (cd built/bin && sha256sum -c binaries.sha256)
+          sha256sum r189/r189-driver
+          sha256sum r189/frozen/manifest.json
+      - name: Build and certify source-locked R28 and 9-arm selftest
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r190_cms_mixed/r28
+          chmod +x r190_cms_mixed/r28
+          python3 -m py_compile research/r190_cms_mixed_benchmark.py research/r189_short_inference.py research/r188_feedback_benchmark.py
+          python3 -u research/r190_cms_mixed_benchmark.py smoke
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          paths=["r189/frozen/manifest.json","r189/r189-driver","built/bin/kissat_4_0_4",
+                 "r190_cms_mixed/r28","experiments/drnas_v16/r28_exact_gf2.cpp"]
+          report={s:hashlib.sha256(pathlib.Path(s).read_bytes()).hexdigest() for s in paths}
+          pathlib.Path("r190_cms_mixed/pins.json").write_text(json.dumps(report,sort_keys=True,indent=2))
+          print("R190_PIN",json.dumps(report,sort_keys=True))
+          PY
+          tar czf r190_source_bundle.tar.gz r189/frozen r189/r189-driver built/bin/kissat_4_0_4 r190_cms_mixed/r28 r190_cms_mixed/pins.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r190-source-locked38-binaries
+          path: r190_source_bundle.tar.gz
+          retention-days: 90
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    name: R190 original-CNF nine-arm paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r190-source-locked38-binaries
+      - name: Install comparator and verify pinned bundle
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf r190_source_bundle.tar.gz
+          chmod +x r189/r189-driver built/bin/kissat_4_0_4 r190_cms_mixed/r28
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          p=json.loads(pathlib.Path("r190_cms_mixed/pins.json").read_text())
+          for path,h in p.items():
+              assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()==h,path
+          print("R190_BUNDLE_VERIFIED")
+          PY
+      - name: Execute 9-arm 2-rep SHA-paired 8s cap and independent SAT witness checks
+        run: |
+          set -euo pipefail
+          python3 -u research/r190_cms_mixed_benchmark.py shard --shard ${{ matrix.shard }} | tee r190_cms_mixed/shard-${{ matrix.shard }}.log
+          grep -q '^R190_SHARD_PASS ' r190_cms_mixed/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r190-mixed-ninearm-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r190_cms_mixed/shard-${{ matrix.shard }}.json
+            r190_cms_mixed/shard-${{ matrix.shard }}.log
+            r190_cms_mixed/logs/
+            r189/proofs/
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r190-source-locked38-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r190-mixed-ninearm-shard-*
+          merge-multiple: true
+          path: r190_cms_mixed
+      - name: Audit all original SHA, 684 paired attempts, correctness and PAR-2
+        run: |
+          set -euo pipefail
+          tar xzf r190_source_bundle.tar.gz
+          chmod +x r189/r189-driver built/bin/kissat_4_0_4 r190_cms_mixed/r28
+          test "$(find r190_cms_mixed -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r190_cms_mixed_benchmark.py audit | tee r190_cms_mixed/audit.log
+          grep -q '^R190_FINAL ' r190_cms_mixed/audit.log
+          cat r190_cms_mixed/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R190-CRYPTO-MIXED-684-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r190_cms_mixed/report.json
+            r190_cms_mixed/all_trials.json
+            r190_cms_mixed/summary.md
+            r190_cms_mixed/audit.log
+            r190_cms_mixed/pins.json
