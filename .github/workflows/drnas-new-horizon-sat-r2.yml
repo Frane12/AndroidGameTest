@@ -1,0 +1,146 @@
+name: DRNAS New Horizon SAT R2 — robust linearized response 912 paired
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-sat-r2-robust-linear-20261107]
+    paths:
+      - research/new_horizon_r2.py
+      - research/new_horizon_r2_benchmark.py
+      - .github/workflows/drnas-new-horizon-sat-r2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-new-horizon-sat-r2
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and independently brute-force Horn/2SAT selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_r2.py research/new_horizon_r2_benchmark.py
+          python3 -u research/new_horizon_r2_benchmark.py selftest | tee nh-r2-selftest.log
+          grep -q '^NEW_HORIZON_R2_BENCH_SELFTEST_PASS' nh-r2-selftest.log
+      - name: Download R1 immutable originals and pinned native CaDiCaL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon_r2/source
+          gh run download 42320433991 --repo Frane12/AndroidGameTest -n new-horizon-frozen-pinned -D new_horizon_r2/source
+          test -s new_horizon_r2/source/new_horizon/frozen/manifest.json
+          test -s new_horizon_r2/source/new_horizon/r190-driver
+          python3 -u research/new_horizon_r2_benchmark.py freeze | tee nh-r2-freeze.log
+          python3 -u research/new_horizon_r2_benchmark.py verify
+          cp new_horizon_r2/source/new_horizon/r190-driver new_horizon_r2/r190-driver
+          chmod +x new_horizon_r2/r190-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          p=pathlib.Path("new_horizon_r2")
+          original=json.loads((p/"source/new_horizon/pin.json").read_text())
+          binary_sha=hashlib.sha256((p/"r190-driver").read_bytes()).hexdigest()
+          assert binary_sha==original["binary_sha256"]=="d3e17f52ee77be0df090da28710a10ba9543576e8ca12e9b2555288a02a077ed"
+          assert original["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pin=dict(cadical_source_sha=original["cadical_commit"],binary_sha256=binary_sha,
+                   frozen_sha256=hashlib.sha256((p/"frozen/manifest.json").read_bytes()).hexdigest(),
+                   r2_source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip())
+          (p/"pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("NEW_HORIZON_R2_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon_r2/smoke.cnf
+          new_horizon_r2/r190-driver new_horizon_r2/smoke.cnf 2 default | tee new_horizon_r2/smoke.log
+          grep -q '^R182_STATUS status=SAT' new_horizon_r2/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: new-horizon-r2-frozen-binary-pin
+          retention-days: 90
+          path: |
+            new_horizon_r2/frozen/
+            new_horizon_r2/r190-driver
+            new_horizon_r2/pin.json
+            nh-r2-selftest.log
+            nh-r2-freeze.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: R2 matched clean shadow R1 R2 shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-r2-frozen-binary-pin
+          path: .
+      - name: SHA immutable sources and identical pinned binary
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon_r2/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          d=pathlib.Path("new_horizon_r2")
+          pin=json.loads((d/"pin.json").read_text())
+          assert hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()==pin["binary_sha256"]
+          assert hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest()==pin["frozen_sha256"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["r2_source_commit"]
+          PY
+      - name: Prospective four-arm R2 vs R1 on same original SHA and budget
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r2_benchmark.py shard --shard ${{ matrix.shard }} --binary new_horizon_r2/r190-driver | tee new_horizon_r2/shard-${{ matrix.shard }}.log
+          grep -q '^NEW_HORIZON_R2_SHARD_PASS ' new_horizon_r2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: new-horizon-r2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon_r2/shard-${{ matrix.shard }}.json
+            new_horizon_r2/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-r2-frozen-binary-pin
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: new-horizon-r2-shard-*
+          merge-multiple: true
+          path: new_horizon_r2
+      - name: Audit all 912 matched trials and code invariants
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon_r2 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/new_horizon_r2_benchmark.py audit | tee new_horizon_r2/audit.log
+          grep -q '^NEW_HORIZON_R2_FINAL ' new_horizon_r2/audit.log
+          cat new_horizon_r2/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NEW-HORIZON-SAT-R2-FINAL
+          retention-days: 90
+          path: |
+            new_horizon_r2/report.json
+            new_horizon_r2/trials.json
+            new_horizon_r2/trials.csv
+            new_horizon_r2/summary.md
+            new_horizon_r2/audit.log
