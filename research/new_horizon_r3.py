@@ -191,7 +191,7 @@ def selftest():
                 " ".join(map(str,c))+" 0\n" for c in clauses))
             return p
         # A single early clause can refute all classes. Must not scan 64.
-        bad=write("bad.cnf",24,[(1,2,3),(4,5,6),(-1,-2,-3)])
+        bad=write("bad.cnf",24,[(1,2,3,4),(4,5,6),(-1,-2,-3)])
         info=cheap_probe(bad)
         need(info["route"]=="clean" and info["sampled"]==1 and info["stopped_early"],
              "immediate abstention")
