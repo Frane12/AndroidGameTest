@@ -1,0 +1,59 @@
+name: DRNAS TA3-2026 — exact frozen audit recovery (no solver rerun)
+on:
+  push:
+    branches: [experiment/drnas-ta3-2026-audit-salvage-20261107]
+    paths:
+      - '.github/workflows/drnas-ta3-2026-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta326-audit-recovery-frozen-42396350093
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download exact original SHA-locked 24 official SAT2026 formulas and solver binaries
+        uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 42396350093
+          github-token: ${{ github.token }}
+          name: ta326-original24-frozen-source-binary
+      - name: Restore and audit all eight ORIGINAL finished shard outputs (no rerun)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta326-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p ta3_2026/raw-shards
+          gh run download 42396350093 --repo Frane12/AndroidGameTest -p 'ta326-shard-*' -D ta3_2026/raw-shards
+          test "$(find ta3_2026/raw-shards -type f -name 'shard-*.json' | wc -l)" -eq 8
+          find ta3_2026/raw-shards -type f -name 'shard-*.json' -exec cp '{}' ta3_2026/ \;
+          test "$(find ta3_2026 -maxdepth 1 -type f -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -m py_compile research/drnas_ta3_2026_portfolio.py research/drnas_ta2_structural_profile.py
+          python3 -u research/drnas_ta3_2026_portfolio.py audit | tee ta3_2026/audit.log
+          grep -q '^TA3_FINAL ' ta3_2026/audit.log
+          cat ta3_2026/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve verified final audit and source pins
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-TA3-2026-384-RECOVERED-FINAL
+          retention-days: 90
+          path: |
+            ta3_2026/report.json
+            ta3_2026/all_trials.json
+            ta3_2026/summary.md
+            ta3_2026/audit.log
+            ta3_2026/pins.json
+            ta3_2026/manifest.json
+            ta3_2026/preregistration.json
+            ta3_2026/raw-shards/
