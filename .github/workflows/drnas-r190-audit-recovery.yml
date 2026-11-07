@@ -1,0 +1,55 @@
+name: DRNAS R190 — repair audit only from 684 existing measured trials
+on:
+  push:
+    branches: [experiment/drnas-cms-mixed-38-20261107]
+    paths:
+      - '.github/workflows/drnas-r190-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download original unmodified 684 trials and pinned binaries from R190 run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r190_cms_mixed r190_raw_shards
+          gh run download 42381363304 --repo Frane12/AndroidGameTest -n r190-source-locked38-binaries -D .
+          gh run download 42381363304 --repo Frane12/AndroidGameTest -p 'r190-mixed-ninearm-shard-*' -D r190_raw_shards
+          tar xzf r190_source_bundle.tar.gz
+          find r190_raw_shards -type f -name 'shard-*.json' -print | sort
+          count="$(find r190_raw_shards -type f -name 'shard-*.json' | wc -l)"
+          test "$count" -eq 12
+          find r190_raw_shards -type f -name 'shard-*.json' -exec cp '{}' r190_cms_mixed/ \;
+          test "$(find r190_cms_mixed -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          chmod +x r189/r189-driver built/bin/kissat_4_0_4 r190_cms_mixed/r28
+      - name: Reconstruct aggregate, independently audit pairing, and publish complete report
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r190_cms_mixed_benchmark.py audit | tee r190_cms_mixed/audit.log
+          grep -q '^R190_FINAL ' r190_cms_mixed/audit.log
+          test -s r190_cms_mixed/report.json
+          test -s r190_cms_mixed/all_trials.json
+          test -s r190_cms_mixed/summary.md
+          cat r190_cms_mixed/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R190-CRYPTO-MIXED-684-AUDIT-REPAIRED
+          retention-days: 90
+          path: |
+            r190_cms_mixed/report.json
+            r190_cms_mixed/all_trials.json
+            r190_cms_mixed/summary.md
+            r190_cms_mixed/audit.log
+            r190_cms_mixed/pins.json
