@@ -1,0 +1,146 @@
+name: DRNAS New Horizon SAT R4b — fresh-seed 5-repeat confirmation 960 paired
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-sat-r4b-repeat-confirm-20261107]
+    paths:
+      - 'research/new_horizon_r4b_repeat_confirmation.py'
+      - '.github/workflows/drnas-new-horizon-r4b-repeat-confirm.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-nh-r4b-5repeat
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Brute-force-proven SAT special-case and fresh generator selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_r4b_repeat_confirmation.py
+          python3 -u research/new_horizon_r4b_repeat_confirmation.py selftest | tee nh-repeat-selftest.log
+          grep -q '^NH_R4B_CONFIRM_SELFTEST_PASS 48' nh-repeat-selftest.log
+      - name: Freeze 48 prospectively seeded original CNFs and reuse shared pinned CaDiCaL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon_r4b_confirm/source
+          gh run download 42326199590 --repo Frane12/AndroidGameTest -n new-horizon-r4b-frozen-and-native -D new_horizon_r4b_confirm/source
+          test -s new_horizon_r4b_confirm/source/new_horizon_r4b/r190-driver
+          python3 -u research/new_horizon_r4b_repeat_confirmation.py freeze | tee nh-repeat-freeze.log
+          python3 -u research/new_horizon_r4b_repeat_confirmation.py verify
+          cp new_horizon_r4b_confirm/source/new_horizon_r4b/r190-driver new_horizon_r4b_confirm/r190-driver
+          chmod +x new_horizon_r4b_confirm/r190-driver
+          python3 - <<'PY'
+          import pathlib,json,hashlib,subprocess
+          d=pathlib.Path("new_horizon_r4b_confirm")
+          old=json.loads((d/"source/new_horizon_r4b/pin.json").read_text())
+          binary=hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()
+          assert binary==old["binary_sha"]=="d3e17f52ee77be0df090da28710a10ba9543576e8ca12e9b2555288a02a077ed"
+          assert old["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pin=dict(native_binary_sha=binary,
+              frozen_source_manifest_sha=hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest(),
+              source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+              cadical_commit=old["cadical_commit"])
+          (d/"pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("NH_R4B_REPEAT_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon_r4b_confirm/smoke.cnf
+          new_horizon_r4b_confirm/r190-driver new_horizon_r4b_confirm/smoke.cnf 2 default | tee new_horizon_r4b_confirm/smoke.log
+          grep -q '^R182_STATUS status=SAT' new_horizon_r4b_confirm/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: new-horizon-r4b-confirm-sources-and-native
+          retention-days: 90
+          path: |
+            new_horizon_r4b_confirm/frozen/
+            new_horizon_r4b_confirm/r190-driver
+            new_horizon_r4b_confirm/pin.json
+            nh-repeat-selftest.log
+            nh-repeat-freeze.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    name: R4b prospective 5-repeat clean R4 XOR-only R4b shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-r4b-confirm-sources-and-native
+          path: .
+      - name: Verify exact source and common solver binary SHA
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon_r4b_confirm/r190-driver
+          python3 - <<'PY'
+          import pathlib,json,hashlib,subprocess
+          d=pathlib.Path("new_horizon_r4b_confirm")
+          pin=json.loads((d/"pin.json").read_text())
+          assert hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()==pin["native_binary_sha"]
+          assert hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest()==pin["frozen_source_manifest_sha"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["source_commit"]
+          print("NH_R4B_REPEAT_SHA_PASS")
+          PY
+      - name: Run 5 randomized-order repeats on same SHA CNF per policy
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r4b_repeat_confirmation.py shard --shard ${{ matrix.shard }} --binary new_horizon_r4b_confirm/r190-driver | tee new_horizon_r4b_confirm/shard-${{ matrix.shard }}.log
+          grep -q '^NH_R4B_CONFIRM_SHARD_PASS ' new_horizon_r4b_confirm/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: new-horizon-r4b-confirm-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon_r4b_confirm/shard-${{ matrix.shard }}.json
+            new_horizon_r4b_confirm/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-r4b-confirm-sources-and-native
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: new-horizon-r4b-confirm-shard-*
+          merge-multiple: true
+          path: new_horizon_r4b_confirm
+      - name: Check all 960 trials, paired status, original SHA and PAR2
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon_r4b_confirm -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/new_horizon_r4b_repeat_confirmation.py audit | tee new_horizon_r4b_confirm/audit.log
+          grep -q '^NH_R4B_CONFIRM_FINAL ' new_horizon_r4b_confirm/audit.log
+          cat new_horizon_r4b_confirm/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NH-R4B-FIVE-REPEAT-FINAL
+          retention-days: 90
+          path: |
+            new_horizon_r4b_confirm/report.json
+            new_horizon_r4b_confirm/trials.json
+            new_horizon_r4b_confirm/trials.csv
+            new_horizon_r4b_confirm/summary.md
+            new_horizon_r4b_confirm/audit.log
