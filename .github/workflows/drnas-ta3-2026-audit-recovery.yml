@@ -1,0 +1,47 @@
+name: DRNAS TA3-2026 artifact-only final audit recovery
+on:
+  push:
+    branches: [experiment/drnas-worldsim-w1-20261107]
+    paths: ['.github/workflows/drnas-ta3-2026-audit-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    name: Recover original 384 SAT2026 trials without rerunning solvers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original frozen inputs and all eight original result shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42396350093 --repo Frane12/AndroidGameTest -n ta326-original24-frozen-source-binary -D .
+          tar xzf ta326-frozen24-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p ta3_2026/raw-shards
+          gh run download 42396350093 --repo Frane12/AndroidGameTest -p 'ta326-shard-*' -D ta3_2026/raw-shards
+          test "$(find ta3_2026/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 8
+          find ta3_2026/raw-shards -type f -name 'shard-*.json' -exec cp '{}' ta3_2026/ \;
+          test "$(find ta3_2026 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_ta3_2026_portfolio.py audit | tee ta3_2026/recovery-audit.log
+          grep -q '^TA3_FINAL ' ta3_2026/recovery-audit.log
+          cat ta3_2026/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA3-2026-384-ARTIFACT-ONLY-RECOVERED-FINAL
+          retention-days: 90
+          path: |
+            ta3_2026/report.json
+            ta3_2026/all_trials.json
+            ta3_2026/summary.md
+            ta3_2026/recovery-audit.log
+            ta3_2026/pins.json
+            ta3_2026/manifest.json
+            ta3_2026/raw-shards/
