@@ -28,7 +28,7 @@ BACKENDS = frozenset(("cms_plain", "cms_r28", "kissat_plain", "kissat_r28"))
 WINDOW_BYTES = 160 * 1024
 CLAUSE_CAP = 320
 LITERAL_CAP = 12000
-MIN_MULTI_BYTES = 550000
+MIN_MULTI_BYTES = 500000
 
 
 def region_stats(mm, start):
