@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DRNAS Ultimate T phase 1: paired native-CDCL trail-frontier causal experiment.
 Exactly the frozen original R2 20-CNF SHA set, NOT blind or final holdout.
-Ten modes x two repeats x 20 original sources = 400 trials, five shards.
+Eleven modes x two repeats x 20 original sources = 440 trials, five shards.
 """
 import argparse
 import collections
@@ -23,10 +23,11 @@ ROOT = pathlib.Path("ultimate_t2")
 FROZEN = pathlib.Path("ultimate_r2/frozen")
 MANIFEST = FROZEN/"manifest.json"
 MODES = ("r153","t_clean","t_shadow","t_source","t_adaptive","t_derived",
-         "t2_derived_rows","t2_derived_units","t2_derived_incremental","t2_derived_shadow")
+         "t2_derived_rows","t2_derived_units","t2_derived_incremental","t2_derived_shadow",
+         "td_lazy_source")
 REPS = 2
 SHARDS = 5
-PROTO = "DRNAS-ULTIMATE-T2-20261107-CAUSAL-ISOLATION-TEN-ARM-PHASE2"
+PROTO = "DRNAS-TD-20261107-LAZY-WATCH-11-ARM-SOURCE-ABLATION"
 FALLBACK = pathlib.Path("research/ultimate_t2_fallback.py")
 T_NATIVE = ROOT/"t-native"
 
@@ -58,7 +59,7 @@ def cpu():
     return platform.processor() or "unknown"
 
 def selftest():
-    need(len(MODES)==10 and len(cases())==20,"ten-arm protocol")
+    need(len(MODES)==11 and len(cases())==20,"eleven-arm TD protocol")
     need(T_NATIVE.is_file() and FALLBACK.is_file(),"native binary or fallback missing")
     need((ROOT/"empty.tsv").is_file(),"empty control")
     print("ULTIMATE_T2_SELFTEST_PASS",flush=True)
@@ -193,7 +194,7 @@ def audit():
         part=json.loads((ROOT/f"shard-{i}.json").read_text())
         need(len(part)==len(cs[i::SHARDS])*REPS*len(MODES),"incomplete shard")
         rows+=part
-    need(len(rows)==len(cs)*REPS*len(MODES)==400,"trial count incorrect")
+    need(len(rows)==len(cs)*REPS*len(MODES)==440,"trial count incorrect")
     pairs=collections.defaultdict(dict)
     for r in rows:
         c=source.get(r["sha256"])
@@ -224,7 +225,7 @@ def audit():
                 selected=sum(bool(x["t_gate"].get("eligible")) for x in subset),
                 started=sum(x["native_started"] in ("t_shadow","t_source","t_adaptive","gauss_cooldown",
                                          "t2_derived_rows","t2_derived_units",
-                                         "t2_derived_incremental","t2_derived_shadow")
+                                         "t2_derived_incremental","t2_derived_shadow","td_lazy_source")
                             for x in subset),
                 terminal_missing=sum(x["t_gate"].get("eligible",False) and x["native_mode"] is None
                                      for x in subset),
@@ -244,14 +245,16 @@ def audit():
                      ("t2_derived_rows","t2_derived_incremental"),
                      ("t2_derived_units","t2_derived_incremental"),
                      ("t2_derived_shadow","t2_derived_incremental"),
-                     ("t_derived","t2_derived_incremental")):
+                     ("t_derived","t2_derived_incremental"),
+                     ("t_source","td_lazy_source"),("t_shadow","td_lazy_source"),
+                     ("t_clean","td_lazy_source")):
         deltas=[a[ref]["par2_s"]-a[cand]["par2_s"] for a in pairs.values()]
         comparisons[f"{cand}_vs_{ref}"]=dict(wins=sum(x>0.005 for x in deltas),
             losses=sum(x<-.005 for x in deltas),ties=sum(abs(x)<=.005 for x in deltas),
             par2_gain_s=round(sum(deltas),6))
-    report=dict(status="ULTIMATE_T2_PHASE2_AUDIT_PASS_NONBLIND",protocol=PROTO,
+    report=dict(status="ULTIMATE_TD_LAZY_SOURCE_AUDIT_PASS_NONBLIND",protocol=PROTO,
         original_manifest_sha=sha(MANIFEST),original_r2_run=42346485260,
-        source_count=20,attempts=400,original_cnfs_unchanged=True,
+        source_count=20,attempts=440,original_cnfs_unchanged=True,
         source_XOR_independently_replayed=True, t1_run_id=42351079758,models_checked_original=True,
         independent_native_LRAT=False,blind_holdout=False,
         runtime_shadow_real=True,results=results,comparisons=comparisons)
@@ -262,8 +265,8 @@ def audit():
             z=dict(v);z["t_gate"]=json.dumps(z["t_gate"],sort_keys=True)
             w.writerow(z)
     with (ROOT/"summary.md").open("w") as f:
-        f.write("# Ultimate T2 — controlled XOR row / unit / incremental ablation\n\n")
-        f.write("20 previously used original CNFs; ten arms, two reps = 400 attempts. Not blind. Native UNSAT lacks LRAT. Causal factorial isolation.\n\n")
+        f.write("# Ultimate TD — lazy exact two-watch vs eager source XOR incremental frontier\n\n")
+        f.write("20 previously used original CNFs; eleven arms, two reps = 440 attempts. Not blind. Native UNSAT lacks LRAT. Causal factorial isolation.\n\n")
         f.write("| Cohort | Mode | Solved | PAR2 s | Selected | Started | Completed reasons | Shadow opportunities |\n")
         f.write("|---|---|---:|---:|---:|---:|---:|---:|\n")
         for cohort,arms in results.items():
