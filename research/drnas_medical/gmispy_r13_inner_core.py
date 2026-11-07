@@ -117,7 +117,7 @@ def run_native(binary, cnf, mode, seed, expect, variables, clauses):
         return {"status": "TIMEOUT", "wall_s": round(time.perf_counter()-tick, 7)}
     wall = time.perf_counter() - tick
     need(p.returncode == 0, "native crash: " + p.stderr[-300:])
-    status = re.findall(r"^R182_STATUS status=(SAT|UNSAT|TIMEOUT)\\b", p.stdout, re.M)
+    status = re.findall(r"^R182_STATUS status=(SAT|UNSAT|TIMEOUT)\b", p.stdout, re.M)
     need(len(status) == 1, "native status missing")
     need(status[0] == expect, "SAT answer differs from independently certified R12")
     timing = re.findall(r"^R13_TIMING inner_s=([0-9.]+) native_s=([0-9.]+) prep_s=([0-9.]+)$",
@@ -141,7 +141,7 @@ def run_native(binary, cnf, mode, seed, expect, variables, clauses):
         "status": status[0], "wall_s": round(wall, 7),
         "native_s": native, "inner_s": inner, "prep_s": prep,
         "external_overhead_s": round(max(0.0, wall-native), 7),
-        "actual_dual": int(re.search(r"actual_dual=(\\d+)", policy[0]).group(1)),
+        "actual_dual": int(re.search(r"actual_dual=(\d+)", policy[0]).group(1)),
         "policy_reason": re.search(r"reason=([a-zA-Z_]+)", policy[0]).group(1),
         "SAT_witness_checked": status[0] == "SAT",
     }
