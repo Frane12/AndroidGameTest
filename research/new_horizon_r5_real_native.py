@@ -21,15 +21,17 @@ import r182_mixed_engine as exact
 ROOT=pathlib.Path("new_horizon_r5")
 SRC=ROOT/"frozen"
 PRIOR=ROOT/"prior-r183/frozen/manifest.json"
-PROTO="DRNAS-NH-R5-PROSPECTIVE-EXTERNAL-MAIN2026-NATIVE6-v1"
-FAMILIES=("cryptography","miter","xor-chain","linear-equations","lights-out")
+PROTO="DRNAS-NH-R5-PROSPECTIVE-EXTERNAL-MAIN2026-NATIVE6-v2"
+FAMILIES=("cryptography","miter","xor-chain","linear-equations","lights-out",
+          "bitvector","hardware-verification","planning","scheduling",
+          "graph-coloring","uniform-random")
 TRACKS=("main_2026",)
-QUOTA_PER_FAMILY=4
+QUOTA_PER_FAMILY=6
 TARGET=16
 MIN_CASES=12
-MAX_ATTEMPTS=120
+MAX_ATTEMPTS=200
 MAX_RAW_BYTES=7*1024*1024
-MAX_PLAIN_BYTES=2_500_000
+MAX_PLAIN_BYTES=3_500_000
 MAX_VARS=20_000
 MAX_CLAUSES=170_000
 REPS=2
