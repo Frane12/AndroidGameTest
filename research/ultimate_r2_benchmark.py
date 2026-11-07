@@ -49,12 +49,12 @@ def selftest():
             clauses=[" ".join(str(-v if mask>>i&1 else v)
                              for i,v in enumerate(range(1,width+1)))+" 0"
                      for mask in range(1<<width) if mask.bit_count()%2==0]
-            header="c "+"x"*350+"\\n"+f"p cnf {width} {len(clauses)}\\n"
-            for body in ("\\n".join(clauses), " ".join(clauses),
-                         "\\n".join(c.replace(" 0","\\n 0") for c in clauses)):
-                f.write_text(header+body+"\\n")
+            header="c "+"x"*350+"\n"+f"p cnf {width} {len(clauses)}\n"
+            for body in ("\n".join(clauses), " ".join(clauses),
+                         "\n".join(c.replace(" 0","\n 0") for c in clauses)):
+                f.write_text(header+body+"\n")
                 need(bridge.cheap_probe(f)[0],f"width-{width} wrapped DIMACS missed")
-            f.write_text(header+"\\n".join(clauses[:-1])+"\\n")
+            f.write_text(header+"\n".join(clauses[:-1])+"\n")
             need(not bridge.cheap_probe(f)[0],f"width-{width} incomplete parity accepted")
     # On Linux, expensive full-source proof work must be preemptible.
     if hasattr(signal,"setitimer"):
