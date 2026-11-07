@@ -112,6 +112,8 @@ def run_one(c, mode, cap, stage, shard):
         command, started, cwd=cwd, env={"W1_PROOF_FILE": "/dev/null"}, cap=cap)
     elapsed = min(cap, time.perf_counter() - started)
     status, evidence = "TIMEOUT", "CAP_TIMEOUT"
+    if stage == "smoke":
+        print("W2_SMOKE_DETAIL", json.dumps({"mode":mode, "selected":selected, "rc":rc, "timeout":timed_out, "stdout_tail":output[-3500:], "command":list(map(str,command))}), flush=True)
     if not timed_out and elapsed < cap:
         status, model = w1.parse_answer(output, rc)
         if status == "SAT":
