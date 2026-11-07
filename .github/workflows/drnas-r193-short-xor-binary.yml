@@ -1,0 +1,147 @@
+name: DRNAS R193 SHORT XOR binary all types 528 paired
+on:
+  push:
+    branches: [experiment/drnas-r193-short-xor-binary-20261107]
+    paths:
+      - 'research/r193_short_xor_binary.py'
+      - '.github/workflows/drnas-r193-short-xor-binary.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: r193-short-xor-binary-528
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate new generator families before creating original CNFs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r193_short_xor_binary.py research/r193_dual_live_benchmark.py research/r186_cheap_selector.py
+          python3 -u research/r193_short_xor_binary.py selftest
+      - name: Reuse same R193 CaDiCaL executable, exact pinned SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r193short/source
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D r193short/source
+          cp r193short/source/r193-driver r193short/r193-driver
+          chmod +x r193short/r193-driver
+          python3 - <<'PY'
+          import hashlib,pathlib
+          p=pathlib.Path("r193short/r193-driver")
+          digest=hashlib.sha256(p.read_bytes()).hexdigest()
+          assert digest=="3f355d18566d2ec080c8a38c0c317276f41c79c304c326f99ad63672b5a02c3b",digest
+          print("R193SHORT_BINARY_PIN_PASS",digest)
+          PY
+      - name: Freeze 44 new seeds, then smoke-test six R193 policies
+        run: |
+          set -euo pipefail
+          python3 -u research/r193_short_xor_binary.py freeze
+          python3 -u research/r193_short_xor_binary.py verify
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r193short/smoke.cnf
+          for mode in default sat dual_fast dual_learning dual_keep_default dual_keep_sat; do
+            r193short/r193-driver r193short/smoke.cnf 2 "$mode" 0 > "r193short/smoke-$mode.log"
+            grep -q '^R182_STATUS status=SAT' "r193short/smoke-$mode.log"
+          done
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r193short")
+          sha=lambda f:hashlib.sha256((p/f).read_bytes()).hexdigest()
+          pin={"native_binary_sha256":sha("r193-driver"),
+               "manifest_sha256":sha("frozen/manifest.json"),
+               "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a",
+               "families":11,"formulas":44,"repetitions":2,"modes":6,"cap_s":2.0}
+          (p/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R193SHORT_BUILD_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r193short-sha-pinned-native-frozen44
+          retention-days: 90
+          path: |
+            r193short/frozen/
+            r193short/r193-driver
+            r193short/pin.json
+            r193short/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    name: R193 XOR binary mixed short shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193short-sha-pinned-native-frozen44
+          path: r193short
+      - name: Verify original SHA/binary, compare six profiles at 2s cap
+        run: |
+          set -euo pipefail
+          chmod +x r193short/r193-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r193short")
+          pin=json.loads((p/"pin.json").read_text())
+          for f,key in (("r193-driver","native_binary_sha256"),
+                        ("frozen/manifest.json","manifest_sha256")):
+              assert hashlib.sha256((p/f).read_bytes()).hexdigest()==pin[key]
+          PY
+          python3 -u research/r193_short_xor_binary.py shard --shard ${{ matrix.shard }} --binary r193short/r193-driver | tee r193short/shard-${{ matrix.shard }}.log
+          grep -q '^R193SHORT_SHARD_PASS ' r193short/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r193short-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r193short/shard-${{ matrix.shard }}.json
+            r193short/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193short-sha-pinned-native-frozen44
+          path: r193short
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r193short-shard-*
+          merge-multiple: true
+          path: r193short
+      - name: Audit exact 528 pairs, original SHA, SAT models and per-family speed
+        run: |
+          set -euo pipefail
+          test "$(find r193short -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r193_short_xor_binary.py audit | tee r193short/audit.log
+          grep -q '^R193SHORT_FINAL ' r193short/audit.log
+          cat r193short/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R193-SHORT-XOR-BINARY-RESULTS
+          retention-days: 90
+          path: |
+            r193short/report.json
+            r193short/trials.json
+            r193short/summary.md
+            r193short/audit.log
