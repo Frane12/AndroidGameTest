@@ -1,0 +1,59 @@
+name: DRNAS TA2 — bounded structural SAT fingerprint on 40 source-locked originals
+on:
+  push:
+    branches: [experiment/drnas-ta2-nonxor-structure-20261107]
+    paths:
+      - 'research/drnas_ta2_structural_profile.py'
+      - '.github/workflows/drnas-ta2-structural-fingerprint.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta2-bounded-source-only-structural-20261107
+  cancel-in-progress: false
+jobs:
+  structural:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Freeze and smoke-test source-only structural analyzer
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ta2_structural_profile.py
+          python3 -u research/drnas_ta2_structural_profile.py smoke
+      - name: Restore historical R194 source manifest only for holdout SHA exclusion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42386841737 --repo Frane12/AndroidGameTest -n r194-source-binary-pins -D .
+          test -s r194-source-locked38-and-binaries.tar.gz
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          test -s r189/frozen/manifest.json
+      - name: Materialize SHA-pinned SAT2025 original CNFs, no solver results
+        run: |
+          set -euo pipefail
+          python3 -u research/r199_unseen_mixed40_crossbackend.py fetch | tee r199/ta2-fetch.log
+          grep -q '^R199_HOLDOUT_FROZEN' r199/ta2-fetch.log
+      - name: Measure source-only non-XOR and XOR structural features
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta2_structural_profile.py analyze | tee r199/ta2-profile.log
+          grep -q '^TA2_AUDIT_PASS ' r199/ta2-profile.log
+          cat r199/ta2-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA2-SAT-SOURCE-STRUCTURAL-40-FINAL
+          retention-days: 90
+          path: |
+            r199/ta2-structural-fingerprints.json
+            r199/ta2-summary.json
+            r199/ta2-summary.md
+            r199/ta2-profile.log
+            r199/ta2-fetch.log
+            r199/candidates.json
