@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""DRNAS R199: four parallel source-paired cross-backend hybrid experiments.
+"""DRNAS R199: prospective 40-source mixed 2025 cross-backend transfer experiment.
 
 40 SHA-pinned original SAT2025 CNFs not used in R189, 3 paired repeats,
-4 stratified shards, 6 arms: pure CMS/Kissat, R28 routing into each, and certified
-R193 GF2 derived clauses into each. 12s end-to-end wall cap per trial.
+8 stratified shards, 6 arms: pure CMS/Kissat, R28 routing into each, and certified
+R193 GF2 derived clauses into each. 20s end-to-end wall cap per trial.
 Original CNFs and binary hashes are frozen; SAT witnesses checked on ORIGINAL.
-Derived clauses are proof-replayed by R193. Not blind; CMS/Kissat UNSAT is not
+Derived clauses are proof-replayed by R193. Precommitted SHA-disjoint sources; CMS/Kissat UNSAT is not
 independently LRAT-certified. The experiment tests backend transfer, not a claim
 of general SAT superiority.
 """
@@ -15,8 +15,8 @@ import r192_gauss_first_cms_hybrid as old
 import r193_certified_gauss_cms as certified
 
 ROOT = pathlib.Path("r199")
-SOURCE = pathlib.Path("r189/frozen")
-PROTO = "DRNAS-R199-4PARALLEL-CROSS-BACKEND-SOURCE-PAIRED-v1"
+SOURCE = pathlib.Path("r199/sources")
+PROTO = "DRNAS-R199-40-UNSEEN-2025-SOURCE-PAIRED-v1"
 CAP = 20.0
 REPS = 3
 SHARDS = 8
