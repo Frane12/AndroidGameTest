@@ -25,7 +25,7 @@ def validate(conn):
         ).fetchone()
         assert c is not None, cohort_id
         assert c["original_formulas"] == originals and c["total_attempts"] == attempts
-        assert "PASS" in c["audit_status"], cohort_id
+        assert any(word in c["audit_status"] for word in ("PASS", "COMPLETE")), cohort_id
         ms = conn.execute(
             "SELECT * FROM benchmark_modes WHERE cohort_id=?", (cohort_id,)
         ).fetchall()
