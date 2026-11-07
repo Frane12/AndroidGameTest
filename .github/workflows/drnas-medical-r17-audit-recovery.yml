@@ -1,0 +1,72 @@
+name: DRNAS Medical R17 artifact-only independent audit recovery
+on:
+  push:
+    branches: [experiment/drnas-medical-r17-structural-lp-forecast-20261107]
+    paths:
+      - '.github/workflows/drnas-medical-r17-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  immutable-artifact-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: R17 audit original ten SHA-locked holdouts without recomputing predictions
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install audit-only NumPy dependency
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check 'numpy==2.3.4'
+      - name: Recover original run immutable preregistration and ten solver outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r17 all-r17
+          gh run download 42344188975 --repo Frane12/AndroidGameTest \
+            -n R17-FROZEN-PRESOLVE-PREDICTIONS-SHA256 \
+            -D r17
+          for family in sha_disjoint degree_disjoint; do
+            for n in 24 48 96 192 384; do
+              d="all-r17/R17-PROSPECTIVE-${family}-${n}"
+              mkdir -p "$d"
+              gh run download 42344188975 --repo Frane12/AndroidGameTest \
+                -n "R17-PROSPECTIVE-${family}-${n}" -D "$d"
+            done
+          done
+          sha256sum r17/frozen/preregistered.json
+          cat r17/frozen/sha256.txt
+          sha256sum -c r17/frozen/sha256.txt --ignore-missing || \
+            (cd r17/frozen && sha256sum -c sha256.txt)
+      - name: Independently audit original SHA-frozen pre-solve predictions vs original R17 results
+        run: |
+          set -euo pipefail
+          args=()
+          for family in sha_disjoint degree_disjoint; do
+            for n in 24 48 96 192 384; do
+              d="all-r17/R17-PROSPECTIVE-${family}-${n}"
+              mapfile -t found < <(find "$d" -type f -name summary.json | sort)
+              test "${#found[@]}" -eq 1
+              args+=("${found[0]}")
+            done
+          done
+          mkdir -p r17-final
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py audit \
+            --freeze r17/frozen --inputs "${args[@]}" \
+            --out r17-final/independent_prospective_audit.json \
+            | tee r17-final/audit.log
+          grep -q '^R17_FINAL ' r17-final/audit.log
+          cat r17-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R17-CERTIFIED-FORECAST-AUDIT-RECOVERED
+          path: r17-final/
+          retention-days: 90
