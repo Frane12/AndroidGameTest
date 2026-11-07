@@ -1,0 +1,132 @@
+name: DRNAS Medical R13 pinned native solve-only timing on R12 frozen iML1515
+on:
+  push:
+    branches: [experiment/drnas-medical-r13-inner-core-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r13_inner_core.py'
+      - '.github/workflows/drnas-medical-r13-inner-core.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile pinned unchanged R195 strategy with R13 solve-only clocks
+        run: |
+          set -euo pipefail
+          mkdir -p r13
+          python3 -m py_compile research/drnas_medical/gmispy_r13_inner_core.py
+          python3 research/drnas_medical/gmispy_r13_inner_core.py selftest
+          git fetch --no-tags --depth=1 origin 9d19a4ab2da1dc87ddc8a61156c2742078628642
+          test "$(git rev-parse FETCH_HEAD)" = 9d19a4ab2da1dc87ddc8a61156c2742078628642
+          git show FETCH_HEAD:research/r195_dualkeep_real_driver.cpp > r13/r195-source.cpp
+          python3 research/drnas_medical/gmispy_r13_inner_core.py instrument --input r13/r195-source.cpp --out r13/r13-instrumented.cpp
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/cadical-r13
+          cd /tmp/cadical-r13
+          git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          ./configure
+          make -j2
+          cd "$GITHUB_WORKSPACE"
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/cadical-r13/src r13/r13-instrumented.cpp /tmp/cadical-r13/build/libcadical.a -o r13/r13-native
+          chmod +x r13/r13-native
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r13/sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > r13/unsat.cnf
+          for mode in default dual_keep_default dual_keep_guarded; do
+            r13/r13-native r13/sat.cnf 2 "$mode" 0 11 > r13/smoke-sat-$mode.log
+            grep -q '^R182_STATUS status=SAT' r13/smoke-sat-$mode.log
+            grep -q '^R13_TIMING inner_s=' r13/smoke-sat-$mode.log
+            r13/r13-native r13/unsat.cnf 2 "$mode" 0 11 > r13/smoke-unsat-$mode.log
+            grep -q '^R182_STATUS status=UNSAT' r13/smoke-unsat-$mode.log
+            grep -q '^R13_TIMING inner_s=' r13/smoke-unsat-$mode.log
+          done
+          sha256sum r13/r13-native | tee r13/native.sha
+          echo R13_BUILD_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R13-PINNED-NATIVE
+          path: r13/
+          retention-days: 90
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24, 48, 96, 192, 384]
+    name: R13 ${{ matrix.n }} genes 5-seed inside-solve R195 paired
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R13-PINNED-NATIVE
+          path: r13
+      - name: Download exact R12 frozen source with original SHAs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check python-sat==1.9.dev21
+          python3 -m py_compile research/drnas_medical/gmispy_r13_inner_core.py
+          mkdir -p r13/source-${{ matrix.n }}
+          gh run download 42336300298 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R12-COHORT-${{ matrix.n }}-RAW -D r13/source-${{ matrix.n }}
+          test "$(find r13/source-${{ matrix.n }} -name manifest.json | wc -l)" -eq 1
+          chmod +x r13/r13-native
+          sha256sum -c r13/native.sha
+      - name: Independently reverify all CNFs then measure 3 R195 modes with 5 seeds
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r13_inner_core.py paired --root r13/source-${{ matrix.n }} --binary r13/r13-native --n ${{ matrix.n }} --out r13/paired-${{ matrix.n }}.json | tee r13/paired-${{ matrix.n }}.log
+          grep -q '^R13_COHORT_FINAL ' r13/paired-${{ matrix.n }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R13-COHORT-${{ matrix.n }}-RAW
+          path: |
+            r13/paired-${{ matrix.n }}.json
+            r13/paired-${{ matrix.n }}.log
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R13-COHORT-*-RAW
+          path: all-r13
+          merge-multiple: false
+      - name: Fail-closed correctness audit and independent 192/384 gene holdout
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r13/DRNAS-MEDICAL-R13-COHORT-${n}-RAW"
+            mapfile -t matches < <(find "$d" -name "paired-${n}.json" -type f | sort)
+            test "${#matches[@]}" -eq 1
+            inputs+=("${matches[0]}")
+          done
+          mkdir -p r13-final
+          python3 -u research/drnas_medical/gmispy_r13_inner_core.py audit --inputs "${inputs[@]}" --out r13-final/report.json | tee r13-final/audit.log
+          grep -q '^R13_FINAL ' r13-final/audit.log
+          cat r13-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R13-INNER-CORE-PAIRED-FINAL
+          path: r13-final/
+          retention-days: 90
