@@ -1,0 +1,159 @@
+name: DRNAS TA7H-60 — exact 12 SAT2026 originals, six arms, 144 source-paired 60s
+on:
+  push:
+    branches: [experiment/drnas-ta7h-60s-20261107]
+    paths:
+      - '.github/workflows/drnas-ta7h-60s.yml'
+      - 'research/drnas_ta7_60s_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta7h-60s-source-replay-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore original 12-source SHA-pinned TA7H cohort and freeze 60s protocol
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact 12-source archived inputs from TA7H run 42412800653
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42412800653 --repo Frane12/AndroidGameTest -n ta7h-original12-frozen -D .
+          test -s ta7h-original12-frozen.tar.gz
+          tar xzf ta7h-original12-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          digest=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          pins_path=pathlib.Path('ta7/pins.json')
+          pins=json.loads(pins_path.read_text())
+          for path, expected in pins.items():
+              assert digest(path)==expected, ('frozen pin drift',path)
+          cases=json.loads(pathlib.Path('ta7/manifest.json').read_text())
+          assert cases['protocol']=='DRNAS-TA7-2026-NEW12-HOSTLOCK-6ARMS-2REPS-12S-v1'
+          assert len(cases['cases'])==12
+          assert len({c['sha256'] for c in cases['cases']})==12
+          for c in cases['cases']:
+              path='ta7/sources/'+c['id']+'.cnf'
+              assert digest(path)==c['sha256'],path
+          pins['research/drnas_ta7_60s_benchmark.py']=digest('research/drnas_ta7_60s_benchmark.py')
+          pins_path.write_text(json.dumps(pins,sort_keys=True,indent=2)+'\n')
+          print('TA7H60_EXACT_12_SOURCE_REPLAY_PASS',len(pins),flush=True)
+          PY
+          python3 -m py_compile research/drnas_ta7_60s_benchmark.py research/drnas_ta7_hostlocked_router.py
+          python3 -u research/drnas_ta7_60s_benchmark.py smoke | tee ta7/smoke60.log
+          grep -q '^TA7_SELFTEST_PASS 6' ta7/smoke60.log
+          tar czf ta7h60-original12-frozen.tar.gz \
+            ta3_2026 r189/frozen/manifest.json r199/candidates.json ta3/candidates.json \
+            r200/manifest.json ta6/manifest.json ta7exclusions/ta7-manifest.json \
+            r190_cms_mixed/r28 built/bin/kissat_4_0_4 \
+            r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh \
+            ta7/manifest.json ta7/pins.json ta7/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta7h60-original12-frozen
+          retention-days: 90
+          path: ta7h60-original12-frozen.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ta7h60-prepare-diagnostic
+          retention-days: 14
+          path: |
+            ta7/smoke60.log
+            ta7/pins.json
+            ta7/manifest.json
+  paired:
+    needs: prepare
+    name: TA7H60 one-source six-arm 60s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta7h60-original12-frozen
+      - name: Restore native CMS 5.11.15 and verify every source and binary pin
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf ta7h60-original12-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          digest=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          for p,h in json.loads(pathlib.Path('ta7/pins.json').read_text()).items():
+              assert digest(p)==h,p
+          print('TA7H60_ALL_PINS_PASS',flush=True)
+          PY
+      - name: Run six frozen arms twice on the same exact original CNF
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta7_60s_benchmark.py shard --shard ${{ matrix.shard }} | tee ta7/shard-${{ matrix.shard }}.log
+          grep -q '^TA7_SHARD_PASS ' ta7/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta7h60-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ta7/shard-${{ matrix.shard }}.json
+            ta7/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: TA7H60 source-cluster audit of 144 original-SHA-matched 60s trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta7h60-original12-frozen
+      - name: Audit all 12 single-source shards and report PAR2 and paired ratios
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta7h60-original12-frozen.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'ta7h60-shard-*' -D ta7/raw-shards
+          test "$(find ta7/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 12
+          find ta7/raw-shards -name 'shard-*.json' -exec cp '{}' ta7/ \;
+          python3 -u research/drnas_ta7_60s_benchmark.py audit | tee ta7/audit60.log
+          grep -q '^TA7_FINAL ' ta7/audit60.log
+          cat ta7/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA7H60-EXACT12-144-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            ta7/report.json
+            ta7/report.md
+            ta7/all-trials.json
+            ta7/manifest.json
+            ta7/pins.json
+            ta7/audit60.log
+            ta7/raw-shards/
