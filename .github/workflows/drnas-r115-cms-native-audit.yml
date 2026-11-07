@@ -1,0 +1,47 @@
+name: DRNAS R115 CNF vs native XOR — exact 250-block equivalence audit
+on:
+  push:
+    branches: [experiment/drnas-r115-cms-gauss-audit-20261107]
+    paths:
+      - '.github/workflows/drnas-r115-cms-native-audit.yml'
+      - 'research/r115_cms_native_xor_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  r115-native-xor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          cryptominisat5 --version
+      - name: Get original source and compile R28
+        run: |
+          set -euo pipefail
+          mkdir -p r115_cms_native
+          curl -fLsS --retry 3 --retry-delay 3 -o r115_cms_native/archived.zip "https://github.com/Frane12/AndroidGameTest/releases/download/drnas-orion-review-v0.1-20261106/DRNAS_R115_RAW.zip"
+          unzip -o r115_cms_native/archived.zip '75429ff7acb5acb597abe01aa745c2a6.cnf' -d r115_cms_native
+          mv r115_cms_native/75429ff7acb5acb597abe01aa745c2a6.cnf r115_cms_native/r115.cnf
+          echo '243e5d0079606862166a4619691cbbb8ffc9c8c14eb16250138b16d724c6bc83  r115_cms_native/r115.cnf' | sha256sum -c
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r115_cms_native/r28
+          sha256sum experiments/drnas_v16/r28_exact_gf2.cpp r115_cms_native/r28 > r115_cms_native/provenance.sha256
+          lscpu > r115_cms_native/cpu.txt
+          git rev-parse HEAD > r115_cms_native/commit.txt
+      - name: Three paired four-arm runs + equivalence and witness audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r115_cms_native_xor_audit.py | tee r115_cms_native/audit.log
+      - name: Upload reproducibility files
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R115-CNF-VS-NATIVE-XOR-FOUR-ARM-AUDIT
+          path: r115_cms_native/
+          retention-days: 60
