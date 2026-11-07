@@ -1,0 +1,90 @@
+name: DRNAS Medical R14 exact cross-stage learning full iML1515 paired
+on:
+  push:
+    branches: [experiment/drnas-medical-r14-cross-stage-learning-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r14_cross_stage.py'
+      - '.github/workflows/drnas-medical-r14-cross-stage-learning.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24, 48, 96, 192, 384]
+    name: R14 ${{ matrix.n }} genes 3x baseline vs gated fresh vs cross-stage sharing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Lock published iML1515 R9 / certified R10 independent reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r14_cross_stage.py
+          python3 -u research/drnas_medical/gmispy_r14_cross_stage.py selftest
+          mkdir -p r14/r9 r14/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r14/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW -D r14/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r14/r9/source --freeze r14/r9/frozen
+          test -s r14/reference/summary.json
+      - name: Run exactly matched biological pipeline with all 3 SAT reuse policies
+        run: |
+          set -euo pipefail
+          mkdir -p r14
+          python3 -u research/drnas_medical/gmispy_r14_cross_stage.py cohort --source r14/r9/source --frozen r14/r9/frozen --reference r14/reference/summary.json --n ${{ matrix.n }} --out r14/paired-${{ matrix.n }}.json | tee r14/paired-${{ matrix.n }}.log
+          grep -q '^R14_COHORT_FINAL ' r14/paired-${{ matrix.n }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R14-COHORT-${{ matrix.n }}-RAW
+          path: |
+            r14/paired-${{ matrix.n }}.json
+            r14/paired-${{ matrix.n }}.log
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R14-COHORT-*-RAW
+          path: all-r14
+          merge-multiple: false
+      - name: Strict five-cohort stage reuse audit and whole-pipeline ratio report
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r14/DRNAS-MEDICAL-R14-COHORT-${n}-RAW"
+            mapfile -t matches < <(find "$d" -type f -name "paired-${n}.json" | sort)
+            test "${#matches[@]}" -eq 1
+            inputs+=("${matches[0]}")
+          done
+          mkdir -p r14-final
+          python3 -u research/drnas_medical/gmispy_r14_cross_stage.py audit --inputs "${inputs[@]}" --out r14-final/report.json | tee r14-final/audit.log
+          grep -q '^R14_FINAL ' r14-final/audit.log
+          cat r14-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R14-CROSS-STAGE-FINAL
+          path: r14-final/
+          retention-days: 90
