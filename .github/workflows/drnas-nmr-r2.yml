@@ -1,0 +1,220 @@
+name: DRNAS New Horizon NMR R2 — persistent neural mixing resolution
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-nmr-r2-20261107]
+    paths:
+      - 'research/nmr_live_driver.cpp'
+      - 'research/nmr_online.py'
+      - 'research/nmr_r2_benchmark.py'
+      - '.github/workflows/drnas-nmr-r2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-nmr-r2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify neural implementation and recurrence negative controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_sat.py research/nmr_online.py research/nmr_r2_benchmark.py
+          python3 -u research/nmr_r2_benchmark.py selftest | tee nmr-selftest.log
+          grep -q '^NMR_R2_BENCH_SELFTEST_PASS' nmr-selftest.log
+      - name: Recover R1 SHA-frozen same-source suite and clean solver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42320433991 --repo Frane12/AndroidGameTest -n new-horizon-frozen-pinned -D .
+          test -f new_horizon/frozen/manifest.json
+          test -f new_horizon/pin.json
+          test -f new_horizon/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path("new_horizon")
+          p=json.loads((root/"pin.json").read_text())
+          assert p["commit"]=="b1da46570005535f0f885698b0f7f2e9777d06bb"
+          assert hashlib.sha256((root/"r190-driver").read_bytes()).hexdigest()==p["binary_sha256"]
+          assert hashlib.sha256((root/"frozen/manifest.json").read_bytes()).hexdigest()==p["manifest_sha256"]
+          print("NMR_R2_R1_SOURCE_PIN_PASS",p["manifest_sha256"])
+          PY
+          python3 -u research/nmr_r2_benchmark.py prepare
+          python3 -u research/nmr_r2_benchmark.py verify
+      - name: Build pinned CaDiCaL 2.1 interactive driver and smoke test
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/nmr-cadical
+          (cd /tmp/nmr-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/nmr-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -I/tmp/nmr-cadical/src research/nmr_live_driver.cpp /tmp/nmr-cadical/build/libcadical.a -o nmr_r2/nmr-driver
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          printf 'p cnf 2 2\n1 0\n-1 2 0\n' > nmr_r2/smoke.cnf
+          printf 'FINISH 0\n' | nmr_r2/nmr-driver nmr_r2/smoke.cnf 2 | tee nmr_r2/smoke.log
+          grep -q '^NMR_STATUS status=SAT' nmr_r2/smoke.log
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          paths=["nmr_r2/nmr-driver","new_horizon/r190-driver","nmr_r2/split.json"]
+          p={x:hashlib.sha256(pathlib.Path(x).read_bytes()).hexdigest() for x in paths}
+          p["cadical_commit"]="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pathlib.Path("nmr_r2/build-pin.json").write_text(json.dumps(p,indent=2,sort_keys=True))
+          print("NMR_R2_BUILD_PASS",json.dumps(p))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmr-r2-pinned-suite
+          retention-days: 90
+          path: |
+            new_horizon/frozen/
+            new_horizon/pin.json
+            new_horizon/r190-driver
+            nmr_r2/nmr-driver
+            nmr_r2/split.json
+            nmr_r2/build-pin.json
+            nmr_r2/smoke.log
+            nmr-selftest.log
+  train:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r2-pinned-suite
+          path: .
+      - uses: actions/cache/restore@v4
+        id: old-memory
+        with:
+          path: nmr_r2/model.sqlite
+          key: nmr-r2-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            nmr-r2-${{ runner.os }}-${{ github.ref_name }}-
+      - name: Train persistent network only on training formulas
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          python3 -u research/nmr_r2_benchmark.py verify
+          if test -f nmr_r2/model.sqlite; then sha256sum nmr_r2/model.sqlite > nmr_r2/previous-memory.sha; fi
+          python3 -u research/nmr_r2_benchmark.py train --binary nmr_r2/nmr-driver --clean new_horizon/r190-driver --memory nmr_r2/model.sqlite | tee nmr_r2/training.log
+          grep -q '^NMR_R2_TRAIN_PASS' nmr_r2/training.log
+          python3 - <<'PY'
+          import hashlib,pathlib
+          p=pathlib.Path("nmr_r2/model.sqlite")
+          assert p.is_file()
+          s=hashlib.sha256(p.read_bytes()).hexdigest()
+          pathlib.Path("nmr_r2/model.sha256").write_text(s+"\n")
+          print("NMR_R2_PERSISTENCE_SHA",s)
+          PY
+      - uses: actions/cache/save@v4
+        with:
+          path: nmr_r2/model.sqlite
+          key: nmr-r2-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r2-trained-memory
+          retention-days: 90
+          path: |
+            nmr_r2/model.sqlite
+            nmr_r2/model.sha256
+            nmr_r2/previous-memory.sha
+            nmr_r2/training.json
+            nmr_r2/train-trials.json
+            nmr_r2/training.log
+  evaluate:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    name: NMR R2 frozen and live holdout shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r2-pinned-suite
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r2-trained-memory
+          path: .
+      - name: Verify model and binaries and evaluate without checkpoint writes
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          pin=json.loads(pathlib.Path("nmr_r2/build-pin.json").read_text())
+          for name in ("nmr_r2/nmr-driver","new_horizon/r190-driver","nmr_r2/split.json"):
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==pin[name]
+          got=hashlib.sha256(pathlib.Path("nmr_r2/model.sqlite").read_bytes()).hexdigest()
+          assert got==pathlib.Path("nmr_r2/model.sha256").read_text().strip()
+          print("NMR_R2_FROZEN_CHECKPOINT_PASS",got)
+          PY
+          python3 -u research/nmr_r2_benchmark.py shard --shard ${{ matrix.shard }} --binary nmr_r2/nmr-driver --clean new_horizon/r190-driver --memory nmr_r2/model.sqlite | tee nmr_r2/shard-${{ matrix.shard }}.log
+          grep -q '^NMR_R2_SHARD_PASS ' nmr_r2/shard-${{ matrix.shard }}.log
+          test "$(sha256sum nmr_r2/model.sqlite | cut -d' ' -f1)" = "$(cat nmr_r2/model.sha256)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            nmr_r2/shard-${{ matrix.shard }}.json
+            nmr_r2/shard-${{ matrix.shard }}.log
+  audit:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r2-pinned-suite
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r2-trained-memory
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nmr-r2-shard-*
+          merge-multiple: true
+          path: nmr_r2
+      - name: Complete source-checked, paired five-arm audit
+        run: |
+          set -euo pipefail
+          test "$(find nmr_r2 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/nmr_r2_benchmark.py audit | tee nmr_r2/audit.log
+          grep -q '^NMR_R2_FINAL ' nmr_r2/audit.log
+          cat nmr_r2/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NMR-R2-FINAL
+          retention-days: 90
+          path: |
+            nmr_r2/model.sha256
+            nmr_r2/training.json
+            nmr_r2/report.json
+            nmr_r2/trials.csv
+            nmr_r2/trials.json
+            nmr_r2/summary.md
+            nmr_r2/audit.log
