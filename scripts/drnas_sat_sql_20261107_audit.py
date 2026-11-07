@@ -10,6 +10,10 @@ EXPECTED = {
     "ultimate_r1_20261107": (45, 630, 90, 7),
     "ultimate_r2_20261107": (20, 200, 40, 5),
     "ultimate_r2_prebudget_20261107": (20, 200, 40, 5),
+    "ultimate_r2_prepbudget_rerun_20261107": (20, 200, 40, 5),
+    "ultimate_r2x_20261107": (20, 200, 40, 5),
+    "new_horizon_r4f_20261107": (None, 2464, 616, 4),
+    "neural_r5_20261107": (None, 400, 80, 5),
 }
 
 def validate(conn):
@@ -40,10 +44,18 @@ def validate(conn):
     assert metric("ultimate_r2_20261107", "r2_live") == (18, 1176.449248)
     assert metric("ultimate_r2_prebudget_20261107", "r2_clean") == (16, 1235.379087)
     assert metric("ultimate_r2_prebudget_20261107", "r2_live") == (16, 1237.634491)
-    assert conn.execute("SELECT COUNT(*) FROM research_findings").fetchone()[0] >= 9
+    assert metric("ultimate_r2_prepbudget_rerun_20261107", "r2_clean") == (18, 1170.545666)
+    assert metric("ultimate_r2_prepbudget_rerun_20261107", "r2_live") == (18, 1173.075083)
+    assert metric("ultimate_r2x_20261107", "r2_clean") == (18, 1166.599241)
+    assert metric("ultimate_r2x_20261107", "r2_live") == (18, 1169.270087)
+    assert metric("new_horizon_r4f_20261107", "r4f_select") == (584, 128.977387)
+    assert metric("new_horizon_r4f_20261107", "r4e_mid") == (584, 128.874675)
+    assert metric("neural_r5_20261107", "r5_neural") == (66, 283.370511)
+    assert metric("neural_r5_20261107", "clean") == (66, 283.3763)
+    assert conn.execute("SELECT COUNT(*) FROM research_findings").fetchone()[0] >= 15
     assert conn.execute(
         "SELECT status FROM build_status WHERE version='Ultimate R2x'"
-    ).fetchone() is not None
+    ).fetchone()[0] == "ULTIMATE_R2X_AUDIT_PASS_200_PAIRED_NOT_GLOBAL_BLIND"
     assert conn.execute(
         "SELECT COUNT(*) FROM benchmark_mode_telemetry WHERE cohort_id='ultimate_r2_20261107'"
     ).fetchone()[0] == 15
