@@ -1,0 +1,164 @@
+name: DRNAS R199 — 40 unseen SAT2025 mixed original CNFs, 720 paired six-arm
+on:
+  push:
+    branches: [experiment/drnas-r199-unseen-mixed40-crossbackend-20261107]
+    paths:
+      - 'research/r199_unseen_mixed40_crossbackend.py'
+      - 'r199/candidates.json'
+      - '.github/workflows/drnas-r199-unseen-mixed40.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r199-prospective-40-cross-backend
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact previously tested R194 binaries and method source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42386841737 --repo Frane12/AndroidGameTest -n r194-source-binary-pins -D .
+          test -s r194-source-locked38-and-binaries.tar.gz
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test -s r189/frozen/manifest.json
+      - name: Materialize precommitted 40 original SAT 2025 CNFs without outcome-based selection
+        run: |
+          set -euo pipefail
+          python3 -u research/r199_unseen_mixed40_crossbackend.py fetch | tee r199/fetch.log
+          grep -q '^R199_HOLDOUT_FROZEN' r199/fetch.log
+      - name: Freeze exact solver SHA, original source SHA and code before any evaluation
+        run: |
+          set -euo pipefail
+          mkdir -p r199
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          paths = [
+            'r189/frozen/manifest.json', 'r190_cms_mixed/r28',
+            'built/bin/kissat_4_0_4', 'r192/cms_single.sh',
+            'r192/cms_gauss_forced.sh', 'r192/pins.json',
+            'research/r199_unseen_mixed40_crossbackend.py',
+            'r199/candidates.json', 'r199/manifest.json',
+            'research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py',
+            'research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py',
+            'research/r190_cms_mixed_benchmark.py',
+            'research/r182_mixed_engine.py',
+            'research/r183_external_mixed.py',
+          ]
+          pins = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('r199/pins.json').write_text(json.dumps(pins, sort_keys=True, indent=2) + '\n')
+          print('R199_SOURCE_BINARY_PIN', json.dumps(pins, sort_keys=True))
+          PY
+          python3 -m py_compile research/r199_unseen_mixed40_crossbackend.py
+          python3 -u research/r199_unseen_mixed40_crossbackend.py smoke | tee r199/smoke.log
+          grep -q '^R199_SELFTEST_PASS' r199/smoke.log
+          tar czf r199-frozen40-original-sources-and-binaries.tar.gz r189/frozen r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh r199/candidates.json r199/manifest.json r199/pins.json r199/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r199-40source-binary-frozen
+          retention-days: 90
+          path: r199-frozen40-original-sources-and-binaries.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R199 unseen mixed source-disjoint shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r199-40source-binary-frozen
+      - name: Restore 40 SHA-locked original CNFs and identical solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r199-frozen40-original-sources-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import json, hashlib, pathlib
+          for p, expected in json.loads(pathlib.Path('r199/pins.json').read_text()).items():
+            assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() == expected, p
+          print('R199_FROZEN_SHA_AUDIT_PASS')
+          PY
+      - name: Six-arm randomized paired original-CNF benchmark with SAT witness verification
+        run: |
+          set -euo pipefail
+          python3 -u research/r199_unseen_mixed40_crossbackend.py shard --shard ${{ matrix.shard }} | tee r199/shard-${{ matrix.shard }}.log
+          grep -q '^R199_SHARD_PASS ' r199/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r199-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r199/shard-${{ matrix.shard }}.json
+            r199/shard-${{ matrix.shard }}.log
+            r199/proofs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r199-40source-binary-frozen
+      - name: Restore sources and combine exactly eight disjoint shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf r199-frozen40-original-sources-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p r199/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r199-shard-*' -D r199/raw-shards
+          test "$(find r199/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 8
+          find r199/raw-shards -type f -name 'shard-*.json' -exec cp '{}' r199/ \;
+          test "$(find r199 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+      - name: Fail-closed paired source, witness, formula-truth and PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r199_unseen_mixed40_crossbackend.py audit | tee r199/audit.log
+          grep -q '^R199_FINAL ' r199/audit.log
+          cat r199/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R199-UNSEEN-MIXED40-720-FINAL
+          retention-days: 90
+          path: |
+            r199/report.json
+            r199/all-trials.json
+            r199/summary.md
+            r199/audit.log
+            r199/pins.json
+            r199/candidates.json
+            r199/manifest.json
+            r199/raw-shards/
