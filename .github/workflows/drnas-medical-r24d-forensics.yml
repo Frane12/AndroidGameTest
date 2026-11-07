@@ -1,0 +1,124 @@
+name: DRNAS Medical R24D — strict certificate forensic replay
+on:
+  push:
+    branches: [experiment/drnas-medical-r24d-primal-oracle-forensics-20261108]
+    paths:
+      - 'research/drnas_medical/gmispy_r24d_primal_oracle_forensics.py'
+      - '.github/workflows/drnas-medical-r24d-forensics.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r24d-forensics-20261108
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {n: 192, arm: r9_baseline}
+          - {n: 192, arm: share_12_control}
+          - {n: 384, arm: r9_baseline}
+          - {n: 384, arm: share_12_control}
+    name: R24D N${{ matrix.n }} ${{ matrix.arm }} exact failing primal and oracle
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Freeze original scientific backend and check instrumentation syntax
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r24d_primal_oracle_forensics.py
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 42422748623
+          github-token: ${{ github.token }}
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          path: r24d/frozen
+      - name: Retrieve SHA-locked published original bacterial source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r24d/r9 r24d/output
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r24d/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r24d/r9/source --freeze r24d/r9/frozen
+          test -s r24d/frozen/router-and-holdouts.json
+      - name: Replay original strict SAT/FBA and identify rejected metabolic KO
+        run: |
+          set -uo pipefail
+          timeout -k 10s 360s python3 -u research/drnas_medical/gmispy_r24d_primal_oracle_forensics.py \
+            --source r24d/r9/source --manifest r24d/frozen/router-and-holdouts.json \
+            --n ${{ matrix.n }} --arm ${{ matrix.arm }} \
+            --out r24d/output/replay.json \
+            2>&1 | tee r24d/output/replay.log
+          status=${PIPESTATUS[0]}
+          echo "R24D_DIAGNOSTIC_EXIT=${status}"
+          test "$status" -eq 0
+          grep -q '^R24D_FINAL ' r24d/output/replay.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open('r24d/output/replay.json'))
+          assert d['complete'] and d['protocol']=='R24D-FORENSIC-STRICT-v1'
+          assert d['source_sha']=='9c772d44ca43350e40dc7ee86c7aa148796856be1eea45e5406c6df8f7dcde28'
+          print('R24D_REPLAY_ACCEPT',d['outcome'],d['arm'],d['n'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R24D-FORENSIC-${{ matrix.n }}-${{ matrix.arm }}
+          retention-days: 90
+          path: |
+            r24d/output/replay.json
+            r24d/output/replay.log
+  audit:
+    needs: diagnostic
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R24D-FORENSIC-*
+          path: forensic-artifacts
+      - name: Read four forensic reports without treating rejected LPs as valid
+        run: |
+          set -euo pipefail
+          mkdir -p r24d-final
+          python3 - <<'PY' | tee r24d-final/audit.log
+          import json,pathlib
+          files=sorted(pathlib.Path('forensic-artifacts').rglob('replay.json'))
+          assert len(files)==4,files
+          found=[]
+          for f in files:
+              d=json.loads(f.read_text())
+              assert d['complete'] and d['protocol']=='R24D-FORENSIC-STRICT-v1'
+              found.append({'arm':d['arm'],'n':d['n'],'outcome':d['outcome'],
+                            'failure':d.get('failure'),
+                            'primal_raw_samples':[e for e in d['events'] if e['kind']=='fresh_raw_lp']})
+          assert {(r['n'],r['arm']) for r in found}=={
+              (n,arm) for n in (192,384) for arm in ('r9_baseline','share_12_control')}
+          report={'status':'R24D_STRICT_FORENSICS_RECORDED',
+                  'biological_correctness_not_assumed_for_failed_cases':True,
+                  'not_a_speedup_benchmark':True,'replays':found}
+          pathlib.Path('r24d-final/report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print('R24D_FINAL',json.dumps(report,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R24D-STRICT-FORENSICS-FINAL
+          retention-days: 90
+          path: r24d-final/
