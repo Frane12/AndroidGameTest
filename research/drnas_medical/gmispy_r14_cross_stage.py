@@ -259,14 +259,21 @@ def run_trial(model, genes, rules, threshold, expected, arm, rep, n):
 def cohort(source, frozen, reference, n, out):
     need(n in SIZES, "cohort outside predeclared sizes")
     genes, expected = r11.frozen_reference(source, frozen, reference, n)
-    model, manifest = r8.load_frozen(source)
-    rules = r8.all_rules(model)
+    check_model, manifest = r8.load_frozen(source)
     threshold = float(manifest["wildtype_biomass"]) * .01
+    del check_model
     need(threshold > 0 and len(genes) == n, "invalid model target")
     rows = []
     for rep in range(REPS):
         order = ARMS[rep:] + ARMS[:rep]
         for arm in order:
+            # Each arm/repetition gets a CLEAN COBRA+GLPK model instance.
+            # Prevents LP warm state or retained numerical bases leaking across
+            # arms; loading is excluded from r9.solve's measured wall time.
+            model, fresh_manifest = r8.load_frozen(source)
+            need(abs(float(fresh_manifest["wildtype_biomass"])*.01 - threshold)
+                 < 1e-12, "frozen biomass target changed")
+            rules = r8.all_rules(model)
             trial = run_trial(model, genes, rules, threshold, expected,
                               arm, rep, n)
             rows.append(trial)
