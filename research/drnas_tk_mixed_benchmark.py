@@ -40,7 +40,7 @@ def freeze():
     ROOT.mkdir(exist_ok=True)
     cases=[]
     for pi,profile in enumerate(PROFILES):
-        for j in range(3):
+        for j in range(4):
             name=f"mix-p{pi}-s{j}.cnf"; n,cs,model=make(912700+pi*100+j,profile)
             p=ROOT/name;p.write_text(f"p cnf {n} {len(cs)}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in cs))
             cases.append(dict(id=name[:-4],path=str(p),sha256=sha(p),nvars=n,nclauses=len(cs),profile=pi,known="SAT",witness=[v if model[v] else -v for v in range(1,n+1)]))
