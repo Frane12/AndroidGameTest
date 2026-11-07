@@ -1,0 +1,192 @@
+name: DRNAS Medical R22 — 3 paired reps fresh-oracle 384
+on:
+  push:
+    branches: [experiment/drnas-medical-r22-three-rep-fresh-oracle-20261107]
+    paths:
+      - '.github/workflows/drnas-medical-r22-three-rep.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r22-paired-reps
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        rep: [0, 1, 2]
+    name: R22 paired frozen 384 rep ${{ matrix.rep }} (3 independent processes)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install unchanged R21 dependencies and fail-closed selftest
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r21_fresh_oracle.py
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py selftest
+      - name: Verify exact published iML1515 source and independent R10 reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r22/r9 r22/reference "r22/rep-${{ matrix.rep }}"
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r22/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-384-RAW -D r22/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r22/r9/source --freeze r22/r9/frozen
+          test -s r22/reference/summary.json
+      - name: Run three arms in preregistered rotated order with independent fresh oracle
+        run: |
+          set -euo pipefail
+          rep="${{ matrix.rep }}"
+          case "$rep" in
+            0) arms=(r9_baseline share_12_control share_12_memo_k3) ;;
+            1) arms=(share_12_control share_12_memo_k3 r9_baseline) ;;
+            2) arms=(share_12_memo_k3 r9_baseline share_12_control) ;;
+            *) echo "Invalid R22 replicate" >&2; exit 2 ;;
+          esac
+          printf 'R22_START rep=%s order=%s\n' "$rep" "${arms[*]}"
+          for arm in "${arms[@]}"; do
+            echo "R22_TRIAL_START rep=$rep arm=$arm"
+            set +e
+            timeout -k 10s 240s python3 -u research/drnas_medical/gmispy_r21_fresh_oracle.py \
+              --source r22/r9/source --frozen r22/r9/frozen \
+              --reference r22/reference/summary.json --n 384 --arm "$arm" \
+              --out "r22/rep-$rep/$arm.json" \
+              2>&1 | tee "r22/rep-$rep/$arm.log"
+            exit_code=${PIPESTATUS[0]}
+            set -e
+            echo "R22_TRIAL_EXIT rep=$rep arm=$arm exit=$exit_code"
+            if [ "$exit_code" -ne 0 ]; then
+              echo "::error::R22 arm $arm replicate $rep exited $exit_code"
+              exit "$exit_code"
+            fi
+            grep -q '^R21_PASS ' "r22/rep-$rep/$arm.log"
+            python3 - "$rep" "$arm" <<'PY'
+          import json,sys,pathlib
+          rep,arm=sys.argv[1:]
+          row=json.loads(pathlib.Path(f"r22/rep-{rep}/{arm}.json").read_text())
+          assert row["complete"] and row["n"]==384 and row["arm"]==arm
+          result=row["result"]
+          assert result["reference_match"] and result["independent_FBA_sound"]
+          assert result["minimum_intervention_count"]==59
+          assert sum(e["phase"]=="oracle_lp_exit" for e in row["events"])==170
+          print("R22_TRIAL_ACCEPT",json.dumps({
+            "rep":int(rep),"arm":arm,"wall_s":result["wall_s"],
+            "physical_LP":result["physical_LP_calls"],
+            "LP_avoided":result["physical_LP_avoided"]},sort_keys=True))
+          PY
+          done
+          echo "R22_REP_COMPLETE rep=$rep"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R22-REP-${{ matrix.rep }}-RAW
+          retention-days: 90
+          path: |
+            r22/rep-${{ matrix.rep }}/
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R22-REP-*-RAW
+          path: all-r22
+          merge-multiple: false
+      - name: Strict independent biological correctness and paired performance audit
+        run: |
+          set -euo pipefail
+          mkdir -p r22-final
+          python3 - <<'PY' | tee r22-final/audit.log
+          import json,math,pathlib,statistics
+          arms=("r9_baseline","share_12_control","share_12_memo_k3")
+          results={}
+          all_source_sha=set()
+          all_gene_sha=set()
+          for rep in range(3):
+              rep_data={}
+              for arm in arms:
+                  root=pathlib.Path(f"all-r22/DRNAS-MEDICAL-R22-REP-{rep}-RAW")
+                  files=list(root.rglob(f"{arm}.json"))
+                  assert len(files)==1,(rep,arm,files)
+                  d=json.loads(files[0].read_text())
+                  assert d["protocol"]=="DRNAS-MEDICAL-R21-INDEPENDENT-FRESH-GLPK-ORACLE-v1"
+                  assert d["complete"] and d["n"]==384 and d["arm"]==arm
+                  r=d["result"]
+                  assert r["reference_match"] and r["independent_FBA_sound"]
+                  assert r["minimum_intervention_count"]==59
+                  assert r["LP_requests"]==r["physical_LP_calls"]+r["physical_LP_avoided"]
+                  assert r["wall_s"]>0 and math.isfinite(r["wall_s"])
+                  assert sum(e["phase"]=="oracle_lp_exit" for e in d["events"])==170
+                  assert sum(e["phase"]=="fresh_oracle_verified" for e in d["events"])==1
+                  assert r["no_human_cancer_model"] and r["no_native_DRNAS"]
+                  all_source_sha.add(r["source_SHA"])
+                  all_gene_sha.add(r["gene_SHA"])
+                  rep_data[arm]={"seconds":r["wall_s"],"LP_requests":r["LP_requests"],
+                                  "physical_LP":r["physical_LP_calls"],
+                                  "LP_avoided":r["physical_LP_avoided"],
+                                  "stage3_seconds":r["stage_wall_s"][2]}
+              assert rep_data["r9_baseline"]["LP_requests"]==1070
+              assert rep_data["share_12_control"]["LP_requests"]==997
+              assert rep_data["share_12_memo_k3"]["LP_requests"]==1003
+              assert rep_data["share_12_memo_k3"]["LP_avoided"]==31
+              results[str(rep)]=rep_data
+          assert len(all_source_sha)==len(all_gene_sha)==1
+          baseline=[results[str(rep)]["r9_baseline"]["seconds"] for rep in range(3)]
+          medians={arm:round(statistics.median(results[str(rep)][arm]["seconds"]
+                             for rep in range(3)),6) for arm in arms}
+          per_rep_speedups={
+            arm:[round(results[str(rep)]["r9_baseline"]["seconds"]/
+                       results[str(rep)][arm]["seconds"],6)
+                 for rep in range(3)] for arm in arms if arm!="r9_baseline"}
+          summary={
+            "status":"R22_THREE_REPS_BIOLOGICAL_AUDIT_PASS",
+            "protocol":"DRNAS-MEDICAL-R22-THREE-REPS-384-ROTATED-v1",
+            "n":384,"repeats":3,"arms":list(arms),"trial_count":9,
+            "source_sha":next(iter(all_source_sha)),
+            "gene_sha":next(iter(all_gene_sha)),
+            "all_59_minimal_interventions_verified":True,
+            "all_170_independent_LP_per_trial_verified":True,
+            "medians_s":medians,
+            "median_speedup_control_vs_R9":round(medians["r9_baseline"]/medians["share_12_control"],6),
+            "median_speedup_memo_vs_R9":round(medians["r9_baseline"]/medians["share_12_memo_k3"],6),
+            "paired_speedups_vs_R9":per_rep_speedups,
+            "control_faster_reps":sum(r>1 for r in per_rep_speedups["share_12_control"]),
+            "memo_faster_reps":sum(r>1 for r in per_rep_speedups["share_12_memo_k3"]),
+            "predeclared_control_hypothesis_supported":
+              medians["share_12_control"]<medians["r9_baseline"] and
+              all(r>1 for r in per_rep_speedups["share_12_control"]),
+            "per_rep":results,
+            "original_references_frozen":True,
+            "not_new_source_blind_holdout":True,
+            "no_world_record_claim":True,
+            "no_independent_implementation_claim":True,
+            "scope_note":"Nine original algorithm trials on the same iML1515 source; 3 reps per arm; measured solver wall excludes independent oracle verification"
+          }
+          pathlib.Path("r22-final/report.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
+          print("R22_FINAL",json.dumps({
+            k:summary[k] for k in ("status","trial_count","medians_s",
+              "median_speedup_control_vs_R9","median_speedup_memo_vs_R9",
+              "paired_speedups_vs_R9","control_faster_reps","memo_faster_reps",
+              "predeclared_control_hypothesis_supported")},sort_keys=True))
+          PY
+          grep -q '^R22_FINAL ' r22-final/audit.log
+          cat r22-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R22-THREE-REPS-AUDIT-FINAL
+          retention-days: 90
+          path: r22-final/
