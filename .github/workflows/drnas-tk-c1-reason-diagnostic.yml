@@ -1,0 +1,45 @@
+name: DRNAS TK — C1 per-source reason diagnostic
+on:
+  push:
+    branches: [experiment/drnas-tk-xor-cdcl-diagnostics-20261107]
+    paths: [.github/workflows/drnas-tk-c1-reason-diagnostic.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch completed C1 audit artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42358062002 --jq .conclusion)" = success
+          mkdir -p input
+          gh run download 42358062002 --repo Frane12/AndroidGameTest -n DRNAS-C1-50-ORIGINAL-600-PAIRED-FINAL -D input
+          test -s input/all-trials.json
+      - name: Diagnose recorded native reason concentration
+        run: |
+          set -euo pipefail
+          python3 research/drnas_tk_reason_diagnostic.py input/all-trials.json --mode c1_lazy_cooldown | tee tk-diagnostic.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open("tk-diagnostic.json"))
+          assert r["attempts"] == 100 and r["sources"] == 50
+          assert r["recorded_proposals"] == 3023 and r["recorded_completed_reasons"] == 172
+          assert r["sources_with_recorded_reasons"] == 1
+          assert r["timeouts_without_terminal_telemetry"] == 26
+          print("TK_DIAGNOSTIC_PASS", flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TK-C1-REASON-DIAGNOSTIC
+          path: tk-diagnostic.json
+          if-no-files-found: error
