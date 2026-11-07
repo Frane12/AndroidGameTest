@@ -1,0 +1,133 @@
+name: DRNAS R192 — certified native XOR/XNF vs CryptoMiniSat 380 paired
+on:
+  push:
+    branches: [experiment/drnas-r192-source-certified-xnf-vs-cms-20261107]
+    paths:
+      - 'research/r192_certified_xnf_cms.py'
+      - '.github/workflows/drnas-r192-certified-xnf-cms.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r192-source-xnf-cms-380-paired
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Frozen R191 source and solver pins, CMS 5.11.15, XNF truth table selftests
+        env:
+          GH_TOKEN: ${ github.token }
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42383032510 --repo Frane12/AndroidGameTest -n r191-frozen-original-38-pinned-binaries -D .
+          test -s r191_pinned_sources.tar.gz
+          tar xzf r191_pinned_sources.tar.gz
+          chmod +x r188/r188-live r188/r188-driver r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+          python3 -m py_compile research/r192_certified_xnf_cms.py
+          python3 -u research/r192_certified_xnf_cms.py selftest | tee r192-selftest.log
+          grep -q '^R192_SELFTEST_PASS' r192-selftest.log
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,"research")
+          import r191_selective_live_cms as r191
+          c=r191.verify_sources()
+          assert len(c)==38 and sum(x["real"] for x in c)==25
+          print("R192_ORIGINAL_38_SHA_PINNED_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r192-frozen-original38-and-native-pins
+          path: r191_pinned_sources.tar.gz
+          retention-days: 90
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: R192 five-arm source-CNF/XNF shard ${ matrix.shard }
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r192-frozen-original38-and-native-pins
+      - name: CMS and immutable original SHA verification
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r191_pinned_sources.tar.gz
+          chmod +x r188/r188-live r188/r188-driver r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+      - name: Five-arm pair 12s cap incl preprocessing, verify every SAT model on unchanged original
+        run: |
+          set -euo pipefail
+          python3 -u research/r192_certified_xnf_cms.py shard --shard ${ matrix.shard } | tee r192/shard-${ matrix.shard }.log
+          grep -q '^R192_SHARD_PASS' r192/shard-${ matrix.shard }.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r192-shard-${ matrix.shard }
+          retention-days: 90
+          path: |
+            r192/shard-${ matrix.shard }.json
+            r192/shard-${ matrix.shard }.log
+            r192/raw/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r192-frozen-original38-and-native-pins
+      - name: Reconstruct the actual 12 shard JSONs (do not assume download-artifact root)
+        env:
+          GH_TOKEN: ${ github.token }
+        run: |
+          set -euo pipefail
+          mkdir -p r192/downloaded
+          gh run download "${ github.run_id }" --repo Frane12/AndroidGameTest -p 'r192-shard-*' -D r192/downloaded
+          test "$(find r192/downloaded -type f -name 'shard-*.json' | wc -l)" -eq 12
+          find r192/downloaded -type f -name 'shard-*.json' -exec cp '{}' r192/ \;
+          test "$(find r192 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          tar xzf r191_pinned_sources.tar.gz
+          chmod +x r188/r188-live r188/r188-driver r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+      - name: Full 380 paired attempts, source SHA, SAT witnesses, parity provenance and PAR-2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r192_certified_xnf_cms.py audit | tee r192/audit.log
+          grep -q '^R192_FINAL ' r192/audit.log
+          test -s r192/report.json
+          test -s r192/all-trials.json
+          test -s r192/summary.md
+          cat r192/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R192-CMS-NATIVE-XNF-380-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            r192/report.json
+            r192/all-trials.json
+            r192/summary.md
+            r192/audit.log
