@@ -104,7 +104,7 @@ def cases_and_groups():
     need((ROOT / "manifest.json").exists(), "missing frozen holdout manifest")
     m = json.loads((ROOT / "manifest.json").read_text())
     cases = m["cases"]
-    need(len(cases) == 24 and len({c["sha256"] for c in cases}) == 40,
+    need(len(cases) == 24 and len({c["sha256"] for c in cases}) == 24,
          "expected 24 source-unique frozen original CNFs")
     older = json.loads(pathlib.Path("r189/frozen/manifest.json").read_text())["cases"]
     oldsha = {c["sha256"] for c in older}
