@@ -1,0 +1,149 @@
+name: DRNAS Neural R5 reward-trained utility gate 400 paired
+on:
+  push:
+    branches: [experiment/drnas-neural-r5-utility-gate-20261107]
+    paths:
+      - 'research/nmr_r5_utility.py'
+      - 'research/nmr_r5_benchmark.py'
+      - '.github/workflows/drnas-neural-r5-utility.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-neural-r5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile Python and test neural reward learning / abstention
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/nmr_r5_utility.py research/nmr_r5_benchmark.py
+          python3 -u research/nmr_r5_benchmark.py selftest | tee r5-selftest.log
+          grep -q '^R5_BENCH_SELFTEST_PASS' r5-selftest.log
+      - name: Retrieve original frozen R4 native drivers and TRAIN-only rewards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42326167303 --repo Frane12/AndroidGameTest -n nmr-r4-frozen-build -D .
+          mkdir -p nmr_r4
+          gh run download 42326167303 --repo Frane12/AndroidGameTest -n nmr-r4-trained-memory -D nmr_r4
+          test -f nmr_r4/training-trials.json
+          test -f nmr_r4/model.sqlite
+          chmod +x nmr_r4/nmr4-driver nmr_r3/nmr3-driver new_horizon/r190-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          pin=json.loads(pathlib.Path("nmr_r4/build-pin.json").read_text())
+          for file,digest in pin.items():
+              if file=="cadical_commit":continue
+              assert hashlib.sha256(pathlib.Path(file).read_bytes()).hexdigest()==digest,file
+          assert pin["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          got=hashlib.sha256(pathlib.Path("nmr_r4/model.sqlite").read_bytes()).hexdigest()
+          assert got==pathlib.Path("nmr_r4/model.sha256").read_text().strip()
+          print("R5_R4_BINARY_AND_MEMORY_PIN_PASS")
+          PY
+      - name: Train 10-to-8-to-2 MLP on paired original-training-case utility only
+        run: |
+          set -euo pipefail
+          python3 -u research/nmr_r5_benchmark.py train | tee r5-train.log
+          grep -q '^R5_TRAIN_PASS' r5-train.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmr-r5-frozen-train
+          retention-days: 90
+          path: |
+            new_horizon/frozen/
+            new_horizon/r190-driver
+            nmr_r2/split.json
+            nmr_r3/nmr3-driver
+            nmr_r4/nmr4-driver
+            nmr_r4/model.sqlite
+            nmr_r4/model.sha256
+            nmr_r4/build-pin.json
+            nmr_r4/training-trials.json
+            nmr_r5/model.json
+            nmr_r5/train-report.json
+            r5-selftest.log
+            r5-train.log
+  evaluate:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: R5 source-matched five-arm shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r5-frozen-train
+          path: .
+      - name: Immutable trained model and actual controller test
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r4/nmr4-driver nmr_r3/nmr3-driver new_horizon/r190-driver
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=json.loads(pathlib.Path("nmr_r5/train-report.json").read_text())
+          assert hashlib.sha256(pathlib.Path("nmr_r5/model.json").read_bytes()).hexdigest()==p["model_sha256"]
+          assert hashlib.sha256(pathlib.Path("nmr_r4/model.sqlite").read_bytes()).hexdigest()==pathlib.Path("nmr_r4/model.sha256").read_text().strip()
+          print("R5_EVAL_IMMUTABLE_MODEL_PASS")
+          PY
+          python3 -u research/nmr_r5_benchmark.py shard --shard ${{ matrix.shard }} | tee nmr_r5/shard-${{ matrix.shard }}.log
+          grep -q '^R5_SHARD_PASS ' nmr_r5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r5-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            nmr_r5/shard-${{ matrix.shard }}.json
+            nmr_r5/shard-${{ matrix.shard }}.log
+  audit:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r5-frozen-train
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nmr-r5-shard-*
+          merge-multiple: true
+          path: nmr_r5
+      - name: Verify all 400 source-identical paired outcomes and freeze report
+        run: |
+          set -euo pipefail
+          test "$(find nmr_r5 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/nmr_r5_benchmark.py audit | tee nmr_r5/audit.log
+          grep -q '^R5_FINAL ' nmr_r5/audit.log
+          cat nmr_r5/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NEURAL-R5-FINAL
+          retention-days: 90
+          path: |
+            nmr_r5/report.json
+            nmr_r5/trials.json
+            nmr_r5/trials.csv
+            nmr_r5/summary.md
+            nmr_r5/train-report.json
+            nmr_r5/audit.log
