@@ -1,0 +1,58 @@
+name: DRNAS TA5 - audited evidence SQL and source protocol smoke
+on:
+  push:
+    branches: [experiment/drnas-ta5-forensic-holdout-20261107]
+    paths:
+      - 'research/drnas_sat_benchmark_increment_20261107.sql'
+      - 'research/DRNAS-TA5-FORENSIC-AND-PROSPECTIVE-PROTOCOL.md'
+      - '.github/workflows/drnas-ta5-evidence-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Idempotent SQL migration and audited benchmark invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, sqlite3
+          root=pathlib.Path('research')
+          db=sqlite3.connect(':memory:')
+          db.executescript((root/'drnas_sat_benchmark_history_20261106.sql').read_text())
+          increment=(root/'drnas_sat_benchmark_increment_20261107.sql').read_text()
+          db.executescript(increment)
+          cohorts={
+              'r199_20251107_mixed40': 720,
+              'tk_mixed_20261107': 108,
+              'ta3_sat2026_recovered': 384,
+              'ta4_2025_source15': 240,
+          }
+          for key, trials in cohorts.items():
+              x=db.execute('SELECT sum(trials) FROM benchmark_modes WHERE cohort_id=?',(key,)).fetchone()[0]
+              assert x==trials,(key,x,trials)
+              status=db.execute('SELECT audit_status FROM benchmark_cohorts WHERE cohort_id=?',(key,)).fetchone()[0]
+              assert 'PASS' in status,(key,status)
+          def metrics():
+              return (
+                  db.execute('SELECT count(*) FROM benchmark_cohorts').fetchone()[0],
+                  db.execute('SELECT count(*) FROM benchmark_modes').fetchone()[0],
+                  db.execute('SELECT count(*) FROM source_structure_audits').fetchone()[0],
+              )
+          before=metrics()
+          db.executescript(increment)
+          assert metrics()==before,(before,metrics())
+          a=db.execute("SELECT par2_s,solved FROM benchmark_modes WHERE cohort_id='r199_20251107_mixed40' AND mode='kissat_r28'").fetchone()
+          b=db.execute("SELECT par2_s,solved FROM benchmark_modes WHERE cohort_id='r199_20251107_mixed40' AND mode='kissat_plain'").fetchone()
+          assert a==(3440.828233,36) and b==(3560.914758,33),(a,b)
+          tags=db.execute('SELECT tags_json FROM source_structure_audits WHERE run_id=42391835603').fetchone()[0]
+          import json
+          assert json.loads(tags)['complete_xor3_sample']==19
+          print('TA5_SQL_AUDIT_PASS',dict(zip(cohorts,cohorts.values())),'total_counts',metrics())
+          PY
