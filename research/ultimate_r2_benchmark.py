@@ -154,7 +154,12 @@ def run_one(src,mode,cap,sha0):
     watchdog=False
     try:out,err=p.communicate(timeout=cap)
     except subprocess.TimeoutExpired:
-        watchdog=True;os.killpg(p.pid,signal.SIGKILL);out,err=p.communicate()
+        watchdog=True
+        try:
+            os.killpg(p.pid,signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # The process group exited just before our kill.
+        out,err=p.communicate()
     elapsed=time.perf_counter()-t
     if not watchdog and p.returncode not in (0,10,20):
         need(False,f"solver/process failure {mode} rc={p.returncode}: "+
