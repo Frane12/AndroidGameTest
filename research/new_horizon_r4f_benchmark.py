@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""DRNAS New Horizon R4f: SHA-frozen paired 144x4x4 = 2304 trials.
+"""DRNAS New Horizon R4f: SHA-frozen paired 154x4x4 = 2464 trials.
 
-104 unchanged R4e formulas and 40 NEW deterministic generated controls.
+104 unchanged R4e formulas and 50 NEW deterministic generated controls.
 Known generator families. This is NOT independent industrial blind holdout.
 R4f is preregistered before its run; no family labels enter selector logic.
 """
