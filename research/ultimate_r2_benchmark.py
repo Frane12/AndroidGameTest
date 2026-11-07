@@ -83,6 +83,10 @@ def freeze():
             need(d not in {c["sha256"] for c in cases},"duplicate new SHA")
             # Precommitted byte bound, not chosen using solver outcomes.
             need(0<len(raw)<=12_000_000,"outside deterministic byte envelope")
+            header=re.search(rb"(?m)^p\s+cnf\s+(\d+)\s+(\d+)\s*$",raw[:8192])
+            need(header is not None,"original DIMACS header missing")
+            need(0<int(header[1])<=150000 and 0<=int(header[2])<=160000,
+                 "original outside R166x native parser bounds")
             (FROZEN/(ident+".cnf")).write_bytes(raw)
             cases.append(dict(id=ident,sha256=d,cohort="new_to_r1",
                 source=url,expected="UNKNOWN",cap_s=CAP_NEW,family="official2026"))
