@@ -1,0 +1,169 @@
+name: DRNAS TA — 30 source-disjoint SAT2026 structural 300 paired
+on:
+  push:
+    branches: [experiment/drnas-ta-structural-holdout-20261107]
+    paths:
+      - research/ultimate_ta_fallback.py
+      - research/ultimate_ta_benchmark.py
+      - .github/workflows/drnas-ta-structural-holdout.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta-disjoint-structural-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check frozen TA protocol and selftests before source retrieval
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ultimate_ta_fallback.py research/ultimate_ta_benchmark.py research/ultimate_r2t_benchmark.py
+          python3 -u research/ultimate_ta_benchmark.py selftest
+          grep -q 'source_disjoint' research/ultimate_ta_benchmark.py
+      - name: Download exact prior original R2 binaries and all exclusion manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42346485260 --repo Frane12/AndroidGameTest -n ultimate-r2-originals-pinned-native-protocol -D .
+          mkdir -p ta_exclusions/r193
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D ta_exclusions/r193
+          test -s ultimate_r1/frozen/manifest.json
+          test -s ultimate_r2/frozen/manifest.json
+          test -s ta_exclusions/r193/frozen/manifest.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          h=lambda f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()
+          p=json.loads(pathlib.Path("ultimate_r2/build-pin.json").read_text())
+          assert p["source_commit"]=="5a497c976e7bcc092138d44bb91925996bfc27ba"
+          assert p["manifest_sha"]=="2e6169009e985555e43e81d9b534f3bb307cef93963329694ef42459bef3c2e2"
+          assert h("ultimate_r2/frozen/manifest.json")==p["manifest_sha"]
+          for f,d in p["binaries"].items():
+              if f=="research/ultimate_r2_fallback.py":continue
+              assert h(f)==d,(f,"native SHA changed")
+          print("TA_PRIOR_SOURCE_EXCLUSIONS_PASS")
+          PY
+          chmod +x ultimate_r1/source_r153/r153 ultimate_r1/ultimate-dispatch ultimate_r2/r166x-native built/bin/kissat_4_0_4 research/ultimate_ta_fallback.py
+      - name: Freeze 30 outcome-independent SAT2026 original sources with strict prior SHA exclusion
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_ta_benchmark.py freeze | tee ta-freeze.log
+          grep -q '^TA_FREEZE_PASS' ta-freeze.log
+          python3 -u research/ultimate_ta_benchmark.py verify
+      - name: Pin TA binary hashes, source manifest and source-selection protocol
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          h=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          source=json.loads(pathlib.Path("ultimate_r2/build-pin.json").read_text())
+          binaries={p:v for p,v in source["binaries"].items() if p!="research/ultimate_r2_fallback.py"}
+          for p in ("research/ultimate_ta_fallback.py","research/ultimate_ta_benchmark.py","research/ultimate_r2t_benchmark.py","research/ultimate_r2t_fallback.py"):
+              binaries[p]=h(p)
+          out=dict(source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+              original_R2_commit=source["source_commit"],original_R2_manifest=source["manifest_sha"],
+              ta_manifest_sha=h("ultimate_ta/frozen/manifest.json"),binaries=binaries,
+              expected_trials=300,protocol="DRNAS-TA-20261107-30-DISJOINT-FIVE-ARM-PAIR-v1")
+          pathlib.Path("ultimate_ta/build-pin.json").write_text(json.dumps(out,sort_keys=True,indent=2)+"\n")
+          print("TA_SOURCE_PIN_PASS",out["ta_manifest_sha"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta-source-disjoint-30-native-pins
+          retention-days: 90
+          path: |
+            ultimate_r1/
+            ultimate_r2/
+            ultimate_ta/
+            ta_exclusions/r193/frozen/manifest.json
+            built/bin/kissat_4_0_4
+            built/bin/cadical_3_0_1
+            ta-freeze.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    name: TA five-arm source-disjoint shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta-source-disjoint-30-native-pins
+          path: .
+      - name: Verify source SHA and exact source-preregistration
+        run: |
+          set -euo pipefail
+          chmod +x ultimate_r1/source_r153/r153 ultimate_r1/ultimate-dispatch ultimate_r2/r166x-native built/bin/kissat_4_0_4 research/ultimate_ta_fallback.py
+          python3 -u research/ultimate_ta_benchmark.py verify
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          p=json.loads(pathlib.Path("ultimate_ta/build-pin.json").read_text())
+          h=lambda f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()
+          assert p["source_commit"]==subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          assert p["expected_trials"]==300
+          assert h("ultimate_ta/frozen/manifest.json")==p["ta_manifest_sha"]
+          for f,v in p["binaries"].items():assert h(f)==v,f
+          print("TA_FROZEN_SHA_CHECKPOINT_PASS")
+          PY
+      - name: Run R153 R1A clean portfolio binary paired on unchanged original CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_ta_benchmark.py shard --shard ${{ matrix.shard }} | tee ultimate_ta/shard-${{ matrix.shard }}.log
+          grep -q '^ULTIMATE_R2_SHARD_PASS' ultimate_ta/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ultimate_ta/shard-${{ matrix.shard }}.json
+            ultimate_ta/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta-source-disjoint-30-native-pins
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ta-shard-*
+          merge-multiple: true
+          path: ultimate_ta
+      - name: Verify 300 original SHA, SAT models, paired PAR2 and policy ablation
+        run: |
+          set -euo pipefail
+          test "$(find ultimate_ta -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 6
+          python3 -u research/ultimate_ta_benchmark.py audit | tee ultimate_ta/audit.log
+          grep -q '^TA_FINAL' ultimate_ta/audit.log
+          cat ultimate_ta/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA-30-DISJOINT-300-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            ultimate_ta/report.json
+            ultimate_ta/trials.json
+            ultimate_ta/trials.csv
+            ultimate_ta/summary.md
+            ultimate_ta/audit.log
