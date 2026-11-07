@@ -630,7 +630,7 @@ int main(int argc,char**argv) {
                 c1.notify_assignment({-3});
                 c1.notify_backtrack(0);
                 if(!c1.reasons.empty())throw runtime_error("C1_BACKTRACK_REASON_EXPIRY_FAIL");
-                cout<<"C1_NATIVE_REASON_HANDOFF_SELFTEST_PASS\\n";
+                cout<<"C1_NATIVE_REASON_HANDOFF_SELFTEST_PASS\n";
             }
 
             cout<<"ULTIMATE_T2_NATIVE_SELFTEST_PASS\n"<<flush;
@@ -652,7 +652,8 @@ int main(int argc,char**argv) {
            mode!="t_clean"&&mode!="t_shadow"&&mode!="t_source"&&mode!="t_adaptive"&&
            mode!="t2_derived_rows"&&mode!="t2_derived_units"&&
            mode!="t2_derived_incremental"&&mode!="t2_derived_shadow"&&
-            mode!="td_lazy_source")
+            mode!="td_lazy_source"&&mode!="c1_lazy_cooldown"&&
+            mode!="c1_lazy_fastwake"&&mode!="c1_lazy_shadow")
             throw runtime_error("R166X_BAD_MODE");
         const double cap=stod(argv[4]);
         if(!(cap>=1.0&&cap<=120.0))
