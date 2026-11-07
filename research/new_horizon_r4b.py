@@ -41,10 +41,10 @@ def source_evidence(source, *, pure_only=False):
     start=time.perf_counter()
     path=pathlib.Path(source)
     result=dict(route="clean",reason="none",scan_s=0.0,scanned=0,
-                complete_source=False,clauses=None,n=None,m=None)
-    def finish(reason, *, route="clean",clauses=None,complete=False):
+                complete_source=False,clauses=None,gf2_rows=None,n=None,m=None)
+    def finish(reason, *, route="clean",clauses=None,complete=False,gf2_rows=None):
         result.update(route=route,reason=reason,scan_s=time.perf_counter()-start,
-                      complete_source=complete,clauses=clauses)
+                      complete_source=complete,clauses=clauses,gf2_rows=gf2_rows)
         return result
     if path.stat().st_size>MAX_SOURCE_BYTES:
         return finish("byte_budget_metadata")
@@ -52,15 +52,13 @@ def source_evidence(source, *, pure_only=False):
     candidate=None
     partial=[]
     clauses=[]
-    terminated=False
     with path.open(encoding="ascii") as f:
         for line in f:
             line=line.strip()
             if not line or line.startswith("c"):
                 continue
             if line.startswith("%"):
-                terminated=True
-                break
+                continue
             if line.startswith("p "):
                 need(n is None and not partial,"invalid DIMACS header position")
                 parts=line.split()
@@ -113,7 +111,7 @@ def source_evidence(source, *, pure_only=False):
     if not exact or len(rows)<2 or any(len(vs)>6 for vs,_ in rows):
         return finish("not_exact_source_pure_parity",complete=True)
     return finish("full_original_gf2_certified",
-                  route="pure",clauses=clauses,complete=True)
+                  route="pure",clauses=clauses,complete=True,gf2_rows=rows)
 
 def run_one(source,binary,cap,mode,scratch=None):
     """clean/R4 baseline, pure-only ablation, proposed R4b.
@@ -132,9 +130,9 @@ def run_one(source,binary,cap,mode,scratch=None):
     if evidence["route"]!="clean" and cap-(time.perf_counter()-start)>.15:
         clauses=evidence["clauses"]
         if evidence["route"]=="pure":
-            exact,rows,covered=pure.detect_exact(clauses)
-            need(exact and len(rows)>=2 and covered==len(clauses),
-                 "source parity certificate drift")
+            rows=evidence["gf2_rows"]
+            need(rows and evidence["complete_source"],
+                 "source parity certificate missing")
             answer=pure.gaussian(rows)
             if answer["status"]=="SAT":
                 need(pure.verify_sat(clauses,answer["model"]),
@@ -151,7 +149,7 @@ def run_one(source,binary,cap,mode,scratch=None):
         if elapsed<cap:
             return dict(status=answer["status"],elapsed=elapsed,proof=proof,
                     route=route,reason=evidence["reason"],
-                    r4b_evidence={k:v for k,v in evidence.items() if k!="clauses"})
+                    r4b_evidence={k:v for k,v in evidence.items() if k not in ("clauses","gf2_rows")})
     # If the complete original clauses don't certify an exact special case,
     # the original source is passed unchanged to the pinned native CDCL solver.
     remain=cap-(time.perf_counter()-start)
@@ -172,7 +170,7 @@ def run_one(source,binary,cap,mode,scratch=None):
     else:proof="CAP"
     return dict(status=status,elapsed=elapsed,proof=proof,
          route="clean",reason=evidence["reason"],
-         r4b_evidence={k:v for k,v in evidence.items() if k!="clauses"})
+         r4b_evidence={k:v for k,v in evidence.items() if k not in ("clauses","gf2_rows")})
 
 def selftest():
     import tempfile
