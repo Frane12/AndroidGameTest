@@ -1,0 +1,188 @@
+name: DRNAS New Horizon R6 — dual-live default vs UNSAT on 16 real SAT2026 originals
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-r6-dual-unsat-20261107]
+    paths:
+      - 'research/new_horizon_r6_dual_unsat_driver.cpp'
+      - 'research/new_horizon_r6_dual_live_benchmark.py'
+      - '.github/workflows/drnas-new-horizon-r6-dual-live.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-nh-r6-dual-unsat
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Source SHA protocol and Python parser selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_r6_dual_live_benchmark.py
+          python3 -u research/new_horizon_r6_dual_live_benchmark.py selftest | tee nh-r6-selftest.log
+          grep -q '^NH_R6_SELFTEST_PASS' nh-r6-selftest.log
+      - name: Import exact original 16 GBD main2026 CNFs from R5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon_r6/prior
+          gh run download 42332924411 --repo Frane12/AndroidGameTest -n nh-r5-gbd2026-originals-native-freeze -D new_horizon_r6/prior
+          test -s new_horizon_r6/prior/new_horizon_r5/frozen/manifest.json
+          test -s new_horizon_r6/prior/new_horizon_r5/r190-driver
+          cp -r new_horizon_r6/prior/new_horizon_r5/frozen new_horizon_r6/frozen
+          python3 -u research/new_horizon_r6_dual_live_benchmark.py verify | tee new_horizon_r6/source-verify.log
+          grep -q '^NH_R6_R5_SOURCE_VERIFIED 16 8931f7f544c04336cc9469039d5677915e999c5cd8f4070a4e103d2be8e346a7' new_horizon_r6/source-verify.log
+      - name: Build exactly pinned CaDiCaL2.1 dual-live default UNSAT driver
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r6-cadical
+          (
+            cd /tmp/r6-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r6-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I/tmp/r6-cadical/src research/new_horizon_r6_dual_unsat_driver.cpp \
+            /tmp/r6-cadical/build/libcadical.a -o new_horizon_r6/r6-driver
+          chmod +x new_horizon_r6/r6-driver
+      - name: Smoke native single and all dual options with SAT UNSAT sources
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon_r6/sat-smoke.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > new_horizon_r6/unsat-smoke.cnf
+          for mode in default unsat dual_keep_default dual_keep_unsat dual_fast dual_learning dual_interleave; do
+            for order in 0 1; do
+              new_horizon_r6/r6-driver new_horizon_r6/sat-smoke.cnf 2 "$mode" "$order" > "new_horizon_r6/smoke-$mode-$order.log"
+              grep -q '^R182_STATUS status=SAT ' "new_horizon_r6/smoke-$mode-$order.log"
+              grep -q "^NH_R6_MODE $mode profile=" "new_horizon_r6/smoke-$mode-$order.log"
+              if [[ "$mode" == dual_* ]]; then
+                grep -q '^NH_R6_DUAL selected=' "new_horizon_r6/smoke-$mode-$order.log"
+                grep -q 'preserved=1 source_original=1' "new_horizon_r6/smoke-$mode-$order.log"
+              fi
+            done
+          done
+          new_horizon_r6/r6-driver new_horizon_r6/unsat-smoke.cnf 2 unsat 0 > new_horizon_r6/unsat-smoke.log
+          grep -q '^R182_STATUS status=UNSAT ' new_horizon_r6/unsat-smoke.log
+          echo NH_R6_NATIVE_SELFTEST_PASS
+      - name: Pin original source manifest, native binary SHA, same fixed solver commit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path("new_horizon_r6")
+          original_sha=hashlib.sha256((root/"frozen/manifest.json").read_bytes()).hexdigest()
+          assert original_sha=="8931f7f544c04336cc9469039d5677915e999c5cd8f4070a4e103d2be8e346a7"
+          pin=dict(protocol="DRNAS_NH_R6_R5_REAL_16_DUAL_DEFAULT_UNSAT_PRESERVED_v1",
+              R5_manifest_sha256=original_sha,
+              driver_sha256=hashlib.sha256((root/"r6-driver").read_bytes()).hexdigest(),
+              cadical_commit=subprocess.check_output(
+                ["git","-C","/tmp/r6-cadical","rev-parse","HEAD"],text=True).strip(),
+              branch_commit=subprocess.check_output(
+                ["git","rev-parse","HEAD"],text=True).strip(),
+              cap_s=12.0,replications=2,arms=7,source_count=16)
+          (root/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("NH_R6_BINARY_SOURCE_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nh-r6-r5-originals-dual-live-native-pin
+          retention-days: 90
+          path: |
+            new_horizon_r6/frozen/
+            new_horizon_r6/r6-driver
+            new_horizon_r6/pin.json
+            new_horizon_r6/source-verify.log
+            new_horizon_r6/smoke-*.log
+            new_horizon_r6/unsat-smoke.log
+            nh-r6-selftest.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    name: R6 source-original dual default UNSAT fixed/adaptive/interleave shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nh-r6-r5-originals-dual-live-native-pin
+          path: .
+      - name: Verify original source byte-identical SHA and pinned native driver
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon_r6/r6-driver
+          python3 -u research/new_horizon_r6_dual_live_benchmark.py verify
+          python3 - <<'PY'
+          import json,hashlib,pathlib,subprocess
+          p=pathlib.Path("new_horizon_r6")
+          d=json.loads((p/"pin.json").read_text())
+          assert d["R5_manifest_sha256"]==hashlib.sha256(
+              (p/"frozen/manifest.json").read_bytes()).hexdigest()
+          assert d["driver_sha256"]==hashlib.sha256((p/"r6-driver").read_bytes()).hexdigest()
+          assert d["branch_commit"]==subprocess.check_output(
+              ["git","rev-parse","HEAD"],text=True).strip()
+          assert d["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          print("NH_R6_SHARD_PIN_PASS")
+          PY
+      - name: Seven policies x two repeat same-SHA 12s wall-charged CDCL search
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r6_dual_live_benchmark.py shard --shard ${{ matrix.shard }} --binary new_horizon_r6/r6-driver | tee new_horizon_r6/shard-${{ matrix.shard }}.log
+          grep -q '^NH_R6_SHARD_PASS ' new_horizon_r6/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nh-r6-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon_r6/shard-${{ matrix.shard }}.json
+            new_horizon_r6/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nh-r6-r5-originals-dual-live-native-pin
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nh-r6-shard-*
+          merge-multiple: true
+          path: new_horizon_r6
+      - name: Full 224 source-identical and selected-state-preserved audit
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon_r6 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/new_horizon_r6_dual_live_benchmark.py audit | tee new_horizon_r6/audit.log
+          grep -q '^NH_R6_FINAL ' new_horizon_r6/audit.log
+          cat new_horizon_r6/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-NH-R6-DUAL-LIVE-REAL-2026-FINAL
+          retention-days: 90
+          path: |
+            new_horizon_r6/report.json
+            new_horizon_r6/trials.json
+            new_horizon_r6/trials.csv
+            new_horizon_r6/summary.md
+            new_horizon_r6/audit.log
