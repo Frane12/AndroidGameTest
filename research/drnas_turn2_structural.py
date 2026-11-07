@@ -200,12 +200,12 @@ def transformation(n, clauses, mode):
     if variant in ("struct_order", "struct_both"):
         # Prioritize short clauses and high-degree literals deterministically.
         # This is a bijective reorder; it neither learns nor inserts clauses.
+        label_degree = {abs(mp[i]):occ[i] for i in range(1,n+1)}
         for c in out:
-            c.sort(key=lambda lit: (-occ[abs(next(i for i in range(1,n+1)
-                                                  if abs(mp[i]) == abs(lit)))],
+            c.sort(key=lambda lit: (-label_degree[abs(lit)],
                                    abs(lit), lit < 0))
-        # Avoid the quadratic inverse lookup above in production (replaced below).
-        out.sort(key=lambda c: (len(c), tuple(abs(v) for v in c)))
+        out.sort(key=lambda c: (len(c), -sum(label_degree[abs(v)] for v in c),
+                                tuple(abs(v) for v in c)))
     inverse = {abs(mp[i]): (i if mp[i] > 0 else -i) for i in range(1, n+1)}
     restored = [
         tuple(sorted(inverse[abs(v)] if v > 0 else -inverse[abs(v)] for v in c))
