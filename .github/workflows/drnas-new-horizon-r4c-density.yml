@@ -1,0 +1,148 @@
+name: DRNAS New Horizon R4c — density-veto source-exact 1152 paired
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-r4c-density-veto-20261107]
+    paths:
+      - 'research/new_horizon_r4c.py'
+      - 'research/new_horizon_r4c_benchmark.py'
+      - '.github/workflows/drnas-new-horizon-r4c-density.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-new-horizon-r4c-density
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Independent selftest and exact source-membership gate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_r4c.py research/new_horizon_r4c_benchmark.py
+          python3 -u research/new_horizon_r4c_benchmark.py selftest | tee nh-r4c-selftest.log
+          grep -q '^NH_R4C_SELFTEST_PASS 72' nh-r4c-selftest.log
+      - name: Freeze source, import identical pinned native binary from successful R4b
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon_r4c/source
+          gh run download 42326624103 --repo Frane12/AndroidGameTest -n new-horizon-r4b-confirm-sources-and-native -D new_horizon_r4c/source
+          test -s new_horizon_r4c/source/new_horizon_r4b_confirm/r190-driver
+          test -s new_horizon_r4c/source/new_horizon_r4b_confirm/pin.json
+          python3 -u research/new_horizon_r4c_benchmark.py freeze | tee nh-r4c-freeze.log
+          python3 -u research/new_horizon_r4c_benchmark.py verify
+          cp new_horizon_r4c/source/new_horizon_r4b_confirm/r190-driver new_horizon_r4c/r190-driver
+          chmod +x new_horizon_r4c/r190-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          root=pathlib.Path("new_horizon_r4c")
+          old=json.loads((root/"source/new_horizon_r4b_confirm/pin.json").read_text())
+          executable=hashlib.sha256((root/"r190-driver").read_bytes()).hexdigest()
+          assert executable==old["native_binary_sha"]=="d3e17f52ee77be0df090da28710a10ba9543576e8ca12e9b2555288a02a077ed"
+          assert old["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          pin=dict(binary_sha256=executable,
+                   manifest_sha256=hashlib.sha256((root/"frozen/manifest.json").read_bytes()).hexdigest(),
+                   repo_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   cadical_commit=old["cadical_commit"])
+          (root/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("NH_R4C_SOURCE_BINARY_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon_r4c/smoke.cnf
+          new_horizon_r4c/r190-driver new_horizon_r4c/smoke.cnf 2 default | tee new_horizon_r4c/smoke.log
+          grep -q '^R182_STATUS status=SAT' new_horizon_r4c/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nh-r4c-native-frozen-source
+          retention-days: 90
+          path: |
+            new_horizon_r4c/frozen/
+            new_horizon_r4c/r190-driver
+            new_horizon_r4c/pin.json
+            nh-r4c-selftest.log
+            nh-r4c-freeze.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    name: R4c clean XOR-only R4b R4c source-paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nh-r4c-native-frozen-source
+          path: .
+      - name: Recheck same source and native solver hashes
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon_r4c/r190-driver
+          python3 - <<'PY'
+          import pathlib,json,hashlib,subprocess
+          root=pathlib.Path("new_horizon_r4c")
+          p=json.loads((root/"pin.json").read_text())
+          assert hashlib.sha256((root/"r190-driver").read_bytes()).hexdigest()==p["binary_sha256"]
+          assert hashlib.sha256((root/"frozen/manifest.json").read_bytes()).hexdigest()==p["manifest_sha256"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==p["repo_commit"]
+          print("NH_R4C_SHA_RECHECK_PASS")
+          PY
+      - name: Run four methods on identical formulas and four repetitions
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r4c_benchmark.py shard --shard ${{ matrix.shard }} --binary new_horizon_r4c/r190-driver | tee new_horizon_r4c/shard-${{ matrix.shard }}.log
+          grep -q '^NH_R4C_SHARD_PASS ' new_horizon_r4c/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nh-r4c-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon_r4c/shard-${{ matrix.shard }}.json
+            new_horizon_r4c/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nh-r4c-native-frozen-source
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nh-r4c-shard-*
+          merge-multiple: true
+          path: new_horizon_r4c
+      - name: Fail-closed verify all 1152 SHA source-matched rows and PAR2
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon_r4c -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/new_horizon_r4c_benchmark.py audit | tee new_horizon_r4c/audit.log
+          grep -q '^NH_R4C_FINAL ' new_horizon_r4c/audit.log
+          cat new_horizon_r4c/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NEW-HORIZON-R4C-FINAL
+          retention-days: 90
+          path: |
+            new_horizon_r4c/report.json
+            new_horizon_r4c/trials.json
+            new_horizon_r4c/trials.csv
+            new_horizon_r4c/summary.md
+            new_horizon_r4c/audit.log
