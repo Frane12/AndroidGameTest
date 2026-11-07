@@ -1,0 +1,156 @@
+name: DRNAS R195 optimized dual-keep 2026 real SAT 7-arm paired
+on:
+  push:
+    branches: [experiment/drnas-r195-dualkeep-optimized-real-20261107]
+    paths:
+      - 'research/r195_dualkeep_real_driver.cpp'
+      - 'research/r195_dualkeep_real_benchmark.py'
+      - '.github/workflows/drnas-r195-dualkeep-real-2026.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r195-prospective-real-paired
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python source selection and precommitted causal design selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r195_dualkeep_real_benchmark.py research/r188_feedback_benchmark.py
+          python3 -u research/r195_dualkeep_real_benchmark.py selftest
+      - name: Fetch exactly pinned 25 pre-existing real R193 CNFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r195/source
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D r195/source
+          test -d r195/source/frozen
+      - name: Freeze prospective official 2026 CNFs before running any solvers
+        run: |
+          set -euo pipefail
+          python3 -u research/r195_dualkeep_real_benchmark.py freeze | tee r195/freeze.log
+          python3 -u research/r195_dualkeep_real_benchmark.py verify
+          grep -q '^R195_FREEZE_PASS ' r195/freeze.log
+      - name: Build same SHA CaDiCaL 2.1 and validate seven modes
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r195-cadical
+          (
+            cd /tmp/r195-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r195-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r195-cadical/src research/r195_dualkeep_real_driver.cpp /tmp/r195-cadical/build/libcadical.a -o r195/r195-driver
+          chmod +x r195/r195-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r195/smoke.cnf
+          for mode in default sat split128 split256 dual_keep_default dual_keep_sat dual_keep_guarded; do
+            r195/r195-driver r195/smoke.cnf 2 "$mode" 0 11 > "r195/smoke-$mode.log"
+            grep -q '^R182_STATUS status=SAT' "r195/smoke-$mode.log"
+            grep -q '^R195_POLICY ' "r195/smoke-$mode.log"
+          done
+          grep -q '^R195_PILOT ' r195/smoke-dual_keep_default.log
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("r195")
+          sha=lambda f:hashlib.sha256((p/f).read_bytes()).hexdigest()
+          result={"protocol":"R195-REAL-7ARM-SHA-AUDIT",
+              "source_sha256":sha("frozen/manifest.json"),
+              "native_sha256":sha("r195-driver"),
+              "cadical_commit":"31f9aae44947c673dc6190c9beb399acb9ffec6a"}
+          (p/"pin.json").write_text(json.dumps(result,sort_keys=True,indent=2))
+          print("R195_BUILD_PIN_PASS",json.dumps(result,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r195-real-frozen-native
+          retention-days: 90
+          path: |
+            r195/frozen/
+            r195/freeze.log
+            r195/r195-driver
+            r195/pin.json
+            r195/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R195 real CNF seven-arm paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r195-real-frozen-native
+          path: r195
+      - name: SHA-validate real original and native then run seven-arm pairs
+        run: |
+          set -euo pipefail
+          chmod +x r195/r195-driver
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("r195");pin=json.loads((p/"pin.json").read_text())
+          for filename,key in (("frozen/manifest.json","source_sha256"),
+                               ("r195-driver","native_sha256")):
+              assert hashlib.sha256((p/filename).read_bytes()).hexdigest()==pin[key]
+          PY
+          python3 -u research/r195_dualkeep_real_benchmark.py shard --shard ${{ matrix.shard }} --binary r195/r195-driver | tee r195/shard-${{ matrix.shard }}.log
+          grep -q '^R195_SHARD_PASS ' r195/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r195-real-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r195/shard-${{ matrix.shard }}.json
+            r195/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r195-real-frozen-native
+          path: r195
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r195-real-shard-*
+          merge-multiple: true
+          path: r195
+      - name: Audit every original SHA, paired seed and seven arms
+        run: |
+          set -euo pipefail
+          test "$(find r195 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r195_dualkeep_real_benchmark.py audit | tee r195/audit.log
+          grep -q '^R195_FINAL ' r195/audit.log
+          cat r195/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R195-REAL-SAT-SEVEN-ARM-FINAL
+          retention-days: 90
+          path: |
+            r195/report.json
+            r195/all-trials.json
+            r195/summary.md
+            r195/audit.log
