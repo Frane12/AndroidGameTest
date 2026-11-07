@@ -1,0 +1,197 @@
+name: DRNAS R196 — why split256 changes CDCL (8 real CNFs, 4 seeds, 7 causal arms)
+on:
+  push:
+    branches: [experiment/drnas-r196-split-causality-20261107]
+    paths:
+      - 'research/r196_split_causality_driver.cpp'
+      - 'research/r196_split_causality_benchmark.py'
+      - '.github/workflows/drnas-r196-split-causality.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r196-causal-256
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Audit preregistered research design
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r196_split_causality_benchmark.py
+          python3 -u research/r196_split_causality_benchmark.py selftest | tee r196-selftest.log
+          grep -q '^R196_SELFTEST_PASS' r196-selftest.log
+      - name: Import exact original R195 CNF bytes, SHA-before-timing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r196/archive
+          gh run download 42332923725 --repo Frane12/AndroidGameTest -n r195-real-frozen-native -D r196/archive
+          test -s r196/archive/frozen/manifest.json
+          python3 -u research/r196_split_causality_benchmark.py freeze | tee r196/freeze.log
+          grep -q '^R196_SOURCE_FREEZE_PASS ' r196/freeze.log
+          python3 -u research/r196_split_causality_benchmark.py verify
+      - name: Build same exact CaDiCaL2.1 native CDCL on pinned commit
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r196-cadical
+          (
+            cd /tmp/r196-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a
+            ./configure
+            make -j2
+          )
+          test "$(git -C /tmp/r196-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I/tmp/r196-cadical/src research/r196_split_causality_driver.cpp /tmp/r196-cadical/build/libcadical.a -o r196/r196-driver
+          chmod +x r196/r196-driver
+      - name: Smoke original SAT UNSAT and all seven causal controls
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r196/smoke-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > r196/smoke-unsat.cnf
+          for mode in default limit_cancel split128_twice split256 split512 split256_rebuild split256_trace; do
+            r196/r196-driver r196/smoke-sat.cnf 2 "$mode" 11 > "r196/smoke-$mode.log"
+            grep -q '^R182_STATUS status=SAT' "r196/smoke-$mode.log"
+            grep -q "^R196_POLICY mode=$mode " "r196/smoke-$mode.log"
+            grep -q '^R196_STATS_BEGIN stage=final' "r196/smoke-$mode.log"
+          done
+          grep -q '^R196_STATS_BEGIN stage=after_pilot' r196/smoke-split256_trace.log
+          r196/r196-driver r196/smoke-unsat.cnf 2 default 11 > r196/smoke-unsat.log
+          grep -q '^R182_STATUS status=UNSAT' r196/smoke-unsat.log
+          python3 - <<'PY'
+          import pathlib
+          p=11;h=10
+          var=lambda i,j:i*h+j+1
+          clauses=[]
+          for i in range(p):clauses.append(tuple(var(i,j) for j in range(h)))
+          for j in range(h):
+            for i in range(p):
+              for k in range(i+1,p):clauses.append((-var(i,j),-var(k,j)))
+          f=pathlib.Path("r196/smoke-hard.cnf")
+          f.write_text(f"p cnf {p*h} {len(clauses)}\n"+
+               "".join(" ".join(map(str,c))+" 0\n" for c in clauses))
+          PY
+          r196/r196-driver r196/smoke-hard.cnf 4 split256_rebuild 11 > r196/smoke-rebuild.log
+          grep -q '^R196_PILOT ' r196/smoke-rebuild.log
+          grep -q '^R196_POLICY ' r196/smoke-rebuild.log
+          echo R196_NATIVE_SELFTEST_PASS
+      - name: Pin original source SHA and precise new native binary SHA
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path("r196")
+          full=lambda p:hashlib.sha256((root/p).read_bytes()).hexdigest()
+          archive=full("archive/frozen/manifest.json")
+          assert archive=="caae5fe7abde52e3d886add24bf23cd925411504e9c866dddcbd2fc8cb595be4"
+          pin=dict(protocol="DRNAS-R196-CAUSAL-SPLIT256-8REAL-4SEEDS-7ARM-20261107-v1",
+            native_driver_sha256=full("r196-driver"),
+            sources_SHA256=full("frozen/r196-manifest.json"),
+            prior_R195_original_manifest_SHA256=archive,
+            cadical_commit=subprocess.check_output(
+              ["git","-C","/tmp/r196-cadical","rev-parse","HEAD"],text=True).strip(),
+            source_commit=subprocess.check_output(
+              ["git","rev-parse","HEAD"],text=True).strip(),
+            expected_trials=224)
+          (root/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R196_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r196-real-cnf-sources-native-causal-pin
+          retention-days: 90
+          path: |
+            r196/frozen/
+            r196/r196-driver
+            r196/pin.json
+            r196/freeze.log
+            r196/smoke-*.log
+            r196-selftest.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    name: R196 original-CNF seven-arm four-seed causal shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r196-real-cnf-sources-native-causal-pin
+          path: r196
+      - name: Verify unchanged exact source and pinned native executable
+        run: |
+          set -euo pipefail
+          chmod +x r196/r196-driver
+          python3 -u research/r196_split_causality_benchmark.py verify
+          python3 - <<'PY'
+          import pathlib,json,hashlib,subprocess
+          p=pathlib.Path("r196")
+          o=json.loads((p/"pin.json").read_text())
+          assert hashlib.sha256((p/"r196-driver").read_bytes()).hexdigest()==o["native_driver_sha256"]
+          assert hashlib.sha256((p/"frozen/r196-manifest.json").read_bytes()).hexdigest()==o["sources_SHA256"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==o["source_commit"]
+          assert o["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          print("R196_PRE_TRIAL_SHA_PASS")
+          PY
+      - name: Source-paired 4 seeds x 7 causal methods with native counter stats
+        run: |
+          set -euo pipefail
+          python3 -u research/r196_split_causality_benchmark.py shard --shard ${{ matrix.shard }} --binary r196/r196-driver | tee r196/shard-${{ matrix.shard }}.log
+          grep -q '^R196_SHARD_PASS ' r196/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r196-causal-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r196/shard-${{ matrix.shard }}.json
+            r196/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r196-real-cnf-sources-native-causal-pin
+          path: r196
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r196-causal-shard-*
+          merge-multiple: true
+          path: r196
+      - name: Fail-closed same-source SHA, same seed and all 224 arms audit
+        run: |
+          set -euo pipefail
+          test "$(find r196 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r196_split_causality_benchmark.py audit | tee r196/audit.log
+          grep -q '^R196_FINAL ' r196/audit.log
+          cat r196/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R196-SPLIT-256-CAUSAL-FINAL
+          retention-days: 90
+          path: |
+            r196/report.json
+            r196/trials.json
+            r196/trials.csv
+            r196/summary.md
+            r196/audit.log
