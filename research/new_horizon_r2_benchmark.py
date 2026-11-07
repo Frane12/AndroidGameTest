@@ -73,11 +73,11 @@ def generated_trap(i):
     n=96;clauses=[(1,)]
     if i%2==0: 
         clauses.extend([(-x,x+1) for x in range(1,96)])
-        clauses.append((1,2,3)) # not Horn; SAT with all-positive model
+        clauses.extend([(1,2,3),(4+i,5+i,6+i)]) # outside both classes; unique SHA
         kind="false_horn"
     else:
         clauses.extend([(-x,x+1) for x in range(1,96)])
-        clauses.append((1,2,3)) # not 2SAT; SAT with all-positive model
+        clauses.extend([(1,2,3),(4+i,5+i,6+i)]) # later disproof; unique SHA
         kind="false_2sat"
     return n,clauses,"SAT",kind
 
