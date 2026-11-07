@@ -1,0 +1,155 @@
+name: DRNAS Medical R17 pre-solve structural LP forecast vs frozen R9
+on:
+  push:
+    branches: [experiment/drnas-medical-r17-structural-lp-forecast-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r17_structural_forecast.py'
+      - '.github/workflows/drnas-medical-r17-structural-forecast.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: medical-r17-structural-lp-prediction
+  cancel-in-progress: false
+jobs:
+  preregister:
+    name: R17 pre-register topology-only forecasts before opening prospective outcomes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Pin dependencies and verify mathematical predictor tests
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r17_structural_forecast.py
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py selftest
+      - name: Recover source-frozen iML1515 and five certified original R9 LP counts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r17/unpacked r17/ref r17/source r17/r9-frozen r17/frozen
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS \
+            -D r17/unpacked
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-MEDICAL-R9-CERTIFIED-SCALING-FINAL \
+            -D r17/ref
+          mapfile -t src < <(find r17/unpacked -type f -name iML1515.xml | sort)
+          mapfile -t p8 < <(find r17/unpacked -type f -name manifest.json | sort)
+          mapfile -t p9 < <(find r17/unpacked -type f -name r9-manifest.json | sort)
+          mapfile -t aud < <(find r17/ref -type f -name certified-scaling.json | sort)
+          test "${#src[@]}" -eq 1
+          test "${#p8[@]}" -eq 1
+          test "${#p9[@]}" -eq 1
+          test "${#aud[@]}" -eq 1
+          cp "${src[0]}" r17/source/iML1515.xml
+          cp "${p8[0]}" r17/source/manifest.json
+          cp "${p9[0]}" r17/r9-frozen/r9-manifest.json
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py freeze \
+            --source r17/source --original-r9 r17/r9-frozen \
+            --training-audit "${aud[0]}" --freeze r17/frozen \
+            | tee r17/preregistration.log
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py verify \
+            --source r17/source --original-r9 r17/r9-frozen --freeze r17/frozen
+          grep -q '^R17_PRECOMMITTED ' r17/preregistration.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R17-FROZEN-PRESOLVE-PREDICTIONS-SHA256
+          path: r17/
+          retention-days: 90
+  prospective:
+    name: R17 held-out ${{ matrix.family }} N=${{ matrix.n }} two replicates
+    needs: preregister
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        family: [sha_disjoint, degree_disjoint]
+        n: [24,48,96,192,384]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install original R9 pinned PySAT CaDiCaL and COBRApy GLPK
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            cobra==0.30.0 python-sat==1.9.dev21 scipy
+      - uses: actions/download-artifact@v4
+        with:
+          name: R17-FROZEN-PRESOLVE-PREDICTIONS-SHA256
+          path: r17
+      - name: Confirm exact SHA-frozen predictions before invoking ANY prospective LP
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py verify \
+            --source r17/source --original-r9 r17/r9-frozen --freeze r17/frozen
+          mkdir -p r17-results/${{ matrix.family }}-${{ matrix.n }}
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py test \
+            --source r17/source --original-r9 r17/r9-frozen --freeze r17/frozen \
+            --family ${{ matrix.family }} --n ${{ matrix.n }} \
+            --out r17-results/${{ matrix.family }}-${{ matrix.n }} \
+            | tee r17-results/${{ matrix.family }}-${{ matrix.n }}/run.log
+          grep -q '^R17_COHORT_FINAL ' r17-results/${{ matrix.family }}-${{ matrix.n }}/run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R17-PROSPECTIVE-${{ matrix.family }}-${{ matrix.n }}
+          retention-days: 90
+          path: r17-results/${{ matrix.family }}-${{ matrix.n }}/
+  independent-audit:
+    name: R17 independent preregistered generalization and prediction errors
+    needs: prospective
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: R17-FROZEN-PRESOLVE-PREDICTIONS-SHA256
+          path: r17
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: R17-PROSPECTIVE-*
+          path: all-r17
+          merge-multiple: false
+      - name: Compare ten frozen predictions with independently certified solve counts
+        run: |
+          set -euo pipefail
+          args=()
+          for family in sha_disjoint degree_disjoint; do
+            for n in 24 48 96 192 384; do
+              d="all-r17/R17-PROSPECTIVE-${family}-${n}"
+              mapfile -t files < <(find "$d" -type f -name summary.json | sort)
+              test "${#files[@]}" -eq 1
+              args+=("${files[0]}")
+            done
+          done
+          mkdir -p r17-final
+          python3 -u research/drnas_medical/gmispy_r17_structural_forecast.py audit \
+            --freeze r17/frozen --inputs "${args[@]}" \
+            --out r17-final/independent_prospective_audit.json \
+            | tee r17-final/audit.log
+          grep -q '^R17_FINAL ' r17-final/audit.log
+          cat r17-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MEDICAL-R17-STRUCTURAL-PREDICTION-FINAL
+          retention-days: 90
+          path: r17-final/
