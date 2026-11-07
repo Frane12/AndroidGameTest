@@ -155,6 +155,7 @@ def run_trial(case, mode, rep, shard):
     need(digest(src) == case["sha256"], "trial SHA drift")
     start = time.perf_counter()
     status, proof, selected, route = "TIMEOUT", "CAP_TIMEOUT", mode, None
+    pilot_result = {"elapsed_s": 0.0, "certified": False}
     if mode in ("ta3_portfolio", "ta8_certified_pretest", "ta8_shadow_pretest"):
         signal_timed_out = False
         def alarm(_sig, _frame):
@@ -249,6 +250,8 @@ def audit():
             need(row["status"] in ("SAT", "UNSAT", "TIMEOUT"), "invalid result")
             expected = 2*CAP if row["status"] == "TIMEOUT" else row["elapsed_s"]
             need(abs(expected - row["par2_s"]) <= .00002, "PAR2 rule violated")
+            need(row.get("proof") != "SOURCE_XOR_CONTRADICTION_REPLAYED" or
+                 (row["mode"] == "ta8_certified_pretest" and row["status"] == "UNSAT" and row.get("source_certified") is True), "invalid certified source shortcut")
             need(row["status"] != "SAT" or "VERIFIED" in row["proof"] or
                  "MODEL_CHECKED" in row["proof"], "SAT witness not verified")
         rows.extend(subset)
@@ -268,7 +271,10 @@ def audit():
             SAT=sum(r["status"] == "SAT" for r in s),
             UNSAT=sum(r["status"] == "UNSAT" for r in s),
             timeouts=sum(r["status"] == "TIMEOUT" for r in s),
-            attempts=len(s))
+            attempts=len(s),
+            pilot_wall_s=round(sum(r.get("pilot_s",0.0) for r in s),6),
+            verified_proof_hits=sum(r.get("source_certified",False) for r in s),
+            proof_shortcuts=sum(r.get("proof") == "SOURCE_XOR_CONTRADICTION_REPLAYED" for r in s))
     by_key = {(r["sha256"], r["rep"], r["mode"]):r for r in rows}
     for mode, base in REFERENCE.items():
         wins = losses = ties = 0
