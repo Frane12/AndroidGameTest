@@ -1,0 +1,90 @@
+name: DRNAS Medical R15 stage-boundary causal 75-run iML1515
+on:
+  push:
+    branches: [experiment/drnas-medical-r15-stage-boundary-ablation-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r15_stage_boundary.py'
+      - '.github/workflows/drnas-medical-r15-stage-boundary.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24, 48, 96, 192, 384]
+    name: R15 ${{ matrix.n }} genes 5-arm 3-rep stage boundary ablations
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen original iML1515 and R10 independent biological reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r15_stage_boundary.py
+          python3 -u research/drnas_medical/gmispy_r15_stage_boundary.py selftest
+          mkdir -p r15/r9 r15/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r15/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW -D r15/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r15/r9/source --freeze r15/r9/frozen
+          test -s r15/reference/summary.json
+      - name: Pair R9 baseline vs fresh gated vs isolated 1-2 vs 2-3 vs all-stage reuse
+        run: |
+          set -euo pipefail
+          mkdir -p r15
+          python3 -u research/drnas_medical/gmispy_r15_stage_boundary.py cohort --source r15/r9/source --frozen r15/r9/frozen --reference r15/reference/summary.json --n ${{ matrix.n }} --out r15/paired-${{ matrix.n }}.json | tee r15/paired-${{ matrix.n }}.log
+          grep -q '^R15_COHORT_FINAL ' r15/paired-${{ matrix.n }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R15-COHORT-${{ matrix.n }}-RAW
+          path: |
+            r15/paired-${{ matrix.n }}.json
+            r15/paired-${{ matrix.n }}.log
+          retention-days: 90
+          if-no-files-found: warn
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R15-COHORT-*-RAW
+          path: all-r15
+          merge-multiple: false
+      - name: Five-cohort strict biological audit plus per-stage causal timing report
+        run: |
+          set -euo pipefail
+          inputs=()
+          for n in 24 48 96 192 384; do
+            d="all-r15/DRNAS-MEDICAL-R15-COHORT-${n}-RAW"
+            mapfile -t matches < <(find "$d" -type f -name "paired-${n}.json" | sort)
+            test "${#matches[@]}" -eq 1
+            inputs+=("${matches[0]}")
+          done
+          mkdir -p r15-final
+          python3 -u research/drnas_medical/gmispy_r15_stage_boundary.py audit --inputs "${inputs[@]}" --out r15-final/report.json | tee r15-final/audit.log
+          grep -q '^R15_FINAL ' r15-final/audit.log
+          cat r15-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R15-STAGE-BOUNDARY-FINAL
+          path: r15-final/
+          retention-days: 90
