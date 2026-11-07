@@ -1,0 +1,172 @@
+name: DRNAS R191 — source-coupled live XOR/CDCL vs CMS 608 paired
+on:
+  push:
+    branches: [experiment/drnas-r191-selective-live-vs-cms-20261107]
+    paths:
+      - 'research/r191_selective_live_cms.py'
+      - '.github/workflows/drnas-r191-selective-live-cms.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r191-live-cms-608-paired
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install CMS 5.11.15 (same packaged comparator as R190)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          cryptominisat5 --version > cms-version.log
+          grep -q 'CryptoMiniSat version 5.11.15' cms-version.log
+          cryptominisat5 --hhelp 2>&1 | grep -q 'autodisablegauss' || true
+      - name: Fetch immutable R190 reference binaries and R188 real live source bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42381363304 --repo Frane12/AndroidGameTest -n r190-source-locked38-binaries -D .
+          test -s r190_source_bundle.tar.gz
+          tar xzf r190_source_bundle.tar.gz
+          mkdir -p r188
+          gh run download 42224887686 --repo Frane12/AndroidGameTest -n r188-frozen-real25-synthetic13-native-binaries -D r188
+          chmod +x r188/r188-live r188/r188-driver r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path('r188')
+          pin=json.loads((p/'build-pin.json').read_text())
+          for f,key in (('frozen/manifest.json','source_manifest_sha256'),
+                        ('r188-live','live_binary_sha256'),
+                        ('r188-driver','clean_binary_sha256')):
+              x=hashlib.sha256((p/f).read_bytes()).hexdigest()
+              assert x==pin[key],(f,x,pin[key])
+          r189=hashlib.sha256(pathlib.Path('r189/frozen/manifest.json').read_bytes()).hexdigest()
+          assert r189==pin['source_manifest_sha256']
+          r190pin=json.loads(pathlib.Path('r190_cms_mixed/pins.json').read_text())
+          for filename,value in r190pin.items():
+              assert hashlib.sha256(pathlib.Path(filename).read_bytes()).hexdigest()==value
+          print('R191_PINNED_R188_R190_SAME_SHA_PASS')
+          PY
+      - name: Existing native bridge selftest, new policy selftest and original CNF audit
+        run: |
+          set -euo pipefail
+          mkdir -p r191
+          r188/r188-live selftest | tee r191/live-selftest.log
+          grep -q 'SELFTEST_PASS' r191/live-selftest.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          names=['r189/frozen/manifest.json','r189/r189-driver','r188/r188-live',
+                 'r188/r188-driver','r190_cms_mixed/r28',
+                 'built/bin/kissat_4_0_4']
+          pins={s:hashlib.sha256(pathlib.Path(s).read_bytes()).hexdigest() for s in names}
+          pathlib.Path('r191/pins.json').write_text(json.dumps(pins,sort_keys=True,indent=2)+'\n')
+          print('R191_PIN',json.dumps(pins,sort_keys=True))
+          PY
+          python3 -m py_compile research/r191_selective_live_cms.py research/r188_feedback_benchmark.py
+          python3 -u research/r191_selective_live_cms.py selftest | tee r191/selftest.log
+          grep -q '^R191_SELFTEST_PASS' r191/selftest.log
+          tar czf r191_pinned_sources.tar.gz r189/frozen r189/r189-driver r188/r188-live r188/r188-driver r188/build-pin.json r190_cms_mixed/r28 built/bin/kissat_4_0_4 r191/pins.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r191-frozen-original-38-pinned-binaries
+          path: r191_pinned_sources.tar.gz
+          retention-days: 90
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    name: R191 original CNF live-shadow-CMS paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r191-frozen-original-38-pinned-binaries
+      - name: Install CryptoMiniSat and verify original source and all native binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r191_pinned_sources.tar.gz
+          chmod +x r188/r188-live r188/r188-driver r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          pins=json.loads(pathlib.Path('r191/pins.json').read_text())
+          for file,h in pins.items():
+              assert hashlib.sha256(pathlib.Path(file).read_bytes()).hexdigest()==h,file
+          print('R191_ALL_SHA_VERIFIED')
+          PY
+      - name: Eight-arm 12s end-to-end randomized paired runs with witness checks
+        run: |
+          set -euo pipefail
+          python3 -u research/r191_selective_live_cms.py shard --shard ${{ matrix.shard }} | tee r191/shard-${{ matrix.shard }}.log
+          grep -q '^R191_SHARD_PASS ' r191/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r191-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r191/shard-${{ matrix.shard }}.json
+            r191/shard-${{ matrix.shard }}.log
+            r191/raw/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r191-frozen-original-38-pinned-binaries
+      - name: Explicitly reconstruct all 12 source-paired shards (no path assumptions)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r191/raw_shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r191-shard-*' -D r191/raw_shards
+          count="$(find r191/raw_shards -type f -name 'shard-*.json' | wc -l)"
+          test "$count" -eq 12
+          find r191/raw_shards -type f -name 'shard-*.json' -exec cp '{}' r191/ \;
+          test "$(find r191 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          tar xzf r191_pinned_sources.tar.gz
+          chmod +x r188/r188-live r188/r188-driver r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+      - name: Fail-closed SHA, 608 pairs, SAT/UNSAT agreement and live telemetry audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r191_selective_live_cms.py audit | tee r191/audit.log
+          grep -q '^R191_FINAL ' r191/audit.log
+          test -s r191/report.json
+          test -s r191/all-trials.json
+          cat r191/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R191-SELECTIVE-LIVE-CRYPTO-608-FINAL
+          retention-days: 90
+          path: |
+            r191/report.json
+            r191/all-trials.json
+            r191/summary.md
+            r191/audit.log
+            r191/pins.json
