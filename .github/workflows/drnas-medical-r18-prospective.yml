@@ -1,0 +1,106 @@
+name: DRNAS Medical R18 Prospective Nine Holdouts and Locked Audit
+on:
+  push:
+    branches: [experiment/drnas-medical-r18-flux-presolve-20261107]
+    paths:
+      - '.github/workflows/drnas-medical-r18-prospective.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  prospective:
+    name: R18 prospective ${{ matrix.family }} N=${{ matrix.n }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        include:
+          - {family: new_sha_192, n: 24}
+          - {family: new_sha_192, n: 48}
+          - {family: new_sha_192, n: 96}
+          - {family: new_sha_192, n: 144}
+          - {family: new_sha_192, n: 192}
+          - {family: new_degree_144, n: 24}
+          - {family: new_degree_144, n: 48}
+          - {family: new_degree_144, n: 96}
+          - {family: new_degree_144, n: 144}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install identical original R9 PySAT and GLPK stack
+        run: python3 -m pip install cobra==0.30.0 python-sat==1.9.dev21 scipy
+      - name: Download PREVIOUS already-finished R18 frozen predictions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r18
+          gh run download 42346440066 -R Frane12/AndroidGameTest -n R18-FROZEN-PREDICTIONS -D r18
+          (cd r18/frozen && sha256sum -c sha256.txt)
+          test "$(cut -d' ' -f1 r18/frozen/sha256.txt)" = "7faf2734f46dae13b285cd11ba248ad7e715ca809b37cdc896d7d8e58471a573"
+          python3 research/drnas_medical/gmispy_r18_flux_forecast.py verify --source r18/training/source --freeze r18/frozen
+      - name: Run two paired solve checks after predictions were SHA-frozen
+        run: |
+          set -euo pipefail
+          mkdir -p results/${{ matrix.family }}-${{ matrix.n }}
+          python3 -u research/drnas_medical/gmispy_r18_flux_forecast.py run --source r18/training/source --freeze r18/frozen --family ${{ matrix.family }} --n ${{ matrix.n }} --out results/${{ matrix.family }}-${{ matrix.n }} | tee results/${{ matrix.family }}-${{ matrix.n }}/run.log
+          grep -q '^R18_COHORT_FINAL ' results/${{ matrix.family }}-${{ matrix.n }}/run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R18-HELDOUT-${{ matrix.family }}-${{ matrix.n }}
+          path: results/${{ matrix.family }}-${{ matrix.n }}/
+          retention-days: 90
+  audit:
+    name: R18 independent symmetric-log validation on original predictions
+    needs: prospective
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install audit dependency only
+        run: python3 -m pip install numpy==2.3.4
+      - name: Load original pre-solve forecast SHA from immutable prior run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r18
+          gh run download 42346440066 -R Frane12/AndroidGameTest -n R18-FROZEN-PREDICTIONS -D r18
+          (cd r18/frozen && sha256sum -c sha256.txt)
+          test "$(cut -d' ' -f1 r18/frozen/sha256.txt)" = "7faf2734f46dae13b285cd11ba248ad7e715ca809b37cdc896d7d8e58471a573"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: R18-HELDOUT-*
+          path: all-heldouts
+      - name: Require all nine unchanged heldouts and calculate predeclared log error
+        run: |
+          set -euo pipefail
+          inputs=()
+          for f in new_sha_192 new_degree_144; do
+            if [ "$f" = new_sha_192 ]; then nums="24 48 96 144 192"; else nums="24 48 96 144"; fi
+            for n in $nums; do
+              dir="all-heldouts/R18-HELDOUT-${f}-${n}"
+              mapfile -t files < <(find "$dir" -name summary.json -type f | sort)
+              test "${#files[@]}" -eq 1
+              inputs+=("${files[0]}")
+            done
+          done
+          mkdir -p audit-out
+          python3 -u research/drnas_medical/gmispy_r18_flux_forecast.py audit --freeze r18/frozen --inputs "${inputs[@]}" --out audit-out/independent_report.json | tee audit-out/audit.log
+          grep -q '^R18_FINAL ' audit-out/audit.log
+          cat audit-out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R18-CERTIFIED-PRESOLVE-FORECAST-FINAL
+          path: audit-out/
+          retention-days: 90
