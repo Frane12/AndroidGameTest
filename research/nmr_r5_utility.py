@@ -194,6 +194,13 @@ def run_case(source,driver,clean_binary,r3_driver,cap,mode,memory,net):
         z=r4.run_case(source,driver,clean_binary,r3_driver,cap,"clean",memory)
     elif mode=="r4_safe":
         z=r4.run_case(source,driver,clean_binary,r3_driver,cap,"r4_safe",memory)
+    elif mode in ("r5_neural","r5_reward_only") and memory.db.execute(
+            "SELECT COUNT(*) FROM r4_rewards WHERE delta_s>?",
+            (REQUIRED_MARGIN_S,)).fetchone()[0]<2:
+        # Safe O(1) abstention before fingerprint/MLP: no training evidence.
+        # Zero additional solver launches; compare with r5_shadow scan cost.
+        z=r4.run_case(source,driver,clean_binary,r3_driver,cap,"clean",memory)
+        reason="global_no_positive_fast_abstain"
     elif (not r4.eligible(source,cap)):
         z=r4.run_case(source,driver,clean_binary,r3_driver,cap,"clean",memory)
         reason="cheap_abstain"
