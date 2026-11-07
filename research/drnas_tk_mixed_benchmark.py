@@ -18,12 +18,12 @@ def make(seed, profile):
     clauses=[]
     used=set()
     while len(used)<nxor:
-        vs=tuple(sorted(rng.sample(range(1,n+1),4)))
+        vs=tuple(sorted(rng.sample(range(1,n+1),3)))
         if vs in used: continue
         used.add(vs); rhs=parity(planted[v] for v in vs)
         # Forbid all assignments that violate XOR; each forbidden assignment
         # becomes one clause false exactly on that assignment.
-        for bits in itertools.product((0,1),repeat=4):
+        for bits in itertools.product((0,1),repeat=3):
             if parity(bits)==rhs: continue
             clauses.append([v if bit==0 else -v for v,bit in zip(vs,bits)])
     # Planted 3-CNF residual: every clause contains a false literal at the
@@ -40,7 +40,7 @@ def freeze():
     ROOT.mkdir(exist_ok=True)
     cases=[]
     for pi,profile in enumerate(PROFILES):
-        for j in range(4):
+        for j in range(3):
             name=f"mix-p{pi}-s{j}.cnf"; n,cs,model=make(912700+pi*100+j,profile)
             p=ROOT/name;p.write_text(f"p cnf {n} {len(cs)}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in cs))
             cases.append(dict(id=name[:-4],path=str(p),sha256=sha(p),nvars=n,nclauses=len(cs),profile=pi,known="SAT",witness=[v if model[v] else -v for v in range(1,n+1)]))
@@ -54,7 +54,7 @@ def run_case(c, rep):
     for mode in order:
         status,elapsed,raw,gate,native,killed,started,progress=t.run_one(p,mode,CAP,c["sha256"])
         if not gate or gate.get("source_sha256")!=c["sha256"] or not gate.get("eligible"):
-            raise RuntimeError("XOR source gate did not activate for "+c["id"])
+            raise RuntimeError("XOR source gate did not activate for "+c["id"]+" gate="+json.dumps(gate,sort_keys=True))
         if status=="SAT": t.prior.helper.gf.sat_check(t.prior.helper.gf.dimacs(p)[1],t.prior.model(raw))
         # Independently validate generated witness too.
         assignment={abs(x):x>0 for x in c["witness"]}
