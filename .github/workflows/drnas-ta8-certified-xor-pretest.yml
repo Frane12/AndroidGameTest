@@ -1,0 +1,207 @@
+name: DRNAS TA8 — certified XOR pretest 12 fresh SAT2026 144 paired 10s
+on:
+  push:
+    branches: [experiment/drnas-ta8-certified-xor-pretest-20261107]
+    paths:
+      - '.github/workflows/drnas-ta8-certified-xor-pretest.yml'
+      - 'research/drnas_ta8_certified_xor_probe.py'
+      - 'research/drnas_ta8_certified_probe_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta8-certified-xor-pretest-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore historical sources; freeze 12 new originals and proof-only native R28
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen host solvers and all historical SHA exclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42412800653 --repo Frane12/AndroidGameTest -n ta7h-original12-frozen -D .
+          test -s ta7h-original12-frozen.tar.gz
+          tar xzf ta7h-original12-frozen.tar.gz
+          test -s r200/manifest.json
+          test -s ta6/manifest.json
+          test -s ta7exclusions/ta7-manifest.json
+          test -s ta7/manifest.json
+          mkdir -p ta7h_exclusions
+          cp ta7/manifest.json ta7h_exclusions/ta7h-manifest.json
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import pathlib,json
+          files=['r200/manifest.json','ta6/manifest.json',
+                 'ta7exclusions/ta7-manifest.json',
+                 'ta7h_exclusions/ta7h-manifest.json']
+          sets=[{c['sha256'] for c in json.loads(pathlib.Path(p).read_text())['cases']} for p in files]
+          assert [len(x) for x in sets]==[24,24,24,12]
+          assert all(not sets[i]&sets[j] for i in range(4) for j in range(i+1,4))
+          print('TA8_FOUR_PRIOR_SOURCE_EXCLUSION_GROUPS_VERIFIED',flush=True)
+          PY
+      - name: Run independent proof-replay tests and freeze new source SHA before trials
+        run: |
+          set -euo pipefail
+          mkdir -p ta8
+          python3 -m py_compile research/drnas_ta8_certified_xor_probe.py research/drnas_ta8_certified_probe_benchmark.py
+          python3 -u research/drnas_ta8_certified_xor_probe.py | tee ta8/pilot-selftest.log
+          grep -q '^TA8_CERTIFIED_PROBE_SELFTEST_PASS 5' ta8/pilot-selftest.log
+          python3 -u research/drnas_ta8_certified_probe_benchmark.py fetch | tee ta8/fetch.log
+          grep -q '^TA8_HOLDOUT_FROZEN ' ta8/fetch.log
+      - name: Pin all code, binaries, old manifest hashes and new CNF bytes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          paths=[
+            'research/drnas_ta8_certified_xor_probe.py',
+            'research/drnas_ta8_certified_probe_benchmark.py',
+            'research/drnas_ta3_adaptive_selector.py',
+            'research/drnas_ta2_structural_profile.py',
+            'research/r199_unseen_mixed40_crossbackend.py',
+            'research/r164_pure_exact_gf2.py',
+            'research/r165_component_benchmark.py',
+            'research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py',
+            'research/r190_cms_mixed_benchmark.py',
+            'research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py',
+            'research/r182_mixed_engine.py',
+            'research/r183_external_mixed.py',
+            'r190_cms_mixed/r28',
+            'built/bin/kissat_4_0_4',
+            'r192/cms_single.sh','r192/cms_gauss_forced.sh','r192/pins.json',
+            'r189/frozen/manifest.json','r199/candidates.json',
+            'ta3/candidates.json','ta3_2026/manifest.json',
+            'ta3_2026/excluded_hashes.json','ta3_2026/preregistration.json',
+            'r200/manifest.json','ta6/manifest.json',
+            'ta7exclusions/ta7-manifest.json',
+            'ta7h_exclusions/ta7h-manifest.json',
+            'ta8/manifest.json'
+          ]
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('ta8/pins.json').write_text(json.dumps(pins,indent=2,sort_keys=True)+'\n')
+          cases=json.loads(pathlib.Path('ta8/manifest.json').read_text())['cases']
+          assert len(cases)==12 and len({c['sha256'] for c in cases})==12
+          for c in cases:
+            p=pathlib.Path('ta8/sources')/(c['id']+'.cnf')
+            assert hashlib.sha256(p.read_bytes()).hexdigest()==c['sha256'],c['id']
+          print('TA8_SOURCE_BINARY_CODE_PINS_PASS',len(pins),flush=True)
+          PY
+          python3 -u research/drnas_ta8_certified_probe_benchmark.py smoke | tee ta8/smoke.log
+          grep -q '^TA8_SELFTEST_PASS 6' ta8/smoke.log
+          tar czf ta8-original12-frozen.tar.gz \
+            ta3_2026 r189/frozen/manifest.json r199/candidates.json ta3/candidates.json \
+            r200/manifest.json ta6/manifest.json \
+            ta7exclusions/ta7-manifest.json ta7h_exclusions/ta7h-manifest.json \
+            r190_cms_mixed/r28 built/bin/kissat_4_0_4 \
+            r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh \
+            ta8/manifest.json ta8/pins.json ta8/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta8-original12-frozen
+          retention-days: 90
+          path: ta8-original12-frozen.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ta8-prepare-diagnostics
+          retention-days: 14
+          path: |
+            ta8/pilot-selftest.log
+            ta8/fetch.log
+            ta8/smoke.log
+            ta8/manifest.json
+  paired:
+    needs: prepare
+    name: TA8 10s six-arm original source shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta8-original12-frozen
+      - name: Restore frozen original CNF, certified R28 and host solver binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf ta8-original12-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for p,h in json.loads(pathlib.Path('ta8/pins.json').read_text()).items():
+            assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h,p
+          print('TA8_ALL_PINS_VERIFIED',flush=True)
+          PY
+      - name: Compare certified active/shadow TA3 and clean host references
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta8_certified_probe_benchmark.py shard --shard ${{ matrix.shard }} | tee ta8/shard-${{ matrix.shard }}.log
+          grep -q '^TA8_SHARD_PASS ' ta8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta8-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ta8/shard-${{ matrix.shard }}.json
+            ta8/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: TA8 fail-closed 144 trials and independent XOR cert source replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta8-original12-frozen
+      - name: Audit source-disjoint trials, paired PAR2 and proof path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta8-original12-frozen.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'ta8-shard-*' -D ta8/raw-shards
+          test "$(find ta8/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 3
+          find ta8/raw-shards -name 'shard-*.json' -exec cp '{}' ta8/ \;
+          python3 -u research/drnas_ta8_certified_probe_benchmark.py audit | tee ta8/audit.log
+          grep -q '^TA8_FINAL ' ta8/audit.log
+          cat ta8/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA8-XOR-REPLAY-144-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            ta8/report.json
+            ta8/report.md
+            ta8/all-trials.json
+            ta8/manifest.json
+            ta8/pins.json
+            ta8/audit.log
+            ta8/raw-shards/
