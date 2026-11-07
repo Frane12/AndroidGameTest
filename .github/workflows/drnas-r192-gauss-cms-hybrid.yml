@@ -1,0 +1,147 @@
+name: DRNAS R192 — Gaussian-first R28/CryptoMiniSat hybrid 380 paired
+on:
+  push:
+    branches: [experiment/drnas-r192-r28-cms-gaussian-hybrid-20261107]
+    paths:
+      - "research/r192_gauss_first_cms_hybrid.py"
+      - ".github/workflows/drnas-r192-gauss-cms-hybrid.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r192-gauss-first-cms-paired
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned CMS 5.11.15 and retrieve R190 exact native binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42381363304 --repo Frane12/AndroidGameTest -n r190-source-locked38-binaries -D .
+          tar xzf r190_source_bundle.tar.gz
+          test -s r189/frozen/manifest.json
+          test -s r190_cms_mixed/r28
+          chmod +x r189/r189-driver r190_cms_mixed/r28 built/bin/kissat_4_0_4
+      - name: Freeze exact CMS single-thread wrappers and SHA proofs
+        run: |
+          set -euo pipefail
+          mkdir -p r192
+          printf '#!/bin/sh\nexec /usr/bin/cryptominisat5 --threads=1 "$@"\n' > r192/cms_single.sh
+          printf '#!/bin/sh\nexec /usr/bin/cryptominisat5 --threads=1 --autodisablegauss=0 --maxnummatrices=5 "$@"\n' > r192/cms_gauss_forced.sh
+          chmod +x r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          paths=['r189/frozen/manifest.json','r190_cms_mixed/r28','built/bin/kissat_4_0_4',
+                 'r192/cms_single.sh','r192/cms_gauss_forced.sh']
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('r192/pins.json').write_text(json.dumps(pins,sort_keys=True,indent=2)+'\n')
+          print('R192_PINS',json.dumps(pins,sort_keys=True))
+          PY
+          python3 -m py_compile research/r192_gauss_first_cms_hybrid.py
+          python3 -u research/r192_gauss_first_cms_hybrid.py smoke | tee r192/smoke.log
+          grep -q '^R192_SMOKE_PASS' r192/smoke.log
+          tar czf r192-pinned-source-bundle.tar.gz r189/frozen r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r192-38-source-pinned-gauss-cms-bundle
+          retention-days: 90
+          path: r192-pinned-source-bundle.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    name: R192 source-paired GF2-CMS vs pure CMS shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r192-38-source-pinned-gauss-cms-bundle
+      - name: Install CryptoMiniSat, audit exact binary/script/source pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r192-pinned-source-bundle.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          pins=json.loads(pathlib.Path('r192/pins.json').read_text())
+          for f,h in pins.items():
+              assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+          print('R192_SOURCE_PIN_PASS')
+          PY
+      - name: Run 5-arm original-CNF identical SHA Gaussian-first vs CMS head-to-head
+        run: |
+          set -euo pipefail
+          python3 -u research/r192_gauss_first_cms_hybrid.py shard --shard ${{ matrix.shard }} | tee r192/shard-${{ matrix.shard }}.log
+          grep -q '^R192_SHARD_PASS ' r192/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r192-paired-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r192/shard-${{ matrix.shard }}.json
+            r192/shard-${{ matrix.shard }}.log
+            r192/logs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r192-38-source-pinned-gauss-cms-bundle
+      - name: Explicitly retrieve 12 frozen trial shards and pinned originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf r192-pinned-source-bundle.tar.gz
+          mkdir -p r192/all-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r192-paired-shard-*' -D r192/all-shards
+          test "$(find r192/all-shards -type f -name 'shard-*.json' | wc -l)" -eq 12
+          find r192/all-shards -type f -name 'shard-*.json' -exec cp '{}' r192/ \;
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test "$(find r192 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+      - name: Fail-closed exact SHA, 380 paired models, source truth and PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r192_gauss_first_cms_hybrid.py audit | tee r192/audit.log
+          grep -q '^R192_FINAL ' r192/audit.log
+          cat r192/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R192-GAUSSIAN-FIRST-CRYPTO-380-FINAL
+          retention-days: 90
+          path: |
+            r192/report.json
+            r192/all_trials.json
+            r192/summary.md
+            r192/audit.log
+            r192/pins.json
