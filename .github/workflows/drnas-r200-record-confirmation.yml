@@ -1,0 +1,191 @@
+name: DRNAS R200 — 24 new SAT2026 CNFs eight-arm record confirmation 576 paired
+on:
+  push:
+    branches: [experiment/drnas-r200-independent-record-confirmation-20261107]
+    paths:
+      - '.github/workflows/drnas-r200-record-confirmation.yml'
+      - 'research/drnas_r200_record_confirmation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r200-frozen-record-confirmation
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Select next 24 original official SAT2026 sources and pin old champions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore old source exclusions and previous tested binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42396350093 --repo Frane12/AndroidGameTest -n ta326-original24-frozen-source-binary -D .
+          tar xzf ta326-frozen24-binaries.tar.gz
+          gh run download 42149824021 --repo Frane12/AndroidGameTest -n r166x-frozen-r165-and-kissat404 -D .
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh r165/r165-native
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          native=pathlib.Path('r165/r165-native')
+          expected='f57e68640f576d2fe5ad541e343ba958d861d7ac1e5c7c37e0022ec3d088719e'
+          pin=json.loads(pathlib.Path('r165/build-pin.json').read_text())
+          assert hashlib.sha256(native.read_bytes()).hexdigest()==expected==pin['binary_sha256']
+          assert pin['commit']=='e5f1328c0f53eee6051da110cfae595440397251'
+          print('R200_R165_FROZEN_BINARY_PASS')
+          PY
+      - name: Freeze previously unused SAT2026 sources before any solver measurements
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_r200_record_confirmation.py
+          python3 -u research/drnas_r200_record_confirmation.py fetch | tee r200/fetch.log
+          grep -q '^R200_HOLDOUT_FROZEN ' r200/fetch.log
+      - name: Pin scripts and binaries, run all eight SAT smoke checks
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          paths=[
+            'research/drnas_r200_record_confirmation.py',
+            'research/r199_unseen_mixed40_crossbackend.py',
+            'research/drnas_ta3_adaptive_selector.py',
+            'research/drnas_ta2_structural_profile.py',
+            'research/r164_pure_exact_gf2.py',
+            'research/r165_component_benchmark.py',
+            'research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py',
+            'research/r190_cms_mixed_benchmark.py',
+            'research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py',
+            'research/r182_mixed_engine.py',
+            'research/r183_external_mixed.py',
+            'r190_cms_mixed/r28', 'r165/r165-native',
+            'built/bin/kissat_4_0_4',
+            'r192/cms_single.sh', 'r192/cms_gauss_forced.sh', 'r192/pins.json',
+            'ta3_2026/manifest.json', 'ta3_2026/excluded_hashes.json',
+            'ta3_2026/preregistration.json',
+            'r189/frozen/manifest.json', 'r199/candidates.json',
+            'ta3/candidates.json', 'r200/manifest.json'
+          ]
+          pins={}
+          for path in paths:
+            p=pathlib.Path(path)
+            assert p.is_file(), path
+            pins[path]=hashlib.sha256(p.read_bytes()).hexdigest()
+          pathlib.Path('r200/pins.json').write_text(json.dumps(pins, sort_keys=True, indent=2)+'\n')
+          print('R200_CODE_BINARY_SOURCE_PINNED', len(pins))
+          PY
+          python3 -u research/drnas_r200_record_confirmation.py smoke | tee r200/smoke.log
+          grep -q '^R200_SELFTEST_PASS 8' r200/smoke.log
+          tar czf r200-frozen-original24-8arms.tar.gz \
+            ta3_2026 r189/frozen/manifest.json r199/candidates.json ta3/candidates.json \
+            r190_cms_mixed/r28 r165/r165-native r165/build-pin.json \
+            built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh \
+            r200/manifest.json r200/pins.json r200/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r200-frozen-official2026-24original-8arms
+          retention-days: 90
+          path: r200-frozen-original24-8arms.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: r200-prepare-diagnostic
+          retention-days: 14
+          path: |
+            r200/fetch.log
+            r200/smoke.log
+            r200/manifest.json
+            r200/pins.json
+  paired:
+    name: R200 source-locked eight-arm shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r200-frozen-official2026-24original-8arms
+      - name: Restore exact frozen source/binary SHA pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r200-frozen-original24-8arms.tar.gz
+          chmod +x r190_cms_mixed/r28 r165/r165-native built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for p,expected in json.loads(pathlib.Path('r200/pins.json').read_text()).items():
+            assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==expected,p
+          print('R200_ALL_PINS_VERIFIED')
+          PY
+      - name: Three randomized paired repetitions, single inherited CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_r200_record_confirmation.py shard --shard ${{ matrix.shard }} | tee r200/shard-${{ matrix.shard }}.log
+          grep -q '^R200_SHARD_PASS ' r200/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r200-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r200/shard-${{ matrix.shard }}.json
+            r200/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+  audit:
+    name: Fail-closed 576-trial PAR2 and source-cluster bootstrap audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r200-frozen-official2026-24original-8arms
+      - name: Restore and collect all eight complete source-disjoint shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf r200-frozen-original24-8arms.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r200-shard-*' -D r200/raw-shards
+          test "$(find r200/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 8
+          find r200/raw-shards -name 'shard-*.json' -exec cp '{}' r200/ \;
+          python3 -u research/drnas_r200_record_confirmation.py audit | tee r200/audit.log
+          grep -q '^R200_FINAL ' r200/audit.log
+          cat r200/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R200-NEW-SAT2026-576-RECORD-CONFIRMATION-FINAL
+          retention-days: 90
+          path: |
+            r200/report.json
+            r200/report.md
+            r200/all-trials.json
+            r200/manifest.json
+            r200/pins.json
+            r200/audit.log
+            r200/raw-shards/
+          if-no-files-found: warn
