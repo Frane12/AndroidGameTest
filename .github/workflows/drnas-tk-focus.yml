@@ -1,0 +1,47 @@
+name: DRNAS TK — focus XOR reason impact on one original
+on:
+  push:
+    branches: [experiment/drnas-tk-xor-cdcl-diagnostics-20261107]
+    paths: [.github/workflows/drnas-tk-focus.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore audited C1 binaries and exact original inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42358062002 --jq .conclusion)" = success
+          gh run download 42358062002 --repo Frane12/AndroidGameTest -n c1-frozen-600-source-native-pins -D .
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t2/t-native built/bin/kissat_4_0_4 research/ultimate_t2_fallback.py
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=json.loads(pathlib.Path("ultimate_c1/build-pin.json").read_text())
+          for path in ("ultimate_t2/t-native","ultimate_r1/source_r153/r153","built/bin/kissat_4_0_4","research/ultimate_t2_native.cpp","research/ultimate_t2_fallback.py","research/ultimate_t2_probe.py","research/ultimate_t2_benchmark.py"):
+              actual=hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+              assert actual==p["files"][path],path
+          print("TK_BINARY_AND_SOURCE_PINS_PASS")
+          PY
+      - name: Compare clean, shadow and active on source-matched runs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_tk_focus_benchmark.py
+          python3 -u research/drnas_tk_focus_benchmark.py | tee tk-focus-run.log
+          grep -q '^TK_FINAL ' tk-focus-run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TK-FOCUS-REASON-TELEMETRY
+          path: |
+            tk-focus/
+            tk-focus-run.log
+          if-no-files-found: warn
