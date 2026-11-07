@@ -1,0 +1,211 @@
+name: DRNAS Ultimate T2 — proof-gated 400 paired factorial
+on:
+  push:
+    branches: [experiment/drnas-ultimate-t2-causal-isolation-20261107]
+    paths:
+      - research/ULTIMATE_T2_LAUNCH.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ultimate-t2-causal-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require finished and successful T1 240-trial final audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict="$(gh api repos/Frane12/AndroidGameTest/actions/runs/42351079758 --jq .conclusion)"
+          test "$verdict" = "success" || { echo "T1 NOT CERTIFIED FINISHED: $verdict"; exit 1; }
+          mkdir -p ultimate_t2/t1-audit
+          gh run download 42351079758 --repo Frane12/AndroidGameTest -n DRNAS-ULTIMATE-T-PHASE1-240-FINAL -D ultimate_t2/t1-audit
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("ultimate_t2/t1-audit/ultimate_t/report.json")
+          v=json.loads(p.read_text())
+          assert v["status"]=="ULTIMATE_T_PHASE1_AUDIT_PASS_NONBLIND" and v["attempts"]==240
+          assert v["original_cnfs_unchanged"] and v["source_XOR_independently_replayed"]
+          print("ULTIMATE_T2_T1_FINAL_AUDIT_GUARD_PASS",v["status"])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and test bounded late-XOR probe, source certification and Python
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ultimate_t2_probe.py research/ultimate_t2_fallback.py research/ultimate_t2_benchmark.py
+          python3 -u research/ultimate_t2_probe.py
+          python3 -u research/r166x_certified_gauss.py --selftest
+      - name: Download immutable original R2 binaries and 20 source-CNF manifest from T1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42351079758 --repo Frane12/AndroidGameTest -n ultimate-t-frozen-20originals-native-pins -D .
+          python3 -u research/ultimate_t2_benchmark.py verify
+          chmod +x ultimate_r1/source_r153/r153 built/bin/kissat_4_0_4
+      - name: Build frozen CaDiCaL 2.1 T2 10-arm source-only bridge
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/ultimate-t2-cadical
+          (cd /tmp/ultimate-t2-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/ultimate-t2-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          mkdir -p ultimate_t2
+          : > ultimate_t2/empty.tsv
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/ultimate-t2-cadical/src research/ultimate_t2_native.cpp /tmp/ultimate-t2-cadical/build/libcadical.a -o ultimate_t2/t-native
+          chmod +x ultimate_t2/t-native research/ultimate_t2_fallback.py
+          ultimate_t2/t-native selftest | tee ultimate_t2-native-selftest.log
+          grep -q '^ULTIMATE_T2_NATIVE_SELFTEST_PASS' ultimate_t2-native-selftest.log
+          grep -q '^R166X_INCREMENTAL_SELFTEST_PASS' ultimate_t2-native-selftest.log
+          python3 -u research/ultimate_t2_benchmark.py selftest
+      - name: Smoke actual T2 routing on complete-source XOR with residual clauses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,subprocess,os,time
+          p=pathlib.Path("ultimate_t2"); cl=[]
+          for g in range(4):
+              vs=[3*g+1,3*g+2,3*g+3]
+              for mask in (1,2,4,7):
+                  cl.append(" ".join(str(-v if mask >> i & 1 else v) for i,v in enumerate(vs))+" 0")
+          for i in range(28):
+              cl.append(f"{1+(i%12)} {1+((i+5)%12)} 13 0")
+          cnf=p/"smoke-original.cnf"
+          cnf.write_text(f"p cnf 13 {len(cl)}\n"+"\n".join(cl)+"\n")
+          arms=("clean","source","derived","t2_derived_rows","t2_derived_units",
+                "t2_derived_incremental","t2_derived_shadow")
+          for arm in arms:
+              env=os.environ.copy()
+              env.update(ULTIMATE_T_MODE=arm,
+                         ULTIMATE_R2_DEADLINE_NS=str(time.monotonic_ns()+15_000_000_000))
+              v=subprocess.run(["ultimate_r1/source_r153/r153",str(cnf),"research/ultimate_t2_fallback.py"],
+                               env=env,capture_output=True,timeout=16)
+              assert v.returncode==10,(arm,v.returncode,v.stderr[-600:],v.stdout[-1500:])
+              assert b"ULTIMATE_T_GATE " in v.stdout,arm
+              assert b"R166X_RESULT mode=" in v.stdout,arm
+              if arm!="clean":
+                  assert b'"eligible": true' in v.stdout,(arm,v.stdout[-1000:])
+          print("ULTIMATE_T2_SEVEN_ARM_SMOKE_PASS")
+          PY
+      - name: Record exact source and compiled hashes for T2 reproducibility
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          f=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          original=json.loads(pathlib.Path("ultimate_r2/build-pin.json").read_text())
+          v=dict(t1_run_id=42351079758,t1_audit_sha=f("ultimate_t2/t1-audit/ultimate_t/report.json"),
+                 t1_source_sha="e86e6c06e21bd9a6e92b745f90841990cf6b3893",
+                 original_manifest_sha=original["manifest_sha"],
+                 source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                 cadical_commit="31f9aae44947c673dc6190c9beb399acb9ffec6a",
+                 expected_trials=400,
+                 binaries={p:f(p) for p in (
+                   "ultimate_t2/t-native","research/ultimate_t2_native.cpp",
+                   "research/ultimate_t2_fallback.py","research/ultimate_t2_benchmark.py",
+                   "research/ultimate_t2_probe.py","ultimate_r1/source_r153/r153",
+                   "built/bin/kissat_4_0_4")})
+          pathlib.Path("ultimate_t2/build-pin.json").write_text(json.dumps(v,sort_keys=True,indent=2)+"\n")
+          print("ULTIMATE_T2_PREPARE_PASS",v["source_commit"],v["original_manifest_sha"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-t2-frozen-400-source-native-pins
+          retention-days: 90
+          path: |
+            ultimate_r1/
+            ultimate_r2/
+            ultimate_t2/
+            built/bin/kissat_4_0_4
+            built/bin/cadical_3_0_1
+            ultimate_t2-native-selftest.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    name: Ultimate T2 source-locked 10-arm shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ultimate-t2-frozen-400-source-native-pins
+          path: .
+      - name: Verify pinned original, T2 native and 400-trial protocol
+        run: |
+          set -euo pipefail
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t2/t-native built/bin/kissat_4_0_4 research/ultimate_t2_fallback.py
+          python3 -u research/ultimate_t2_benchmark.py verify
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          f=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          v=json.loads(pathlib.Path("ultimate_t2/build-pin.json").read_text())
+          assert v["source_commit"]==subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          assert v["expected_trials"]==400
+          assert f("ultimate_r2/frozen/manifest.json")==v["original_manifest_sha"]
+          assert all(f(p)==h for p,h in v["binaries"].items())
+          print("ULTIMATE_T2_SHA_PASS")
+          PY
+      - name: Causal 10-arm fixed-order-seed paired original CNF comparisons
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_t2_benchmark.py shard --shard ${{ matrix.shard }} | tee ultimate_t2/shard-${{ matrix.shard }}.log
+          grep -q '^ULTIMATE_T2_SHARD_PASS' ultimate_t2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ultimate-t2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ultimate_t2/shard-${{ matrix.shard }}.json
+            ultimate_t2/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ultimate-t2-frozen-400-source-native-pins
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ultimate-t2-shard-*
+          merge-multiple: true
+          path: ultimate_t2
+      - name: Audit 400 original source-matched attempts and report causal component isolation
+        run: |
+          set -euo pipefail
+          test "$(find ultimate_t2 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/ultimate_t2_benchmark.py audit | tee ultimate_t2/audit.log
+          grep -q '^ULTIMATE_T2_FINAL' ultimate_t2/audit.log
+          cat ultimate_t2/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ULTIMATE-T2-400-FACTORIAL-FINAL
+          retention-days: 90
+          path: |
+            ultimate_t2/report.json
+            ultimate_t2/all-trials.json
+            ultimate_t2/all-trials.csv
+            ultimate_t2/summary.md
+            ultimate_t2/audit.log
