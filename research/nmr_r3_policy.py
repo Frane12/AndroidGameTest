@@ -142,7 +142,7 @@ def model_from_result(proc,status):
 
 def result(source,status,model,elapsed,cap,mode,reason,windows,
            scans,observations,confidence,activation_s,feature=None,
-           probability=None,expected_gain=None,already_verified=False):
+           probability=None,expected_gain=None,already_verified=False,callback_wakeups=0):
     if elapsed>=cap:status="TIMEOUT"
     if status=="SAT":
         if not already_verified:
@@ -158,6 +158,7 @@ def result(source,status,model,elapsed,cap,mode,reason,windows,
                 recurrence_hits=confidence.hits if confidence else 0,
                 recurrence_misses=confidence.misses if confidence else 0,
                 activation_s=activation_s,
+                callback_wakeups=callback_wakeups,
                 decision_feature=feature,
                 probability=probability,
                 expected_gain_s=expected_gain,
@@ -208,11 +209,13 @@ def run_case(source,binary,clean_binary,cap,mode,mem=None):
         process.stdin.write(s+"\n")
         process.stdin.flush()
         return read_line(process,prefix)
+
     try:
         read_line(process,"NMR3_READY")
-        def observe(arm,budget):
+        def observe(arm,budget,watch=False):
             nonlocal window_count,status,model
-            w=command(f"STEP {arm} {budget}","NMR3_WINDOW")
+            cmd="WATCH" if watch else "STEP"
+            w=command(f"{cmd} {arm} {budget}","NMR3_WINDOW")
             w["conflict_budget"]=int(w["conflict_budget"])
             recurrence.observe(arm,w)
             observations.append(w)
@@ -223,64 +226,95 @@ def run_case(source,binary,clean_binary,cap,mode,mem=None):
                 model=model_from_result(process,status)
                 return True
             return False
+
         solved=False
         for budget in PILOT_BUDGETS:
-            if time.perf_counter()-start>=cap-0.08:break
+            if time.perf_counter()-start>=cap-0.08:
+                break
             if observe(0,budget):
-                solved=True;reason="pilot_solved";break
-        if not solved and len(observations)>=2 and time.perf_counter()-start<cap-0.12:
-            prior=observations[0];latest=observations[1]
+                solved=True
+                reason="pilot_solved"
+                break
+
+        if (not solved and len(observations)>=2 and
+                time.perf_counter()-start<cap-0.12):
             periodic=mode!="utility_gate_no_period"
-            feature=telemetry_features(info,prior,latest,recurrence,periodic)
+            feature=telemetry_features(info,observations[0],observations[1],
+                                       recurrence,periodic)
             expected_gain,probability=mem.estimated_gain(feature)
-            # First try single-solver adaptive feedback rather than a costly
-            # second solver. If condition is not met, retain current clauses.
+            activation_allowed=mode in ("forced_probe","utility_gate",
+                                        "utility_gate_no_period")
             activate=mode=="forced_probe"
             if mode.startswith("utility_gate"):
                 activate=(expected_gain>MARGIN_S and probability>=0.75 and
                           cap-(time.perf_counter()-start)>=1.0)
-            if activate:
-                tick=time.perf_counter()
-                command("ACTIVATE","NMR3_ACTIVATED")
-                activation_s=time.perf_counter()-tick
-                activated=True
-                for budget in PILOT_BUDGETS:
-                    if time.perf_counter()-start>=cap-0.10:break
-                    if observe(1,budget):
-                        solved=True;reason="alternative_solved";selected=1
-                        break
-                if not solved:
-                    first=observations[:2]
-                    second=[x for x in observations if x["arm"]=="1"]
-                    if second:
-                        # Derived from measured rate and sample time only.
-                        productivity=lambda items:(sum(int(x["short3"]) for x in items)+1)/(
-                            sum(float(x["dt_s"]) for x in items)+0.003)
-                        default_productivity=productivity(first)
-                        alt_productivity=productivity(second)
-                        if (alt_productivity>default_productivity*1.4 and
-                            sum(float(x["dt_s"]) for x in second)<0.3*cap):
-                            selected=1
-                            reason="verified_pilot_productivity_margin"
-                        else:reason="retain_warm_default"
-                # This live-learning label only updates a private copy; final
-                # training uses true clean-vs-forced paired wallclock reward.
-                if len([x for x in observations if x["arm"]=="1"])>=2:
-                    second=[x for x in observations if x["arm"]=="1"]
-                    pair_features=telemetry_features(info,first[-1],second[-1],
-                                                     recurrence,periodic)
-                    label=old.proxy_target(first[-1],second[-1])
-                    local_model.update(pair_features,label,lr=.005)
-            else:
-                reason="utility_below_cost" if mode.startswith("utility_gate") else "passive_feedback"
-                # Delay observation when stable; increase resolution on drift.
+            if not activate:
+                reason=("utility_below_cost" if mode.startswith("utility_gate")
+                        else "sleeping_passive_feedback")
+                # Rest: no Python neural inference between ordinary samples.
+                # Every WATCH uses O(1) C++ learner callbacks and only returns
+                # to Python for a bounded budget or a detected regime change.
                 while (window_count<MAX_DEFAULT_WINDOWS and
                        time.perf_counter()-start<cap-0.12):
                     prev=observations[-2] if len(observations)>=2 else None
                     last=observations[-1]
                     budget=next_budget(prev,last,recurrence,window_count)
-                    if observe(0,budget):
-                        solved=True;reason="adaptive_default_solved";break
+                    if observe(0,budget,watch=True):
+                        solved=True
+                        reason="asleep_solver_completed"
+                        break
+                    if (observations[-1].get("wakeup")=="callback" and
+                            activation_allowed):
+                        # Decide AFTER the solver safely returns at the
+                        # callback-triggered boundary, never inside learning().
+                        feature=telemetry_features(info,observations[-2],
+                                                   observations[-1],recurrence,
+                                                   periodic)
+                        expected_gain,probability=mem.estimated_gain(feature)
+                        activate=(expected_gain>MARGIN_S and
+                                  probability>=0.75 and
+                                  cap-(time.perf_counter()-start)>=1.0)
+                        reason=("callback_utility_positive" if activate else
+                                "callback_utility_below_cost")
+                        if activate:
+                            break
+            if activate and not solved:
+                tick=time.perf_counter()
+                command("ACTIVATE","NMR3_ACTIVATED")
+                activation_s=time.perf_counter()-tick
+                activated=True
+                first=[x for x in observations if x["arm"]=="0"][:2]
+                for budget in PILOT_BUDGETS:
+                    if time.perf_counter()-start>=cap-0.10:
+                        break
+                    if observe(1,budget):
+                        solved=True
+                        reason="alternative_solved"
+                        selected=1
+                        break
+                second=[x for x in observations if x["arm"]=="1"]
+                if not solved and second:
+                    # Compute benefit proxy only on observed, comparable pilots.
+                    productivity=lambda items:(
+                        (sum(int(x["short3"]) for x in items)+1) /
+                        (sum(float(x["dt_s"]) for x in items)+0.003))
+                    baseline_productivity=productivity(first)
+                    alternative_productivity=productivity(second)
+                    if (alternative_productivity>
+                        1.4*baseline_productivity and
+                        sum(float(x["dt_s"]) for x in second)<0.3*cap):
+                        selected=1
+                        reason="verified_pilot_productivity_margin"
+                    else:
+                        reason="retain_warm_default"
+                # Training on a proxy only in local memory. The persistent
+                # R3 model is trained on paired full wall-clock reward,
+                # never on test/evaluation formulas.
+                if len(second)>=2:
+                    pair_features=telemetry_features(info,first[-1],second[-1],
+                                                     recurrence,periodic)
+                    label=old.proxy_target(first[-1],second[-1])
+                    local_model.update(pair_features,label,lr=.005)
         if not solved:
             end=command(f"FINISH {selected}","NMR3_STATUS")
             status=end["status"]
@@ -293,7 +327,8 @@ def run_case(source,binary,clean_binary,cap,mode,mem=None):
         process.stdin.close();process.stdout.close();process.stderr.close()
     return result(source,status,model,time.perf_counter()-start,cap,
                   mode,reason,window_count,scan,len(observations),
-                  recurrence,activation_s,feature,probability,expected_gain)
+                  recurrence,activation_s,feature,probability,expected_gain,
+                  callback_wakeups=sum(w.get("wakeup")=="callback" for w in observations))
 
 
 def selftest():
