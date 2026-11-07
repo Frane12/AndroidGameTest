@@ -1,0 +1,198 @@
+name: DRNAS Ultimate T — trail frontier six-arm 240 paired
+on:
+  push:
+    branches: [experiment/drnas-ultimate-t-trail-frontier-20261107]
+    paths:
+      - research/ultimate_t_native.cpp
+      - research/ultimate_t_fallback.py
+      - research/ultimate_t_benchmark.py
+      - .github/workflows/drnas-ultimate-t-trail-frontier.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ultimate-t-trail-frontier-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prove T Python syntax and certified XOR algebra
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ultimate_t_fallback.py research/ultimate_t_benchmark.py research/r157_source_certified_xor.py research/r166x_certified_gauss.py
+          python3 -u research/r166x_certified_gauss.py --selftest
+      - name: Download exact original R2 native and source SHA reference without selecting on outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42346485260 --repo Frane12/AndroidGameTest -n ultimate-r2-originals-pinned-native-protocol -D .
+          test -s ultimate_r2/frozen/manifest.json
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          v=json.loads(pathlib.Path("ultimate_r2/build-pin.json").read_text())
+          h=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          assert v["source_commit"]=="5a497c976e7bcc092138d44bb91925996bfc27ba"
+          assert v["manifest_sha"]=="2e6169009e985555e43e81d9b534f3bb307cef93963329694ef42459bef3c2e2"
+          assert h("ultimate_r2/frozen/manifest.json")==v["manifest_sha"]
+          for name,expected in v["binaries"].items():
+              if name=="research/ultimate_r2_fallback.py":continue
+              assert h(name)==expected,(name,"reference native drift")
+          print("ULTIMATE_T_ORIGINAL_PIN_PASS",v["manifest_sha"])
+          PY
+          python3 -u research/ultimate_t_benchmark.py verify
+          chmod +x ultimate_r1/source_r153/r153 built/bin/kissat_4_0_4
+      - name: Compile frozen CaDiCaL 2.1 with source-only XOR frontier extensions
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/ultimate-t-cadical
+          (cd /tmp/ultimate-t-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/ultimate-t-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          mkdir -p ultimate_t
+          : > ultimate_t/empty.tsv
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/ultimate-t-cadical/src research/ultimate_t_native.cpp /tmp/ultimate-t-cadical/build/libcadical.a -o ultimate_t/t-native
+          chmod +x ultimate_t/t-native research/ultimate_t_fallback.py
+          ultimate_t/t-native selftest | tee ultimate_t-native-selftest.log
+          grep -q '^ULTIMATE_T_NATIVE_SELFTEST_PASS' ultimate_t-native-selftest.log
+          grep -q '^R166X_INCREMENTAL_SELFTEST_PASS' ultimate_t-native-selftest.log
+      - name: Verify actual CDCL trail, source certificates, shadow and adaptive T modes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,pathlib,subprocess,time
+          p=pathlib.Path("ultimate_t");cl=[]
+          for g in range(4):
+              vs=[3*g+1,3*g+2,3*g+3]
+              for mask in (1,2,4,7):
+                  cl.append(" ".join(str(-v if mask>>i&1 else v) for i,v in enumerate(vs))+" 0")
+          for i in range(28):
+              cl.append(f"{1+(i%12)} {1+((i+5)%12)} 13 0")
+          s=p/"smoke-source-frontier.cnf"
+          s.write_text(f"p cnf 13 {len(cl)}\n"+"\n".join(cl)+"\n")
+          for arm,expected in (("clean","t_clean"),("shadow","t_shadow"),("source","t_source"),("adaptive","t_adaptive"),("derived","gauss_cooldown")):
+              env=os.environ.copy()
+              env.update(ULTIMATE_T_MODE=arm,ULTIMATE_R2_DEADLINE_NS=str(time.monotonic_ns()+15_000_000_000))
+              z=subprocess.run(["ultimate_r1/source_r153/r153",str(s),"research/ultimate_t_fallback.py"],
+                  stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env,timeout=16)
+              assert z.returncode==10,(arm,z.returncode,z.stderr[-1200:],z.stdout[-2000:])
+              assert b"ULTIMATE_T_GATE" in z.stdout,(arm,z.stdout[-1500:])
+              assert ("R166X_RESULT mode="+expected+" status=SAT").encode() in z.stdout,(arm,z.stdout[-3000:])
+              if arm!="clean":assert b'"eligible": true' in z.stdout,(arm,z.stdout[-2000:])
+          print("ULTIMATE_T_TRAIL_CAUSAL_NATIVE_SMOKE_PASS")
+          PY
+          python3 -u research/ultimate_t_benchmark.py selftest
+      - name: Pin all original binary, source and new T native source hashes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,hashlib,pathlib,subprocess
+          h=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          original=json.loads(pathlib.Path("ultimate_r2/build-pin.json").read_text())
+          binaries={p:d for p,d in original["binaries"].items() if p!="research/ultimate_r2_fallback.py"}
+          for p in ("ultimate_t/t-native","research/ultimate_t_fallback.py","research/ultimate_t_native.cpp","research/ultimate_t_benchmark.py"):
+              binaries[p]=h(p)
+          pin=dict(manifest_sha=original["manifest_sha"],binaries=binaries,
+              caDiCaL_commit="31f9aae44947c673dc6190c9beb399acb9ffec6a",
+              source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+              reference_commit=original["source_commit"],expected_trials=240,protocol="ULTIMATE_T_PHASE1_SIX_ARM")
+          pathlib.Path("ultimate_t/build-pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2)+"\n")
+          print("ULTIMATE_T_PIN_PASS",pin["source_commit"],pin["manifest_sha"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ultimate-t-frozen-20originals-native-pins
+          retention-days: 90
+          path: |
+            ultimate_r1/
+            ultimate_r2/
+            ultimate_t/
+            built/bin/kissat_4_0_4
+            built/bin/cadical_3_0_1
+            ultimate_t-native-selftest.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    name: Ultimate T six-arm causal source frontier shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ultimate-t-frozen-20originals-native-pins
+          path: .
+      - name: Verify source SHA, original references and T native binary
+        run: |
+          set -euo pipefail
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t/t-native built/bin/kissat_4_0_4 research/ultimate_t_fallback.py
+          python3 -u research/ultimate_t_benchmark.py verify
+          python3 - <<'PY'
+          import json,pathlib,hashlib,subprocess
+          p=json.loads(pathlib.Path("ultimate_t/build-pin.json").read_text())
+          h=lambda f:hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()
+          assert p["source_commit"]==subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          assert p["expected_trials"]==240
+          assert h("ultimate_r2/frozen/manifest.json")==p["manifest_sha"]
+          for f,v in p["binaries"].items():assert h(f)==v,f
+          print("ULTIMATE_T_SOURCE_NATIVE_SHA_PASS")
+          PY
+      - name: Six arm paired comparisons from unchanged source CNF
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_t_benchmark.py shard --shard ${{ matrix.shard }} | tee ultimate_t/shard-${{ matrix.shard }}.log
+          grep -q '^ULTIMATE_T_SHARD_PASS' ultimate_t/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ultimate-t-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ultimate_t/shard-${{ matrix.shard }}.json
+            ultimate_t/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ultimate-t-frozen-20originals-native-pins
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ultimate-t-shard-*
+          merge-multiple: true
+          path: ultimate_t
+      - name: Audit 240 paired originals, source replay, SAT witnesses, PAR2
+        run: |
+          set -euo pipefail
+          test "$(find ultimate_t -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 5
+          python3 -u research/ultimate_t_benchmark.py audit | tee ultimate_t/audit.log
+          grep -q '^ULTIMATE_T_FINAL' ultimate_t/audit.log
+          cat ultimate_t/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ULTIMATE-T-PHASE1-240-FINAL
+          retention-days: 90
+          path: |
+            ultimate_t/report.json
+            ultimate_t/all-trials.json
+            ultimate_t/all-trials.csv
+            ultimate_t/summary.md
+            ultimate_t/audit.log
