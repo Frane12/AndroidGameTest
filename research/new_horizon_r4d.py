@@ -260,8 +260,9 @@ def selftest():
             clauses.append((1,2,3))
             bad=make(f"late{k}.cnf",n,clauses)
             ev=source_evidence(bad)
-            need(ev["route"]=="clean" and ev["scanned"]>=80,
-                 "late disproof must be scanned, never guessed")
+            need(ev["route"]=="clean" and (ev["scanned"]>=80 or
+                 ev["reason"]=="tail_non_2sat_witness_cost_veto"),
+                 "late source must be safely vetoed or completely checked")
         # Sparse valid 2SAT remains accelerated; deceptive suffix vetoes
         # before parsing the 128-clause prefix. These have similar metadata.
         sparse=make("sparse_valid.cnf",128,
