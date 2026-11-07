@@ -1,0 +1,52 @@
+name: DRNAS R115 vs CryptoMiniSat Gaussian ON/OFF (independent witness)
+on:
+  push:
+    branches: [experiment/drnas-r115-cms-gauss-audit-20261107]
+    paths:
+      - '.github/workflows/drnas-r115-cms-gauss-audit.yml'
+      - 'research/r115_cms_gauss_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  original-cnf-paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install packaged CryptoMiniSat with Gauss support
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          command -v cryptominisat5
+          cryptominisat5 --version || true
+          cryptominisat5 --hhelp 2>&1 | grep -E 'maxnummatrices|autodisablegauss|maxmatrixrows' | head -20 || true
+      - name: Fetch archived ORIGINAL R115 DIMACS and verify SHA256
+        run: |
+          set -euo pipefail
+          mkdir -p r115_cms_audit
+          curl -fLsS --retry 3 --retry-delay 3 -o r115_cms_audit/r115_raw.zip "https://github.com/Frane12/AndroidGameTest/releases/download/drnas-orion-review-v0.1-20261106/DRNAS_R115_RAW.zip"
+          unzip -o r115_cms_audit/r115_raw.zip -d r115_cms_audit
+          mv r115_cms_audit/75429ff7acb5acb597abe01aa745c2a6.cnf r115_cms_audit/r115.cnf
+          echo '243e5d0079606862166a4619691cbbb8ffc9c8c14eb16250138b16d724c6bc83  r115_cms_audit/r115.cnf' | sha256sum -c
+          lscpu > r115_cms_audit/cpu.txt
+      - name: Compile EXACT pinned R28 C++ and retain provenance
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG experiments/drnas_v16/r28_exact_gf2.cpp -o r115_cms_audit/r28
+          sha256sum experiments/drnas_v16/r28_exact_gf2.cpp r115_cms_audit/r28 > r115_cms_audit/provenance.sha256
+          git rev-parse HEAD > r115_cms_audit/commit.txt
+      - name: Three paired repetitions R28 vs CMS Gauss ON and OFF
+        run: |
+          set -euo pipefail
+          python3 -u research/r115_cms_gauss_audit.py | tee r115_cms_audit/audit.log
+      - name: Upload complete reproducibility bundle
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R115-CMS-GAUSS-ON-OFF-ORIGINAL-CNF-PAIRED
+          path: r115_cms_audit/
+          retention-days: 60
