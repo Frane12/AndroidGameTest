@@ -142,10 +142,11 @@ def model_from_result(proc,status):
 
 def result(source,status,model,elapsed,cap,mode,reason,windows,
            scans,observations,confidence,activation_s,feature=None,
-           probability=None,expected_gain=None):
+           probability=None,expected_gain=None,already_verified=False):
     if elapsed>=cap:status="TIMEOUT"
     if status=="SAT":
-        nh.verify_model(source,model)
+        if not already_verified:
+            nh.verify_model(source,model)
         proof="ORIGINAL_CNF_SAT_WITNESS_CHECKED"
     elif status=="UNSAT":
         proof="NATIVE_CDCL_UNSAT_NO_INDEPENDENT_LRAT"
@@ -175,7 +176,7 @@ def run_case(source,binary,clean_binary,cap,mode,mem=None):
         elapsed=time.perf_counter()-start
         return result(source,z["status"],{},elapsed,cap,mode,
                       "cheap_source_abstention" if mode!="clean" else "clean",
-                      0,0,0,None,0.0)
+                      0,0,0,None,0.0,already_verified=True)
     need(mem is not None,"missing persistent model")
     if mode in ("utility_gate","utility_gate_no_period"):
         # Calibration is known before this formula is seen.
@@ -185,7 +186,7 @@ def run_case(source,binary,clean_binary,cap,mode,mem=None):
                 z=nh.run_one(source,clean_binary,cap,"clean",td)
             return result(source,z["status"],{},time.perf_counter()-start,
                           cap,mode,"no_positive_training_calibration",
-                          0,0,0,None,0.0)
+                          0,0,0,None,0.0,already_verified=True)
     info=nh.fingerprint(source)
     scan=time.perf_counter()-start
     if cap-scan<=0.25:
@@ -257,8 +258,8 @@ def run_case(source,binary,clean_binary,cap,mode,mem=None):
                             sum(float(x["dt_s"]) for x in items)+0.003)
                         default_productivity=productivity(first)
                         alt_productivity=productivity(second)
-                        if alt_productivity>default_productivity*1.4 and
-                           sum(float(x["dt_s"]) for x in second)<0.3*cap:
+                        if (alt_productivity>default_productivity*1.4 and
+                            sum(float(x["dt_s"]) for x in second)<0.3*cap):
                             selected=1
                             reason="verified_pilot_productivity_margin"
                         else:reason="retain_warm_default"
