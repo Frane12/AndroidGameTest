@@ -1,0 +1,174 @@
+name: DRNAS New Horizon R5 — prospective SAT2026 real native speed 6-arm 8s
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-r5-real-native-profile-20261107]
+    paths:
+      - 'research/new_horizon_r5_real_native.py'
+      - '.github/workflows/drnas-new-horizon-r5-real-native.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-new-horizon-r5-real-native
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fail-closed source selection and profile-router selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_r5_real_native.py
+          python3 -u research/new_horizon_r5_real_native.py selftest | tee r5-selftest.log
+          grep -q '^NH_R5_SELFTEST_PASS' r5-selftest.log
+      - name: Import 12 prior R183 original CNF identities and pinned R4d CaDiCaL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon_r5/prior-r183 new_horizon_r5/baseline
+          gh run download 42206668113 --repo Frane12/AndroidGameTest -n r183-pinned-external-originals-and-binary -D new_horizon_r5/prior-r183
+          gh run download 42328083835 --repo Frane12/AndroidGameTest -n nh-r4d-native-frozen-source -D new_horizon_r5/baseline
+          test -s new_horizon_r5/prior-r183/frozen/manifest.json
+          test -s new_horizon_r5/baseline/new_horizon_r4d/r190-driver
+          test -s new_horizon_r5/baseline/new_horizon_r4d/pin.json
+          cp new_horizon_r5/baseline/new_horizon_r4d/r190-driver new_horizon_r5/r190-driver
+          chmod +x new_horizon_r5/r190-driver
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          r=pathlib.Path("new_horizon_r5")
+          old=json.loads((r/"baseline/new_horizon_r4d/pin.json").read_text())
+          binary_sha=hashlib.sha256((r/"r190-driver").read_bytes()).hexdigest()
+          assert binary_sha==old["binary_sha256"]=="d3e17f52ee77be0df090da28710a10ba9543576e8ca12e9b2555288a02a077ed"
+          assert old["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          prior_sha=hashlib.sha256((r/"prior-r183/frozen/manifest.json").read_bytes()).hexdigest()
+          assert prior_sha=="102c8bdef78163aad8e08ab044c0ff7a123df4d67b0a714c50370b13447543c4"
+          print("NH_R5_NATIVE_HISTORICAL_PIN_PASS",binary_sha,prior_sha)
+          PY
+      - name: Smoke all three native CaDiCaL profiles with same CNF
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon_r5/smoke.cnf
+          for profile in default sat unsat; do
+            new_horizon_r5/r190-driver new_horizon_r5/smoke.cnf 2 "$profile" > "new_horizon_r5/smoke-$profile.log"
+            grep -q '^R182_STATUS status=SAT' "new_horizon_r5/smoke-$profile.log"
+            grep -q "^R190_PROFILE $profile" "new_horizon_r5/smoke-$profile.log"
+            echo "NH_R5_NATIVE_PROFILE_PASS $profile"
+          done
+      - name: Freeze SHA-disjoint original GBD SAT Competition 2026 sources BEFORE any timing
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r5_real_native.py freeze | tee new_horizon_r5/freeze.log
+          grep -q '^NH_R5_FREEZE_PASS ' new_horizon_r5/freeze.log
+          python3 -u research/new_horizon_r5_real_native.py verify
+          python3 - <<'PY'
+          import hashlib,pathlib,json,subprocess
+          d=pathlib.Path("new_horizon_r5")
+          m=json.loads((d/"frozen/manifest.json").read_text())
+          need=lambda x: None if x else (_ for _ in ()).throw(AssertionError("R5_SOURCE_FREEZE_INCOMPLETE"))
+          need(m["selection_source_only_before_any_R5_timing"])
+          pin=dict(binary_sha256=hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest(),
+            manifest_sha256=hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest(),
+            repo_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            original_sources=len(m["cases"]))
+          (d/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("NH_R5_FREEZE_BINARY_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nh-r5-gbd2026-originals-native-freeze
+          retention-days: 90
+          path: |
+            new_horizon_r5/frozen/
+            new_horizon_r5/r190-driver
+            new_horizon_r5/pin.json
+            new_horizon_r5/freeze.log
+            new_horizon_r5/smoke-default.log
+            new_horizon_r5/smoke-sat.log
+            new_horizon_r5/smoke-unsat.log
+            r5-selftest.log
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    name: R5 real GBD original default sat unsat router R4b R4d shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nh-r5-gbd2026-originals-native-freeze
+          path: .
+      - name: Assert SHA-pinned originals and exact same native solver commit
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon_r5/r190-driver
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          d=pathlib.Path("new_horizon_r5")
+          pin=json.loads((d/"pin.json").read_text())
+          assert hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()==pin["binary_sha256"]
+          assert hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest()==pin["manifest_sha256"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["repo_commit"]
+          print("NH_R5_SHARD_SOURCE_BINARY_SHA_PASS")
+          PY
+          python3 -u research/new_horizon_r5_real_native.py verify
+      - name: Run six precommitted policies on original SAT2026 CNFs (8s caps)
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_r5_real_native.py shard --shard ${{ matrix.shard }} --binary new_horizon_r5/r190-driver | tee new_horizon_r5/shard-${{ matrix.shard }}.log
+          grep -q '^NH_R5_SHARD_PASS ' new_horizon_r5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nh-r5-real-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon_r5/shard-${{ matrix.shard }}.json
+            new_horizon_r5/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nh-r5-gbd2026-originals-native-freeze
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nh-r5-real-shard-*
+          merge-multiple: true
+          path: new_horizon_r5
+      - name: Fail-closed all formula SHA, SAT witnesses, 6-arm PAR2 audit
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon_r5 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/new_horizon_r5_real_native.py audit | tee new_horizon_r5/audit.log
+          grep -q '^NH_R5_FINAL ' new_horizon_r5/audit.log
+          cat new_horizon_r5/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NH-R5-REAL-2026-NATIVE-PROFILES-FINAL
+          retention-days: 90
+          path: |
+            new_horizon_r5/report.json
+            new_horizon_r5/trials.json
+            new_horizon_r5/trials.csv
+            new_horizon_r5/summary.md
+            new_horizon_r5/audit.log
