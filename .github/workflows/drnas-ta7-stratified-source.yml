@@ -1,0 +1,208 @@
+name: DRNAS TA7 — three-region 24 SAT2026 structural router 576 paired
+on:
+  push:
+    branches: [experiment/drnas-ta7-stratified-source-20261107]
+    paths:
+      - '.github/workflows/drnas-ta7-stratified-source.yml'
+      - 'research/drnas_ta7_benchmark.py'
+      - 'research/drnas_ta7_stratified_selector.py'
+      - 'research/drnas_ta6_router.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-ta7-stratified-source-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze 24 next new originals excluding TA6 and restore pinned solvers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore old source exclusions and previous tested binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          # TA6 prepare successfully archived frozen pinned binaries and all
+          # previous source manifests. Reuse as an explicit source exclusion,
+          # even while its paired benchmark is still running.
+          gh run download 42409355073 --repo Frane12/AndroidGameTest -n ta6-frozen-official2026-24original-8arms -D .
+          test -s ta6-frozen-original24-8arms.tar.gz
+          tar xzf ta6-frozen-original24-8arms.tar.gz
+          test -s ta6/manifest.json
+          test -s r200/manifest.json
+          test -s ta3_2026/preregistration.json
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh r165/r165-native
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          native=pathlib.Path('r165/r165-native')
+          expected='f57e68640f576d2fe5ad541e343ba958d861d7ac1e5c7c37e0022ec3d088719e'
+          pin=json.loads(pathlib.Path('r165/build-pin.json').read_text())
+          assert hashlib.sha256(native.read_bytes()).hexdigest()==expected==pin['binary_sha256']
+          assert pin['commit']=='e5f1328c0f53eee6051da110cfae595440397251'
+          print('TA7_R165_FROZEN_BINARY_PASS')
+          PY
+      - name: Freeze new SAT2026 sources and three-region router rules before solving
+        run: |
+          set -euo pipefail
+          mkdir -p ta7
+          python3 -m py_compile research/drnas_ta6_router.py research/drnas_ta7_stratified_selector.py research/drnas_ta7_benchmark.py
+          python3 -u research/drnas_ta7_stratified_selector.py selftest | tee ta7/router-selftest.log
+          grep -q '^TA7_SELFTEST_PASS ' ta7/router-selftest.log
+          mkdir -p ta7
+          python3 -u research/drnas_ta7_benchmark.py fetch | tee ta7/fetch.log
+          grep -q '^TA7_HOLDOUT_FROZEN ' ta7/fetch.log
+      - name: Pin scripts and binaries, run all eight SAT and router smoke checks
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          paths=[
+            'research/drnas_ta7_benchmark.py',
+            'research/drnas_ta7_stratified_selector.py',
+            'research/drnas_ta6_router.py',
+            'research/r199_unseen_mixed40_crossbackend.py',
+            'research/drnas_ta3_adaptive_selector.py',
+            'research/drnas_ta2_structural_profile.py',
+            'research/r164_pure_exact_gf2.py',
+            'research/r165_component_benchmark.py',
+            'research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py',
+            'research/r190_cms_mixed_benchmark.py',
+            'research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py',
+            'research/r182_mixed_engine.py',
+            'research/r183_external_mixed.py',
+            'r190_cms_mixed/r28', 'r165/r165-native',
+            'built/bin/kissat_4_0_4',
+            'r192/cms_single.sh', 'r192/cms_gauss_forced.sh', 'r192/pins.json',
+            'ta3_2026/manifest.json', 'ta3_2026/excluded_hashes.json',
+            'ta3_2026/preregistration.json',
+            'r189/frozen/manifest.json', 'r199/candidates.json',
+            'ta3/candidates.json', 'ta7/manifest.json',
+            'ta6/manifest.json',
+            'r200/manifest.json'
+          ]
+          pins={}
+          for path in paths:
+            p=pathlib.Path(path)
+            assert p.is_file(), path
+            pins[path]=hashlib.sha256(p.read_bytes()).hexdigest()
+          pathlib.Path('ta7/pins.json').write_text(json.dumps(pins, sort_keys=True, indent=2)+'\n')
+          print('TA7_CODE_BINARY_SOURCE_PINNED', len(pins))
+          PY
+          python3 -u research/drnas_ta7_benchmark.py smoke | tee ta7/smoke.log
+          grep -q '^TA7_SELFTEST_PASS 8' ta7/smoke.log
+          tar czf ta7-frozen-original24-8arms.tar.gz \
+            ta3_2026 r189/frozen/manifest.json r199/candidates.json ta3/candidates.json r200/manifest.json ta6/manifest.json \
+            r190_cms_mixed/r28 r165/r165-native r165/build-pin.json \
+            built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh \
+            ta7/manifest.json ta7/pins.json ta7/sources
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ta7-frozen-official2026-24original-8arms
+          retention-days: 90
+          path: ta7-frozen-original24-8arms.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ta7-prepare-diagnostic
+          retention-days: 14
+          path: |
+            ta7/router-selftest.log
+            ta7/fetch.log
+            ta7/smoke.log
+            ta7/manifest.json
+            ta7/pins.json
+  paired:
+    name: TA7 source-locked eight-arm shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta7-frozen-official2026-24original-8arms
+      - name: Restore exact frozen source/binary SHA pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf ta7-frozen-original24-8arms.tar.gz
+          chmod +x r190_cms_mixed/r28 r165/r165-native built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for p,expected in json.loads(pathlib.Path('ta7/pins.json').read_text()).items():
+            assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==expected,p
+          print('TA7_ALL_PINS_VERIFIED')
+          PY
+      - name: Paired TA7 guarded/explore/shadow vs TA6 TA3 and clean backends
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ta7_benchmark.py shard --shard ${{ matrix.shard }} | tee ta7/shard-${{ matrix.shard }}.log
+          grep -q '^TA7_SHARD_PASS ' ta7/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ta7-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ta7/shard-${{ matrix.shard }}.json
+            ta7/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+  audit:
+    name: Audit TA7 vs TA6/TA3 PAR2, routing changes, SHA and source bootstrap
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ta7-frozen-official2026-24original-8arms
+      - name: Restore and collect all eight complete source-disjoint shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta7-frozen-original24-8arms.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'ta7-shard-*' -D ta7/raw-shards
+          test "$(find ta7/raw-shards -name 'shard-*.json' -type f | wc -l)" -eq 8
+          find ta7/raw-shards -name 'shard-*.json' -exec cp '{}' ta7/ \;
+          python3 -u research/drnas_ta7_benchmark.py audit | tee ta7/audit.log
+          grep -q '^TA7_FINAL ' ta7/audit.log
+          cat ta7/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TA7-THREE-REGION-576-PROSPECTIVE-FINAL
+          retention-days: 90
+          path: |
+            ta7/report.json
+            ta7/report.md
+            ta7/all-trials.json
+            ta7/manifest.json
+            ta7/pins.json
+            ta7/audit.log
+            ta7/raw-shards/
+          if-no-files-found: warn
