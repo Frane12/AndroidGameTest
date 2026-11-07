@@ -68,6 +68,7 @@ def output_trial(c,mode,rep,driver,clean,mem):
                 scan_s=round(result["scan_s"],8),
                 recurrence_hits=result["recurrence_hits"],
                 recurrence_misses=result["recurrence_misses"],
+                callback_wakeups=result["callback_wakeups"],
                 observations=result["observations"],
                 net_probability=result.get("probability"),
                 utility_estimate_s=result.get("expected_gain_s"),
@@ -135,7 +136,7 @@ def shard(index,driver,clean,path):
                     save(OUT/f"shard-{index}.json",rows)
                     print("NMR3_TRIAL",json.dumps({k:row[k] for k in
                         ("id","mode","status","wall_s","windows",
-                         "reason","activation_s")}),flush=True)
+                         "reason","activation_s","callback_wakeups")}),flush=True)
         target=len(data["testing"][index::SHARDS])*REPS*len(MODES)
         need(len(rows)==target,"incomplete shard")
         print("NMR3_SHARD_PASS",index,target,flush=True)
@@ -182,7 +183,8 @@ def audit():
             activation_count=sum(r["activation_s"]>0 for r in rows),
             cost_abstention_count=sum("abstention" in r["reason"] or
               "no_positive_training_calibration"==r["reason"] for r in rows),
-            recurrence_hits=sum(r["recurrence_hits"] for r in rows))
+            recurrence_hits=sum(r["recurrence_hits"] for r in rows),
+            callback_wakeups=sum(r["callback_wakeups"] for r in rows))
     comparisons={}
     for mode in MODES[1:]:
         wins=losses=ties=0
