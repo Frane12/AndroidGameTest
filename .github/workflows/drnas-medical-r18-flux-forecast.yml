@@ -1,0 +1,41 @@
+name: DRNAS Medical R18 Pre-solve Flux Forecast
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r18-flux-presolve-20261107
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  preregistration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install requirements and validate
+        run: |
+          python3 -m pip install cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r18_flux_forecast.py
+          python3 research/drnas_medical/gmispy_r18_flux_forecast.py selftest
+      - name: Recover certified original R17 source and outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r18/training r18/audit-source r18/frozen
+          gh run download 42344188975 -R Frane12/AndroidGameTest -n R17-FROZEN-PRESOLVE-PREDICTIONS-SHA256 -D r18/training
+          gh run download 42344466528 -R Frane12/AndroidGameTest -n DRNAS-MEDICAL-R17-CERTIFIED-FORECAST-AUDIT-RECOVERED -D r18/audit-source
+          p=$(find r18/audit-source -name independent_prospective_audit.json | head -1)
+          test -s "$p"
+          python3 -u research/drnas_medical/gmispy_r18_flux_forecast.py freeze --source r18/training/source --prior-r17 r18/training/frozen --prior-r9 r18/training/r9-frozen --prior-r17-audit "$p" --freeze r18/frozen
+          python3 research/drnas_medical/gmispy_r18_flux_forecast.py verify --source r18/training/source --freeze r18/frozen
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: R18-FROZEN-PREDICTIONS
+          path: r18/
+          retention-days: 90
