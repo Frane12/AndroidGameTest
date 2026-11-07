@@ -1,0 +1,142 @@
+name: DRNAS R201 — CMS 5.11.15 staged source-certified partial XOR, 32 causal pilot trials
+on:
+  push:
+    branches: [experiment/drnas-r201-staged-cms-partial-xor-20261107]
+    paths:
+      - 'research/r201_staged_cms.cpp'
+      - 'research/r201_staged_cms.py'
+      - '.github/workflows/drnas-r201-staged-cms.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r201-staged-cms-certified-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin native CMS 5.11.15 developer API and original R194 sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcryptominisat5-dev cryptominisat g++
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42386841737 --repo Frane12/AndroidGameTest -n r194-source-binary-pins -D .
+          test -s r194-source-locked38-and-binaries.tar.gz
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          test -s r189/frozen/manifest.json
+          mkdir -p r201
+          python3 -m py_compile research/r201_staged_cms.py research/r166x_certified_gauss.py
+          python3 research/r166x_certified_gauss.py --selftest
+          g++ -O2 -std=c++17 -Wall -Wextra -Werror -pthread \
+            research/r201_staged_cms.cpp -lcryptominisat5 -o r201/r201-stage-cms
+          ldd r201/r201-stage-cms
+      - name: Fail-closed certified original-CNF replay and CMS four-arm smoke
+        run: |
+          set -euo pipefail
+          python3 -u research/r201_staged_cms.py smoke --driver r201/r201-stage-cms | tee r201/smoke.log
+          grep -q '^R201_SMOKE_PASS' r201/smoke.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          files=['research/r201_staged_cms.py','research/r201_staged_cms.cpp','r201/r201-stage-cms','r189/frozen/manifest.json']
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in files}
+          pathlib.Path('r201/pins.json').write_text(json.dumps(pins,indent=2,sort_keys=True)+'\n')
+          print('R201_SOURCE_BINARY_PIN',json.dumps(pins,sort_keys=True))
+          PY
+          tar czf r201-frozen.tar.gz r189/frozen r201/r201-stage-cms r201/pins.json r201/smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r201-source-binary-frozen
+          retention-days: 90
+          path: r201-frozen.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: r201-prepare-diagnostic
+          path: r201/smoke.log
+          retention-days: 14
+  paired:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r201-source-binary-frozen
+      - name: Restore exact native CMS 5.11.15 and verify pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcryptominisat5-5.11t64
+          tar xzf r201-frozen.tar.gz
+          chmod +x r201/r201-stage-cms
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          for name,expected in json.loads(pathlib.Path('r201/pins.json').read_text()).items():
+              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==expected,name
+          print('R201_PIN_REPLAY_PASS')
+          PY
+      - name: Same-source four-arm, two-repetition end-to-end capped trials
+        run: |
+          set -euo pipefail
+          python3 -u research/r201_staged_cms.py bench --driver r201/r201-stage-cms \
+             --shard ${{ matrix.shard }} | tee r201/shard-${{ matrix.shard }}.log
+          grep -q '^R201_SHARD_PASS' r201/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r201-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r201/shard-${{ matrix.shard }}.json
+            r201/shard-${{ matrix.shard }}.log
+            r201/raw/${{ matrix.shard }}/certified.proof.json
+            r201/raw/${{ matrix.shard }}/certified.tsv
+          if-no-files-found: warn
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover exact four source-disjoint shards and audit 32 trials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r201/shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest \
+            -p 'r201-shard-*' -D r201/shards
+          test "$(find r201/shards -name 'shard-*.json' -type f | wc -l)" -eq 4
+          find r201/shards -name 'shard-*.json' -exec cp '{}' r201/ \;
+          python3 -u research/r201_staged_cms.py audit | tee r201/audit.log
+          grep -q '^R201_FINAL' r201/audit.log
+          cat r201/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R201-CMS-INCREMENTAL-CERTIFIED-32-FINAL
+          retention-days: 90
+          path: |
+            r201/summary.json
+            r201/audit.log
+            r201/shards/
