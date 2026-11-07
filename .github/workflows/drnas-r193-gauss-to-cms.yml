@@ -1,0 +1,149 @@
+name: DRNAS R193 — certified GF2 clauses to CryptoMiniSat 532 paired
+on:
+  push:
+    branches: [experiment/drnas-r193-certified-gauss-to-cms-20261107]
+    paths:
+      - 'research/r193_certified_gauss_cms.py'
+      - '.github/workflows/drnas-r193-gauss-to-cms.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r193-certified-cms-532-paired
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install matching CryptoMiniSat 5.11.15 and retrieve R192 source-frozen binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42384364180 --repo Frane12/AndroidGameTest -n r192-38-source-pinned-gauss-cms-bundle -D .
+          test -s r192-pinned-source-bundle.tar.gz
+          tar xzf r192-pinned-source-bundle.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test -s r189/frozen/manifest.json
+      - name: Source proofs, truth table exhaustivity, exact binary pins and basic SAT witnesses
+        run: |
+          set -euo pipefail
+          mkdir -p r193
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          files=['r189/frozen/manifest.json','r190_cms_mixed/r28',
+                 'built/bin/kissat_4_0_4','r192/cms_single.sh','r192/cms_gauss_forced.sh',
+                 'research/r193_certified_gauss_cms.py',
+                 'research/r189_short_inference.py','research/r188_feedback_benchmark.py',
+                 'research/r192_gauss_first_cms_hybrid.py',
+                 'research/r182_mixed_engine.py','research/r183_external_mixed.py']
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in files}
+          pathlib.Path('r193/pins.json').write_text(json.dumps(pins,sort_keys=True,indent=2)+'\n')
+          print('R193_PIN',json.dumps(pins,sort_keys=True))
+          PY
+          python3 -m py_compile research/r193_certified_gauss_cms.py research/r189_short_inference.py research/r192_gauss_first_cms_hybrid.py
+          python3 -u research/r193_certified_gauss_cms.py smoke | tee r193/smoke.log
+          grep -q '^R193_SELFTEST_PASS' r193/smoke.log
+          tar czf r193_source_pins.tar.gz r189/frozen r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh r193/pins.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r193-source-locked38-and-certified-binaries
+          retention-days: 90
+          path: r193_source_pins.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    name: R193 original source GF2-derived clauses vs CMS shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193-source-locked38-and-certified-binaries
+      - name: Verify original formulas and installed CryptoMiniSat version
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r193_source_pins.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          for cfg in ('r192/pins.json','r193/pins.json'):
+              pins=json.loads(pathlib.Path(cfg).read_text())
+              for p,expected in pins.items():
+                  assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==expected,p
+          print('R193_BINARY_AND_SOURCE_PIN_PASS')
+          PY
+      - name: 7-arm paired 12s cap, certified XOR provenance and original SAT audit
+        run: |
+          set -euo pipefail
+          python3 -u research/r193_certified_gauss_cms.py shard --shard ${{ matrix.shard }} | tee r193/shard-${{ matrix.shard }}.log
+          grep -q '^R193_SHARD_PASS ' r193/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r193-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r193/shard-${{ matrix.shard }}.json
+            r193/shard-${{ matrix.shard }}.log
+            r193/proofs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193-source-locked38-and-certified-binaries
+      - name: Reassemble exactly 12 original R193 shards without rewriting measured data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf r193_source_pins.tar.gz
+          mkdir -p r193/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r193-shard-*' -D r193/raw-shards
+          test "$(find r193/raw-shards -type f -name 'shard-*.json' | wc -l)" -eq 12
+          find r193/raw-shards -type f -name 'shard-*.json' -exec cp '{}' r193/ \;
+          test "$(find r193 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+      - name: Strict proof/correctness/cohort/paired PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r193_certified_gauss_cms.py audit | tee r193/audit.log
+          grep -q '^R193_FINAL ' r193/audit.log
+          cat r193/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R193-CERTIFIED-GF2-CMS-532-FINAL
+          retention-days: 90
+          path: |
+            r193/report.json
+            r193/all-trials.json
+            r193/summary.md
+            r193/audit.log
+            r193/pins.json
+            r193/raw-shards/
