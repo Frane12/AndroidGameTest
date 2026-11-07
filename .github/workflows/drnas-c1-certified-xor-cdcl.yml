@@ -1,0 +1,228 @@
+name: DRNAS C1 — certified XOR/CDCL 600 paired native and shadow causal study
+on:
+  push:
+    branches: [experiment/drnas-c1-certified-xor-cdcl-20261107]
+    paths:
+      - .github/workflows/drnas-c1-certified-xor-cdcl.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c1-xor-cdcl-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require finished and successful T1 240-trial final audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict="$(gh api repos/Frane12/AndroidGameTest/actions/runs/42351079758 --jq .conclusion)"
+          test "$verdict" = "success" || { echo "T1 NOT CERTIFIED FINISHED: $verdict"; exit 1; }
+          mkdir -p ultimate_t2/t1-audit
+          gh run download 42351079758 --repo Frane12/AndroidGameTest -n DRNAS-ULTIMATE-T-PHASE1-240-FINAL -D ultimate_t2/t1-audit
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path("ultimate_t2/t1-audit")
+          matches=[p for p in (root/"report.json",root/"ultimate_t"/"report.json") if p.is_file()]
+          assert len(matches)==1,("missing or ambiguous T1 final report",list(root.rglob("*")))
+          v=json.loads(matches[0].read_text())
+          assert v["status"]=="ULTIMATE_T_PHASE1_AUDIT_PASS_NONBLIND" and v["attempts"]==240
+          assert v["original_cnfs_unchanged"] and v["source_XOR_independently_replayed"]
+          print("ULTIMATE_T2_T1_FINAL_AUDIT_GUARD_PASS",v["status"])
+          PY
+      - name: Compile and test bounded late-XOR probe, source certification and Python
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ultimate_t2_probe.py research/ultimate_t2_fallback.py research/ultimate_t2_benchmark.py research/ultimate_c1_benchmark.py
+          python3 -u research/ultimate_t2_probe.py
+          python3 -u research/r166x_certified_gauss.py --selftest
+      - name: Download immutable original R2 binaries and 20 source-CNF manifest from T1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42351079758 --repo Frane12/AndroidGameTest -n ultimate-t-frozen-20originals-native-pins -D .
+          python3 -u research/ultimate_t2_benchmark.py verify
+          chmod +x ultimate_r1/source_r153/r153 built/bin/kissat_4_0_4
+      - name: Download 30 previously audited source-disjoint TA SAT2026 originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42353551967 --jq .conclusion)" = success
+          gh run download 42353551967 --repo Frane12/AndroidGameTest -n ta-source-disjoint-30-native-pins -D c1-ta
+          test -s c1-ta/ultimate_ta/frozen/manifest.json
+          mkdir -p ultimate_ta
+          cp -a c1-ta/ultimate_ta/frozen ultimate_ta/frozen
+          rm -rf c1-ta
+          python3 -u research/ultimate_c1_benchmark.py verify
+      - name: Build frozen CaDiCaL 2.1 C1 six-arm source-certified bridge
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/ultimate-t2-cadical
+          (cd /tmp/ultimate-t2-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/ultimate-t2-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          mkdir -p ultimate_t2
+          : > ultimate_t2/empty.tsv
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/ultimate-t2-cadical/src research/ultimate_t2_native.cpp /tmp/ultimate-t2-cadical/build/libcadical.a -o ultimate_t2/t-native
+          chmod +x ultimate_t2/t-native research/ultimate_t2_fallback.py
+          ultimate_t2/t-native selftest | tee ultimate_t2-native-selftest.log
+          grep -q '^ULTIMATE_T2_NATIVE_SELFTEST_PASS' ultimate_t2-native-selftest.log
+          grep -q '^R166X_INCREMENTAL_SELFTEST_PASS' ultimate_t2-native-selftest.log
+          grep -q '^C1_NATIVE_REASON_HANDOFF_SELFTEST_PASS' ultimate_t2-native-selftest.log
+          python3 -u research/ultimate_t2_benchmark.py selftest
+      - name: Smoke C1 exact-source XOR native propagation with residual clauses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,subprocess,os,time
+          p=pathlib.Path("ultimate_t2"); cl=[]
+          for g in range(4):
+              vs=[3*g+1,3*g+2,3*g+3]
+              for mask in (1,2,4,7):
+                  cl.append(" ".join(str(-v if mask >> i & 1 else v) for i,v in enumerate(vs))+" 0")
+          for i in range(28):
+              cl.append(f"{1+(i%12)} {1+((i+5)%12)} 13 0")
+          cnf=p/"smoke-original.cnf"
+          cnf.write_text(f"p cnf 13 {len(cl)}\n"+"\n".join(cl)+"\n")
+          arms=("clean","td_lazy_source","c1_lazy_shadow","c1_lazy_cooldown","c1_lazy_fastwake")
+          for arm in arms:
+              env=os.environ.copy()
+              env.update(ULTIMATE_T_MODE=arm,
+                         ULTIMATE_R2_DEADLINE_NS=str(time.monotonic_ns()+15_000_000_000))
+              v=subprocess.run(["ultimate_r1/source_r153/r153",str(cnf),"research/ultimate_t2_fallback.py"],
+                               env=env,capture_output=True,timeout=16)
+              assert v.returncode==10,(arm,v.returncode,v.stderr[-600:],v.stdout[-1500:])
+              assert b"ULTIMATE_T_GATE " in v.stdout,arm
+              assert b"R166X_RESULT mode=" in v.stdout,arm
+              if arm!="clean":
+                  assert b'"eligible": true' in v.stdout,(arm,v.stdout[-1000:])
+          print("C1_CERTIFIED_FIVE_ARM_SMOKE_PASS")
+          PY
+      - name: Freeze C1 protocol and SHA-pinned original sources and executable
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          h=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          files=("ultimate_t2/t-native","ultimate_t2/empty.tsv",
+                 "research/ultimate_t2_native.cpp","research/ultimate_t2_fallback.py",
+                 "research/ultimate_t2_probe.py","research/ultimate_t2_benchmark.py",
+                 "research/ultimate_c1_benchmark.py","research/C1_PROTOCOL.md",
+                 "ultimate_r1/source_r153/r153","built/bin/kissat_4_0_4")
+          td="ultimate_r2/frozen/manifest.json"
+          ta="ultimate_ta/frozen/manifest.json"
+          assert h(td)=="2e6169009e985555e43e81d9b534f3bb307cef93963329694ef42459bef3c2e2"
+          assert len(json.loads(pathlib.Path(ta).read_text())["cases"])==30
+          out=dict(protocol="DRNAS-C1-20261107-50-SOURCE-SIX-ARM-CAUSAL-v1",
+                   source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+                   td_manifest_sha=h(td),ta_manifest_sha=h(ta),attempts=600,
+                   files={p:h(p) for p in files})
+          pathlib.Path("ultimate_c1").mkdir(exist_ok=True)
+          pathlib.Path("ultimate_c1/build-pin.json").write_text(json.dumps(out,indent=2,sort_keys=True)+"\n")
+          print("C1_PIN_PASS",out["source_commit"],out["td_manifest_sha"],out["ta_manifest_sha"])
+          PY
+          python3 -u research/ultimate_c1_benchmark.py selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c1-frozen-600-source-native-pins
+          retention-days: 90
+          path: |
+            ultimate_r1/
+            ultimate_r2/
+            ultimate_t2/
+            ultimate_ta/frozen/
+            ultimate_c1/
+            built/bin/kissat_4_0_4
+            built/bin/cadical_3_0_1
+            ultimate_t2-native-selftest.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    name: C1 50-original six-arm causal shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c1-frozen-600-source-native-pins
+          path: .
+      - name: Verify original CNF SHA and exact C1 600-trial protocol
+        run: |
+          set -euo pipefail
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t2/t-native built/bin/kissat_4_0_4 research/ultimate_t2_fallback.py
+          python3 -u research/ultimate_c1_benchmark.py verify
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          h=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+          p=json.loads(pathlib.Path("ultimate_c1/build-pin.json").read_text())
+          assert p["source_commit"]==subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          assert p["attempts"]==600
+          assert h("ultimate_r2/frozen/manifest.json")==p["td_manifest_sha"]
+          assert h("ultimate_ta/frozen/manifest.json")==p["ta_manifest_sha"]
+          assert all(h(path)==digest for path,digest in p["files"].items())
+          print("C1_SHA_SOURCE_PIN_PASS")
+          PY
+      - name: Run six-arm fixed-seed causal native reason transfer comparisons
+        run: |
+          set -euo pipefail
+          python3 -u research/ultimate_c1_benchmark.py shard --shard ${{ matrix.shard }} | tee ultimate_c1/shard-${{ matrix.shard }}.log
+          grep -q '^C1_SHARD_PASS' ultimate_c1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c1-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            ultimate_c1/shard-${{ matrix.shard }}.json
+            ultimate_c1/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c1-frozen-600-source-native-pins
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c1-shard-*
+          merge-multiple: true
+          path: ultimate_c1
+      - name: Audit 600 original source-matched attempts, paired PAR2 and exact reason handoff
+        run: |
+          set -euo pipefail
+          test "$(find ultimate_c1 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 10
+          python3 -u research/ultimate_c1_benchmark.py audit | tee ultimate_c1/audit.log
+          grep -q '^C1_FINAL' ultimate_c1/audit.log
+          cat ultimate_c1/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C1-50-ORIGINAL-600-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            ultimate_c1/report.json
+            ultimate_c1/all-trials.json
+            ultimate_c1/all-trials.csv
+            ultimate_c1/summary.md
+            ultimate_c1/audit.log
