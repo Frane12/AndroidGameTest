@@ -2,6 +2,27 @@
 
 **Status:** Cumulative source- and protocol-aware review from successful GitHub Actions final audit logs, not a SAT Competition ranking and not a claim that NP-complete SAT has polynomial complexity.
 
+## TA FINAL AUDIT 42353551967 — locked source-disjoint negative result
+
+As of 2026-11-07, all six TA shards, all 300 paired attempts and the independent final audit **PASS**. The 30 SAT2026 original source CNF SHA values are disjoint from the enumerated R1/R2/R193 frozen manifests, but the test is **not globally blind** and may share broader source families. The source and policy thresholds were not changed for this final audit.
+
+| Frozen arm | SAT/UNSAT solved out of 60 | SAT | UNSAT | Within-TA PAR-2 sum (seconds) |
+|---|---:|---:|---:|---:|
+| R153 | **12/60** | 8 | 4 | **2957.183758** |
+| R1A | 10/60 | 6 | 4 | 3066.988472 |
+| R2 Clean | 8/60 | 8 | 0 | 3201.353495 |
+| R2 Portfolio | 8/60 | 6 | 2 | 3154.929632 |
+| R2 Binary | 8/60 | 6 | 2 | 3154.981717 |
+
+Matched Portfolio vs R153: 0 wins, 12 losses, 48 ties, **-197.745874 seconds PAR-2 gain** (negative is worse). Portfolio vs R1A: 0 wins, 10 losses, 50 ties, -87.941160 seconds. Portfolio vs Clean: 4 wins, 6 losses, 50 ties, **+46.423863 seconds**, but equal 8/60 solved. Portfolio selected 52/60 R1A routes and 8/60 structural Clean routes; Binary has the same aggregate route totals, not necessarily identical per case. These results **falsify transfer of the previously promising R2T source-selector gain to this exact new cohort**; no broad SAT performance claim and no same-TA threshold retuning are justified. SAT witnesses were checked; native UNSAT still lacks independent machine-checked LRAT/FRAT certificates.
+
+Evidence: https://github.com/Frane12/AndroidGameTest/actions/runs/42353551967. Latest SQL cumulative record is `research/drnas_sat_benchmark_history_20261107_ta.sql` on the TA experimental branch, including five exact mode scores, six paired deltas, and two research findings. Next test design: analyze mistakes only on a separately designated development set, then use a newly disjoint holdout; never use the completed TA results to tune and then rebrand TA as blind.
+
+## TD current experimental state
+
+TD lazy source XOR 440-paired, five source-locked 11-arm shards, was launched as https://github.com/Frane12/AndroidGameTest/actions/runs/42356438634. Still active at this review; no final PAR-2 or solver advantage claim. On source SHA 22701e08... (first pair in shard 0), `td_lazy_source` vs `t_source`: repetition 0 0.728388 vs 0.731105 s, repetition 1 0.730978 vs 0.727765 s. Hence no consistent two-repetition gain; both report 0 completed native reasons, and the new method's asserted removed eager incidence update is not a benefit until full paired audit. The 20-source TD exact bucket detector-only audit run 42356263207 found 11912 parity patterns but zero newly recognized source cases; its scan consumed 6.599585 s vs old scan 0.402115 s and did not measure solver PAR-2.
+
+
 ## Verified finished build comparison
 
 **PAR-2 figures below are sums within the indicated experiment. DO NOT compare across rows with unrelated cohorts, caps or number of attempts.** Solved counts use SAT witness checking on unchanged source CNF when the benchmark offers it; native UNSAT certificates are not independently LRAT-checked for many paths.
@@ -30,7 +51,7 @@ T's live Source and matched Shadow both updated **~82.3 million row incidences**
 
 ## Three independent T successors
 
-### TA — source-only algorithm selection, *running now*
+### TA — source-only algorithm selection, *frozen protocol; final result above*
 
 The best validated cheap opportunity is selecting a fixed CDCL profile based on source binary/Horn density. R2T's same-source 13.394898-s gain is small (~1.15%) but comparatively less expensive to test than another full Gaussian preprocessing variant. Freeze **30 new original SAT2026 SHA-disjoint CNFs** against R1/R2/R193 manifests, with no outcome-based selection. Five arms: R153, R1A, Clean, frozen R2T Portfolio, new Binary density-only TA. 2 repetitions, 30-s limit, 6 shards = 300 attempts. This is **not globally blind** because other DRNAS historical test sets exist and source families may overlap; it is formally new to the explicit exclusion manifests.
 
@@ -38,7 +59,7 @@ Falsification: TA portfolio loses to clean on source-disjoint originals, or gain
 
 Run https://github.com/Frane12/AndroidGameTest/actions/runs/42353551967 (latest executable permission fix); PR https://github.com/Frane12/AndroidGameTest/pull/21.
 
-### TD — *proposed, not built*
+### TD — *lazy source variant built and running, results pending*
 
 The candidate mechanism is **lazy certified derived GF(2) frontier**: avoid expensive per-assignment incidence updates across irrelevant XOR components until a low-degree row approaches unit/conflict status. On source-certified rows use a reversible lazy two-watch invariant and independently checked sparse Gaussian derivations only for components incident to active residual clauses. Do not repeatedly process 82M events without a candidate propagation signal.
 
