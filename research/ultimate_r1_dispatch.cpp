@@ -84,7 +84,7 @@ int main(int argc,char**argv) {
   const char* solver=dual?"ultimate_r1/r194-compat":
                      choose?"built/bin/cadical_3_0_1":"built/bin/kissat_4_0_4";
   cout<<fixed<<setprecision(6)
-    <<"c R160_SELECTOR route="<<(dual?"R194_DUAL":choose?"CADICAL":"KISSAT")
+    <<"c ULTIMATE_R1_SELECTOR route="<<(dual?"R194_DUAL":choose?"CADICAL":"KISSAT")
     <<" reason="<<p.reason
     <<" parsed="<<(p.parseok?1:0)
     <<" observed="<<p.seen<<" declared="<<p.declared
