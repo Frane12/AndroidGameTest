@@ -1,0 +1,142 @@
+name: DRNAS TD2 — sparse GF2 and preparation cost gate, 640 paired development trials
+on:
+  push:
+    branches: [experiment/drnas-td2-sparse-budget-20261107]
+    paths:
+      - 'research/td2_bounded_gf2.py'
+      - 'research/td2_cost_gate_benchmark.py'
+      - 'research/test_td2_bounded_gf2.py'
+      - '.github/workflows/drnas-td2-bounded-gf2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-td2-sparse-budget-development
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact R199 originals and solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42390697619 --repo Frane12/AndroidGameTest -n r199-40source-binary-frozen -D .
+          tar xzf r199-frozen40-original-sources-and-binaries.tar.gz
+          chmod +x built/bin/kissat_4_0_4 r190_cms_mixed/r28 r192/cms_single.sh r192/cms_gauss_forced.sh
+      - name: Check mathematical equivalence and recovery from exhausted preparation budget
+        run: |
+          set -euo pipefail
+          mkdir -p td2
+          python3 -m unittest discover -s research -p test_td2_bounded_gf2.py -v 2>&1 | tee td2/tests.log
+          python3 - <<'PY'
+          import hashlib, json, pathlib, sys
+          sys.path.insert(0, 'research')
+          import r199_unseen_mixed40_crossbackend as suite
+          cases, groups = suite.cases_and_groups()
+          assert len(cases) == 40 and len(groups) == 8
+          paths = list(json.loads(pathlib.Path('r199/pins.json').read_text())) + [
+            '/usr/bin/cryptominisat5', 'r199/pins.json',
+            'research/td2_bounded_gf2.py', 'research/td2_cost_gate_benchmark.py',
+            'research/test_td2_bounded_gf2.py', '.github/workflows/drnas-td2-bounded-gf2.yml',
+            'research/r186_cheap_selector.py', 'research/r154_unseen_freeze.py',
+            'research/r152_lightsout_unseen.py', 'research/r115_world_top_rematch.py',
+            'experiments/drnas_v16/r32p_real_satcomp26_benchmark.py',
+          ]
+          pins = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('td2/pins.json').write_text(json.dumps(pins, sort_keys=True, indent=2) + '\n')
+          print('TD2_FREEZE_PASS', json.dumps(pins, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: td2-frozen-inputs
+          retention-days: 90
+          path: |
+            r199-frozen40-original-sources-and-binaries.tar.gz
+            td2/pins.json
+            td2/tests.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    name: TD2 source-paired cost-gate shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: td2-frozen-inputs
+      - name: Restore inputs and exact CMS version
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r199-frozen40-original-sources-and-binaries.tar.gz
+          chmod +x built/bin/kissat_4_0_4 r190_cms_mixed/r28 r192/cms_single.sh r192/cms_gauss_forced.sh
+      - name: Run eight randomized paired arms with original witness verification inside the budget
+        run: |
+          set -euo pipefail
+          python3 -u research/td2_cost_gate_benchmark.py shard --shard ${{ matrix.shard }} | tee td2/shard-${{ matrix.shard }}.log
+          grep -q '^TD2_SHARD_PASS ' td2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: td2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            td2/shard-${{ matrix.shard }}.json
+            td2/shard-${{ matrix.shard }}.log
+            td2/**/proofs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: td2-frozen-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: td2-shard-*
+          path: td2
+          merge-multiple: true
+      - name: Validate source identities, pairing, answers and total time
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf r199-frozen40-original-sources-and-binaries.tar.gz
+          chmod +x built/bin/kissat_4_0_4 r190_cms_mixed/r28 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 -u research/td2_cost_gate_benchmark.py audit | tee td2/audit.log
+          grep -q '^TD2_AUDIT_PASS ' td2/audit.log
+          cat td2/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TD2-640-FINAL
+          retention-days: 90
+          path: |
+            td2/report.json
+            td2/all-trials.json
+            td2/summary.md
+            td2/audit.log
+            td2/pins.json
