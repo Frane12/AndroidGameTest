@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
