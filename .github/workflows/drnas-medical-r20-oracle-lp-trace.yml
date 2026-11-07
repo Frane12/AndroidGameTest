@@ -1,0 +1,70 @@
+name: DRNAS Medical R20 — identify R19 GLPK oracle stuck LP
+on:
+  push:
+    branches: [experiment/drnas-medical-r20-oracle-lp-trace-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r20_oracle_lp_trace.py'
+      - '.github/workflows/drnas-medical-r20-oracle-lp-trace.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r20-oracle-trace
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        arm: [r9_baseline, share_12_control, share_12_memo_k3]
+    name: R20 independent FBA LP n384 ${{ matrix.arm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Frozen original biomedical dependencies and test
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r20_oracle_lp_trace.py
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py selftest
+      - name: Source-lock original iML1515 and independent published R10 reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r20/r9 r20/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r20/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-384-RAW -D r20/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r20/r9/source --freeze r20/r9/frozen
+          test -s r20/reference/summary.json
+      - name: Per LP independent oracle trace (hard 5-minute cap)
+        run: |
+          set -uo pipefail
+          timeout -k 10s 300s python3 -u research/drnas_medical/gmispy_r20_oracle_lp_trace.py \
+            --source r20/r9/source --frozen r20/r9/frozen --reference r20/reference/summary.json \
+            --n 384 --arm ${{ matrix.arm }} --out r20/oracle-${{ matrix.arm }}.json \
+            2>&1 | tee r20/oracle-${{ matrix.arm }}.log
+          code=${PIPESTATUS[0]}
+          echo "R20_PROCESS_EXIT=${code}"
+          if [ "${code}" -ne 0 ]; then
+            echo "::error::R20 diagnostic terminated; inspect final R20_LP enter and faulthandler stacks"
+            exit "${code}"
+          fi
+          grep -q '^R20_COMPLETE ' r20/oracle-${{ matrix.arm }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R20-LP-TRACE-${{ matrix.arm }}
+          retention-days: 90
+          path: |
+            r20/oracle-${{ matrix.arm }}.json
+            r20/oracle-${{ matrix.arm }}-lp.json
+            r20/oracle-${{ matrix.arm }}.log
