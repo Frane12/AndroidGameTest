@@ -1,0 +1,158 @@
+name: DRNAS R194 — 4 parallel cross-backend certified hybrid 456 paired
+on:
+  push:
+    branches: [experiment/drnas-r194-four-parallel-crosssolver-hybrid-20261107]
+    paths:
+      - 'research/r194_four_parallel_crosssolver_hybrid.py'
+      - '.github/workflows/drnas-r194-four-parallel-crosssolver-hybrid.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r194-four-parallel-crossbackend-hybrid
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact 38 original sources and frozen R28/Kissat binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat unzip
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42384364180 --repo Frane12/AndroidGameTest -n r192-38-source-pinned-gauss-cms-bundle -D .
+          test -s r192-pinned-source-bundle.tar.gz
+          tar xzf r192-pinned-source-bundle.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          test -s r189/frozen/manifest.json
+      - name: Freeze updated Python scripts, original data and binaries
+        run: |
+          set -euo pipefail
+          mkdir -p r194
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          paths = [
+            'r189/frozen/manifest.json',
+            'r190_cms_mixed/r28',
+            'built/bin/kissat_4_0_4',
+            'r192/cms_single.sh', 'r192/cms_gauss_forced.sh',
+            'research/r194_four_parallel_crosssolver_hybrid.py',
+            'research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py',
+            'research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py',
+            'research/r190_cms_mixed_benchmark.py',
+            'research/r182_mixed_engine.py',
+            'research/r183_external_mixed.py',
+          ]
+          pins = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('r194/pins.json').write_text(json.dumps(pins, sort_keys=True, indent=2) + '\n')
+          print('R194_SOURCE_BINARY_PIN', json.dumps(pins, sort_keys=True))
+          PY
+          python3 -m py_compile research/r194_four_parallel_crosssolver_hybrid.py research/r193_certified_gauss_cms.py
+          python3 -u research/r194_four_parallel_crosssolver_hybrid.py smoke | tee r194/smoke.log
+          grep -q '^R194_SELFTEST_PASS' r194/smoke.log
+          tar czf r194-source-locked38-and-binaries.tar.gz r189/frozen r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/pins.json r192/cms_single.sh r192/cms_gauss_forced.sh r194/pins.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r194-source-binary-pins
+          retention-days: 90
+          path: r194-source-locked38-and-binaries.tar.gz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    name: R194 four-way independent cross-backend test ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r194-source-binary-pins
+      - name: Restore immutable CNF sources and audit identical solver builds
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          python3 - <<'PY'
+          import json, hashlib, pathlib
+          for fname in ('r192/pins.json', 'r194/pins.json'):
+              pins = json.loads(pathlib.Path(fname).read_text())
+              for path, digest in pins.items():
+                  assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() == digest, path
+          print('R194_SHA_AND_BINARY_AUDIT_PASS')
+          PY
+      - name: Source-matched 6-arm pairwise benchmark with original SAT witness validation
+        run: |
+          set -euo pipefail
+          python3 -u research/r194_four_parallel_crosssolver_hybrid.py shard --shard ${{ matrix.shard }} | tee r194/shard-${{ matrix.shard }}.log
+          grep -q '^R194_SHARD_PASS ' r194/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r194-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r194/shard-${{ matrix.shard }}.json
+            r194/shard-${{ matrix.shard }}.log
+            r194/proofs/
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r194-source-binary-pins
+      - name: Combine exactly four source-disjoint paired trial shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf r194-source-locked38-and-binaries.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p r194/raw-shards
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'r194-shard-*' -D r194/raw-shards
+          test "$(find r194/raw-shards -type f -name 'shard-*.json' | wc -l)" -eq 4
+          find r194/raw-shards -type f -name 'shard-*.json' -exec cp '{}' r194/ \;
+          test "$(find r194 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+      - name: Fail-closed 456-trial original SHA, SAT proof, pair counts and PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -u research/r194_four_parallel_crosssolver_hybrid.py audit | tee r194/audit.log
+          grep -q '^R194_FINAL ' r194/audit.log
+          cat r194/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R194-4PARALLEL-CROSSBACKEND-456-FINAL
+          retention-days: 90
+          path: |
+            r194/report.json
+            r194/all-trials.json
+            r194/summary.md
+            r194/audit.log
+            r194/pins.json
+            r194/raw-shards/
