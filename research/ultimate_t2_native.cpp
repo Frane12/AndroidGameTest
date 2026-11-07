@@ -42,6 +42,8 @@ public:
     map<int,int> reason_component;
     long component_gate_events=0, suppressed_rows=0;
     long component_scan_gate=4096; // 32768 in R166X full mode: protect sparse but useful GF(2) components
+    // C1 frozen causal ablation: bounded cooldown; never disable XOR permanently.
+    long c1_epoch_scan_gate=32768, c1_sleep_base=65536;
     uint64_t propagate_ns=0, propagate_calls=0;
     size_t component_count=0;
     // R166X: two-watch fast rejection eliminates full-row parity scanning
@@ -217,12 +219,12 @@ public:
                 ++component_gate_events; ++suppressed_rows;
                 continue;
             }
-            if(cooldown_enabled && component_scans[ci]-component_epoch_start[ci]>=32768 &&
+            if(cooldown_enabled && component_scans[ci]-component_epoch_start[ci]>=c1_epoch_scan_gate &&
                component_proposals[ci]-component_epoch_proposal_start[ci]<2 &&
                component_reasons[ci]-component_epoch_reason_start[ci]==0) {
                 // Exponential but BOUNDED cooldown, not a permanent veto.
                 const long shift=min(5L,component_sleep_episodes[ci]);
-                component_sleep_until[ci]=notifications+(65536L<<shift);
+                component_sleep_until[ci]=notifications+(c1_sleep_base<<shift);
                 ++component_sleep_episodes[ci];
                 ++component_gate_events; ++suppressed_rows;
                 continue;
@@ -466,7 +468,8 @@ static int r162_run(const string& mode,const string& src,
     const bool t_source=(mode=="t_shadow"||mode=="t_source"||mode=="t_adaptive"||
         mode=="t2_derived_rows"||mode=="t2_derived_incremental"||
         mode=="t2_derived_units"||mode=="t2_derived_shadow"||
-         mode=="td_lazy_source");
+         mode=="td_lazy_source"||mode=="c1_lazy_cooldown"||
+          mode=="c1_lazy_fastwake"||mode=="c1_lazy_shadow");
     const bool extend=!clean&&!gauss&&!t_source;
     const size_t max_extra=(mode=="direct_full"||mode=="direct_full_feedback"||
                             mode=="direct_incremental"||mode=="direct_watchlazy"||
@@ -475,17 +478,25 @@ static int r162_run(const string& mode,const string& src,
     const long derived=(long)certified.size()-(long)source_rows;
     R162Bridge::Mode m=clean?R162Bridge::FREEZE:
          mode=="watch_boundary"?R162Bridge::WATCH:
-         (mode=="shadow_boundary"||mode=="t_shadow"||mode=="t2_derived_shadow")?
+         (mode=="shadow_boundary"||mode=="t_shadow"||mode=="t2_derived_shadow"||mode=="c1_lazy_shadow")?
          R162Bridge::SHADOW:R162Bridge::DIRECT;
     R162Bridge bridge(std::move(certified),n,m);
     bridge.adaptive_gate=(mode=="direct_boundary");
     bridge.component_feedback=(mode=="direct_feedback"||mode=="direct_full_feedback");
     bridge.component_scan_gate=(mode=="direct_full_feedback"?32768:4096);
-    bridge.incremental_enabled=(mode=="direct_incremental"||(t_source&&mode!="td_lazy_source"));
+    bridge.incremental_enabled=(mode=="direct_incremental"||(t_source&&mode!="td_lazy_source"&&mode!="c1_lazy_cooldown"&&
+            mode!="c1_lazy_fastwake"&&mode!="c1_lazy_shadow"));
     bridge.watchlazy_enabled=(mode=="direct_watchlazy"||mode=="direct_cooldown"||
                               mode=="gauss_watchlazy"||mode=="gauss_cooldown"||
-                              mode=="td_lazy_source");
-    bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown"||mode=="t_adaptive");
+                              mode=="td_lazy_source"||mode=="c1_lazy_cooldown"||
+                              mode=="c1_lazy_fastwake"||mode=="c1_lazy_shadow");
+    bridge.cooldown_enabled=(mode=="direct_cooldown"||mode=="gauss_cooldown"||mode=="t_adaptive"||
+                              mode=="c1_lazy_cooldown"||mode=="c1_lazy_fastwake"||
+                              mode=="c1_lazy_shadow");
+     if(mode=="c1_lazy_fastwake"){
+         bridge.c1_epoch_scan_gate=4096;
+         bridge.c1_sleep_base=8192;
+     }
     if(bridge.incremental_enabled)bridge.initialize_incremental();
     if(!clean && !bridge.rows.empty()){
         solver.connect_external_propagator(&bridge);
@@ -559,6 +570,8 @@ static int r162_run(const string& mode,const string& src,
         <<" watch_invariant_audits="<<bridge.watch_invariant_audits
         <<" cooldown_wakes="<<bridge.cooldown_wakes
         <<" cooldown_skips="<<bridge.cooldown_skips
+         <<" c1_epoch_scan_gate="<<bridge.c1_epoch_scan_gate
+         <<" c1_sleep_base="<<bridge.c1_sleep_base
         <<" assignment_notify_ns="<<bridge.assignment_notify_ns
         <<" backtrack_notify_ns="<<bridge.backtrack_notify_ns
         <<" incremental_upd_ns="<<bridge.incremental_upd_ns
@@ -600,6 +613,26 @@ int main(int argc,char**argv) {
                     throw runtime_error("R166X_DERIVED_UNIT_NATIVE_SELFTEST_FAIL");
                 cout<<"R166X_DERIVED_UNIT_NATIVE_SELFTEST_PASS\n";
             }
+            {
+                R162Bridge c1({{{1,2,3},0}},3,R162Bridge::DIRECT);
+                c1.watchlazy_enabled=true;
+                c1.cooldown_enabled=true;
+                c1.c1_epoch_scan_gate=4096;
+                c1.c1_sleep_base=8192;
+                c1.notify_new_decision_level();
+                c1.notify_assignment({1,2});
+                int lit=c1.cb_propagate();
+                if(lit!=-3)throw runtime_error("C1_LAZY_DIRECT_IMPLICATION_FAIL");
+                vector<int> clause;
+                for(int x;(x=c1.cb_add_reason_clause_lit(lit))!=0;)clause.push_back(x);
+                if(clause!=vector<int>({-3,-1,-2}) || c1.reason_clauses_completed!=1)
+                    throw runtime_error("C1_EXACT_REASON_HANDOFF_FAIL");
+                c1.notify_assignment({-3});
+                c1.notify_backtrack(0);
+                if(!c1.reasons.empty())throw runtime_error("C1_BACKTRACK_REASON_EXPIRY_FAIL");
+                cout<<"C1_NATIVE_REASON_HANDOFF_SELFTEST_PASS\\n";
+            }
+
             cout<<"ULTIMATE_T2_NATIVE_SELFTEST_PASS\n"<<flush;
             return 0;
         }
