@@ -1,0 +1,180 @@
+name: DRNAS R197 — CDCL state isolation and prospective 2026 holdout
+on:
+  push:
+    branches: [experiment/drnas-r197-state-isolation-blind-20261107]
+    paths:
+      - 'research/r197_patch_cadical.py'
+      - 'research/r197_state_driver.cpp'
+      - 'research/r197_state_blind_benchmark.py'
+      - '.github/workflows/drnas-r197-state-isolation-blind.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r197-states-isolation-blind
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate preregistered sources seeds and experimental arms
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/r197_patch_cadical.py research/r197_state_blind_benchmark.py
+          python3 -u research/r197_state_blind_benchmark.py selftest
+      - name: Freeze SHA-disjoint official 2026 holdout BEFORE measurements
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r197/archive
+          gh run download 42332923725 --repo Frane12/AndroidGameTest -n r195-real-frozen-native -D r197/archive
+          test -s r197/archive/frozen/manifest.json
+          python3 -u research/r197_state_blind_benchmark.py freeze | tee r197/freeze.log
+          python3 -u research/r197_state_blind_benchmark.py verify
+          grep -q '^R197_FREEZE_PASS ' r197/freeze.log
+      - name: Compile pinned CaDiCaL 2.1 with surgical incremental scheduling ablations
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r197-cadical
+          ( cd /tmp/r197-cadical
+            git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a )
+          test "$(git -C /tmp/r197-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          python3 -u research/r197_patch_cadical.py /tmp/r197-cadical/src/internal.cpp | tee r197/patch.log
+          ( cd /tmp/r197-cadical
+            ./configure
+            make -j2 )
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I/tmp/r197-cadical/src research/r197_state_driver.cpp /tmp/r197-cadical/build/libcadical.a -o r197/r197-driver
+          chmod +x r197/r197-driver
+      - name: Smoke all causal arms on SAT and UNSAT and confirm internal patch telemetry
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r197/smoke-sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > r197/smoke-unsat.cnf
+          for mode in default split256 split256_keep_restart split256_keep_rephase split256_keep_stabilize split256_keep_all split128_twice; do
+            r197/r197-driver r197/smoke-sat.cnf 2 "$mode" 11 > "r197/smoke-$mode.log" 2>&1
+            grep -q '^R182_STATUS status=SAT' "r197/smoke-$mode.log"
+            grep -q "^R197_POLICY mode=$mode " "r197/smoke-$mode.log"
+            grep -q '^R197_STATS_BEGIN' "r197/smoke-$mode.log"
+          done
+          r197/r197-driver r197/smoke-unsat.cnf 2 default 11 > r197/smoke-unsat.log 2>&1
+          grep -q '^R182_STATUS status=UNSAT' r197/smoke-unsat.log
+          r197/r197-driver r197/frozen/262a226a47330987f038128579967405.cnf 12 split256_keep_all 11 > r197/smoke-resume.log 2>&1
+          grep -q '^R197_STATE when=before keep=all' r197/smoke-resume.log
+          grep -q '^R197_STATE when=after keep=all' r197/smoke-resume.log
+          grep -q '^R182_STATUS status=' r197/smoke-resume.log
+          echo R197_NATIVE_PATCH_SELFTEST_PASS
+      - name: Freeze SHA provenance of original CNFs patched library and driver
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path("r197")
+          h=lambda x:hashlib.sha256((p/x).read_bytes()).hexdigest()
+          pin=dict(protocol="DRNAS-R197-STATE-ABLATION-HOLDOUT-20261107-v1",
+           driver_sha=h("r197-driver"),manifest_sha=h("frozen/manifest.json"),
+           patch_sha=hashlib.sha256(pathlib.Path("research/r197_patch_cadical.py").read_bytes()).hexdigest(),
+           patched_source_sha=hashlib.sha256(pathlib.Path("/tmp/r197-cadical/src/internal.cpp").read_bytes()).hexdigest(),
+           cadical_commit=subprocess.check_output(["git","-C","/tmp/r197-cadical","rev-parse","HEAD"],text=True).strip(),
+           source_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+           expected_trials=160)
+          assert pin["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          (p/"pin.json").write_text(json.dumps(pin,sort_keys=True,indent=2))
+          print("R197_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r197-originals-native-protocol-frozen
+          retention-days: 90
+          path: |
+            r197/frozen/
+            r197/r197-driver
+            r197/pin.json
+            r197/freeze.log
+            r197/patch.log
+            r197/smoke-*.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    name: R197 causal or prospective blind shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r197-originals-native-protocol-frozen
+          path: r197
+      - name: SHA-validate unmodified original formulas and pinned native solver
+        run: |
+          set -euo pipefail
+          chmod +x r197/r197-driver
+          python3 -u research/r197_state_blind_benchmark.py verify
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path("r197");v=json.loads((p/"pin.json").read_text())
+          sha=lambda x:hashlib.sha256((p/x).read_bytes()).hexdigest()
+          assert sha("r197-driver")==v["driver_sha"]
+          assert sha("frozen/manifest.json")==v["manifest_sha"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==v["source_commit"]
+          assert v["expected_trials"]==160
+          print("R197_PRE_TRIAL_SHA_PASS")
+          PY
+      - name: Run same-source same-seed native CDCL experiments
+        run: |
+          set -euo pipefail
+          python3 -u research/r197_state_blind_benchmark.py shard --shard ${{ matrix.shard }} --binary r197/r197-driver | tee r197/shard-${{ matrix.shard }}.log
+          grep -q '^R197_SHARD_PASS ' r197/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r197-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r197/shard-${{ matrix.shard }}.json
+            r197/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r197-originals-native-protocol-frozen
+          path: r197
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r197-shard-*
+          merge-multiple: true
+          path: r197
+      - name: Fail-closed 160-arm blinded source and seed audit
+        run: |
+          set -euo pipefail
+          test "$(find r197 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 12
+          python3 -u research/r197_state_blind_benchmark.py audit | tee r197/audit.log
+          grep -q '^R197_FINAL ' r197/audit.log
+          cat r197/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R197-CDCL-STATE-BLIND-FINAL
+          retention-days: 90
+          path: |
+            r197/report.json
+            r197/all-trials.json
+            r197/summary.md
+            r197/audit.log
