@@ -42,6 +42,26 @@ def selftest():
         f.write_text("p cnf 3 102\n1 2 0\n-1 -2 0\n1 3 0\n"+"1 3 0\n"*99)
         yes,_=bridge.cheap_probe(f)
         need(yes,"complete source parity prefix not detected")
+    # Source-certified R157 supports 2..6-variable parity blocks.
+    for width in (5, 6):
+        with tempfile.TemporaryDirectory() as t:
+            f=pathlib.Path(t)/"wide.cnf"
+            clauses=[" ".join(str(-v if mask>>i&1 else v)
+                             for i,v in enumerate(range(1,width+1)))+" 0"
+                     for mask in range(1<<width) if mask.bit_count()%2==0]
+            f.write_text("c "+"x"*350+"\n"+
+                         f"p cnf {width} {len(clauses)}\n"+
+                         "\n".join(clauses)+"\n")
+            yes,_=bridge.cheap_probe(f)
+            need(yes,f"width-{width} complete source parity not detected")
+    # On Linux, expensive full-source proof work must be preemptible.
+    if hasattr(signal,"setitimer"):
+        try:
+            with bridge.preparation_budget(0.005): time.sleep(0.030)
+        except bridge.PreparationBudgetExceeded:
+            pass
+        else:
+            need(False,"preparation budget failed to preempt")
     print("ULTIMATE_R2_SELFTEST_PASS",flush=True)
 def freeze():
     old_cases=get(OLD_MANIFEST)["cases"]
