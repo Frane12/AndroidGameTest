@@ -1,0 +1,151 @@
+name: DRNAS TURN1 — radical representation pivot 12 fresh SAT2026 144 paired 60s
+on:
+  push:
+    branches: [experiment/drnas-turn1-representation-20261107]
+    paths:
+      - '.github/workflows/drnas-turn1-representation.yml'
+      - 'research/drnas_turn1_representation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-turn1-representation-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore historical SHA exclusions and pinned native Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42413969004 --repo Frane12/AndroidGameTest -n ta8-original12-frozen -D .
+          tar xzf ta8-original12-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4
+          python3 -m unittest discover -s research -p test_drnas_turn1_representation.py -v
+          python3 -u research/drnas_turn1_representation.py smoke
+      - name: Freeze 12 next eligible original CNFs before any benchmark
+        run: |
+          set -euo pipefail
+          mkdir -p turn1
+          python3 -u research/drnas_turn1_representation.py fetch | tee turn1/fetch.log
+          grep -q '^TURN1_SOURCE_FROZEN 12 ' turn1/fetch.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,platform,subprocess,sys
+          sys.path.insert(0,'research')
+          import drnas_turn1_representation as t
+          files=list(t.EXCLUSIONS)+['ta3_2026/excluded_hashes.json','ta3_2026/preregistration.json',
+            'turn1/manifest.json','research/drnas_turn1_representation.py',
+            'built/bin/kissat_4_0_4','/usr/bin/cryptominisat5']
+          t.save('turn1/pins.json',{p:t.sha(p) for p in files})
+          t.save('turn1/preregistration.json',dict(protocol=t.PROTO,cap_s=t.CAP,reps=t.REPS,modes=t.MODES,
+            primary='kissat_both versus kissat_plain',primary_signal_rule='ratio > 1.05, source-bootstrap low95 > 1, <= 1 formula regressing > 10%, solved >= baseline',
+            secondary_exploratory=True,one_CPU=True,one_solver=True,all_preparation_charged=True,
+            independent_UNSAT_proof=False,promotion_allowed=False,seed_policy='fixed string seeds in source, identical across repetitions; no source hash or results as transformation seed'))
+          t.save('turn1/environment-prepare.json',dict(platform=platform.platform(),python=platform.python_version(),cms=subprocess.check_output(['cryptominisat5','--version'],text=True)))
+          t.verify()
+          print('TURN1_ALL_PINS_PASS',flush=True)
+          PY
+          tar czf turn1-frozen.tar.gz turn1/manifest.json turn1/pins.json turn1/preregistration.json turn1/environment-prepare.json turn1/sources \
+            ta3_2026/preregistration.json ta3_2026/excluded_hashes.json ta3_2026/manifest.json \
+            r189/frozen/manifest.json r199/candidates.json ta3/candidates.json r200/manifest.json ta6/manifest.json \
+            ta7exclusions/ta7-manifest.json ta7h_exclusions/ta7h-manifest.json ta8/manifest.json built/bin/kissat_4_0_4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turn1-frozen-original12
+          path: turn1-frozen.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: turn1-prepare-diagnostics
+          path: turn1/
+          retention-days: 14
+  paired:
+    needs: prepare
+    name: TURN1 one original six arms 60s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn1-frozen-original12
+      - name: Verify source and binaries and execute serial paired experiment
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf turn1-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4
+          lscpu > turn1/cpu-${{ matrix.shard }}.txt
+          python3 -u research/drnas_turn1_representation.py shard --shard ${{ matrix.shard }} | tee turn1/shard-${{ matrix.shard }}.log
+          grep -q '^TURN1_SHARD_PASS ' turn1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: turn1-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            turn1/shard-${{ matrix.shard }}.json
+            turn1/shard-${{ matrix.shard }}.log
+            turn1/cpu-${{ matrix.shard }}.txt
+            turn1/raw/**/worker.log
+            turn1/raw/**/solver.log
+            turn1/raw/**/model.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn1-frozen-original12
+      - name: Audit 144 complete trials, source clusters and fixed primary hypothesis
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf turn1-frozen.tar.gz
+          gh run download "${{ github.run_id }}" --repo Frane12/AndroidGameTest -p 'turn1-shard-*' -D turn1/collected
+          test "$(find turn1/collected -name 'shard-*.json' -type f | wc -l)" -eq 12
+          find turn1/collected -name 'shard-*.json' -exec cp '{}' turn1/ \;
+          python3 -u research/drnas_turn1_representation.py audit | tee turn1/audit.log
+          grep -q '^TURN1_FINAL ' turn1/audit.log
+          cat turn1/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN1-REPRESENTATION-144-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            turn1/report.json
+            turn1/report.md
+            turn1/all-trials.json
+            turn1/audit.log
+            turn1/manifest.json
+            turn1/pins.json
+            turn1/preregistration.json
