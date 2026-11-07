@@ -1,0 +1,144 @@
+name: DRNAS New Horizon SAT — canonical reconstruction 592 paired
+on:
+  push:
+    branches: [experiment/drnas-new-horizon-sat-20261107]
+    paths:
+      - 'research/new_horizon_sat.py'
+      - 'research/new_horizon_benchmark.py'
+      - '.github/workflows/drnas-new-horizon-sat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-new-horizon-sat-r1
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Selftest invariant reconstruction and controlled generators
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/new_horizon_sat.py research/new_horizon_benchmark.py
+          python3 -u research/new_horizon_benchmark.py selftest | tee nh-selftest.log
+          grep -q '^NEW_HORIZON_GENERATOR_SELFTEST_PASS' nh-selftest.log
+      - name: Freeze SHA-matched reused originals and new controlled sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p new_horizon/source
+          gh run download 42221503842 --repo Frane12/AndroidGameTest -n r187-frozen-real25-synthetic13-native-binaries -D new_horizon/source
+          python3 -u research/new_horizon_benchmark.py freeze | tee nh-freeze.log
+          python3 -u research/new_horizon_benchmark.py verify
+      - name: Pin same CaDiCaL 2.1 source and build native solver
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/nh-cadical
+          ( cd /tmp/nh-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2 )
+          test "$(git -C /tmp/nh-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -I/tmp/nh-cadical/src research/r190_general_cdcl_driver.cpp /tmp/nh-cadical/build/libcadical.a -o new_horizon/r190-driver
+          chmod +x new_horizon/r190-driver
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > new_horizon/smoke.cnf
+          new_horizon/r190-driver new_horizon/smoke.cnf 2 default | tee new_horizon/smoke.log
+          grep -q '^R182_STATUS status=SAT' new_horizon/smoke.log
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          d=pathlib.Path("new_horizon")
+          pin=dict(binary_sha256=hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest(),manifest_sha256=hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest(),commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),cadical_commit="31f9aae44947c673dc6190c9beb399acb9ffec6a")
+          (d/"pin.json").write_text(json.dumps(pin,indent=2,sort_keys=True))
+          print("NEW_HORIZON_BUILD_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: new-horizon-frozen-pinned
+          retention-days: 90
+          path: |
+            new_horizon/frozen/
+            new_horizon/r190-driver
+            new_horizon/pin.json
+            new_horizon/smoke.log
+            nh-selftest.log
+            nh-freeze.log
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    name: New Horizon matched 4-arm shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-frozen-pinned
+          path: new_horizon
+      - name: Recheck frozen sources and pinned binary
+        run: |
+          set -euo pipefail
+          chmod +x new_horizon/r190-driver
+          python3 - <<'PY'
+          import json,hashlib,pathlib,subprocess
+          d=pathlib.Path("new_horizon");p=json.loads((d/"pin.json").read_text())
+          assert hashlib.sha256((d/"r190-driver").read_bytes()).hexdigest()==p["binary_sha256"]
+          assert hashlib.sha256((d/"frozen/manifest.json").read_bytes()).hexdigest()==p["manifest_sha256"]
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==p["commit"]
+          PY
+      - name: Source-identical control trials with preprocessing wallclock
+        run: |
+          set -euo pipefail
+          python3 -u research/new_horizon_benchmark.py shard --shard ${{ matrix.shard }} --binary new_horizon/r190-driver | tee new_horizon/shard-${{ matrix.shard }}.log
+          grep -q '^NEW_HORIZON_SHARD_PASS ' new_horizon/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: new-horizon-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            new_horizon/shard-${{ matrix.shard }}.json
+            new_horizon/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: new-horizon-frozen-pinned
+          path: new_horizon
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: new-horizon-shard-*
+          merge-multiple: true
+          path: new_horizon
+      - name: Validate 592 paired attempts and SAT witnesses
+        run: |
+          set -euo pipefail
+          test "$(find new_horizon -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/new_horizon_benchmark.py audit | tee new_horizon/audit.log
+          grep -q '^NEW_HORIZON_FINAL ' new_horizon/audit.log
+          cat new_horizon/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NEW-HORIZON-SAT-R1-FINAL
+          retention-days: 90
+          path: |
+            new_horizon/report.json
+            new_horizon/trials.json
+            new_horizon/trials.csv
+            new_horizon/summary.md
+            new_horizon/audit.log
