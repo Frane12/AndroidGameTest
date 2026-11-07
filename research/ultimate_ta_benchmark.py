@@ -43,7 +43,7 @@ def freeze():
     FROZEN.mkdir(parents=True,exist_ok=True)
     lines=b.official.download_bytes(b.official.URI,150000,14).decode("ascii").splitlines()
     urlset=sorted(set(u.strip() for u in lines if re.fullmatch(
-         r"https?://benchmark-database\\.de/file/[a-f0-9]{32}",u.strip())),
+         r"https?://benchmark-database\.de/file/[a-f0-9]{32}",u.strip())),
          key=lambda x:hashlib.sha256((PROTO+x).encode()).hexdigest())
     need(len(urlset)>100,"SAT 2026 source index not available")
     entries=[];retrieval=[];added=set()
@@ -58,7 +58,7 @@ def freeze():
             need(digest not in seen and digest not in {c["sha256"] for c in entries},
                  "source SHA overlaps previously benchmarked CNFs")
             need(0<len(raw)<=12_000_000,"source byte-envelope veto")
-            head=re.search(rb"(?m)^p\\s+cnf\\s+(\\d+)\\s+(\\d+)\\s*$",raw[:8192])
+            head=re.search(rb"(?m)^p\s+cnf\s+(\d+)\s+(\d+)\s*$",raw[:8192])
             need(head is not None,"missing original DIMACS header")
             need(0<int(head[1])<=150000 and 0<=int(head[2])<=160000,
                  "outside native variable/clauses limits")
