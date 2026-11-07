@@ -1,0 +1,98 @@
+name: DRNAS Medical R16 — exact GPR reaction signature LP memo at stage k3
+on:
+  push:
+    branches: [experiment/drnas-medical-r16-k3-reaction-memo-20261107]
+    paths:
+      - 'research/drnas_medical/gmispy_r16_reaction_memo.py'
+      - '.github/workflows/drnas-medical-r16-reaction-memo.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-medical-r16-exact-gpr-memo
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [24,48,96,192,384]
+    name: Medical R16 exact-reaction LP memo 5 arm 3 rep genes ${{ matrix.n }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen biomedical software and confirm R16 protocol
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r16_reaction_memo.py
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py selftest
+      - name: Download published iML1515 frozen R9 source and independent R10 result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r16/r9 r16/reference
+          gh run download 42239472392 --repo Frane12/AndroidGameTest -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r16/r9
+          gh run download 42286261326 --repo Frane12/AndroidGameTest -n DRNAS-MEDICAL-R10-IML1515-COHORT-${{ matrix.n }}-RAW -D r16/reference
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify --source r16/r9/source --freeze r16/r9/frozen
+          test -s r16/reference/summary.json
+      - name: Paired exact-reaction memo k3 and all-stage vs R9 and R15 controls
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py cohort --source r16/r9/source --frozen r16/r9/frozen --reference r16/reference/summary.json --n ${{ matrix.n }} --out r16/paired-${{ matrix.n }}.json | tee r16/paired-${{ matrix.n }}.log
+          grep -q '^R16_COHORT_PASS ' r16/paired-${{ matrix.n }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R16-COHORT-${{ matrix.n }}-RAW
+          retention-days: 90
+          path: |
+            r16/paired-${{ matrix.n }}.json
+            r16/paired-${{ matrix.n }}.log
+  audit:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The audit script imports PySAT/COBRA at module load, just like cohort jobs.
+      # Pin the identical environment so a missing dependency cannot mask
+      # partial-cohort/benchmark failures.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned biomedical dependencies for strict audit
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy
+          python3 -m py_compile research/drnas_medical/gmispy_r16_reaction_memo.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R16-COHORT-*-RAW
+          path: all-r16
+          merge-multiple: false
+      - name: Strict 75-run independent biological reference and physical LP audit
+        run: |
+          set -euo pipefail
+          mkdir -p r16-final
+          python3 -u research/drnas_medical/gmispy_r16_reaction_memo.py audit --inputs all-r16/DRNAS-MEDICAL-R16-COHORT-24-RAW/paired-24.json all-r16/DRNAS-MEDICAL-R16-COHORT-48-RAW/paired-48.json all-r16/DRNAS-MEDICAL-R16-COHORT-96-RAW/paired-96.json all-r16/DRNAS-MEDICAL-R16-COHORT-192-RAW/paired-192.json all-r16/DRNAS-MEDICAL-R16-COHORT-384-RAW/paired-384.json --out r16-final/report.json | tee r16-final/audit.log
+          grep -q '^R16_FINAL ' r16-final/audit.log
+          cat r16-final/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R16-EXACT-GPR-MEMO-FINAL
+          retention-days: 90
+          path: r16-final/
