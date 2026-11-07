@@ -1,0 +1,177 @@
+name: DRNAS Neural R3 six-cycle selective learning 1680 paired
+on:
+  push:
+    branches: [experiment/drnas-neural-r3-six-cycle-confidence-20261107]
+    paths:
+      - 'research/nmr_r3_policy.py'
+      - 'research/nmr_r3_six_cycle.py'
+      - '.github/workflows/drnas-neural-r3-six-cycle.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-neural-r3-six-cycle
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify R3 policy and safe gated-learning benchmark source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/nmr_r3_policy.py research/nmr_r3_six_cycle.py research/nmr_r2_benchmark.py research/new_horizon_sat.py
+          python3 -u research/nmr_r3_six_cycle.py selftest
+      - name: Download original R2 SHA-pinned CNF, CaDiCaL binaries and split
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42322672422
+          name: nmr-r2-pinned-suite
+          github-token: ${{ github.token }}
+          path: .
+      - name: Download R2 trained-only frozen neural checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42322672422
+          name: nmr-r2-trained-memory
+          github-token: ${{ github.token }}
+          path: nmr_r2
+      - name: Freeze source, split, binary and 0th checkpoint SHA
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          python3 -u research/nmr_r3_six_cycle.py verify
+          python3 -u research/nmr_r3_six_cycle.py prepare
+          grep -q '"train_cases": 34' nmr_r3/protocol.json
+          grep -q '"test_cases": 40' nmr_r3/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmr-r3-frozen-setup
+          retention-days: 90
+          path: |
+            new_horizon/frozen/
+            new_horizon/r190-driver
+            nmr_r2/nmr-driver
+            nmr_r2/build-pin.json
+            nmr_r2/split.json
+            nmr_r2/model.sqlite
+            nmr_r2/model.sha256
+            nmr_r3/checkpoints/epoch-00.sqlite
+            nmr_r3/protocol.json
+  train:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-frozen-setup
+          path: .
+      - name: Six training-only epochs with immutable R2 holdout and continuous checkpoints
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          python3 -u research/nmr_r3_six_cycle.py train | tee nmr_r3/training.log
+          grep -q '^NMR_R3_TRAIN_PASS 6' nmr_r3/training.log
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          p=pathlib.Path('nmr_r3')
+          r=json.loads((p/'training-epochs.json').read_text())
+          assert len(r)==6
+          for x in r:
+              fn=p/'checkpoints'/f'epoch-{x["epoch"]:02d}.sqlite'
+              assert hashlib.sha256(fn.read_bytes()).hexdigest()==x['checkpoint_sha256']
+          print('NMR_R3_CHECKPOINT_CHAIN_PASS',len(r))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmr-r3-six-trained-only-checkpoints
+          retention-days: 90
+          path: |
+            nmr_r3/checkpoints/
+            nmr_r3/training-epochs.json
+            nmr_r3/train-epoch-*.json
+            nmr_r3/training.log
+  evaluate:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    name: DRNAS Neural R3 learning curve paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-frozen-setup
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-six-trained-only-checkpoints
+          path: .
+      - name: Check SHA then run all 7 checkpoints with fresh paired clean and gate ablation
+        run: |
+          set -euo pipefail
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          python3 -u research/nmr_r3_six_cycle.py shard --shard ${{ matrix.shard }} | tee nmr_r3/shard-${{ matrix.shard }}.log
+          grep -q '^NMR_R3_SHARD_PASS ' nmr_r3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nmr-r3-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            nmr_r3/shard-${{ matrix.shard }}.json
+            nmr_r3/shard-${{ matrix.shard }}.log
+  audit:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-frozen-setup
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmr-r3-six-trained-only-checkpoints
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nmr-r3-shard-*
+          merge-multiple: true
+          path: nmr_r3
+      - name: Audit every source SHA, 1680 paired outcomes, checkpoints and SAT original witnesses
+        run: |
+          set -euo pipefail
+          test "$(find nmr_r3 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          chmod +x nmr_r2/nmr-driver new_horizon/r190-driver
+          python3 -u research/nmr_r3_six_cycle.py audit | tee nmr_r3/audit.log
+          grep -q '^NMR_R3_FINAL ' nmr_r3/audit.log
+          cat nmr_r3/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NEURAL-R3-SIX-CYCLE-FINAL
+          retention-days: 90
+          path: |
+            nmr_r3/protocol.json
+            nmr_r3/training-epochs.json
+            nmr_r3/report.json
+            nmr_r3/summary.md
+            nmr_r3/audit.log
