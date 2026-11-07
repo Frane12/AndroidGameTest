@@ -165,7 +165,7 @@ def shard(i):
     pin=json.loads((ROOT/"build-pin.json").read_text())
     for p,d in pin["binaries"].items():
         need(sha(p)==d,"binary hash drift "+p)
-    need(pin["manifest_sha"]==sha(MANIFEST),"T manifest pin drift")
+    need(pin["original_manifest_sha"]==sha(MANIFEST),"T2 manifest pin drift")
     if hasattr(os,"sched_getaffinity"):
         affinity=os.sched_getaffinity(0)
         os.sched_setaffinity(0,{min(affinity)})
