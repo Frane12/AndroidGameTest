@@ -205,9 +205,11 @@ def audit():
     report=dict(protocol=PROTO,source_selection=manifest["protocol"],
         source_count=n,measurements=len(rows),repeats=REPS,
         total_wall_cap_s=CAP,pilot_reference_preselected_only=True,
-        selection_conditioned_on_reference_easiness=True,\n        source_count_insufficient_for_20_case_holdout=True,
+        selection_conditioned_on_reference_easiness=True,
+        source_count_insufficient_for_20_case_holdout=True,
         source_disjoint_declared_registry=True,history_registry_not_exhaustive=True,
-        no_posthoc_source_exclusion=True,independent_unsat_lrat=False,\n        pilot_only_no_promotion=True,
+        no_posthoc_source_exclusion=True,independent_unsat_lrat=False,
+        pilot_only_no_promotion=True,
         SAT_original_model_check_required=True,all_scores=scores,
         cases=comparisons,not_auto_promoted=True)
     ROOT.mkdir(parents=True,exist_ok=True)
