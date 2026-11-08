@@ -1,0 +1,53 @@
+name: DRNAS Mallob M1 — lossless timeout diagnostic and SAT/UNSAT controls
+on:
+  push:
+    branches: [experiment/drnas-mallob-m1-timeout-diagnostic-20261108]
+    paths:
+      - '.github/workflows/drnas-mallob-m1-diagnostic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mallob-m1-diagnostic-20261108
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Mallob runtime dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openmpi-bin libopenmpi-dev libgmp-dev libboost-all-dev libhwloc-dev libnuma-dev libssl-dev libzstd-dev
+      - name: Download original pinned Mallob binary and 102 frozen R193 CNFs
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42434235972
+          repository: Frane12/AndroidGameTest
+          github-token: '${{ github.token }}'
+          name: amds-pinned-binaries-and-inputs
+          path: .
+      - name: Test Mallob controls and preserve complete timeout diagnostics
+        run: |
+          set -euo pipefail
+          test -s alpha_mallob_shared/frozen/manifest.json
+          test -s external/mallob/build/mallob
+          chmod +x external/mallob/build/mallob external/mallob/build/mallob_sat_process
+          python3 -m py_compile research/drnas_alpha_mallob_shared.py research/drnas_mallob_m1_diagnostic.py
+          python3 -u research/drnas_mallob_m1_diagnostic.py | tee mallob-m1-console.log
+          grep -q '^MALLOB_M1_FINAL ' mallob-m1-console.log
+      - name: Upload detailed diagnostics, including on failure
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MALLOB-M1-DIAGNOSTIC
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mallob_m1/
+            mallob-m1-console.log
