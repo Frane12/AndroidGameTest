@@ -161,7 +161,12 @@ def verify_proofs(original, source_rows, proofs):
 
 def derive(original, max_s=PREP_BUDGET):
     began = time.perf_counter()
-    need(len(original) <= 150000, "excessive source clause count")
+    if len(original) > 150000:
+        return [], [], dict(source_rows=0, gf2_lemmas=0,
+                            resolution_lemmas=0, rounds=0,
+                            proof_replayed=True, budget_exhausted=False,
+                            derived_clauses=0, abstain="large_source_guard",
+                            prep_s=round(time.perf_counter()-began, 6))
     source = r195.certified_source_rows(original)[:MAX_SOURCE_ROWS]
     replay_source_xors(original, source)
     known = {normalize(c) for c in original if normalize(c) is not None}
@@ -264,8 +269,11 @@ def trial(case, rep, mode, binary):
     if mode != "cms_native":
         prep_started = time.perf_counter()
         if mode == "source_xor":
-            rows = r195.certified_source_rows(original)[:MAX_SOURCE_ROWS]
-            replay_source_xors(original, rows)
+            if len(original) <= 150000:
+                rows = r195.certified_source_rows(original)[:MAX_SOURCE_ROWS]
+                replay_source_xors(original, rows)
+            else:
+                rows = []  # skip costly scan; original CNF is unchanged
             stats["source_rows"] = len(rows)
         else:
             rows, proofs, stats = derive(original)
