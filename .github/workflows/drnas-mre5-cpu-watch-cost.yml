@@ -1,0 +1,201 @@
+name: DRNAS MRE5 — native CPU cost and real BCP watcher classification
+on:
+  push:
+    branches: [experiment/drnas-mre5-cpu-watch-cost-20261108]
+    paths:
+      - '.github/workflows/drnas-mre5-cpu-watch-cost.yml'
+      - 'research/mre5_patch_cms.py'
+      - 'research/mre5_cpu_watch_cost.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre5-cpu-cost-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify SHA-locked original, proof replay and experiment design
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre5_cpu_watch_cost.py research/mre5_patch_cms.py research/mre4_patch_cms.py
+          python3 -u research/mre1_cross_representation.py selftest
+          python3 -u research/mre2_impact_gate.py selftest
+          python3 -u research/mre5_cpu_watch_cost.py selftest
+          mkdir -p mre5
+          gh run download 42486847349 --repo Frane12/AndroidGameTest -n mre3-inputs -D .
+          sha256sum -c mre3_p1/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import mre4_trace_pilot as p
+          p.setup()
+          PY
+          sha256sum r195/frozen/manifest.json > mre5/manifest.sha256
+      - name: Clone and pin exact CMS 5.11.15 source and apply strict watch-ID patch
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build g++ libgmp-dev libcryptominisat5-dev
+          git clone --quiet --depth 1 --branch 5.11.15 --single-branch https://github.com/msoos/cryptominisat.git cms-pinned
+          ACTUAL_SHA="$(git -C cms-pinned rev-parse HEAD)"
+          echo "CMS_UPSTREAM_SHA=$ACTUAL_SHA"
+          test "$ACTUAL_SHA" = "3b709118fd08eb1d15f25e0e239dbc596f967b60"
+          python3 -u research/mre5_patch_cms.py cms-pinned research/mre5_native_bridge.cpp
+          cmake -S cms-pinned -B cms-build -GNinja -DCMAKE_BUILD_TYPE=Release -DONLY_SIMPLE=ON -DBUILD_SHARED_LIBS=ON -DNOZLIB=ON -DENABLE_TESTING=OFF
+          cmake --build cms-build --target cryptominisat5 --parallel 4
+          mkdir -p mre5/lib
+          LIB_FILE="$(find cms-build -type f -name 'libcryptominisat5.so*' | head -n 1)"
+          test -n "$LIB_FILE"
+          # Preserve the pinned library's actual DT_SONAME, not just the linker name.
+          cp "$LIB_FILE" mre5/lib/libcryptominisat5.so.5.11
+          cp "$LIB_FILE" mre5/lib/libcryptominisat5.so
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/mre5_native_bridge.cpp -L"$PWD/mre5/lib" -lcryptominisat5 -Wl,-rpath,'$ORIGIN/lib' -o mre5/native
+          nm -D mre5/lib/libcryptominisat5.so | grep 'drnas_trace_'
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          sha256sum mre5/native mre5/lib/libcryptominisat5.so.5.11 > mre5/binaries.sha256
+      - name: Native CPU and watcher classification smoke, on and off
+        run: |
+          set -euo pipefail
+          cat > mre5/smoke.cnf <<'EOF'
+          p cnf 3 2
+          2 3 0
+          1 2 0
+          EOF
+          : > mre5/empty.tsv
+          for enabled in 1 0; do
+            DRNAS_TRACE_ENABLED="$enabled" DRNAS_ORIG_COUNT=1 DRNAS_TAG_0="1,2" DRNAS_TAG_1="3,-2" mre5/native mre5/smoke.cnf mre5/empty.tsv mre5/empty.tsv cms_native 11 | tee "mre5/smoke-$enabled.log"
+            grep -q "^DRNAS_CPU trace_enabled=$enabled " "mre5/smoke-$enabled.log"
+            grep -q "^DRNAS_WATCH_GLOBAL enabled=$enabled " "mre5/smoke-$enabled.log"
+            grep -q '^DRNAS_TRACE_INPUT marked0=1 marked1=0 ' "mre5/smoke-$enabled.log"
+            grep -q '^DRNAS_TRACE tag=0 attached=1 ' "mre5/smoke-$enabled.log"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre5-inputs
+          retention-days: 3
+          compression-level: 6
+          path: |
+            r195/frozen/
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+            mre5/manifest.sha256
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        seed: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-inputs
+          path: .
+      - name: Verify native binary, instrumented CMS and original CNF SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          python3 -u research/r195_native_cms_benchmark.py verify
+      - name: Compare full native solver CPU seconds versus tagged watcher classifications
+        run: |
+          set -euo pipefail
+          python3 -u research/mre5_cpu_watch_cost.py shard --seed ${{ matrix.seed }} --binary mre5/native | tee mre5/seed-${{ matrix.seed }}.log
+          grep -q '^MRE5_SHARD_PASS ${{ matrix.seed }} 16
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre5-seed-${{ matrix.seed }}
+          retention-days: 7
+          path: |
+            mre5/seed-${{ matrix.seed }}.json
+            mre5/seed-${{ matrix.seed }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre5-seed-*
+          merge-multiple: true
+          path: mre5
+      - name: Audit native process CPU, watcher classification and matched on/off pairs
+        run: |
+          set -euo pipefail
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/mre5_cpu_watch_cost.py audit | tee mre5/audit.log
+          cat mre5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE5-CPU-COST-FINAL
+          retention-days: 30
+          path: |
+            mre5/report.json
+            mre5/audit.log
+ mre5/seed-${{ matrix.seed }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre5-seed-${{ matrix.seed }}
+          retention-days: 7
+          path: |
+            mre5/seed-${{ matrix.seed }}.json
+            mre5/seed-${{ matrix.seed }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre5-seed-*
+          merge-multiple: true
+          path: mre4
+      - name: Audit tagged events, source and paired wall times
+        run: |
+          set -euo pipefail
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/mre4_trace_pilot.py audit | tee mre5/audit.log
+          cat mre5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE5-CPU-COST-FINAL
+          retention-days: 30
+          path: |
+            mre5/report.json
+            mre5/audit.log
