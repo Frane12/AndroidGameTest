@@ -1,0 +1,117 @@
+name: DRNAS Medical R25 — strict cold/warm LP oracle isolation
+
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r25-oracle-isolation-20261108
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  isolate:
+    name: "R25 strict oracle N${{ matrix.n }} ${{ matrix.order }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [192, 384]
+        order: [gene_first, reaction_first]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen scientific dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy==1.17.1
+          python3 -m py_compile research/drnas_medical/gmispy_r25_oracle_isolation.py
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 42422748623
+          github-token: ${{ github.token }}
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          path: r25/locked
+      - name: Verify original SHA-frozen iML1515 source and cohort
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r25/r9 r25/out
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r25/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r25/r9/source --freeze r25/r9/frozen
+          test -s r25/locked/router-and-holdouts.json
+      - name: Cold/warm independent gene vs GPR FBA; fail closed
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r25_oracle_isolation.py \
+            --source r25/r9/source \
+            --manifest r25/locked/router-and-holdouts.json \
+            --n ${{ matrix.n }} --order ${{ matrix.order }} \
+            --out r25/out/${{ matrix.n }}-${{ matrix.order }}.json \
+            2>&1 | tee r25/out/${{ matrix.n }}-${{ matrix.order }}.log
+          grep -q '^R25_FINAL ' r25/out/${{ matrix.n }}-${{ matrix.order }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R25-${{ matrix.n }}-${{ matrix.order }}
+          retention-days: 30
+          path: r25/out
+          if-no-files-found: warn
+
+  audit:
+    name: R25 independent four-shard fail-closed audit
+    runs-on: ubuntu-24.04
+    needs: isolate
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R25-*
+          path: r25/reports
+          merge-multiple: true
+      - name: Do not grant biological validity on inconsistent LP outputs
+        run: |
+          set -euo pipefail
+          mkdir -p r25/audit
+          python3 - <<'PY' | tee r25/audit/audit.log
+          import glob,json
+          files=sorted(glob.glob('r25/reports/*.json'))
+          wanted={(n,o) for n in (192,384) for o in ('gene_first','reaction_first')}
+          assert len(files)==4, (len(files),files)
+          rows=[json.load(open(f)) for f in files]
+          seen={(v['n'],v['order']) for v in rows}
+          assert seen==wanted and len(rows)==len(seen), (seen,wanted)
+          assert all(v['complete'] and
+                     v['protocol']=='DRNAS-MEDICAL-R25-STRICT-ORACLE-ISOLATION-v1'
+                     and v['research_only'] and v['not_a_speedup_test']
+                     and v['source_sha']=='9c772d44ca43350e40dc7ee86c7aa148796856be1eea45e5406c6df8f7dcde28'
+                     and len(v['rows'])==3 for v in rows)
+          assert len({v['frozen_digest'] for v in rows})==1
+          mismatched=[dict(n=v['n'],order=v['order'],
+                           failures=len(v['failures']),outcome=v['outcome'])
+                      for v in rows if v['failures']]
+          report=dict(protocol='R25-STRICT-ORACLE-AUDIT-v1',
+                      diagnostic_shards=4,comparisons_reported=True,
+                      mismatched_shards=mismatched,
+                      speedup_validated=False,
+                      R24_biological_correctness_validated=False,
+                      status=('R25_DIAGNOSTIC_CONSISTENT'
+                              if not mismatched else 'R25_FAIL_CLOSED_DISAGREEMENT'))
+          json.dump(report,open('r25/audit/summary.json','w'),indent=2)
+          print('R25_AUDIT '+json.dumps(report,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R25-FORENSIC-AUDIT
+          path: r25/audit
+          retention-days: 30
+          if-no-files-found: warn
