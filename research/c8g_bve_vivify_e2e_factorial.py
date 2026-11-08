@@ -96,7 +96,7 @@ def bench(shard):
     probe_path = OUT / ("probe-%d.json" % shard)
     probe_payload = dict(source_sha256=c["sha256"], gbd=c["gbd"],
                          probes=probe_rows)
-    probe_path.write_text(json.dumps(probe_payload, indent=2, sort_keys=True) + "\\n")
+    probe_path.write_text(json.dumps(probe_payload, indent=2, sort_keys=True) + "\n")
     for probe_row in probe_rows:
         print("C8G_PROBE " + json.dumps(probe_row, sort_keys=True), flush=True)
     seed = int(hashlib.sha256((PROTO + "|" + c["sha256"]).encode()).hexdigest()[:8], 16)
