@@ -1,0 +1,133 @@
+name: DRNAS MRE6i — cheap XOR gate four fresh SAT2026 plus certified GF2 80 paired 35s
+on:
+  push:
+    branches: [experiment/drnas-mre6i-prefilter-new2026-20261108]
+    paths:
+      - '.github/workflows/drnas-mre6i-cheap-xor-gate-new2026.yml'
+      - 'research/mre6i_source_freeze.py'
+      - 'research/mre6i_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6i-80-35s-20261108
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze four new external-runtime-selected SAT2026 CNFs plus two new XOR controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check mathematical proof and gate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre6i_source_freeze.py research/mre6i_benchmark.py research/mre6h_fast_gf2.py research/mre6g_proof_graph.py
+          python3 -u research/mre6i_benchmark.py selftest
+      - name: Restore SHA-frozen old anchor originals and same pinned CMS binary
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42503866092 --repo Frane12/AndroidGameTest -n mre6f-pinned-six-originals-and-CMS -D .
+          sha256sum -c mre5/binaries.sha256
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_freeze.py verify
+      - name: Freeze four previously unselected official SAT2026 originals and two fixed synthetic controls
+        run: |
+          set -euo pipefail
+          python3 -u research/mre6i_source_freeze.py freeze | tee mre6i-freeze.log
+          grep -q '^MRE6I_FREEZE_PASS 8$' mre6i-freeze.log
+          (cd mre6i_sources && sha256sum -c source.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6i-8-source-SHA-and-pinned-CMS
+          retention-days: 12
+          compression-level: 6
+          path: |
+            mre6i_sources/*.cnf
+            mre6i_sources/manifest.json
+            mre6i_sources/source.sha256
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+            mre6i-freeze.log
+  paired:
+    needs: freeze
+    name: MRE6i 35s true SAT-solving source-paired shard \${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6i-8-source-SHA-and-pinned-CMS
+          path: .
+      - name: Verify all eight original SHA sources and pinned native CMS
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          (cd mre6i_sources && sha256sum -c source.sha256)
+          python3 -u research/mre6i_source_freeze.py verify
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Run 20 complete source-paired SAT/UNSAT attempts including preparation and witness check
+        run: |
+          set -euo pipefail
+          mkdir -p mre6i
+          python3 -u research/mre6i_benchmark.py shard --shard \${{ matrix.shard }} --binary mre5/native | tee mre6i/shard-\${{ matrix.shard }}.log
+          grep -q '^MRE6I_SHARD_PASS \${{ matrix.shard }} 20$' mre6i/shard-\${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6i-results-shard-\${{ matrix.shard }}
+          retention-days: 16
+          path: |
+            mre6i/shard-\${{ matrix.shard }}.json
+            mre6i/shard-\${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: Independent 80-trial original SHA/seed/witness and PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6i-8-source-SHA-and-pinned-CMS
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6i-results-shard-*
+          merge-multiple: true
+          path: mre6i
+      - name: Verify exact original eight CNFs and all modes for all 16 pairs
+        run: |
+          set -euo pipefail
+          (cd mre6i_sources && sha256sum -c source.sha256)
+          python3 -u research/mre6i_benchmark.py audit | tee mre6i/audit.log
+          grep -q '^MRE6I_FINAL' mre6i/audit.log
+          cat mre6i/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6I-80-REAL-35S-AUDITED-FINAL
+          retention-days: 30
+          path: |
+            mre6i/report.json
+            mre6i/audit.log
+            mre6i_sources/manifest.json
+            mre6i-freeze.log
