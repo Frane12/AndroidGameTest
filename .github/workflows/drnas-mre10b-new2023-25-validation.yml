@@ -1,0 +1,148 @@
+name: DRNAS MRE10b — 12 fresh SAT2023-2025 144 paired 15s CMS vs C++ Joint
+on:
+  push:
+    branches: [experiment/drnas-mre10b-new2023-2025-20261108]
+    paths:
+      - '.github/workflows/drnas-mre10b-new2023-25-validation.yml'
+      - 'research/mre10b_external_freeze.py'
+      - 'research/mre10b_new_sources_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre10b-144-20261108
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: External CaDiCaL prefreeze 12 new original SAT2023-2025 SHAs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover immutable successful MRE10 C++ and CMS executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42509505558 -R Frane12/AndroidGameTest -n mre10-SHA16-exact-CMS-inprocess-CPP -D .
+          sha256sum -c mre7_easy/bin.sha256
+          sha256sum -c mre10/binaries.sha256
+          (cd mre7_easy && sha256sum -c source.sha256)
+          python3 -m py_compile research/mre10b_external_freeze.py research/mre10b_new_sources_benchmark.py
+          python3 research/mre10b_external_freeze.py selftest
+          chmod +x mre7_easy/bin/native mre10/bin/native mre10/bin/standalone
+      - name: Source selection solely by external independent CaDiCaL screen
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          python3 -u research/mre10b_external_freeze.py freeze | tee mre10b-freeze.log
+          grep -q '^MRE10B_FROZEN_PASS 12$' mre10b-freeze.log
+          (cd mre10b_sources && sha256sum -c source.sha256)
+      - name: Exact pure Python vs C++ clause transforms on all new sources
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 research/mre10b_new_sources_benchmark.py selftest
+          python3 research/mre10b_new_sources_benchmark.py parity --standalone mre10/bin/standalone | tee mre10b-parity.log
+          grep -q '^MRE10B_12NEW_EXACT_CLAUSE_PARITY_PASS' mre10b-parity.log
+          ldd mre10/bin/native | grep libcryptominisat5.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre10b-12new-SHA-CMS-CPP
+          retention-days: 14
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            mre10b_sources/*.cnf
+            mre10b_sources/manifest.json
+            mre10b_sources/source.sha256
+            mre7_easy/bin/native
+            mre7_easy/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre10/bin/native
+            mre10/bin/standalone
+            mre10/binaries.sha256
+            mre10b-freeze.log
+            mre10b-parity.log
+  trials:
+    needs: freeze
+    name: MRE10b 4 arms 3 seeds 15s full SAT shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre10b-12new-SHA-CMS-CPP
+          path: .
+      - name: Enforce immutable native binary and new-source SHAs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          (cd mre10b_sources && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          sha256sum -c mre10/binaries.sha256
+          chmod +x mre7_easy/bin/native mre10/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd mre10/bin/native | grep libcryptominisat5.so
+          python3 research/mre10b_external_freeze.py verify
+      - name: 24 SHA-paired full end-to-end SAT/UNSAT and original witness checks
+        run: |
+          set -euo pipefail
+          mkdir -p mre10b
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre10b_new_sources_benchmark.py shard --shard ${{ matrix.shard }} --ext mre7_easy/bin/native --cpp mre10/bin/native | tee mre10b/shard-${{ matrix.shard }}.log
+          grep -q '^MRE10B_SHARD_PASS ${{ matrix.shard }} 24$' mre10b/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre10b-results-shard-${{ matrix.shard }}
+          retention-days: 14
+          path: |
+            mre10b/shard-${{ matrix.shard }}.json
+            mre10b/shard-${{ matrix.shard }}.log
+  audit:
+    needs: trials
+    name: Independent complete 144-trial original SHA and PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre10b-12new-SHA-CMS-CPP
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre10b-results-shard-*
+          merge-multiple: true
+          path: mre10b
+      - name: Full 12 original SHAs x 3 seeds x 4 modes PAR2 and witness audit
+        run: |
+          set -euo pipefail
+          (cd mre10b_sources && sha256sum -c source.sha256)
+          python3 -u research/mre10b_new_sources_benchmark.py audit | tee mre10b/audit.log
+          grep -q '^MRE10B_FINAL' mre10b/audit.log
+          cat mre10b/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE10B-144-NEW-SOURCE-PAR2-AUDIT
+          retention-days: 30
+          path: |
+            mre10b/report.json
+            mre10b/audit.log
+            mre10b_sources/manifest.json
