@@ -1,0 +1,155 @@
+name: DRNAS MRE X5 — blind SAT2026 shifted-spread versus source-native
+on:
+  push:
+    branches: [experiment/drnas-mre-x5-spread-shifted-blind26-20261108]
+    paths: ['.github/workflows/drnas-mre-x5-blind26.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x5-prospective-official26-20261108
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: Prospective source-only SHA lock; verify exclusion and exact original clause permutations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore previous MRE6b 2026 source exclusion and immutable X3 CMS native
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p x5_previous_mre6b
+          gh run download 42495094599 -R Frane12/AndroidGameTest \
+            -n mre6b-blind-original-official-SAT2026 -D x5_previous_mre6b
+          test -s x5_previous_mre6b/manifest.json
+          gh run download 42524524856 -R Frane12/AndroidGameTest \
+            -n mre-x3-frozen-five-sha-seven-doses-instrumented-native -D .
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x3/bin.sha256
+          chmod +x mre_x3/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x3/bin/native | grep -q 'libcryptominisat5.so.5.11'
+      - name: Lock all policies then fetch untested official SAT2026 CNFs without probe
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre_x5_blind_spread.py research/mre_x4_early_divergence.py \
+            research/mre_x3_spread_mechanism.py research/mre_x2_clause_order_causal.py
+          python3 -u research/mre_x5_blind_spread.py selftest
+          mkdir -p mre_x5_blind
+          python3 -u research/mre_x5_blind_spread.py freeze | tee mre_x5_blind/freeze.log
+          grep -q '^MRE_X5_FROZEN' mre_x5_blind/freeze.log
+          (cd mre_x5_blind && sha256sum -c source.sha256)
+          python3 -u research/mre_x5_blind_spread.py variants | tee mre_x5_blind/variants.log
+          python3 -u research/mre_x5_blind_spread.py verify | tee mre_x5_blind/verify.log
+          grep -q '^MRE_X5_VARIANTS_PASS' mre_x5_blind/variants.log
+          grep -q '^MRE_X5_VERIFY_PASS' mre_x5_blind/verify.log
+          echo MRE_X5_SOURCE_FROZEN_BEFORE_SOLVER_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x5-official-2026-source-only-frozen-before-solvers
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            mre_x5_blind/*.cnf
+            mre_x5_blind/manifest.json
+            mre_x5_blind/source.sha256
+            mre_x5_blind/variants.json
+            mre_x5_blind/freeze.log
+            mre_x5_blind/variants.log
+            mre_x5_blind/verify.log
+            mre_x3/bin/native
+            mre_x3/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: X5 blind official original vs spread100 vs shifted SHA-paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x5-official-2026-source-only-frozen-before-solvers
+          path: .
+      - name: Verify unchanged original SHA, exact clause multiset and native executable
+        run: |
+          set -euo pipefail
+          (cd mre_x5_blind && sha256sum -c source.sha256)
+          sha256sum -c mre_x3/bin.sha256
+          chmod +x mre_x3/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x3/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre_x5_blind_spread.py verify
+      - name: Full end-to-end 18s original SAT/UNSAT; 4 seed paired; original SAT model replay
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x5_blind_spread.py shard \
+            --shard ${{ matrix.shard }} --native mre_x3/bin/native \
+            | tee mre_x5_blind/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X5_SHARD_PASS ${{ matrix.shard }} ' \
+            mre_x5_blind/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x5-blind-paired-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            mre_x5_blind/shard-${{ matrix.shard }}.json
+            mre_x5_blind/shard-${{ matrix.shard }}.log
+  audit:
+    name: X5 FINAL SHA-disjoint blind source-lock native versus frozen shifted PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x5-official-2026-source-only-frozen-before-solvers
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x5-blind-paired-shard-*
+          merge-multiple: true
+          path: mre_x5_blind
+      - name: Confirm same source SHA and seed, SAT original witness, reference UNSAT and PAR2
+        run: |
+          set -euo pipefail
+          (cd mre_x5_blind && sha256sum -c source.sha256)
+          python3 -u research/mre_x5_blind_spread.py verify
+          python3 -u research/mre_x5_blind_spread.py audit \
+            | tee mre_x5_blind/audit.log
+          grep -q '^MRE_X5_FINAL' mre_x5_blind/audit.log
+          grep '^MRE_X5_FINAL' mre_x5_blind/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE-X5-OFFICIAL-2026-FROZEN-SPREAD-SHIFTED-BLIND-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x5_blind/report.json
+            mre_x5_blind/audit.log
+            mre_x5_blind/manifest.json
+            mre_x5_blind/variants.json
+            mre_x5_blind/shard-*.json
