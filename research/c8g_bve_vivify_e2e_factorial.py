@@ -93,6 +93,12 @@ def bench(shard):
     probe_rows = [probe(c, p, choices, arm)
                   for arm in ("noelim", "noelim_force_vivify",
                               "noelim_novivify")]
+    probe_path = OUT / ("probe-%d.json" % shard)
+    probe_payload = dict(source_sha256=c["sha256"], gbd=c["gbd"],
+                         probes=probe_rows)
+    probe_path.write_text(json.dumps(probe_payload, indent=2, sort_keys=True) + "\\n")
+    for probe_row in probe_rows:
+        print("C8G_PROBE " + json.dumps(probe_row, sort_keys=True), flush=True)
     seed = int(hashlib.sha256((PROTO + "|" + c["sha256"]).encode()).hexdigest()[:8], 16)
     for rep in range(REPS):
         order = list(ARMS)
@@ -161,7 +167,9 @@ def audit():
             noelim_vivifychecks=noelim.get("vivifychecks", 0),
             forced_vivifychecks=force.get("vivifychecks", 0),
             explicit_no_vivify_checks=no_viv.get("vivifychecks", 0),
-            vivify_flag_restores_work=(force.get("vivifychecks", 0) > 0)))
+            vivify_flag_restores_work=(force.get("vivifychecks", 0) > 0),
+            noelim_disables_vivify=(noelim.get("vivifychecks", 0) == 0),
+            noelim_and_explicit_no_vivify_counters_equal=(noelim == no_viv)))
     need(all(r["original_SAT_witness_verified"] for r in rows
              if r["status"] == "SAT"), "unverified SAT witness")
     need(not any(r["status"] == "UNSAT" for r in rows),
