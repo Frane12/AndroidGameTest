@@ -90,6 +90,11 @@ def filter_novel(n,original,extra,certs,max_added=B3_MAX_ADDED):
         if len(norm)==2 and (norm[0] in source_units or norm[1] in source_units):
             stats["subsumed_by_unit"]+=1;continue
         candidates.append((norm,cert))
+    if not candidates:
+        stats["status"]="SKIPPED"
+        stats["reason"]="NO_NOVEL_INPUT_CANDIDATES"
+        stats["analysis_s"]=round(time.perf_counter()-start,6)
+        return [],[],stats
     t=time.perf_counter()
     equations,_,_=a.xor_blocks(original,deadline)
     # 'Non-XOR' here means outside the detected complete parity-block premises.
@@ -194,6 +199,10 @@ def selftest():
     graph[-1].append(2);graph[-2].append(1)
     need(b.graph_implies(graph,(1,2),time.perf_counter()+2),
          "dynamic graph should contain accepted implication")
+    # Zero-candidate fast path must not scan 100k irrelevant clauses.
+    _sel,_cert,_meta=filter_novel(3,[(1,2),(2,3)],[],[])
+    need(_meta["status"]=="SKIPPED" and _meta["reason"]=="NO_NOVEL_INPUT_CANDIDATES",
+         "zero-candidate work skip failed")
     print("CRR1B3LOOSE_SELFTEST_PASS",flush=True)
 
 def worker(source,mode,directory):
@@ -380,6 +389,7 @@ def prepare():
         "case_sha256":[c["sha256"] for c in cc],
         "parent_source_manifest_sha256":a.sha("history/w4sources/manifest.json"),
         "source_set_posthoc_from_CRR1A":True,
+        "cohort_discovery_54_proven_clauses_development_only":True,
         "blind_holdout":False,"promotion_allowed":False,
         "analysis_rule":"exact GF2 CNF verified proposals only; B3 graph updated after each accepted clause",
         "selection":"cross-CNF preferential ranking, then XOR occurrence support, never outcomes",
@@ -501,7 +511,7 @@ def audit():
                            if r["bridge"] and mode.startswith("b3_loose") else None
                            for r in subset],
                 "b3_redundancy":[r["bridge"].get("b3_redundancy",{})
-                          if r["bridge"] and mode=="b3_filtered" else None
+                          if r["bridge"] and mode.startswith("b3_loose") else None
                           for r in subset]}
     report={"status":"CRR1B3LOOSE_AUDIT_PASS",
         "protocol":PROTO,"attempts":len(rows),"formulas":len(cc),
