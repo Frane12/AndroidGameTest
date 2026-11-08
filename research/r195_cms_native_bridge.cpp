@@ -75,7 +75,10 @@ int main(int argc,char**argv) {
         cms.set_num_threads(1);
         cms.set_seed(seed);
         cms.set_verbosity(0);
-        cms.set_allow_otf_gauss();
+        // CryptoMiniSat 5.11.15 witness audit: OTF Gauss without imported XOR
+        // produced an invalid SAT model on frozen SHA b2c2008e... (2/2).
+        // Keep OTF Gauss for certified-XOR arms; native baseline omits it.
+        if(mode!="cms_native") cms.set_allow_otf_gauss();
         cms.new_vars(n);
         for(const auto& c:clauses) {
             vector<Lit> lits;
@@ -108,6 +111,23 @@ int main(int argc,char**argv) {
         string result="TIMEOUT";
         if(status==l_True)result="SAT";
         if(status==l_False)result="UNSAT";
+        // Fail closed at the native boundary, before emitting any SAT verdict:
+        // check the entire original CNF against CMS's reconstructed model.
+        if(status==l_True){
+            const auto& witness=cms.get_model();
+            check(witness.size()>=n,"SAT model missing variables");
+            for(size_t i=0;i<clauses.size();i++){
+                bool satisfied=false;
+                for(int lit:clauses[i]){
+                    const lbool value=witness[unsigned(abs(lit)-1)];
+                    if(value==(lit>0?l_True:l_False)){
+                        satisfied=true;
+                        break;
+                    }
+                }
+                check(satisfied,"SAT witness falsifies original clause index="+to_string(i));
+            }
+        }
         cout<<"R195_RESULT status="<<result
             <<" conflicts="<<cms.get_last_conflicts()
             <<" decisions="<<cms.get_last_decisions()
