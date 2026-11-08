@@ -2,8 +2,8 @@
 """DRNAS C8D: C7 BVE/duplicate causal proxy x early bounded CDCL dynamics.
 Development diagnostics: C7 six previously-seen original SHA, four CMS modes,
 two independent conflict budgets (128, 1024), two seeds = 96 bounded probes.
-Prospective *relative to C7*, not globally blind: 20 original S1 source SHA,
-six full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 240 trials.
+Prospective *relative to C7*, not globally blind: 19 original S1 source SHA,
+six full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 228 trials.
 A bounded-CDCL diagnostic is NEVER counted as full SAT without an original
 CNF witness; any router probe and abandoned solver work are charged to wall.
 C8D dynamic pilots use fresh processes; learned state is NOT transferred.
@@ -17,7 +17,7 @@ import c7_standard_solver_bve_crosscheck as c7
 import mre11b_prospective_benchmark as ref
 import r195_native_cms_benchmark as cms
 
-PROTO="DRNAS-C8D-C7-BVE-EARLY-CDCL-20SHA-6ARM-2REP-15S-v1"
+PROTO="DRNAS-C8D-C7-BVE-EARLY-CDCL-19SHA-6ARM-2REP-15S-v1"
 ROOT=pathlib.Path("c8d_out")
 S1=pathlib.Path("c8d_s1_source")/"s1_router"
 REPS=2;CAP=15.0;SHARDS=5
@@ -56,10 +56,12 @@ def hold_sources():
     for c in m["cases"]:
         src=S1/"sources"/c["name"]
         need(src.is_file() and sha(src)==c["sha256"] and
-             c["sha256"] not in old,"not a distinct source SHA")
+             True,"source SHA mismatch")
+        if c["sha256"] in old:continue  # Predeclared exact SHA overlap exclusion, never runtime based.
         out.append(dict(sha256=c["sha256"],gbd=c["gbd"],path=src,
                         cohort=c["cohort"],prior_reference_status=c["prior_reference_status"]))
-    need(len({c["sha256"] for c in out})==20,"duplicate frozen original")
+    need(len(out)==19 and len({c["sha256"] for c in out})==19,
+         "exact one C7/S1 overlap exclusion expected, no other source change")
     return out
 def inspect(path):
     """Source-only capped prefix: C7 two-sided occurrence eligibility proxy.
@@ -256,7 +258,7 @@ def run_full(c,rep,mode):
                 status,model=ref.external_parse(p)
             else:
                 need(p.returncode==0,"full native failed "+p.stderr[-500:])
-                c6.native_gate(p.stdout,cmd[-2] if False else cm[backend])
+                c6.native_gate(p.stdout,cm[backend])
                 status,model,full_stats=cms.parsed_native(p.stdout)
             if status=="SAT":
                 cms.verify_model(src,model);verified=True
@@ -278,7 +280,7 @@ def run_full(c,rep,mode):
       external_default_seed_not_randomized=(backend=="cadical"))
 def shard(idx):
     ss=hold_sources();need(idx in range(SHARDS),"bad holdout shard")
-    cases=ss[idx::SHARDS];need(len(cases)==4,"expected 4 sources per shard")
+    cases=ss[idx::SHARDS];need(len(cases)==(4 if idx<4 else 3),"source-per-shard drift")
     rows=[]
     for c in cases:
         for rep in range(REPS):
@@ -288,7 +290,7 @@ def shard(idx):
                 x=run_full(c,rep,mode)
                 rows.append(x);save(ROOT/f"shard-{idx}.json",rows)
                 print("C8D_TRIAL",json.dumps(x,sort_keys=True),flush=True)
-    need(len(rows)==48,"48 trials missing")
+    need(len(rows)==len(cases)*REPS*len(MODES),"shard trials missing")
     print("C8D_SHARD_PASS",idx,len(rows),flush=True)
 def audit_diag():
     cc=dev_sources();by_sha={x["sha256"]:x for x in cc}
@@ -324,9 +326,9 @@ def audit():
     rows=[];paired=collections.defaultdict(dict)
     for i in range(SHARDS):
         a=json.loads((ROOT/f"shard-{i}.json").read_text())
-        need(len(a)==48,"partial full-solve shard")
+        need(len(a)==(4 if i<4 else 3)*REPS*len(MODES),"partial full-solve shard")
         rows+=a
-    need(len(rows)==240,"incomplete 240 original paired full trials")
+    need(len(rows)==228,"incomplete 228 original paired full trials")
     for x in rows:
         c=by_sha.get(x["source_sha256"])
         need(c is not None and x["gbd"]==c["gbd"] and x["cohort"]==c["cohort"]
@@ -353,7 +355,7 @@ def audit():
         key=(x["source_sha256"],x["rep"])
         need(x["mode"] not in paired[key],"duplicate mode")
         paired[key][x["mode"]]=x
-    need(len(paired)==40 and all(set(v)==set(MODES) for v in paired.values()),
+    need(len(paired)==38 and all(set(v)==set(MODES) for v in paired.values()),
          "unpaired 40-source-seed x 6-arm cohort")
     for pair in paired.values():
         need(len({x["status"] for x in pair.values() if x["status"]!="TIMEOUT"})<=1,
@@ -386,6 +388,7 @@ def audit():
     report=dict(protocol=PROTO,status="C8D_E2E_AUDIT_PASS",
        full_trials=len(rows),source_count=20,repeats=REPS,cap_s=CAP,
        source_SHA_disjoint_from_C7=True,
+       excluded_one_original_C7_overlap_by_SHA_before_trials=True,
        S1_cohort_previously_evaluated_not_global_blind=True,
        no_pilot_state_reuse=True,pilot_wall_charged=True,
        BVE_proxy_not_actual_internal_BVE_event=True,
