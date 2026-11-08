@@ -1,0 +1,137 @@
+name: DRNAS MRE4 P1 safe causal GF2 + CRR 320 paired 30s
+on:
+  push:
+    branches: [experiment/drnas-mre4-safe-causal-20261108]
+    paths:
+      - 'research/mre4_safe_causal.py'
+      - '.github/workflows/drnas-mre4-safe-causal.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre4-safe-causal-p1
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Certify native CMS 5.11.15, source original SHA, bounded proof gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned CryptoMiniSat headers and compile C++ bridge (OTF Gauss forbidden)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev cryptominisat g++ libgmp-dev
+          dpkg-query -W -f='${Version}\n' libcryptominisat5-dev | grep '^5\.11\.15'
+          python3 -m py_compile research/mre4_safe_causal.py
+          python3 research/r164_pure_exact_gf2.py --selftest
+          python3 research/mre1_cross_representation.py selftest
+          python3 research/mre2_impact_gate.py selftest
+          python3 research/mre4_safe_causal.py selftest
+          mkdir -p mre4_p1
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o mre4_p1/native -lcryptominisat5
+          sha256sum mre4_p1/native > mre4_p1/native.sha256
+      - name: Fetch old source-locked development CNFs without new benchmark tuning
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r195
+          gh run download 42478671195 --repo Frane12/AndroidGameTest -n r195-frozen-verified-sources-binary -D r195
+          sha256sum -c r195/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          sha256sum r195/frozen/manifest.json > mre4_p1/manifest.sha256
+          python3 - <<'PY'
+          import json,pathlib
+          manifest=json.loads(pathlib.Path('r195/frozen/manifest.json').read_text())
+          assert len(manifest['cases'])==32
+          print('MRE4_FROZEN_DEV_SOURCE_SHA_PASS',len(manifest['cases']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre4-p1-frozen-32sha
+          retention-days: 8
+          compression-level: 1
+          path: |
+            r195/frozen/
+            mre4_p1/native
+            mre4_p1/native.sha256
+            mre4_p1/manifest.sha256
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    name: MRE4 safe proof active-vs-shadow shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-p1-frozen-32sha
+          path: .
+      - name: Native CMS 5.11.15 runtime, binary SHA and every original CNF SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64
+          chmod +x mre4_p1/native
+          sha256sum -c mre4_p1/native.sha256
+          sha256sum -c mre4_p1/manifest.sha256
+          python3 research/r195_native_cms_benchmark.py verify
+      - name: Run wall-inclusive bounded 5 arm SHA paired causal probe
+        run: |
+          set -euo pipefail
+          mkdir -p mre4_p1
+          python3 -u research/mre4_safe_causal.py shard --shard ${{ matrix.shard }} --binary mre4_p1/native | tee mre4_p1/shard-${{ matrix.shard }}.log
+          grep -q '^MRE4_SHARD_PASS' mre4_p1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre4-p1-shard-${{ matrix.shard }}
+          retention-days: 35
+          compression-level: 1
+          path: |
+            mre4_p1/shard-${{ matrix.shard }}.json
+            mre4_p1/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-p1-frozen-32sha
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre4-p1-shard-*
+          merge-multiple: true
+          path: mre4_p1
+      - name: Independent full wall and original SAT witness policy audit
+        run: |
+          set -euo pipefail
+          sha256sum -c mre4_p1/manifest.sha256
+          test "$(find mre4_p1 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/mre4_safe_causal.py audit | tee mre4_p1/audit.log
+          grep -q '^MRE4_FINAL' mre4_p1/audit.log
+          cat mre4_p1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE4-P1-STRICT-SAFETY-CAUSAL-FINAL
+          retention-days: 75
+          path: |
+            mre4_p1/report.json
+            mre4_p1/audit.log
