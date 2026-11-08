@@ -1,0 +1,171 @@
+name: DRNAS MRE7e PILOT16 — 16 SHA-frozen originals four-arm 8s PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre7e-pilot16-20261108]
+    paths: ['.github/workflows/drnas-mre7e-pilot16.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre7e-pilot16-v1
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Recover frozen reference-only cohort and compile exact CMS bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Wait for earlier frozen baseline-only selection, then verify SHA-disjoint sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre7_easy mre5/lib
+          # 20+ selection intentionally failed (only 16), preserving this frozen pilot artifact.
+          gh run download 42503444095 -R Frane12/AndroidGameTest -n DRNAS-MRE7E-20PLUS-SHA-LOCKED-ORIGINAL-EASY-CNFS -D mre7_easy
+          python3 -u research/mre7_extended_easy_freeze.py verify
+          python3 - <<'PY'
+          import json
+          m=json.load(open("mre7_easy/manifest.json"))
+          assert len(m["selected_cases"])==16
+          assert m["source_selection_before_mre_gate"]
+          print("MRE7E_PILOT16_REFERENCE_ONLY_SHA_PASS",len(m["selected_cases"]))
+          PY
+          gh run download 42495094599 -R Frane12/AndroidGameTest -n mre6b-blind-pinned-CMS -D mre5
+          sha256sum -c mre5/binaries.sha256
+          gh run download 42497644725 -R Frane12/AndroidGameTest -n crr1b6-frozen-input -D .
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile solver bridge from existing SHA-pinned CMS library
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p mre7_easy/bin
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("research/r195_cms_native_bridge.cpp").read_text()
+          original=s.splitlines()
+          removed=[line for line in original if
+                   'check(model[j]==l_True || model[j]==l_False,' in line or
+                   '"undefined original variable in SAT witness");' in line]
+          assert len(removed)==2,"expected two unused-variable model checks"
+          s=chr(10).join(line for line in original if line not in removed)+chr(10)
+          Path("mre7_easy/bin/native.cpp").write_text(s)
+          print("MRE7_NATIVE_LIFTING_BRIDGE_PATCH_PASS")
+          PY
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -o mre7_easy/bin/native \
+            mre7_easy/bin/native.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../../mre5/lib'
+          chmod +x mre7_easy/bin/native
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre7_easy/bin/native | tee mre7_easy/native.ldd
+          grep "$PWD/mre5/lib/libcryptominisat5.so" mre7_easy/native.ldd
+          sha256sum mre7_easy/bin/native > mre7_easy/bin.sha256
+          python3 -u research/mre7_easy_paired.py selftest
+          cat > mre7_easy/smoke.cnf <<'EOF'
+          p cnf 3 2
+          1 2 0
+          -2 3 0
+          EOF
+          : > mre7_easy/empty.tsv
+          LD_LIBRARY_PATH="$PWD/mre5/lib" mre7_easy/bin/native mre7_easy/smoke.cnf mre7_easy/empty.tsv mre7_easy/empty.tsv cms_native 1337 | tee mre7_easy/smoke-native.log
+          grep -q '^R195_RESULT status=SAT' mre7_easy/smoke-native.log
+          built/bin/kissat_4_0_4 mre7_easy/smoke.cnf | tee mre7_easy/smoke-kissat.log || test "${PIPESTATUS[0]}" -eq 10
+          grep -q '^s SATISFIABLE' mre7_easy/smoke-kissat.log
+          echo MRE7_NATIVE_AND_KISSAT_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre7e-pilot16-frozen-originals-and-native-binaries
+          retention-days: 12
+          compression-level: 6
+          path: |
+            mre7_easy/manifest.json
+            mre7_easy/source.sha256
+            mre7_easy/*.cnf
+            mre7_easy/bin/native
+            mre7_easy/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+  paired:
+    name: MRE7 4-arm 2-rep 8s official source SHA shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre7e-pilot16-frozen-originals-and-native-binaries
+          path: .
+      - name: Assert frozen source checksums and same pinned shared CMS
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          chmod +x mre7_easy/bin/native built/bin/kissat_4_0_4
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre7_easy/bin/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Compare native CMS, all-equalities, mathematical gate and Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre7_bench
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre7_easy_paired.py shard --shard ${{ matrix.shard }} --cms mre7_easy/bin/native --kissat built/bin/kissat_4_0_4 | tee mre7_bench/shard-${{ matrix.shard }}.log
+          grep -q '^MRE7_SHARD_PASS ${{ matrix.shard }} ' mre7_bench/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre7-easy-results-shard-${{ matrix.shard }}
+          retention-days: 12
+          path: |
+            mre7_bench/shard-${{ matrix.shard }}.json
+            mre7_bench/shard-${{ matrix.shard }}.log
+  audit:
+    name: Pilot-only 16 source SAT witness and four-arm PAR2 audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre7e-pilot16-frozen-originals-and-native-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre7-easy-results-shard-*
+          merge-multiple: true
+          path: mre7_bench
+      - name: Verify original source SHA and paired SAT/UNSAT results
+        run: |
+          set -euo pipefail
+          (cd mre7_easy && sha256sum -c source.sha256)
+          python3 -u research/mre7_easy_paired.py audit | tee mre7_bench/audit.log
+          grep -q '^MRE7_FINAL' mre7_bench/audit.log
+          cat mre7_bench/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE7E-PILOT16-FAST-PAR2-NO-PROMOTION-FINAL
+          retention-days: 30
+          path: |
+            mre7_bench/report.json
+            mre7_bench/audit.log
+            mre7_easy/manifest.json
