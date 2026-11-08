@@ -188,7 +188,7 @@ def native_run(c,rep,mode,binary,budget=None):
              "root UNSAT on reference SAT")
         need(stages["working_clauses"]==len(cs) and
              stages["clauses_loaded"]<=len(cs),"stage count wrong")
-        m=re.search(r"^R195_RESULT status=(SAT|UNSAT|BUDGET|UNKNOWN) conflicts=(\\d+) decisions=(\\d+) propagations=(\\d+) source_rows=(\\d+) derived_rows=(\\d+)$",
+        m=re.search(r"^R195_RESULT status=(SAT|UNSAT|BUDGET|UNKNOWN) conflicts=(\d+) decisions=(\d+) propagations=(\d+) source_rows=(\d+) derived_rows=(\d+)$",
              p.stdout,re.M)
         need(m is not None,"no original-native CDCL stats")
         status=m.group(1)
