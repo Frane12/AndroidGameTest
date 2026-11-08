@@ -1,0 +1,153 @@
+name: DRNAS MRE4 P3 Q1 — certified quotient and preserved R28 480 paired
+on:
+  push:
+    branches: [experiment/drnas-mre4-p3-certified-quotient-20261108]
+    paths:
+      - 'research/mre4_p3_certified_quotient.py'
+      - 'research/mre4_p3_q1_benchmark.py'
+      - '.github/workflows/drnas-mre4-p3-q1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre4-p3-certified-quotient
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    name: Verify certified quotient and freeze full-source SHA
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Selftest exact R28, independent GF2/CRR proofs, quotient, controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre4_p3_certified_quotient.py research/mre4_p3_q1_benchmark.py
+          python3 research/r164_pure_exact_gf2.py --selftest
+          python3 research/mre1_cross_representation.py selftest
+          python3 research/mre4_safe_causal.py selftest
+          python3 research/mre4_p3_q1_benchmark.py selftest
+      - name: Restore verified MRE5 native CMS CPU-test-off binary and original development sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          gh run download 42490090624 --repo Frane12/AndroidGameTest -n mre5-inputs -D .
+          test -f r195/frozen/manifest.json
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          chmod +x mre5/native
+          python3 research/r195_native_cms_benchmark.py verify
+          ldd mre5/native | grep cryptominisat5
+          python3 -u research/mre4_p3_q1_benchmark.py freeze
+          python3 -u research/mre4_p3_q1_benchmark.py verify
+          sha256sum mre4_p3/frozen/manifest.json > mre4_p3/manifest.sha256
+      - name: Native SAT-witness reconstruction and real equivalence elimination smoke
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import mre4_p3_q1_benchmark as p
+          c=next(x for x in p.cases() if x["cohort"]=="p3_new_synthetic_equivalence")
+          for mode in ("cms_native","r28_safe","eq_shadow","eq_quotient_no_xor","eq_quotient_with_xor"):
+              r=p.one(c,mode,0,"mre5/native")
+              assert r["status"]=="SAT",r
+              if mode.startswith("eq_quotient"):
+                  assert r["reduced_variables"]==1 and r["saved_clauses"]>=1,r
+              print('MRE4_P3_CAUSAL_SMOKE',mode,r["wall_s"],r["saved_clauses"])
+          print("MRE4_P3_ORIGINAL_WITNESS_SMOKE_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre4-p3-frozen40sha-cms-binary
+          retention-days: 9
+          compression-level: 1
+          path: |
+            mre5/native
+            mre5/lib/
+            mre5/binaries.sha256
+            mre4_p3/frozen/
+            mre4_p3/manifest.sha256
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    name: P3 quotient-shadow-XOR-R28 shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-p3-frozen40sha-cms-binary
+          path: .
+      - name: Audit binaries and exact original SHA before every paired shard
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          chmod +x mre5/native
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre4_p3/manifest.sha256
+          python3 research/mre4_p3_q1_benchmark.py verify
+          ldd mre5/native | grep cryptominisat5
+      - name: Six-arm 30s wall-inclusive SAT model-checked benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/mre4_p3_q1_benchmark.py shard \
+             --shard ${{ matrix.shard }} --binary mre5/native \
+            | tee mre4_p3/shard-${{ matrix.shard }}.log
+          grep -q '^MRE4_P3_SHARD_PASS' mre4_p3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre4-p3-shard-${{ matrix.shard }}
+          retention-days: 40
+          compression-level: 1
+          path: |
+            mre4_p3/shard-${{ matrix.shard }}.json
+            mre4_p3/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-p3-frozen40sha-cms-binary
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre4-p3-shard-*
+          merge-multiple: true
+          path: mre4_p3
+      - name: Confirm all 480 records, original witnesses, certified quotient and PAR2
+        run: |
+          set -euo pipefail
+          sha256sum -c mre4_p3/manifest.sha256
+          test "$(find mre4_p3 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/mre4_p3_q1_benchmark.py audit | tee mre4_p3/audit.log
+          grep -q '^MRE4_P3_FINAL' mre4_p3/audit.log
+          cat mre4_p3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE4-P3-Q1-CERTIFIED-QUOTIENT-FINAL
+          retention-days: 80
+          path: |
+            mre4_p3/report.json
+            mre4_p3/all-trials.json
+            mre4_p3/audit.log
