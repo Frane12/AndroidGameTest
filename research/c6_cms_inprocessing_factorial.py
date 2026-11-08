@@ -81,7 +81,9 @@ def run(c,rep,mode):
         if status in ("SAT","UNSAT"):
             need(status==c["expected_status"],"SAT/UNSAT vs pinned source contradiction")
     if status not in ("SAT","UNSAT") or elapsed>CAP:
-        status="TIMEOUT";verified=False
+        # A process completing just after the strict wall cap is still PAR2 timeout.
+        # Its post-cap counters are not comparable to on-time terminal runs.
+        status="TIMEOUT";verified=False;gate={};stats=None
     need(status!="SAT" or verified,"SAT witness not proven on original CNF")
     return dict(protocol=PROTO,cohort="six frozen C4/C5 development SHA not blind",
         gbd=c["gbd"],sha256=c["sha256"],source_control=bool(c["control"]),
