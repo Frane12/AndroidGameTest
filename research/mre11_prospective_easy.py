@@ -18,8 +18,8 @@ import mre11_holdout as pinned
 import mre6b_blind_freeze as history
 import r195_native_cms_benchmark as ref
 
-PROTO="DRNAS-MRE11-PROSP-GBD2021-23-MINISAT1M-REFEASY-12-5ARM-4SEED-12S-v1"
-SALT="DRNAS-MRE11-PROSPECTIVE-EASY-SOURCE-GBD2021-23-20261108-FREEZE"
+PROTO="DRNAS-MRE11-PROSP-GBD2021-23-INDEX-FALLBACK-REFEASY-12-5ARM-4SEED-12S-v2"
+SALT="DRNAS-MRE11-PROSPECTIVE-EASY-SOURCE-INDEX-FALLBACK-GBD2021-23-20261108-V2"
 ROOT=pathlib.Path("mre11_prospective")
 PRIOR=pathlib.Path("old_ref/mre7_easy")
 YEARS=(2021,2022,2023)
@@ -90,25 +90,35 @@ def pool():
         easy=[r.strip().rsplit("/",1)[-1] for r in raw_easy.decode().splitlines() if r.strip()]
         need(len(all_ids)==400 and len(set(all_ids))==400,
              "official index "+str(year)+" not 400 unique GBDs")
-        need(set(easy)<=set(all_ids) and len(easy)>=15,
-             "minisat1m published index malformed or empty")
+        need(set(easy)<=set(all_ids),
+             "minisat1m metadata source contains non-official GBDs")
         need(all(re.fullmatch(r"[0-9a-f]{32}",g) for g in all_ids),"bad official GBD ID")
+        # Several older tracks have no useful published minisat1m=yes index.
+        # Deterministic fallback: ALL official originals, baseline CMS screened
+        # under exactly the same 0.12-3s criterion, never an MRE gate.
+        use_easy=len(easy)>=15
         snapshots[str(year)]={"index_sha256":sha(raw_all),
             "minisat1m_yes_index_sha256":sha(raw_easy),
-            "official_400":len(all_ids),"minisat1m_yes":len(easy)}
-        all_entries +=[(year,g) for g in easy]
-    all_ids={g for year,g in all_entries}
+            "official_400":len(all_ids),"minisat1m_yes":len(easy),
+            "index_easy_prefilter_available":use_easy,
+            "fallback_to_salted_full_official":not use_easy}
+        all_entries +=[(year,g,0) for g in easy] if use_easy else [(year,g,1) for g in all_ids]
+    all_ids={g for year,g,tier in all_entries}
     repo_ids,old_shas=history.inspect_repo_ids(all_ids)
     prior_ids.update(repo_ids)
-    eligible=[(y,g) for y,g in all_entries if g not in prior_ids]
-    eligible.sort(key=lambda x:sha((SALT+"|"+str(x[0])+"|"+x[1]).encode()))
-    need(len(eligible)>=ATTEMPT_LIMIT//3,"too few source-disjoint official easy inputs")
-    need(len(set(g for y,g in eligible))==len(eligible),"GBD repeats across official years")
+    ranked=sorted((y,g,tier) for y,g,tier in all_entries if g not in prior_ids)
+    ranked.sort(key=lambda x:(x[2],sha((SALT+"|"+str(x[0])+"|"+x[1]).encode())))
+    # One GBD source can appear in more than one competition; freeze it once.
+    eligible=[];used=set()
+    for year,g,tier in ranked:
+        if g in used:continue
+        used.add(g);eligible.append((year,g))
+    need(len(eligible)>=ATTEMPT_LIMIT//3,"too few source-disjoint official inputs")
     return eligible,old_shas,{"indices":snapshots,
          "prior_original_gbds":len(prior_ids),
          "source_candidates":len(eligible),
          "known_prior_registry_not_globally_exhaustive":True,
-         "minisat1m_label_used_before_any_solver_cpu":True}
+         "minisat1m_index_used_when_available_else_full_official_fallback":True}
 
 def screen(src,binary,cadical):
     # This is the ORIGINAL native CMS arm, not a DRNAS gate.
