@@ -3,7 +3,7 @@
 Development diagnostics: C7 six previously-seen original SHA, four CMS modes,
 two independent conflict budgets (128, 1024), two seeds = 96 bounded probes.
 Prospective *relative to C7*, not globally blind: 19 original S1 source SHA,
-six full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 228 trials.
+seven full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 266 trials.
 A bounded-CDCL diagnostic is NEVER counted as full SAT without an original
 CNF witness; any router probe and abandoned solver work are charged to wall.
 C8D dynamic pilots use fresh processes; learned state is NOT transferred.
@@ -17,11 +17,11 @@ import c7_standard_solver_bve_crosscheck as c7
 import mre11b_prospective_benchmark as ref
 import r195_native_cms_benchmark as cms
 
-PROTO="DRNAS-C8D-C7-BVE-EARLY-CDCL-19SHA-6ARM-2REP-15S-v1"
+PROTO="DRNAS-C8D-C7-BVE-EARLY-CDCL-19SHA-7ARM-2REP-15S-v1"
 ROOT=pathlib.Path("c8d_out")
 S1=pathlib.Path("c8d_s1_source")/"s1_router"
 REPS=2;CAP=15.0;SHARDS=5
-MODES=("cms_native","cms_dedup_nobve","cms_nobve","cadical","c8_bve_static","c8_bve_early")
+MODES=("cms_native","cms_dedup_nobve","cms_nobve","cadical","kissat","c8_bve_static","c8_bve_early")
 DIAG_MODES=("cpp_native","cpp_dedup","c6_native_nobve","c6_dedup_nobve")
 DIAG_BUDGETS=(128,1024)
 PROBE_CONFLICTS=256
@@ -243,6 +243,8 @@ def run_full(c,rep,mode):
     elif remaining>0.03:
         if backend=="cadical":
             cmd=["/usr/bin/cadical",str(src.resolve())]
+        elif backend=="kissat":
+            cmd=[str(pathlib.Path("built/bin/kissat_4_0_4").resolve()),str(src.resolve())]
         else:
             cm={"cms_native":"cpp_native","cms_nobve":"c6_native_nobve",
                 "cms_dedup_nobve":"c6_dedup_nobve"}
@@ -254,7 +256,7 @@ def run_full(c,rep,mode):
                              check=False,timeout=remaining,env=env)
         except subprocess.TimeoutExpired:p=None
         if p is not None:
-            if backend=="cadical":
+            if backend in ("cadical","kissat"):
                 status,model=ref.external_parse(p)
             else:
                 need(p.returncode==0,"full native failed "+p.stderr[-500:])
@@ -277,7 +279,7 @@ def run_full(c,rep,mode):
       UNSAT_independent_LRAT=False,wall_s=round(elapsed,6),cap_s=CAP,
       par2_s=round(elapsed if status!="TIMEOUT" else 2*CAP,6),
       native_stats=full_stats,probes_abandoned_restart_not_preserved=True,
-      external_default_seed_not_randomized=(backend=="cadical"))
+      external_default_seed_not_randomized=(backend in ("cadical","kissat")))
 def shard(idx):
     ss=hold_sources();need(idx in range(SHARDS),"bad holdout shard")
     cases=ss[idx::SHARDS];need(len(cases)==(4 if idx<4 else 3),"source-per-shard drift")
@@ -328,7 +330,7 @@ def audit():
         a=json.loads((ROOT/f"shard-{i}.json").read_text())
         need(len(a)==(4 if i<4 else 3)*REPS*len(MODES),"partial full-solve shard")
         rows+=a
-    need(len(rows)==228,"incomplete 228 original paired full trials")
+    need(len(rows)==266,"incomplete 266 original paired full trials")
     for x in rows:
         c=by_sha.get(x["source_sha256"])
         need(c is not None and x["gbd"]==c["gbd"] and x["cohort"]==c["cohort"]
@@ -349,7 +351,7 @@ def audit():
                  static_choice(x["source_BVE_proxy"])[0]==x["backend"],
                  "static gate drift")
         else:
-            known={"cms_native","cms_dedup_nobve","cms_nobve","cadical"}
+            known={"cms_native","cms_dedup_nobve","cms_nobve","cadical","kissat"}
             need(x["mode"] in known and x["backend"]==x["mode"] and x["pilots"]==[],
                  "reference mode changed")
         key=(x["source_sha256"],x["rep"])
@@ -383,7 +385,7 @@ def audit():
                             solved=sum(x["status"]!="TIMEOUT" for x in xx if x["mode"]==m))
                       for m in MODES}))
     oracle=round(sum(min(v["par2_s"] for v in pair.values()
-                       if v["mode"] in ("cms_native","cms_dedup_nobve","cms_nobve","cadical"))
+                       if v["mode"] in ("cms_native","cms_dedup_nobve","cms_nobve","cadical","kissat"))
                      for pair in paired.values()),6)
     report=dict(protocol=PROTO,status="C8D_E2E_AUDIT_PASS",
        full_trials=len(rows),source_count=20,repeats=REPS,cap_s=CAP,
@@ -393,7 +395,7 @@ def audit():
        no_pilot_state_reuse=True,pilot_wall_charged=True,
        BVE_proxy_not_actual_internal_BVE_event=True,
        original_SAT_witness_verified=True,UNSAT_independent_LRAT=False,
-       no_auto_promotion=True,oracle_four_backend_PAR2_s=oracle,
+       no_auto_promotion=True,oracle_five_backend_PAR2_s=oracle,
        scores=scores,per_source=per)
     save(ROOT/"report.json",report)
     print("C8D_FINAL",json.dumps({k:v for k,v in report.items() if k!="per_source"},sort_keys=True),flush=True)
