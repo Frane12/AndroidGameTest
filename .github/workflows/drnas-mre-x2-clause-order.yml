@@ -1,0 +1,149 @@
+name: DRNAS MRE X2 — clause-order causal 13 SHA 7 variants 4 seeds PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre-x2-clause-order-20261108]
+    paths: ['.github/workflows/drnas-mre-x2-clause-order.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x2-clause-order-20261108
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Restore frozen SHA13 and unmodified X native; check seven clause permutations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact previous MRE X native executable and original frozen SHA13 source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42521334746 -R Frane12/AndroidGameTest \
+            -n mre-x-13-original-sha-source-and-certified-seven-native-arms -D .
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          chmod +x mre_x/bin/native mre_x/bin/emit
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre_x_benchmark.py research/mre_x2_clause_order_causal.py
+          python3 -u research/mre_x_benchmark.py verify
+      - name: Independently check Boolean truth, exact clause multiset and original x_tail parity
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x2_clause_order_causal.py selftest --emit mre_x/bin/emit
+          python3 -u research/mre_x2_clause_order_causal.py freeze --emit mre_x/bin/emit \
+            | tee mre_x2/freeze.log
+          python3 -u research/mre_x2_clause_order_causal.py verify | tee mre_x2/verify.log
+          grep -q '^MRE_X2_FREEZE_PASS 13 modes 7' mre_x2/freeze.log
+          grep -q '^MRE_X2_VERIFY_PASS 13 7' mre_x2/verify.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x2-frozen-13-source-native-exact-multisets-seven-orders
+          retention-days: 21
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            mre_x/*.cnf
+            mre_x/manifest.json
+            mre_x/source.sha256
+            mre_x/bin.sha256
+            mre_x/bin/native
+            mre_x/bin/emit
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x2/*.cnf
+            mre_x2/manifest.json
+            mre_x2/freeze.log
+            mre_x2/verify.log
+
+  paired:
+    name: X2 exact-order seven-arm source-paired real SAT PAR2 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x2-frozen-13-source-native-exact-multisets-seven-orders
+          path: .
+      - name: Revalidate source SHA13, executable, clause multiset and fixed manifest
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          chmod +x mre_x/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre_x2_clause_order_causal.py verify
+      - name: Seven clause-order interventions x same solver seed; 12s real SAT/UNSAT PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x2_clause_order_causal.py shard \
+            --shard ${{ matrix.shard }} --native mre_x/bin/native \
+            | tee mre_x2/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X2_SHARD_PASS ${{ matrix.shard }} ' \
+            mre_x2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x2-paired-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            mre_x2/shard-${{ matrix.shard }}.json
+            mre_x2/shard-${{ matrix.shard }}.log
+
+  audit:
+    name: MRE X2 FINAL 364 trials verified original SHA witness and PAR2 causal comparison
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x2-frozen-13-source-native-exact-multisets-seven-orders
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x2-paired-shard-*
+          merge-multiple: true
+          path: mre_x2
+      - name: Full paired audit; no blind or LRAT claim, no automatic promotion
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          python3 -u research/mre_x2_clause_order_causal.py audit \
+            | tee mre_x2/audit.log
+          grep '^MRE_X2_FINAL' mre_x2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE-X2-13SHA-7ORDER-4SEED-12S-REAL-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x2/report.json
+            mre_x2/audit.log
+            mre_x2/manifest.json
+            mre_x2/shard-*.json
