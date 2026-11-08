@@ -1,0 +1,159 @@
+name: DRNAS YalSAT R2 adaptive gate 48 SHA 1152 paired
+on:
+  push:
+    branches: [experiment/drnas-yalsat-adaptive-r2-20261108]
+    paths:
+      - 'research/drnas_yalsat_adaptive_r2.py'
+      - '.github/workflows/drnas-yalsat-adaptive-r2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-yalsat-adaptive-r2
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run structural-gate unit tests and Python compilation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_yalsat_scout.py research/drnas_yalsat_adaptive_r2.py
+          python3 -u research/drnas_yalsat_adaptive_r2.py selftest
+      - name: Obtain pinned upstream YalSAT R193 native and original sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p drnas_yalsat
+          gh run download 42435569125 --repo Frane12/AndroidGameTest -n drnas-yalsat-pinned-original -D drnas_yalsat
+          chmod +x drnas_yalsat/yalsat drnas_yalsat/r193-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("drnas_yalsat")
+          pin=json.loads((p/"drnas-yalsat-pin.json").read_text())
+          for file,key in (("yalsat","yalsat_binary_sha256"),
+                           ("r193-driver","r193_binary_sha256"),
+                           ("frozen/manifest.json","original_source_manifest_sha256")):
+              expected=pin[key]
+              actual=hashlib.sha256((p/file).read_bytes()).hexdigest()
+              assert actual==expected, (file,actual,expected)
+          assert pin["yalsat_commit"]=="a0fd39f072f2d4693dd5a1977de3c3d3f69c8850"
+          print("YALS_R2_PIN_PASS",json.dumps(pin,sort_keys=True))
+          PY
+          python3 -u research/drnas_yalsat_adaptive_r2.py verify
+      - name: Validate structural gate without using SAT labels
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,"research")
+          import drnas_yalsat_adaptive_r2 as r2
+          import drnas_yalsat_scout as b
+          choices=b.cases()
+          distribution={}
+          for c in choices:
+              f=r2.structural_profile(b.FROZEN/(c["id"]+".cnf"))
+              cap,reason=r2.static_adaptive_cap(f)
+              distribution[reason]=distribution.get(reason,0)+1
+              assert cap in (0,.05,.10,.25)
+          assert sum(distribution.values())==48
+          print("YALS_R2_FROZEN_GATE_DISTRIBUTION",distribution)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-yalsat-r2-pinned
+          retention-days: 30
+          compression-level: 1
+          path: |
+            drnas_yalsat/frozen/
+            drnas_yalsat/yalsat
+            drnas_yalsat/r193-driver
+            drnas_yalsat/drnas-yalsat-pin.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    name: R2 YalSAT 12-arm SHA-paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-yalsat-r2-pinned
+          path: drnas_yalsat
+      - name: Install CryptoMiniSat and verify exact frozen source and binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x drnas_yalsat/yalsat drnas_yalsat/r193-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("drnas_yalsat")
+          pin=json.loads((p/"drnas-yalsat-pin.json").read_text())
+          for file,key in (("yalsat","yalsat_binary_sha256"),
+                           ("r193-driver","r193_binary_sha256"),
+                           ("frozen/manifest.json","original_source_manifest_sha256")):
+              assert hashlib.sha256((p/file).read_bytes()).hexdigest()==pin[key]
+          print("YALS_R2_SHARD_SHA_PIN_PASS")
+          PY
+          python3 -u research/drnas_yalsat_adaptive_r2.py verify
+      - name: Measure 30-second FULL-budget baselines, fixed scout, and adaptive gate
+        run: |
+          set -euo pipefail
+          mkdir -p drnas_yalsat_r2
+          python3 -u research/drnas_yalsat_adaptive_r2.py shard --shard ${{ matrix.shard }} --binary drnas_yalsat/r193-driver --cms cryptominisat5 --yals drnas_yalsat/yalsat | tee drnas_yalsat_r2/shard-${{ matrix.shard }}.log
+          grep -q '^YALS_R2_SHARD_PASS' drnas_yalsat_r2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-yalsat-r2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            drnas_yalsat_r2/shard-${{ matrix.shard }}.json
+            drnas_yalsat_r2/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-yalsat-r2-pinned
+          path: drnas_yalsat
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-yalsat-r2-shard-*
+          merge-multiple: true
+          path: drnas_yalsat_r2
+      - name: Strict 48 x 2 x 12 source-identical paired PAR2 proof-policy audit
+        run: |
+          set -euo pipefail
+          test "$(find drnas_yalsat_r2 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_yalsat_adaptive_r2.py audit | tee drnas_yalsat_r2/audit.log
+          grep -q '^YALS_R2_FINAL' drnas_yalsat_r2/audit.log
+          cat drnas_yalsat_r2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-YALSAT-R2-ADAPTIVE-1152-FINAL
+          retention-days: 90
+          path: |
+            drnas_yalsat_r2/report.json
+            drnas_yalsat_r2/all-trials.json
+            drnas_yalsat_r2/audit.log
