@@ -1,0 +1,197 @@
+name: DRNAS Medical R26 — frozen oracle-history replay and strict R24D control
+run-name: R26 oracle history — cold versus warm and original strict controls
+
+on:
+  push:
+    branches:
+      - experiment/drnas-medical-r26-oracle-history-20261108
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sequence:
+    name: "R26 34-call oracle replay ${{ matrix.mode }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [warm_history, cold_each_call]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen scientific backend and assert unchanged validation
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy==1.17.1
+          python3 -m py_compile research/drnas_medical/gmispy_r26_oracle_history.py
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 42422748623
+          github-token: ${{ github.token }}
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          path: r26/locked
+      - name: Retrieve original SHA-frozen published iML1515
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r26/r9 r26/out
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r26/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r26/r9/source --freeze r26/r9/frozen
+          test -s r26/locked/router-and-holdouts.json
+      - name: Replay exact R24D 34-call trace without SAT prehistory
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_medical/gmispy_r26_oracle_history.py \
+            --source r26/r9/source \
+            --manifest r26/locked/router-and-holdouts.json \
+            --mode ${{ matrix.mode }} \
+            --out r26/out/history-${{ matrix.mode }}.json \
+            2>&1 | tee r26/out/history-${{ matrix.mode }}.log
+          grep -q '^R26_FINAL ' r26/out/history-${{ matrix.mode }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R26-HISTORY-${{ matrix.mode }}
+          retention-days: 30
+          path: r26/out
+          if-no-files-found: warn
+
+  original_strict:
+    name: "R26 original R24D strict N${{ matrix.n }} ${{ matrix.arm }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - n: 384
+            arm: r9_baseline
+          - n: 384
+            arm: share_12_control
+          - n: 192
+            arm: share_12_control
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned COBRA and run original R24D syntax and selftest
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check cobra==0.30.0 python-sat==1.9.dev21 scipy==1.17.1
+          python3 -m py_compile research/drnas_medical/gmispy_r24d_primal_oracle_forensics.py
+          python3 -u research/drnas_medical/gmispy_r24_regression_guard.py selftest
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 42422748623
+          github-token: ${{ github.token }}
+          name: DRNAS-MEDICAL-R24-LOCKED-GPR-SELECTOR-AND-HOLDOUTS
+          path: r26/locked
+      - name: Verify original iML1515 biological source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r26/r9 r26/out
+          gh run download 42239472392 --repo Frane12/AndroidGameTest \
+            -n DRNAS-R9-IML1515-SHA-FROZEN-SOURCE-AND-COHORTS -D r26/r9
+          python3 -u research/drnas_medical/gmispy_r9_scaling.py verify \
+            --source r26/r9/source --freeze r26/r9/frozen
+          test -s r26/locked/router-and-holdouts.json
+      - name: Exact R24D strict solve, with prior failures independently tracked
+        run: |
+          set -euo pipefail
+          timeout -k 10s 360s python3 -u research/drnas_medical/gmispy_r24d_primal_oracle_forensics.py \
+            --source r26/r9/source \
+            --manifest r26/locked/router-and-holdouts.json \
+            --n ${{ matrix.n }} --arm ${{ matrix.arm }} \
+            --out r26/out/strict-${{ matrix.n }}-${{ matrix.arm }}.json \
+            2>&1 | tee r26/out/strict-${{ matrix.n }}-${{ matrix.arm }}.log
+          grep -q '^R24D_FINAL ' r26/out/strict-${{ matrix.n }}-${{ matrix.arm }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R26-STRICT-${{ matrix.n }}-${{ matrix.arm }}
+          retention-days: 30
+          path: r26/out
+          if-no-files-found: warn
+
+  audit:
+    name: R26 strict research-only final audit
+    runs-on: ubuntu-24.04
+    needs: [sequence, original_strict]
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DRNAS-MEDICAL-R26-*
+          path: r26/all
+          merge-multiple: true
+      - name: Require five diagnostic outputs and fail closed for unexpected status
+        run: |
+          set -euo pipefail
+          mkdir -p r26/audit
+          python3 - <<'PY' | tee r26/audit/audit.log
+          import json,pathlib
+          root=pathlib.Path('r26/all')
+          modes=('warm_history','cold_each_call')
+          source='9c772d44ca43350e40dc7ee86c7aa148796856be1eea45e5406c6df8f7dcde28'
+          history=[json.loads((root/('history-'+m+'.json')).read_text()) for m in modes]
+          assert all(h['protocol']=='DRNAS-MEDICAL-R26-R24D-ORACLE-HISTORY-v1'
+                     and h['complete'] and h['source_sha']==source
+                     and h['original_calls']==34 and h['repetitions']==3
+                     and len(h['runs'])==3 and not h['speedup_validated']
+                     and not h['R24_correctness_validated'] for h in history)
+          assert len({h['frozen_digest'] for h in history})==1
+          controls=((384,'r9_baseline'),(384,'share_12_control'),
+                    (192,'share_12_control'))
+          original=[]
+          for n,arm in controls:
+              v=json.loads((root/('strict-%d-%s.json'%(n,arm))).read_text())
+              assert v['protocol']=='R24D-FORENSIC-STRICT-v1'
+              assert v['complete'] and v['source_sha']==source
+              assert v['frozen_digest']==history[0]['frozen_digest']
+              assert v['arm']==arm and v['n']==n
+              assert v['outcome'] in ('STRICT_FAILURE_REPRODUCED',
+                                      'NO_FAILURE_REPRODUCED')
+              original.append({'n':n,'arm':arm,'outcome':v['outcome'],
+                               'failure':v.get('failure')})
+          warm=history[0]
+          cold=history[1]
+          report={
+              'status':'R26_DIAGNOSTICS_RECORDED_NOT_BIOLOGICALLY_CERTIFIED',
+              'original_source_sha':source,
+              'diagnostic_shards':5,'replay_calls_per_repetition':34,
+              'repetitions_per_history_mode':3,
+              'warm_R24D_reproduced':warm['historical_trace_reproduced_count'],
+              'cold_R24D_reproduced':cold['historical_trace_reproduced_count'],
+              'warm_target_disagreement':warm['any_target_disagreement'],
+              'cold_target_disagreement':cold['any_target_disagreement'],
+              'warm_state_leak':warm['any_bounds_or_genes_leaked'],
+              'cold_state_leak':cold['any_bounds_or_genes_leaked'],
+              'full_strict_controls':original,
+              'speedup_certified':False,
+              'R24_biological_correctness_certified':False,
+              'no_new_medical_efficacy_claims':True
+          }
+          pathlib.Path('r26/audit/summary.json').write_text(
+              json.dumps(report,sort_keys=True,indent=2)+'\n')
+          print('R26_AUDIT '+json.dumps(report,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MEDICAL-R26-FINAL-RESEARCH-AUDIT
+          retention-days: 30
+          path: r26/audit
+          if-no-files-found: warn
