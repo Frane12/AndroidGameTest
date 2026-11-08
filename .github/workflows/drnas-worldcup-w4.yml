@@ -1,0 +1,120 @@
+name: DRNAS WorldCup W4 — short SAT2026 24 originals 5 solvers 360 paired 30s
+on:
+  push:
+    branches: [experiment/drnas-worldcup-short-w4-20261108]
+    paths: ['.github/workflows/drnas-worldcup-w4.yml', 'research/drnas_worldcup_w4.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: worldcup-w4-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore pinned W1 official sources and six solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42397824391 -R Frane12/AndroidGameTest -n worldsim-w1-frozen-official24-six-solvers -D .
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          mkdir -p history checker
+          gh run download 42420269832 -R Frane12/AndroidGameTest -n turn2-frozen-original12 -D history
+          tar xzf history/turn2-frozen.tar.gz -C history
+          git clone https://github.com/marijnheule/drat-trim.git checker/src
+          make -C checker/src drat-trim
+          cp checker/src/drat-trim checker/drat-trim
+          git -C checker/src rev-parse HEAD > checker/source-commit.txt
+          mkdir -p worldcup_w4
+          python3 -m py_compile research/drnas_worldcup_w4.py
+          python3 -u research/drnas_worldcup_w4.py prepare | tee worldcup_w4/prepare.log
+          grep -q '^W4_PREPARE_PASS' worldcup_w4/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w4-input
+          path: |
+            worldsim-w1-frozen.tar.gz
+            history/
+            checker/drat-trim
+            checker/source-commit.txt
+            worldcup_w4/manifest.json
+            worldcup_w4/pins.json
+            worldcup_w4/prepare.log
+          retention-days: 90
+          if-no-files-found: error
+  paired:
+    name: W4 five solvers 30s paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w4-input}
+      - name: Run sequential randomized single CPU comparisons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          python3 -u research/drnas_worldcup_w4.py shard --shard ${{ matrix.shard }} | tee worldcup_w4/shard-${{ matrix.shard }}.log
+          grep -q '^W4_SHARD_PASS' worldcup_w4/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w4-shard-${{ matrix.shard }}
+          path: |
+            worldcup_w4/shard-${{ matrix.shard }}.json
+            worldcup_w4/shard-${{ matrix.shard }}.log
+            worldsim_w1/raw/${{ matrix.shard }}/**/stdout.log
+          retention-days: 90
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w4-input}
+      - name: Audit complete 360 paired attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'w4-shard-*' -D worldcup_w4/collected
+          find worldcup_w4/collected -name 'shard-*.json' -type f -exec cp '{}' worldcup_w4/ \;
+          python3 -u research/drnas_worldcup_w4.py audit | tee worldcup_w4/audit.log
+          grep -q '^W4_FINAL' worldcup_w4/audit.log
+          cat worldcup_w4/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-WORLDCUP-W4-360-SHORT-FINAL
+          path: worldcup_w4/
+          retention-days: 90
+
