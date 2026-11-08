@@ -1,0 +1,186 @@
+name: DRNAS C8H — isolated BVE ablation and learned-clause telemetry
+on:
+  push:
+    branches:
+      - experiment/drnas-c8h-bve-vivify-skipall-learned-telemetry-20261108
+    paths:
+      - .github/workflows/drnas-c8h-bve-vivify-learned.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c8h-bve-vivify-learned-three-frozen-sha
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Build pinned CaDiCaL 1.7.3 variants and certify frozen SAT sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable C8 sources and pinned CaDiCaL inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42525830867 -R Frane12/AndroidGameTest -n c8b-frozen-three-SHA-C8-full-reference-and-cadical-pin -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -m py_compile research/c8c_patch_upstream_cadical173.py research/c8h_patch_upstream_cadical173.py research/c8c_pivot_causal_audit.py research/c8h_bve_vivify_learned_window.py
+          python3 -u research/c8c_pivot_causal_audit.py verify
+      - name: Build pristine and instrumented upstream CaDiCaL 1.7.3
+        run: |
+          set -euo pipefail
+          mkdir -p c8c/bin c8c_out
+          git clone --quiet --depth 1 --branch rel-1.7.3 https://github.com/arminbiere/cadical.git c8c_original
+          EXPECTED=38e073b389a877b0a0d3c91136d2443ab95fdeba
+          test "$(git -C c8c_original rev-parse HEAD)" = "$EXPECTED"
+          test "$(cat c8c_original/VERSION)" = "1.7.3"
+          cp -a c8c_original c8c_instrumented
+          python3 -u research/c8h_patch_upstream_cadical173.py c8c_instrumented
+          test "$(git -C c8c_instrumented rev-parse HEAD)" = "$EXPECTED"
+          sha256sum c8c_original/src/elim.cpp c8c_instrumented/src/elim.cpp c8c_original/src/analyze.cpp c8c_instrumented/src/analyze.cpp c8c_original/src/vivify.cpp c8c_instrumented/src/vivify.cpp > c8c_out/source-code.sha256
+          (cd c8c_original && ./configure && make -j2)
+          (cd c8c_instrumented && ./configure && make -j2)
+          cp c8c_original/build/cadical c8c/bin/plain
+          cp c8c_instrumented/build/cadical c8c/bin/instrumented
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          sha256sum c8c/bin/plain c8c/bin/instrumented > c8c_out/binary.sha256
+          c8c/bin/plain --version | tee c8c_out/pristine-version.txt
+          c8c/bin/instrumented --version | tee c8c_out/instrumented-version.txt
+          diff -u c8c_out/pristine-version.txt c8c_out/instrumented-version.txt
+          test "$(c8c/bin/plain --version)" = "1.7.3"
+      - name: Verify both builds and existing SAT-preserving skip control
+        run: |
+          set -euo pipefail
+          python3 -u research/c8c_pivot_causal_audit.py smoke | tee c8c_out/smoke.log
+          grep -q '^C8C_SOURCE_PATCH_COMPILED_SAT_AND_SAFE_SKIP_SMOKE_PASS' c8c_out/smoke.log
+          echo C8H_CADICAL173_BUILD_AND_SAT_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8h-pristine-instrumented-173-and-frozen-three-SHA
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            c7_source/dedup/manifest.json
+            c7_source/dedup/*.cnf
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c8c_out/binary.sha256
+            c8c_out/source-code.sha256
+            c8c_out/pristine-version.txt
+            c8c_out/instrumented-version.txt
+            c8c_out/smoke.log
+            c8b_c8_previous/report.json
+            c8_out/cadical-version.txt
+  factorial:
+    name: C8H learned-clause probes and full E2E PAR2 for frozen source ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 34
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8h-pristine-instrumented-173-and-frozen-three-SHA
+          path: .
+      - name: Verify source and binary locks
+        run: |
+          set -euo pipefail
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          sha256sum -c c8c_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c8c_pivot_causal_audit.py verify
+      - name: Reproduce first-event source profile
+        run: |
+          set -euo pipefail
+          mkdir -p c8c_out c8h_out
+          python3 -u research/c8c_pivot_causal_audit.py profile --shard ${{ matrix.shard }} | tee c8c_out/profile-${{ matrix.shard }}.log
+          grep -q '^C8C_PROFILE_PASS' c8c_out/profile-${{ matrix.shard }}.log
+      - name: Measure bounded learned-clause and live-schedule response
+        run: |
+          set -euo pipefail
+          python3 -u research/c8h_bve_vivify_learned_window.py diagnostic --shard ${{ matrix.shard }} | tee c8h_out/diagnostic-${{ matrix.shard }}.log
+          grep -q '^C8H_DIAGNOSTIC_PASS ${{ matrix.shard }} 16$' c8h_out/diagnostic-${{ matrix.shard }}.log
+      - name: Run source-paired full original-CNF PAR2 factorial
+        run: |
+          set -euo pipefail
+          python3 -u research/c8h_bve_vivify_learned_window.py bench --shard ${{ matrix.shard }} | tee c8h_out/bench-${{ matrix.shard }}.log
+          grep -q '^C8H_BENCH_SHARD_PASS ${{ matrix.shard }} 27$' c8h_out/bench-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8h-source-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c8c_out/profile-${{ matrix.shard }}.json
+            c8c_out/trace-${{ matrix.shard }}.json
+            c8c_out/profile-${{ matrix.shard }}.log
+            c8h_out/telemetry-${{ matrix.shard }}.json
+            c8h_out/full-${{ matrix.shard }}.json
+            c8h_out/diagnostic-${{ matrix.shard }}.log
+            c8h_out/bench-${{ matrix.shard }}.log
+  audit:
+    name: C8H fail-closed audit of source locks, witnesses, PAR2, and clause quality
+    needs: factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8h-pristine-instrumented-173-and-frozen-three-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c8h-source-shard-*
+          merge-multiple: true
+          path: .
+      - name: Validate complete original-SHA factorial, witness checks, and telemetry parity
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -m py_compile research/c8h_bve_vivify_learned_window.py
+          python3 -u research/c8h_bve_vivify_learned_window.py audit | tee c8h_out/audit.log
+          grep -q '^C8H_FINAL' c8h_out/audit.log
+          grep '^C8H_CASE' c8h_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C8H-3SHA-9ARM-3REP-E2E-BVE-VIVIFY-LEARNED-CLAUSE-TELEMETRY
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c8h_out/report.json
+            c8h_out/audit.log
+            c8h_out/full-*.json
+            c8h_out/telemetry-*.json
+            c8h_out/diagnostic-*.log
+            c8h_out/bench-*.log
+            c8c_out/profile-*.json
+            c8c_out/trace-*.json
