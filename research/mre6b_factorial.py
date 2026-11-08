@@ -116,7 +116,7 @@ def audit():
         one_reused_source_not_blind=True,
         four_reused_seeds_from_MRE6=True,
         original_SAT_witness_reconstructed_and_verified=True,
-        no_independent_UNSAT_proof=False,
+        independent_UNSAT_proof=False,
         source_vs_quotient_XOR_factorial=True,
         source_input_same_SHA=True,
         native_cpu_solve_excludes_proof_and_CNF_rewriting=True,
