@@ -1,0 +1,120 @@
+name: DRNAS CRR1-B5 — multi-context BCP discrimination 4 original SHA 3 seeds
+on:
+  push:
+    branches: [experiment/drnas-crr1b5-multi-context-20261108]
+    paths: ['.github/workflows/drnas-crr1b5-discrimination.yml', 'research/drnas_crr1b5_discrimination.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-crr1b5-multi-context-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exactly frozen W4 SAT2026 CNFs and run B5 discrimination selftests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42429372803 -R Frane12/AndroidGameTest -n w4-input -D .
+          test -s worldsim-w1-frozen.tar.gz
+          test -s history/w4sources/manifest.json
+          tar xzf worldsim-w1-frozen.tar.gz
+          python3 -m py_compile research/drnas_crr1a_shadow.py research/drnas_crr1b_active.py research/drnas_crr1b2_telemetry.py research/drnas_crr1b4_value.py research/drnas_crr1b5_discrimination.py
+          python3 -u research/drnas_crr1b5_discrimination.py selftest
+          mkdir -p crr1b5
+          python3 -u research/drnas_crr1b5_discrimination.py prepare | tee crr1b5/prepare.log
+          grep -q '^CRR1B5_PREP_PASS' crr1b5/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crr1b5-frozen-input
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            worldsim-w1-frozen.tar.gz
+            history/w4sources/
+            crr1b5/manifest.json
+            crr1b5/pins.json
+            crr1b5/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crr1b5-prepare-debug
+          retention-days: 7
+          if-no-files-found: warn
+          path: crr1b5/
+  probe:
+    needs: prepare
+    name: CRR1B5 multi-context source SHA shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1b5-frozen-input
+      - name: Three independent deterministic seeds of original-CNF 2/3-assumption BCP ranking
+        run: |
+          set -euo pipefail
+          tar xzf worldsim-w1-frozen.tar.gz
+          python3 -u research/drnas_crr1b5_discrimination.py shard --shard ${{ matrix.shard }} | tee crr1b5/shard-${{ matrix.shard }}.log
+          grep -q '^CRR1B5_SHARD_PASS' crr1b5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crr1b5-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            crr1b5/shard-${{ matrix.shard }}.json
+            crr1b5/shard-${{ matrix.shard }}.log
+  audit:
+    needs: probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1b5-frozen-input
+      - name: Reassemble four original-SHA B5 files and check 12 unique seed-source trials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf worldsim-w1-frozen.tar.gz
+          mkdir -p crr1b5/collected
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'crr1b5-shard-*' -D crr1b5/collected
+          test "$(find crr1b5/collected -type f -name 'shard-*.json' | wc -l)" -eq 4
+          find crr1b5/collected -type f -name 'shard-*.json' -exec cp '{}' crr1b5/ \;
+          python3 -u research/drnas_crr1b5_discrimination.py audit | tee crr1b5/audit.log
+          grep -q '^CRR1B5_FINAL' crr1b5/audit.log
+          cat crr1b5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CRR1B5-4SHA-12-TRIAL-B4-vs-MULTICONTEXT-FINAL
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            crr1b5/report.json
+            crr1b5/all-trials.json
+            crr1b5/audit.log
+            crr1b5/manifest.json
+            crr1b5/pins.json
