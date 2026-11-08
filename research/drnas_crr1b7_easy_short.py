@@ -423,8 +423,8 @@ def audit():
                             r["rep"]==rep and r["mode"]==comparator)
                     v=next(r for r in rows if r["id"]==c["id"] and
                             r["rep"]==rep and r["mode"]=="b5_multi8")
-                    if ba["status"] in ("SAT","UNSAT") and
-                       v["status"] in ("SAT","UNSAT"):
+                    if (ba["status"] in ("SAT","UNSAT") and
+                        v["status"] in ("SAT","UNSAT")):
                         ratios.append(ba["elapsed_s"]/v["elapsed_s"])
             gm=math.exp(sum(math.log(v) for v in ratios)/len(ratios)) if ratios else None
             paired.append({"cohort":cohort,"comparator":comparator,
