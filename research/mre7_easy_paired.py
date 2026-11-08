@@ -9,6 +9,8 @@ CaDiCaL agreement at pre-screen but not an LRAT; label explicitly.
 from __future__ import annotations
 import argparse,collections,hashlib,json,math,os,pathlib,random,re,statistics,subprocess,tempfile,time
 import mre7_reference_easy_freeze as frozen
+# The extension freeze kept the first six byte-identical and added new originals.
+frozen.PROTO="DRNAS-MRE7E-OLDER2021-2023-EXTENDED-EASY-20261108-v1"
 import mre6d_all_equalities as equal
 import r164_pure_exact_gf2 as exact
 import r195_native_cms_benchmark as r195
@@ -147,7 +149,8 @@ def shard(idx,cms_binary,kissat_binary):
             for mode in modes:
                 r=trial(case,rep,mode,cms_binary,kissat_binary)
                 rows.append(r)
-                (ROOT/("shard-%d.json"%idx)).write_text(json.dumps(rows,sort_keys=True)+"\n")
+                (ROOT/("shard-%d.json"%idx)).write_text(json.dumps(rows,sort_keys=True)+"
+")
                 print("MRE7_TRIAL",json.dumps(r,sort_keys=True),flush=True)
     need(len(rows)==len(cases)*REPS*len(MODES),"incomplete source shard")
     print("MRE7_SHARD_PASS",idx,len(cases),len(rows),flush=True)
@@ -207,11 +210,13 @@ def audit():
         total_wall_cap_s=CAP,holdout_preselected_using_reference_only=True,
         selection_conditioned_on_reference_easiness=True,
         source_disjoint_declared_registry=True,history_registry_not_exhaustive=True,
+        never_claim_universally_unseen=True,
         no_posthoc_source_exclusion=True,independent_unsat_lrat=False,
         SAT_original_model_check_required=True,all_scores=scores,
         cases=comparisons,not_auto_promoted=True)
     ROOT.mkdir(parents=True,exist_ok=True)
-    (ROOT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
+    (ROOT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"
+")
     print("MRE7_FINAL",json.dumps({k:v for k,v in report.items() if k!="cases"},
         sort_keys=True),flush=True)
 
