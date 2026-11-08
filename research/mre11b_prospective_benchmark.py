@@ -2,7 +2,7 @@
 """MRE11b: new original SAT2021-23 SHA-frozen metadata-easy cohort.
 Source selection uses published MiniSat1m metadata, not CMS/MRE performance.
 Original SAT witnesses checked. UNSAT not independently LRAT certified.
-""".
+"""
 from __future__ import annotations
 import argparse,collections,hashlib,json,os,pathlib,random,subprocess,time
 import mre11b_prospective_freeze as frozen
