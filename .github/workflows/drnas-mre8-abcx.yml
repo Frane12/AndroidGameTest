@@ -1,0 +1,116 @@
+name: DRNAS MRE8 ABCX — 8 causal arms 16 frozen SAT originals 4 seeds PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre8-abcx-ablation-20261108]
+    paths: ['.github/workflows/drnas-mre8-abcx.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre8-abcx-v1
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: SHA and exhaustive 8-arm mathematical certificate selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reuse exact 16 already frozen SAT2021–2025 originals and native CMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42505042425 -R Frane12/AndroidGameTest \
+            -n mre7e-pilot16-frozen-originals-and-native-binaries -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          python3 -u research/mre7_extended_easy_freeze.py verify
+          python3 -m py_compile research/mre8_abcx_ablation.py
+          python3 -u research/mre8_abcx_ablation.py selftest
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x mre7_easy/bin/native
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre7_easy/bin/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          echo MRE8_ABCX_PREP_PASS
+  paired:
+    name: MRE8 8 arms 4 paired seeds frozen SHA shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reuse byte-identical reference-solver binary and frozen input set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42505042425 -R Frane12/AndroidGameTest \
+            -n mre7e-pilot16-frozen-originals-and-native-binaries -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          mkdir -p mre8
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x mre7_easy/bin/native
+      - name: Solve original A B C D Xs Xc Xr with same seed and 8s total cap
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre8_abcx_ablation.py shard \
+            --shard ${{ matrix.shard }} --cms mre7_easy/bin/native | tee mre8/shard-${{ matrix.shard }}.log
+          grep -q '^MRE8_SHARD_PASS ${{ matrix.shard }} ' mre8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre8-abcx-shard-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            mre8/shard-${{ matrix.shard }}.json
+            mre8/shard-${{ matrix.shard }}.log
+  audit:
+    name: MRE8 final independent SHA paired SAT model and PAR2 audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover immutable originals and all results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42505042425 -R Frane12/AndroidGameTest \
+            -n mre7e-pilot16-frozen-originals-and-native-binaries -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre8-abcx-shard-*
+          merge-multiple: true
+          path: mre8
+      - name: Strict 512 paired SHA seed proof and causal-equivalence audit
+        run: |
+          set -euo pipefail
+          python3 -u research/mre8_abcx_ablation.py audit | tee mre8/audit.log
+          grep -q '^MRE8_FINAL' mre8/audit.log
+          cat mre8/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE8-ABCX-16SOURCE-512PAIRED-8ARM-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre8/report.json
+            mre8/audit.log
