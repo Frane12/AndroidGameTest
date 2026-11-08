@@ -81,11 +81,13 @@ def trial(source, arm, rep, order_index, order_seed):
         env["DRNAS_C8I_GATE_TRACE"] = "1"
     start = time.perf_counter()
     proc = None
+    partial_stderr = ""
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                               timeout=CAP_S, check=False, env=env)
-    except subprocess.TimeoutExpired:
-        pass
+    except subprocess.TimeoutExpired as exc:
+        partial_stderr = (exc.stderr.decode("utf-8", "replace")
+                          if isinstance(exc.stderr, bytes) else (exc.stderr or ""))
     wall = time.perf_counter() - start
     status = "TIMEOUT"
     verified = False
@@ -99,7 +101,7 @@ def trial(source, arm, rep, order_index, order_seed):
         if status in ("SAT", "UNSAT"):
             need(status == source["expected"],
                  "solver contradicted official reference status for " + source["gbd"])
-    gate = parse_gate(proc.stderr) if proc is not None and arm == "gate16" else None
+    gate = parse_gate(proc.stderr if proc is not None else partial_stderr) if arm == "gate16" else None
     if gate is not None:
         need(gate["disabled"] == (gate["early_successes"] == 0),
              "gate decision disagrees with early BVE success count")
@@ -199,10 +201,10 @@ def audit():
                   full_trials=len(rows), arms=list(ARMS),
                   independent_external_seeds=False, independent_UNSAT_LRAT=False,
                   SAT_original_witnesses_checked=True,
-                  gate_rule="Run the first 16 scheduled BVE candidates; if none eliminates a variable, skip all later BVE candidates while preserving the simplification schedule.",
+                  gate_rule="In each BVE round, attempt the first 16 candidates; if none eliminates a variable, skip the remaining candidates in that round while preserving the simplification schedule. Only the first decision is summarized.",
                   gate_decisions=dict(formulas_gate_closed=gate_closed,
                                       formulas_gate_open=gate_open,
-                                      formulas_no_decision_before_solver_exit=gate_unobserved,
+                                      formulas_without_captured_first_decision=gate_unobserved,
                                       trials_with_decision=sum(x["gate_decision"] is not None for x in gate_rows)),
                   scores=scores, per_formula=per_formula,
                   no_auto_promotion=True, global_blind_claim=False)
