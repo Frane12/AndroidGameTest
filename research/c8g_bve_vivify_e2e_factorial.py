@@ -65,7 +65,6 @@ def configuration(arm, choices):
 def bench(shard):
     c, p = case(shard)
     choices = p["skipped_candidate_order_development_only"]
-    need(set(ARMS) <= set(ARMS), "arm registration failure")
     OUT.mkdir(exist_ok=True)
     rows = []
     seed = int(hashlib.sha256((PROTO + "|" + c["sha256"]).encode()).hexdigest()[:8], 16)
@@ -81,7 +80,7 @@ def bench(shard):
                        source_sha256=c["sha256"], arm=arm, rep=rep,
                        run_order_seed=order_seed, order_index=order_index,
                        independent_seed_applied=False, cap_s=CAP_S,
-                       route_header_charged=True, binary=binary, options=opts,
+                       route_header_charged=False,\n                       end_to_end_solver_process_wall_included=True,\n                       binary=binary, options=opts,
                        selected_skipped_candidate_variables=(
                            choices.get(arm.removesuffix("_novivify"), [])
                            if arm not in ("default", "instrumented_control",
@@ -142,7 +141,7 @@ def audit():
         per_source.append(dict(gbd=gbd, arms=arms))
     report = dict(protocol=PROTO, cohort="three previously studied C8 development SAT originals; no blind claim",
                   source_count=3, cap_s=CAP_S, repeats=REPS, attempts=len(rows),
-                  arms=list(ARMS), real_E2E_PAR2_including_route_header=True,
+                  arms=list(ARMS), real_E2E_PAR2_including_solver_process_wall=True,\n                  external_router_header_used=False,
                   original_SAT_models_checked=True, independent_solver_seeds=False,
                   independent_UNSAT_LRAT=False,
                   bounded_CDCL_telemetry_source="C8F separate bounded diagnostic; not PAR2",
