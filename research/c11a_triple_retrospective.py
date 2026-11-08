@@ -69,7 +69,7 @@ def analysis():
                 need(0<=r["solved"]<=2 and r["PAR2_s"]>0,"bad historical score")
                 stats[k]["solved"]+=r["solved"]
                 stats[k]["PAR2_s"]+=r["PAR2_s"]
-            cohort.append(dict(sha256=sha,gbd=x["gbd"],nvars=n,nclauses=m,
+            cohort.append(dict(sha256=sha,gbd=x.get("gbd"),nvars=n,nclauses=m,
                 density=round(m/n,5),selected_backend=mode,
                 gain_vs_Kissat_PAR2_s=round(by["kissat"]["PAR2_s"]-chosen["PAR2_s"],6),
                 gain_vs_C10_PAR2_s=round(old["PAR2_s"]-chosen["PAR2_s"],6),
