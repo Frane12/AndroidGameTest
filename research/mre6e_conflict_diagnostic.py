@@ -20,7 +20,7 @@ LIMITS=(1000,5000)
 REPS=1
 CAP=6.0
 SHARDS=4
-PAT=re.compile(r"^R195_RESULT status=(SAT|UNSAT|BUDGET) conflicts=(\\d+) decisions=(\\d+) propagations=(\\d+) source_rows=(\\d+) derived_rows=(\\d+)$",re.M)
+PAT=re.compile(r"^R195_RESULT status=(SAT|UNSAT|BUDGET) conflicts=(\d+) decisions=(\d+) propagations=(\d+) source_rows=(\d+) derived_rows=(\d+)$",re.M)
 
 def need(cond,reason):
     if not cond:raise RuntimeError("MRE6E_FAIL_CLOSED "+str(reason))
@@ -127,7 +127,7 @@ def shard(idx,binary):
                     row=trial(case,rep,mode,cap,binary)
                     records.append(row)
                     (ROOT/("shard-%d.json"%idx)).write_text(
-                         json.dumps(records,sort_keys=True)+"\\n")
+                         json.dumps(records,sort_keys=True)+"\n")
                     print("MRE6E_TRIAL",json.dumps(row,sort_keys=True),flush=True)
     need(len(records)==len(selected)*REPS*len(LIMITS)*len(MODES),
          "incomplete diagnostic shard")
@@ -196,13 +196,13 @@ def audit():
         conflict_budget_unknown_is_not_a_solution=True,
         promotion_allowed=False)
     ROOT.mkdir(parents=True,exist_ok=True)
-    (ROOT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\\n")
+    (ROOT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
     print("MRE6E_FINAL",json.dumps(report,sort_keys=True),flush=True)
 
 def selftest():
     need(len(MODES)==4 and len(LIMITS)==2 and REPS==1 and CAP==6.0,
          "diagnostic design unexpectedly changed")
-    a="R195_RESULT status=BUDGET conflicts=1000 decisions=2000 propagations=4000 source_rows=0 derived_rows=0\\n"
+    a="R195_RESULT status=BUDGET conflicts=1000 decisions=2000 propagations=4000 source_rows=0 derived_rows=0\n"
     stat,native,model=parse(a)
     need(stat=="BUDGET" and native["conflicts"]==1000 and not model,
          "native unknown counter parser broken")
