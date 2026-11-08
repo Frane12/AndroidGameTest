@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """DRNAS C8D: C7 BVE/duplicate causal proxy x early bounded CDCL dynamics.
 Development diagnostics: C7 six previously-seen original SHA, four CMS modes,
-two independent conflict budgets (128, 1024), two seeds = 96 bounded probes.
+two independent conflict budgets (100, 1000), 4 CMS + 2 CaDiCaL BVE arms,
+two seeds = 144 bounded diagnostics.
 Prospective *relative to C7*, not globally blind: 19 original S1 source SHA,
 ten full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 380 trials.
 A bounded-CDCL diagnostic is NEVER counted as full SAT without an original
@@ -139,23 +140,19 @@ def dynamic_choice(f,pilots):
     Selection thresholds frozen *before* S1-source benchmark."""
     baseline=static_choice(f)
     a=pilots.get("cpp_native");b=pilots.get("c6_dedup_nobve")
-    if not a or not b or not a.get("stats") or not b.get("stats"):
-        return baseline
-    if a["status"]!="BUDGET" or b["status"]!="BUDGET":
-        return baseline
-    na=a["stats"];nb=b["stats"]
-    if na["conflicts"]<64 or nb["conflicts"]<64:
-        return baseline
-    # Compare actual solver effort at approximately the same conflict budget.
-    # Smaller decisions and propagation counts alone do not prove quality.
-    da=na["decisions"]/na["conflicts"];db=nb["decisions"]/nb["conflicts"]
-    pa=na["propagations"]/na["conflicts"];pb=nb["propagations"]/nb["conflicts"]
-    if f["duplicate_count"]>=8 and f["pair_drop_fraction"]>=0.075 and (
-        db<da*0.75 and pb<pa*1.30):
-        return "cms_dedup_nobve","early_dedup_lower_decisions_and_BVE_geometry"
-    if f["binary_fraction"]>=0.90 and da<db*.70 and pa<pb*1.3 and (
-        a["wall_s"] < b["wall_s"]*.8):
-        return "cms_native","early_native_dominance"
+    if a and b and a.get("stats") and b.get("stats") and (
+        a["status"]=="BUDGET" and b["status"]=="BUDGET"):
+        na=a["stats"];nb=b["stats"]
+        if na["conflicts"]>=64 and nb["conflicts"]>=64:
+            # Early bounded CDCL causal measurement, not complete solve.
+            da=na["decisions"]/na["conflicts"];db=nb["decisions"]/nb["conflicts"]
+            pa=na["propagations"]/na["conflicts"];pb=nb["propagations"]/nb["conflicts"]
+            if f["duplicate_count"]>=8 and f["pair_drop_fraction"]>=0.075 and (
+                db<da*0.75 and pb<pa*1.30):
+                return "cms_dedup_nobve","early_dedup_lower_decisions_and_BVE_geometry"
+            if f["binary_fraction"]>=0.90 and da<db*.70 and pa<pb*1.3 and (
+                a["wall_s"]<b["wall_s"]*.8):
+                return "cms_native","early_native_dominance"
     # C8 hypothesis: eliminate BVE on instances where real CaDiCaL
     # early traces show few/no eliminations and no-elim makes decisively
     # better decisions per conflict without more propagation cost.
@@ -217,7 +214,7 @@ def probe(c,rep,mode,budget,cap):
     return dict(mode=mode,budget=budget,status=status,stats=stats,
        wall_s=round(wall,6),sat_witness_verified=verified,
        pilot_is_not_full_PAR2=True)
-CADICAL_STAT_RE=re.compile(r"^c\\s+([A-Za-z][A-Za-z0-9_.-]*):\\s+(\\d+)(?:\\s|$)",re.M)
+CADICAL_STAT_RE=re.compile(r"^c\s+([A-Za-z][A-Za-z0-9_.-]*):\s+(\d+)(?:\s|$)",re.M)
 CADICAL_KEYS={"conflicts","decisions","propagations","restarts",
               "eliminated","elimtried","elimphases","elimrounds",
               "vivified","vivifications","vivifychecks","learned"}
@@ -459,7 +456,7 @@ def audit():
                               "cadical_noelim_novivify","kissat"))
                      for pair in paired.values()),6)
     report=dict(protocol=PROTO,status="C8D_E2E_AUDIT_PASS",
-       full_trials=len(rows),source_count=20,repeats=REPS,cap_s=CAP,
+       full_trials=len(rows),source_count=19,repeats=REPS,cap_s=CAP,
        source_SHA_disjoint_from_C7=True,
        excluded_one_original_C7_overlap_by_SHA_before_trials=True,
        S1_cohort_previously_evaluated_not_global_blind=True,
