@@ -1,0 +1,160 @@
+name: DRNAS C9b — prospective official SAT2026 BVE gate vs CaDiCaL Kissat 3SHA
+on:
+  push:
+    branches: [experiment/drnas-c9b-official26-prospective-bve-20261108]
+    paths: ['.github/workflows/drnas-c9b-official26-bve.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c9b-official26-three-frozen-sha-no-selection-leak
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Verify frozen independent SAT2026 3 SHA and C9 original rule + solver pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original SHA-only 2026 CNFs frozen in X5 before C9b runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42527549486 -R Frane12/AndroidGameTest -n mre-x5-official-2026-source-only-frozen-before-solvers -D .
+          test -s mre_x5_blind/manifest.json
+          (cd mre_x5_blind && sha256sum -c source.sha256)
+      - name: Restore pre-existing C9 19-SHA risk-limited LOFO policy locked before official26
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c9_reference c9_original_artifact c9b_out
+          gh run download 42527824455 -R Frane12/AndroidGameTest -n DRNAS-C9-LOFO-SOURCE19-RISK-LIMITED-PORTFOLIO-AUDIT -D c9_original_artifact
+          cp c9_original_artifact/report.json c9_reference/report.json
+          test -s c9_reference/report.json
+          python3 -m py_compile research/c9b_official26_bve_gate.py
+          python3 -u research/c9b_official26_bve_gate.py verify | tee c9b_out/verify.log
+          grep -q '^C9B_SOURCE_ONLY_LOCK_PASS' c9b_out/verify.log
+      - name: Restore SHA-verified Kissat 4.0.4 from C7 standard reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c9b_c7original built/bin c7_source c7_out
+          gh run download 42523071479 -R Frane12/AndroidGameTest -n c7-certified-sources-CMS-CaDiCaL-Kissat-pins -D c9b_c7original
+          cp c9b_c7original/built/bin/kissat_4_0_4 built/bin/
+          cp c9b_c7original/c7_source/kissat.sha256 c7_source/
+          cp c9b_c7original/c7_out/cadical-version.txt c7_out/
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+      - name: Verify CaDiCaL version, Kissat SAT witness and immutable 1500-variable gate
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          python3 -u research/c9b_official26_bve_gate.py smoke | tee c9b_out/smoke.log
+          grep -q '^C9B_FROZEN_RULE_AND_THREE_REFERENCE_SOLVERS_SMOKE_PASS' c9b_out/smoke.log
+          echo C9B_PROSPECTIVE_FROZEN_SHA_AND_LOCKED_GATE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c9b-prospective-official2026-three-original-SHA-and-pinned-solvers
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            mre_x5_blind/manifest.json
+            mre_x5_blind/source.sha256
+            mre_x5_blind/*.cnf
+            c9_reference/report.json
+            built/bin/kissat_4_0_4
+            c7_source/kissat.sha256
+            c7_out/cadical-version.txt
+            c9b_out/verify.log
+            c9b_out/smoke.log
+  paired:
+    name: C9b official2026 original source SHA shard ${{ matrix.shard }} four E2E arms
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c9b-prospective-official2026-three-original-SHA-and-pinned-solvers
+          path: .
+      - name: Verify frozen rule source SHA and two standard reference solver pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          (cd mre_x5_blind && sha256sum -c source.sha256)
+          python3 -u research/c9b_official26_bve_gate.py verify
+      - name: Run 12 true same-SHA reference solver E2E attempts with 25s cap, original SAT witness replay
+        run: |
+          set -euo pipefail
+          mkdir -p c9b_out
+          python3 -u research/c9b_official26_bve_gate.py shard --shard ${{ matrix.shard }} | tee c9b_out/shard-${{ matrix.shard }}.log
+          grep -q '^C9B_SHARD_PASS ${{ matrix.shard }} 12$' c9b_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c9b-official26-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c9b_out/shard-${{ matrix.shard }}.json
+            c9b_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C9b FINAL 36 genuine SAT2026 SHA-paired CaDiCaL-Kissat-C9 route PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c9b-prospective-official2026-three-original-SHA-and-pinned-solvers
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c9b-official26-shard-*
+          merge-multiple: true
+          path: c9b_out
+      - name: Strict paired SHA/model/status/PAR2 audit, no independent UNSAT LRAT claim
+        run: |
+          set -euo pipefail
+          (cd mre_x5_blind && sha256sum -c source.sha256)
+          python3 -u research/c9b_official26_bve_gate.py audit | tee c9b_out/audit.log
+          grep -q '^C9B_FINAL' c9b_out/audit.log
+          grep '^C9B_FINAL' c9b_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C9B-OFFICIAL26-3SHA-36-E2E-FROZEN-BVE-GATE-PAR2
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c9b_out/report.json
+            c9b_out/audit.log
+            c9b_out/shard-*.json
+            mre_x5_blind/manifest.json
+            c9_reference/report.json
