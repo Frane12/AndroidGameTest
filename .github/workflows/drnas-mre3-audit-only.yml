@@ -1,0 +1,50 @@
+name: DRNAS MRE3 — final audited report from two completed source jobs
+on:
+  push:
+    branches: [experiment/drnas-mre3-twoformula-cdcl-ablation-20261108]
+    paths: ['.github/workflows/drnas-mre3-audit-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve EXACT previously completed 48-trial artifacts and originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre3_p1
+          gh run download 42486847349 --repo Frane12/AndroidGameTest -n mre3-inputs -D .
+          gh run download 42486847349 --repo Frane12/AndroidGameTest -n mre3-case-0 -D mre3_p1
+          gh run download 42486847349 --repo Frane12/AndroidGameTest -n mre3-case-1 -D mre3_p1
+          sha256sum -c mre3_p1/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          for i in 0 1; do
+            if [ ! -s "mre3_p1/case-$i.json" ]; then
+              src="$(find mre3_p1 -mindepth 2 -type f -name "case-$i.json" -print -quit)"
+              test -n "$src"
+              cp "$src" "mre3_p1/case-$i.json"
+            fi
+            test -s "mre3_p1/case-$i.json"
+          done
+      - name: Audit source pairing, native counters and SAT witness provenance
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre3_cdcl_clause_ablation.py
+          python3 -u research/mre3_cdcl_clause_ablation.py audit | tee mre3_p1/audit.log
+          cat mre3_p1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE3-48-PAIRED-AUDITED-FINAL
+          retention-days: 30
+          path: |
+            mre3_p1/report.json
+            mre3_p1/audit.log
