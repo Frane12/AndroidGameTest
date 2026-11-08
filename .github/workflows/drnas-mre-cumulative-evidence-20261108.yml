@@ -1,0 +1,127 @@
+name: DRNAS MRE — append six audited MRE series to immutable V15.3.1 evidence layer
+on:
+  push:
+    branches: [experiment/drnas-v1531-analytics-sqlite-20261101]
+    paths:
+      - '.github/workflows/drnas-mre-cumulative-evidence-20261108.yml'
+      - 'research/tseitin-replay/mre_cumulative_ingest_20261108.py'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: drnas-mre-cumulative-evidence-20261108
+  cancel-in-progress: false
+jobs:
+  evidence:
+    name: Read-only historical base plus 1624 raw SHA-paired audit-verified MRE attempts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Historical V15.3.1 checksum and analytics pipeline compile
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tseitin-replay/mre_cumulative_ingest_20261108.py
+          test -s research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          test -s research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+          gzip -t research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          gzip -dc research/sat-analytics-data/current/sat_analytics.sqlite.gz > "$RUNNER_TEMP/DRNAS_V1531_FROZEN_READONLY.sqlite"
+          sha256sum "$RUNNER_TEMP/DRNAS_V1531_FROZEN_READONLY.sqlite" | awk '{print $1}' | diff - research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+      - name: Audit-run provenance, retrieve frozen raw results and SHA-paired source artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre-new-evidence
+          : > mre-new-evidence/artifact_index.tsv
+          cat > "$RUNNER_TEMP/mre-specs.tsv" <<'EOF'
+          mre10_dev|42509505558|42509505558|mre10|8|mre10-factorial-shard|DRNAS-MRE10-640-PAR2-PRIORITY-SIX-AUDIT|aa791ceb5fa1b6b1f24bbda96267da565f2466a0
+          mre10_repeat|42513793922|42513793922|mre10|8|mre10-factorial-shard|DRNAS-MRE10-640-PAR2-REPEAT-AUDIT|90424bbaf4fab661aabe9e636f9aeda97a56a232
+          mre10b_external|42511332725|42511332725|mre10b|6|mre10b-results-shard|DRNAS-MRE10B-144-NEW-SOURCE-PAR2-AUDIT|5ed0cf1f37636884fd4a5b0c19b8e83ddd52e0ff
+          mre6g_certified|42505145407|42506460983|mre6g|3|mre6g-results-shard|DRNAS-MRE6G-60-AUDITED-FINAL|ed9a81e48da963a6fb44722a87dec4e12b6958b4
+          mre6h_fast|42507215971|42507215971|mre6h|3|mre6h-results-shard|DRNAS-MRE6H-FAST-GF2-35S-60-FINAL|cc675c4a45a05c026e958fd03076185c5c4951d0
+          mre6i_gate|42509063941|42509063941|mre6i|4|mre6i-results-shard|DRNAS-MRE6I-80-REAL-35S-AUDITED-FINAL|a4112d0ea6d51dcdcdff4b2b511ffc22691bacc0
+          EOF
+          while IFS='|' read -r label source audit stem count shard_prefix audit_name pin; do
+            dir="mre-new-evidence/$label"
+            mkdir -p "$dir/$stem" "$dir/audit"
+            got_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$source" --jq '.head_sha')"
+            test "$got_sha" = "$pin"
+            got_audit="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$audit" --jq '.status+" "+.conclusion')"
+            test "$got_audit" = "completed success"
+            if test "$source" = "$audit"; then
+              got_source="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$source" --jq '.status+" "+.conclusion')"
+              test "$got_source" = "completed success"
+            fi
+            for target in "$source" "$audit"; do
+              if test "$target" = "$audit" && test "$audit" = "$source"; then
+                # This is a single index for one successful source+audit run.
+                if test -f "$dir/.indexed"; then continue; fi
+              fi
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$target/artifacts?per_page=100" --paginate \
+                --jq '.artifacts[] | [.name, (.id|tostring), (.digest // "null")] | @tsv' \
+              | while IFS="$(printf '\t')" read -r name aid digest; do
+                  printf '%s\t%s\t%s\t%s\t%s\n' "$source" "$target" "$name" "$aid" "$digest" >> mre-new-evidence/artifact_index.tsv
+                done
+              touch "$dir/.indexed"
+            done
+            gh run download "$audit" --repo "$GITHUB_REPOSITORY" -n "$audit_name" -D "$dir/audit"
+            test "$(find "$dir/audit" -name report.json -type f | wc -l)" -eq 1
+            for i in $(seq 0 $((count-1))); do
+              gh run download "$source" --repo "$GITHUB_REPOSITORY" -n "$shard_prefix-$i" -D "$dir/$stem"
+              test -s "$dir/$stem/shard-$i.json"
+            done
+            echo "MRE_EVIDENCE_RETRIEVED label=$label source=$source audited=$audit shard_count=$count SHA=$pin"
+          done < "$RUNNER_TEMP/mre-specs.tsv"
+          test "$(wc -l < mre-new-evidence/artifact_index.tsv)" -ge 40
+      - name: Validate every raw attempt against 6 successful audit reports, paired seeds and original SHA
+        run: |
+          set -euo pipefail
+          mkdir -p mre-new-evidence-out
+          python3 -u research/tseitin-replay/mre_cumulative_ingest_20261108.py \
+            --input mre-new-evidence \
+            --out mre-new-evidence-out \
+            --historical-sqlite "$RUNNER_TEMP/DRNAS_V1531_FROZEN_READONLY.sqlite" \
+            --historical-sha research/sat-analytics-data/current/sat_analytics.sqlite.sha256 \
+            | tee mre-new-evidence-out/run.log
+          grep -q '^MRE_CUMULATIVE_EVIDENCE_PASS' mre-new-evidence-out/run.log
+          test -s mre-new-evidence-out/mre_ingest_audit.json
+          test -s mre-new-evidence-out/mre_source_paired.csv
+          test -s mre-new-evidence-out/mre_evidence.sqlite.gz
+          python3 - <<'PY'
+          import json
+          a=json.load(open("mre-new-evidence-out/mre_ingest_audit.json"))
+          assert a["result"]["benchmark_runs"]==6
+          assert a["result"]["attempts"]==1624
+          assert a["historical_core_counts"]=={"datasets":231,"formulas":2979,"attempts":53330}
+          assert a["historical_tables_modified"] is False
+          print("MRE_EVIDENCE_WAREHOUSE_VERIFIED",a["result"])
+          PY
+      - name: Publish revised additive evidence archive without rewriting historical SQLite
+        run: |
+          set -euo pipefail
+          dest=research/sat-analytics-data/current/mre-evidence
+          mkdir -p "$dest"
+          for f in mre_evidence.sqlite.gz mre_evidence.sqlite.sha256 \
+            mre_ingest_audit.json mre_run_modes.csv mre_source_paired.csv \
+            mre_cross_run_reused_sources.csv run.log; do
+            if test -s "mre-new-evidence-out/$f"; then cp "mre-new-evidence-out/$f" "$dest/$f"; fi
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$dest"
+          if git diff --cached --quiet; then
+            echo 'Historical and MRE evidence snapshot unchanged (idempotent)'
+          else
+            git commit -m 'data: append 1624 audit-verified MRE measurements as linked immutable SQLite evidence [skip ci]'
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-V1531-MRE-1624-ADD-ONLY-EVIDENCE-20261108
+          retention-days: 30
+          path: mre-new-evidence-out/
