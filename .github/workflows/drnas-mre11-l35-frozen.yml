@@ -1,0 +1,142 @@
+name: DRNAS MRE11-L35 — frozen 2026 original 7 native C++ 5 arms 4 seeds 35s PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre11-l35-frozen-20261108]
+    paths: ['.github/workflows/drnas-mre11-l35-frozen.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre11-l35-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Reuse original MRE11 SHA-locked 7 official 2026 CNF and exact native binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve original MRE11 immutable source/binary artifact, never refreeze
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42513542283 -R Frane12/AndroidGameTest \
+            -n mre11-2026-prospective-frozen-sources-and-native-CPP -D .
+          (cd mre11 && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          test -x mre11/bin/native
+          test -x mre11/bin/standalone
+          test -f mre5/lib/libcryptominisat5.so.5.11
+          python3 -m py_compile research/mre11_holdout.py research/mre11_l35_benchmark.py
+          python3 -u research/mre11_l35_benchmark.py verify
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | tee mre11/l35-linked-library.txt
+          grep -q 'libcryptominisat5.so.5.11' mre11/l35-linked-library.txt
+      - name: Confirm unchanged certified transformations and source-only gate telemetry
+        run: |
+          set -euo pipefail
+          python3 -u research/mre11_holdout.py parity \
+            --standalone mre11/bin/standalone | tee mre11/l35-parity.log
+          grep -q '^MRE11_SOURCE_EXACT_ARM_PARITY_PASS' mre11/l35-parity.log
+          python3 -u research/mre11_l35_benchmark.py diagnostics \
+            --standalone mre11/bin/standalone | tee mre11/l35-gate.log
+          grep -q '^MRE11_L35_GATE_DIAGNOSTIC_PASS 7' mre11/l35-gate.log
+          echo MRE11_L35_EXACT_FROZEN_SEVEN_PREPARE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre11-l35-seven-source-sha-locked-assets
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11/manifest.json
+            mre11/source.sha256
+            mre11/*.cnf
+            mre11/bin/*
+            mre11/bin.sha256
+            mre11/l35-*.log
+            mre11/l35-linked-library.txt
+            mre11_l35/gate_diagnostics.json
+            mre5/lib/libcryptominisat5.so.5.11
+  factorial:
+    name: MRE11-L35 35s end-to-end SAT2026 original source-paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-l35-seven-source-sha-locked-assets
+          path: .
+      - name: Verify exact original SHA, frozen native executable, and seed pairing
+        run: |
+          set -euo pipefail
+          chmod +x mre11/bin/native
+          (cd mre11 && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | grep libcryptominisat5
+          python3 -u research/mre11_l35_benchmark.py verify
+      - name: Real SAT/UNSAT original model verified — 5 arms, 4 original seeds, 35s cap
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre11_l35_benchmark.py shard \
+            --shard ${{ matrix.shard }} --native mre11/bin/native \
+            | tee mre11/shard-${{ matrix.shard }}.log
+          grep -q '^MRE11_SHARD_PASS ${{ matrix.shard }} ' mre11/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-l35-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11/shard-${{ matrix.shard }}.json
+            mre11/shard-${{ matrix.shard }}.log
+  audit:
+    name: MRE11-L35 complete 140 paired PAR2, SAT witness, no auto promotion
+    needs: factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-l35-seven-source-sha-locked-assets
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre11-l35-shard-*
+          merge-multiple: true
+          path: mre11
+      - name: Audit unchanged original cohorts and frozen paired seeds at new 35s cap
+        run: |
+          set -euo pipefail
+          (cd mre11 && sha256sum -c source.sha256)
+          python3 -u research/mre11_l35_benchmark.py audit | tee mre11/l35-audit.log
+          grep -q '^MRE11_L35_FINAL' mre11/l35-audit.log
+          grep '^MRE11_L35_FINAL' mre11/l35-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE11-L35-7CNF-5ARM-4SEED-35s-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre11/report.json
+            mre11/l35-audit.log
+            mre11_l35/gate_diagnostics.json
