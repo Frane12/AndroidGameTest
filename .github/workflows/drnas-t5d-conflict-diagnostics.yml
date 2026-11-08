@@ -1,0 +1,58 @@
+name: DRNAS T5D — pinned conflict and reason diagnostics on three original CNFs
+on:
+  push:
+    branches: [experiment/drnas-t5d-conflict-utility-20261108]
+    paths:
+      - research/drnas_t5d_conflict_telemetry.py
+      - .github/workflows/drnas-t5d-conflict-diagnostics.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-t5d-conflict-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve successful frozen T5 source and compiled native binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42480784137 --jq .conclusion)" = success
+          gh run download 42480784137 --repo Frane12/AndroidGameTest -n t5-frozen-20originals-pins -D .
+          chmod +x ultimate_r1/source_r153/r153 ultimate_t5/t-native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_t5d_conflict_telemetry.py
+          python3 research/drnas_t5d_conflict_telemetry.py verify
+      - name: Three-source 24 paired original SHA tests with terminal CDCL statistics
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_t5d_conflict_telemetry.py run | tee t5d-audit.log
+          grep -q '^T5D_PINNED_STATISTICS_PASS' t5d-audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          z=json.loads(pathlib.Path("t5d/report.json").read_text())
+          a=json.loads(pathlib.Path("t5d/all-trials.json").read_text())
+          assert z["status"]=="T5D_PINNED_STATISTICS_PASS"
+          assert len(a)==24 and len(z["cases"])==3
+          assert all(row["stats_printed"] for row in a)
+          print("T5D_SOURCE_LOCKED_DIAGNOSTIC_AUDIT_PASS",flush=True)
+          PY
+          echo "T5D diagnostic uses same T5 binary; internal deadline reserves 1.5 s to print stats, so these times are NOT official T5 benchmark PAR-2." >> "$GITHUB_STEP_SUMMARY"
+          cat t5d/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-T5D-CONFLICT-REASON-PINNED-24-FORENSIC
+          retention-days: 90
+          path: |
+            t5d/report.json
+            t5d/all-trials.json
+            t5d/traces/
+            t5d-audit.log
