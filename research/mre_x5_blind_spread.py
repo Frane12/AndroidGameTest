@@ -44,18 +44,30 @@ def existing_exclusions(index):
          if re.fullmatch(r"[0-9a-f]{32}",s.strip().lower())}
     recorded,old_sha=previous.inspect_repo_ids(set(index))
     ids|=recorded
-    # Exclude conservative superset of R82 historical initial ranking.
-    first220=set(sorted(index,key=lambda g:sha(
-        ("DRNAS-R82-PRECOMMIT-WIDE-RANDOM-ORIGINALS-2025-2026-20261104-v1"
-         +"/2026/"+g).encode()))[:220])
-    ids|=first220
+    # R82 pre-emptively excluded 220 candidates even though only a small
+    # subset was actually fetched/evaluated. Load the immutable R82 FINAL
+    # published manifest and exclude its ACTUAL attempted and frozen originals.
+    # This unlocks previously untouched IDs without revisiting tested data.
+    r82_path=pathlib.Path("x5_previous_r82/world/manifest.json")
+    need(r82_path.is_file(),"R82 final attempted-source registry unavailable")
+    r82=json.loads(r82_path.read_text())
+    need(r82.get("protocol")=="DRNAS-R82-WIDE-OFFICIAL-2025-2026-NOSCREEN-20261104-v1",
+         "R82 frozen historic manifest protocol changed")
+    r82_attempts=[x for x in r82.get("source_selection_attempts",[])
+                  if x.get("year")==2026]
+    r82_cases=[x for x in r82.get("cases",[]) if x.get("year")==2026]
+    need(len(r82_cases)>=4 and len(r82_attempts)>=len(r82_cases),
+         "R82 original source history incomplete")
+    for row in r82_attempts+r82_cases:
+        ids.add(row["gbd"])
+    old_sha.update(x["sha256"] for x in r82_cases)
     need(PREVIOUS_MANIFEST.is_file(),"previous MRE6b freeze manifest unavailable; no blind claim")
     prev=json.loads(PREVIOUS_MANIFEST.read_text())
     old=prev.get("cases") or prev.get("source_cases")
     need(old and len(old)>=4,"previous MRE6b source lock is incomplete")
     for x in old:
         ids.add(x["gbd"]);old_sha.add(x["sha256"])
-    need(len(ids.intersection(index))>=220,"R82 official overlap exclusion failed")
+    need(len(ids.intersection(index))>=len(r82_cases),"actual R82 official source exclusion failed")
     return ids,old_sha,prev
 
 def freeze():
@@ -122,7 +134,7 @@ def freeze():
        year=2026,official_index=r52.URI,index_sha256=sha(raw_index),
        official_reference_status_table=r52.SCORES,status_table_sha256=sha(csv_bytes),
        previously_excluded_ids=len(exclusions.intersection(official)),
-       previous_MRE6b_manifest_sha256=sha(PREVIOUS_MANIFEST.read_bytes()),
+       previous_MRE6b_manifest_sha256=sha(PREVIOUS_MANIFEST.read_bytes()),\n       previous_R82_manifest_sha256=sha(pathlib.Path("x5_previous_r82/world/manifest.json").read_bytes()),
        history_registry_not_guaranteed_globally_exhaustive=True,
        not_X4_X3_X2_development_sources=True,
        no_source_selection_by_duplicate_features_or_timing=True,
