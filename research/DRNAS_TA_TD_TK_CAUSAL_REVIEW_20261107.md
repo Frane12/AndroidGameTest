@@ -90,3 +90,23 @@ Controls: clean CDCL, dual_keep_default, learned-preserving vs reset with identi
 3. On an actual actionable bottleneck, implement *one new testable idea per new build* on a separate TA/TD/TK experimental branch. Reuse frozen controls and source-provenance verification. A running equivalent test must finish before launching duplicates.
 4. Main, frozen original references and user research manuscript remain unchanged. No PR merges absent explicit approval. No world-record, general polynomial-time or P-versus-NP claim from any bounded sample.
 5. For research-grade SAT, validate every SAT witness and independently replay certified GF(2) derivations. Native UNSAT without machine-checkable LRAT/FRAT remains a declared limitation.
+
+
+## 2026-11-09 — C11/C8/C12 incremental reconciliation
+
+GitHub Actions latest-attempt job check (not a full artifact-content audit):
+- [C11A 42534747410](https://github.com/Frane12/AndroidGameTest/actions/runs/42534747410): policy-recovery job success. Previously reported development C8D 38/38, PAR2 94.70 vs Kissat 253.68 (2.68x); C9C 8/24 PAR2 2154.72 tie; C10B 4/16 PAR2 1564.78 vs Kissat 1701.96. These are **different development cohorts**, never aggregate as paired or extrapolate to blind holdout.
+- [C8H 42533156950](https://github.com/Frane12/AndroidGameTest/actions/runs/42533156950): five jobs success including final audit. Three original sources, 81 trials, 9 arms. Default PAR2 9.400; without BVE 27.527; without BVE and vivification 9.140. Nonadditive interaction is an observation, not a proven universal mechanism.
+- [C11B 42535319191](https://github.com/Frane12/AndroidGameTest/actions/runs/42535319191): source pretest and 4/4 benchmark shards success, **FINAL audit failure**. Audit artifact exists. Root cause, verified paired results, and source SHA details pending inspection. No promotion.
+- [C12 42535300094](https://github.com/Frane12/AndroidGameTest/actions/runs/42535300094): prepare, 4/4 shards and final 128-trial audit job success. Numerical paired solved/PAR2, original SHA and UNSAT proof caveats must be extracted from audit artifact before SQL benchmark_modes insert.
+- [C8I 42534555190](https://github.com/Frane12/AndroidGameTest/actions/runs/42534555190): prepare, 4/4 shards and final audit job success. Numerical paired metrics still require artifact-content verification.
+
+### Open failures / falsification checklist
+
+| Expectation | Observation | Candidate explanation, not yet proven | One next action | Accept/reject criterion |
+|---|---|---|---|---|
+| C11B policy transfers to new originals | Final audit failed despite successful shards | Audit schema/provenance issue OR real correctness discrepancy | Inspect C11B final job log and audit ZIP | Complete SHA/witness audit and paired solved/PAR2; reject on unresolved audit |
+| Early BVE gate reduces total E2E time | C8H shows BVE/vivification interaction only on 3 originals | Learned-clause path changes with preprocessing | Extract C8I and C12 final paired tables | Better solved/PAR2 on matched SHA without regression |
+| GF2 reasons reduce CDCL search | T6A Active 16/40 PAR2 1242.089 vs Clean 16/40 1240.934 | Delivered reasons may be redundant or late | Instrument reasons consumed before baseline BCP | Causal advantage vs true runtime Shadow on new SHA |
+
+SQL status records updated in research/drnas_sat_benchmark_history_20261107_ta.sql. This update intentionally contains no invented C11B/C12/C8I PAR2 or UNSAT proof assertions.
