@@ -157,7 +157,7 @@ static Gate certified_gate(const CNF& original,const string& mode){
         for(int lit:sorted)
             if(binary_search(sorted.begin(),sorted.end(),-lit)){taut=true;break;}
         if(taut)continue;
-        string key(reinterpret_cast<const char*>(sorted.data()),
+        string key=sorted.empty()?string():string(reinterpret_cast<const char*>(sorted.data()),
                    sorted.size()*sizeof(int));
         if(!seen.insert(key).second)continue;
         unordered_set<int> local;
@@ -210,7 +210,7 @@ static void print_gate(const Gate& g,const string& mode,double parse_s){
 }
 #ifndef MRE9_STANDALONE
 using namespace CMSat;
-static void result_line(const string& status,const SATSolver* p){
+static void result_line(const string& status,SATSolver* p){
     uint64_t conflicts=p?p->get_last_conflicts():0;
     uint64_t decisions=p?p->get_last_decisions():0;
     uint64_t propagations=p?p->get_last_propagations():0;
