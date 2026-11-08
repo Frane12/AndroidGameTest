@@ -11,7 +11,7 @@ No adaptive selector. No promotion. Original SAT model replay; UNSAT only
 prior CaDiCaL reference agreement, independent LRAT unavailable.
 """
 from __future__ import annotations
-import argparse, collections, hashlib, json, os, pathlib, random, subprocess, sys, time
+import argparse, collections, hashlib, json, os, pathlib, random, statistics, subprocess, sys, time
 import c2_cnf_clean_ablation as c2
 import r195_native_cms_benchmark as cms
 
@@ -135,9 +135,31 @@ def audit():
         need(x["mode"] in MODES and x["status"] in ("SAT","UNSAT","TIMEOUT"),"invalid mode/terminal")
         need(x["status"]=="TIMEOUT" or x["status"]==c["reference_screen_status"],"SAT UNSAT contradiction")
         need(x["status"]!="SAT" or x["original_SAT_witness_verified"],"missing original witness")
-        if x["mode"]=="cpp_native":need(not x["gate"].get("applied"),"native must be unmodified")
-        if x["mode"]=="cpp_dedup":
-            need(x["gate"]["duplicate_literals_removed"]==0 and x["gate"]["taut_clauses_removed"]==0 and x["gate"]["variables_eliminated"]==0,"dedup changed other mechanism")
+        need(x["rep"] in range(REPS),"unregistered seed repetition")
+        need(x["wall_s"]>=0 and x["cap_s"]==CAP,"wall time/cap invalid")
+        if x["status"]=="TIMEOUT":
+            need(x["par2_s"]==2*CAP and not x["original_SAT_witness_verified"],
+                 "timeout must carry PAR2 penalty and no SAT witness")
+            # Subprocess timeout does not return C++ gate telemetry; empty gate is valid here.
+            need(not x["gate"] and x["native_stats"] is None,
+                 "timeout must not fabricate complete native counters")
+        else:
+            need(abs(x["par2_s"]-x["wall_s"])<=0.000002,
+                 "terminal PAR2 must equal measured end-to-end time")
+            if x["mode"]!="cadical":
+                need(isinstance(x["gate"],dict) and "applied" in x["gate"],
+                     "terminal native result missing gate telemetry")
+        if x["mode"]=="cpp_native":
+            need(not x["gate"].get("applied"),"native must be unmodified")
+        if x["mode"]=="cpp_dedup" and x["status"]!="TIMEOUT":
+            need(all(key in x["gate"] for key in
+                     ("duplicate_literals_removed","taut_clauses_removed",
+                      "variables_eliminated","duplicate_clauses_removed")),
+                 "terminal dedup missing source-cert telemetry")
+            need(x["gate"]["duplicate_literals_removed"]==0 and
+                 x["gate"]["taut_clauses_removed"]==0 and
+                 x["gate"]["variables_eliminated"]==0,
+                 "dedup changed other mechanism")
         key=(x["sha256"],x["rep"])
         need(x["mode"] not in paired[key],"duplicate paired key")
         paired[key][x["mode"]]=x
@@ -165,7 +187,7 @@ def audit():
             observed_duplicate_clauses=g["cpp_dedup"][0]["gate"].get("duplicate_clauses_removed",0),
             by_mode={k:dict(solved=sum(x["status"]!="TIMEOUT" for x in v),
                 par2_s=round(sum(x["par2_s"] for x in v),6),
-                median_wall_s=sorted(x["wall_s"] for x in v)[len(v)//2] if v else None)
+                median_wall_s=round(statistics.median(x["wall_s"] for x in v),6) if v else None)
                 for k,v in g.items()}))
     result=dict(protocol=PROTO,preregistered_source_count=12,trials=len(rows),
         paired_source_reps=len(paired),cohort="C2 SHA-disjoint MRE11-EASY12 previous development, NOT global blind",
