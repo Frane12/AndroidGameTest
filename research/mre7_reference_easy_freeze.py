@@ -13,18 +13,18 @@ import mre6b_blind_freeze as prior
 import r195_native_cms_benchmark as r195
 import r164_pure_exact_gf2 as exact
 
-PROTO="DRNAS-MRE7-SAT24SAT25-REFERENCE-SELECTED-EASY-v1"
+PROTO="DRNAS-MRE7-SAT24SAT25-REFERENCE-SELECTED-EASY-EXPANDED-30-v2"
 SALT="DRNAS-MRE7-EASY-SOURCE-PROSPECTIVE-20261108-LOCKED-v1"
 ROOT=pathlib.Path("mre7_easy")
-TARGET=24
-MAX_TRIES=180
+TARGET=30
+MAX_TRIES=508
 MAX_RAW=5*1024*1024
 MAX_PLAIN=9*1024*1024
 MAX_VARS=30000
 MAX_CLAUSES=85000
-MIN_REFERENCE_S=0.08
-MAX_REFERENCE_S=5.0
-YEAR_MAX={"2024":16,"2025":16}
+MIN_REFERENCE_S=0.005
+MAX_REFERENCE_S=8.0
+YEAR_MAX={"2024":25,"2025":25}
 SRC24="https://raw.githubusercontent.com/satcompetition/2024/main/downloads/meta.csv"
 SRC25="https://raw.githubusercontent.com/satcompetition/2025/main/downloads/SC2025.uri"
 
@@ -162,7 +162,7 @@ def freeze(binary="mre5/native",cadical="/usr/bin/cadical"):
         c["sha256"]+"  "+c["filename"]+"\n" for c in selected))
     print("MRE7_FREEZE_FINAL",json.dumps({k:v for k,v in manifest.items()
         if k not in ("screen_trace","selected_cases")},sort_keys=True),flush=True)
-    need(len(selected)>=20,"fewer than 20 easy source-disjoint cases: audit pilot; never fabricate full sample")
+    need(len(selected)>=TARGET,"fewer than precommitted target of 30 reference-only source-disjoint cases; never fabricate full sample")
 
 def verify():
     m=json.loads((ROOT/"manifest.json").read_text())
