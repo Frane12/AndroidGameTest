@@ -1,0 +1,126 @@
+name: DRNAS MRE2-CDCL P1 — two official sources live CDCL counters
+on:
+  push:
+    branches: [experiment/drnas-mre2-cdcl-twoformula-pilot-20261108]
+    paths:
+      - '.github/workflows/drnas-mre2-cdcl-twoformula.yml'
+      - 'research/mre2_cdcl_pilot.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre2-cdcl-pilot
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile audited CMS; unit-test certified inference and gate
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev g++ libgmp-dev
+          dpkg-query -W libcryptominisat5-dev | grep '5.11.15'
+          python3 -m py_compile research/mre2_cdcl_pilot.py
+          python3 -u research/mre1_cross_representation.py selftest
+          python3 -u research/mre2_impact_gate.py selftest
+          python3 -u research/mre2_cdcl_pilot.py selftest
+          mkdir -p mre2_cdcl_p1
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o mre2_cdcl_p1/native -lcryptominisat5
+          sha256sum mre2_cdcl_p1/native > mre2_cdcl_p1/native.sha256
+      - name: Retrieve exactly frozen SAT2026 originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42483127615 --repo Frane12/AndroidGameTest -n mre2-inputs -D .
+          sha256sum -c mre2/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "research")
+          import mre2_cdcl_pilot as p
+          for i in range(2):
+              c=p.select_case(i)
+              print("CDCL_TARGET",c["name"],c["sha256"],c["expected"])
+          PY
+          sha256sum r195/frozen/manifest.json > mre2_cdcl_p1/manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre2-cdcl-inputs
+          retention-days: 4
+          compression-level: 6
+          path: |
+            r195/frozen/
+            mre2_cdcl_p1/native
+            mre2_cdcl_p1/native.sha256
+            mre2_cdcl_p1/manifest.sha256
+  two-real-formulas:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case_no: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre2-cdcl-inputs
+          path: .
+      - name: Verify source and CMS binary pinned hashes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64
+          sha256sum -c mre2_cdcl_p1/native.sha256
+          sha256sum -c mre2_cdcl_p1/manifest.sha256
+          chmod +x mre2_cdcl_p1/native
+          python3 -u research/r195_native_cms_benchmark.py verify
+      - name: Compare actual CMS CDCL propagations conflicts decisions
+        run: |
+          set -euo pipefail
+          python3 -u research/mre2_cdcl_pilot.py case --case-no ${{ matrix.case_no }} --binary mre2_cdcl_p1/native | tee mre2_cdcl_p1/case-${{ matrix.case_no }}.log
+          grep -q '^MRE2_CDCL_CASE_PASS ${{ matrix.case_no }} 20$' mre2_cdcl_p1/case-${{ matrix.case_no }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre2-cdcl-case-${{ matrix.case_no }}
+          retention-days: 10
+          path: |
+            mre2_cdcl_p1/case-${{ matrix.case_no }}.json
+            mre2_cdcl_p1/case-${{ matrix.case_no }}.log
+  audit:
+    needs: two-real-formulas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre2-cdcl-case-*
+          merge-multiple: true
+          path: mre2_cdcl_p1
+      - name: Pair five modes and audit true native CDCL counters
+        run: |
+          set -euo pipefail
+          python3 -u research/mre2_cdcl_pilot.py audit | tee mre2_cdcl_p1/audit.log
+          cat mre2_cdcl_p1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE2-CDCL-TWO-REAL-FINAL
+          retention-days: 30
+          path: |
+            mre2_cdcl_p1/report.json
+            mre2_cdcl_p1/audit.log
