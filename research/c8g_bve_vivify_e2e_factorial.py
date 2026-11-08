@@ -56,7 +56,6 @@ def configuration(arm, choices):
     elif arm not in ("default",):
         binary = "patched"
         skip = choices[key]
-        need(bool(skip), "empty registered candidate skip set for " + arm)
         env["DRNAS_C8C_SKIP_VARS"] = ",".join(map(str, skip))
         if arm.endswith("_novivify"):
             opts = ["--no-vivify"]
@@ -103,6 +102,10 @@ def bench(shard):
             binary, opts, env = configuration(arm, choices)
             result = c8c.run_bin(c, binary, opts=opts, env_extra=env,
                                  verbose=False, cap=CAP_S)
+            selected_skips = (choices.get(arm.removesuffix("_novivify"), [])
+                              if arm not in ("default", "instrumented_control",
+                                             "noelim", "noelim_force_vivify",
+                                             "noelim_novivify", "novivify") else [])
             row = dict(protocol=PROTO, source_index=shard, gbd=c["gbd"],
                        source_sha256=c["sha256"], arm=arm, rep=rep,
                        run_order_seed=order_seed, order_index=order_index,
@@ -110,11 +113,12 @@ def bench(shard):
                        route_header_charged=False,
                        end_to_end_solver_process_wall_included=True,
                        binary=binary, options=opts,
-                       selected_skipped_candidate_variables=(
-                           choices.get(arm.removesuffix("_novivify"), [])
-                           if arm not in ("default", "instrumented_control",
-                                          "noelim", "noelim_force_vivify",
-                                          "noelim_novivify", "novivify") else []),
+                       selected_skipped_candidate_variables=selected_skips,
+                       empty_skip_set_is_noop=(
+                           arm not in ("default", "instrumented_control",
+                                       "noelim", "noelim_force_vivify",
+                                       "noelim_novivify", "novivify")
+                           and not selected_skips),
                        status=result["status"],
                        original_SAT_witness_verified=
                            result["original_sat_model_verified"],
