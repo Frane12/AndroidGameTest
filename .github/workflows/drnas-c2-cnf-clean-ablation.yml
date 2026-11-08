@@ -1,0 +1,148 @@
+name: DRNAS C2 — source CNF cleaning causal ablation 5 SHA 7 arms 70 paired
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c2-clean-ablation-20261108]
+    paths: ['.github/workflows/drnas-c2-cnf-clean-ablation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c2-cnf-clean-5sha-7arms
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore 5/8 frozen source SHAs and compile C2 with exact CMS pin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original frozen MRE11b sources + same native CMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42511069503 -R Frane12/AndroidGameTest -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D .
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          sha256sum -c mre11b_blind/binary.sha256
+          chmod +x mre10/bin/native built/bin/kissat_4_0_4
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+      - name: Compile new modes + full truth table audit before real solves
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10 cadical
+          mkdir -p c2/bin c2_out
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE research/c2_native_cnf_ablation.cpp -o c2/bin/emit
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror research/c2_native_cnf_ablation.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o c2/bin/native
+          chmod +x c2/bin/native c2/bin/emit
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd c2/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/c2_cnf_clean_ablation.py
+          python3 -u research/c2_cnf_clean_ablation.py selftest | tee c2_out/selftest.log
+          grep -q '^C2_SELFTEST_PASS' c2_out/selftest.log
+          cadical --version | tee c2_out/cadical-version.txt
+          sha256sum c2/bin/native c2/bin/emit mre10/bin/native > c2_out/binary.sha256
+          echo C2_FROZEN_SOURCE_PINS_STANDALONE_TRUTH_TABLE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c2-SHA8-original-CMS-pins-and-ablation-native
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            mre11b_blind/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre10/bin/native
+            c2/bin/native
+            c2/bin/emit
+            c2_out/selftest.log
+            c2_out/cadical-version.txt
+            c2_out/binary.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: Source-locked 7-arm 2-repeat 35s C2 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c2-SHA8-original-CMS-pins-and-ablation-native
+          path: .
+      - name: Verify exact source SHA + pinned native build, install same CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10 cadical
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x c2/bin/native c2/bin/emit mre10/bin/native
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          sha256sum -c c2_out/binary.sha256
+          python3 -u research/mre11b_prospective_freeze.py verify
+          cadical --version
+      - name: Solve original SHA for 7 isolated arms with exact paired seeds
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          mkdir -p c2_out
+          python3 -u research/c2_cnf_clean_ablation.py shard --shard ${{ matrix.shard }} | tee c2_out/shard-${{ matrix.shard }}.log
+          grep -q '^C2_SHARD_PASS ${{ matrix.shard }} 14$' c2_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c2-cnf-clean-result-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c2_out/shard-${{ matrix.shard }}.json
+            c2_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: Fail-closed C2 original SHA SAT witness parity and solved PAR2 70/70
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c2-SHA8-original-CMS-pins-and-ablation-native
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c2-cnf-clean-result-shard-*
+          merge-multiple: true
+          path: c2_out
+      - name: Enforce exact SHA source, 5 x 2 x 7 complete pairing, SAT consistency
+        run: |
+          set -euo pipefail
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c2_cnf_clean_ablation.py audit | tee c2_out/audit.log
+          grep -q '^C2_FINAL' c2_out/audit.log
+          cat c2_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-C2-CNF-CLEAN-5SHA-70-PAIRED-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            c2_out/report.json
+            c2_out/audit.log
+            c2_out/shard-*.json
