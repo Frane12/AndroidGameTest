@@ -1,0 +1,126 @@
+name: DRNAS MRE6b — replay locked unseen SAT2026 7-source CPU benchmark
+on:
+  push:
+    branches: [experiment/drnas-mre6b-official-unseen-holdout-20261108]
+    paths: ['.github/workflows/drnas-mre6b-frozen-paired-replay.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6b-pinned-seven-originals-only
+  cancel-in-progress: false
+jobs:
+  recover_frozen:
+    name: Recover EXACT seven pre-solve frozen official source SHAs and native CMS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore artifacts of unchanged first frozen source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre6b_blind mre5
+          gh run download 42495094599 --repo Frane12/AndroidGameTest -n mre6b-blind-original-official-SAT2026 -D mre6b_blind
+          gh run download 42495094599 --repo Frane12/AndroidGameTest -n mre6b-blind-pinned-CMS -D mre5
+          sha256sum -c mre5/binaries.sha256
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6b_blind_freeze.py verify
+          python3 -u research/mre6b_blind_pilot.py selftest
+          python3 - <<'PY'
+          import json
+          p=json.load(open("mre6b_blind/manifest.json"))
+          assert p["original_source_count"]==7
+          assert p["statuses"]=={"SAT":4,"UNSAT":3}
+          print("MRE6B_UNCHANGED_7_ORIGINALS_SOURCE_SHA_PIN_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6b-locked-inputs-CMS
+          retention-days: 10
+          compression-level: 6
+          path: |
+            mre6b_blind/manifest.json
+            mre6b_blind/source.sha256
+            mre6b_blind/*.cnf
+            mre5/native
+            mre5/binaries.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: real-original official source-paired MRE6b (shard ${{ matrix.shard }})
+    needs: recover_frozen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-locked-inputs-CMS
+          path: .
+      - name: Verify unchanged official source and CPU library
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6b_blind_freeze.py verify
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Run all four arms with paired SHA, seed and full 18s preprocessing cap
+        run: |
+          set -euo pipefail
+          mkdir -p mre6b_blind
+          python3 -u research/mre6b_blind_pilot.py shard --shard ${{ matrix.shard }} --binary mre5/native | tee mre6b_blind/shard-${{ matrix.shard }}.log
+          grep -q '^MRE6B_BLIND_SHARD_PASS ${{ matrix.shard }} ' mre6b_blind/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6b-locked-results-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre6b_blind/shard-${{ matrix.shard }}.json
+            mre6b_blind/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit actual blind source-disjoint MRE6b PAR2 and SAT witnesses
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-locked-inputs-CMS
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6b-locked-results-shard-*
+          merge-multiple: true
+          path: mre6b_blind
+      - name: Verify original SHA and full paired outcome; no post-hoc selection
+        run: |
+          set -euo pipefail
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6b_blind_pilot.py audit | tee mre6b_blind/audit.log
+          cat mre6b_blind/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6B-UNSEEN-SAT2026-7REAL-FINAL
+          retention-days: 30
+          path: |
+            mre6b_blind/report.json
+            mre6b_blind/manifest.json
+            mre6b_blind/audit.log
