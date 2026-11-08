@@ -3,29 +3,35 @@
 Development diagnostics: C7 six previously-seen original SHA, four CMS modes,
 two independent conflict budgets (128, 1024), two seeds = 96 bounded probes.
 Prospective *relative to C7*, not globally blind: 19 original S1 source SHA,
-seven full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 266 trials.
+ten full SAT/UNSAT arms x 2 seeds x 15s end-to-end = 380 trials.
 A bounded-CDCL diagnostic is NEVER counted as full SAT without an original
 CNF witness; any router probe and abandoned solver work are charged to wall.
 C8D dynamic pilots use fresh processes; learned state is NOT transferred.
 BVE raw-resolvent eligibility proxy is NOT evidence of actual CMS BVE events.
 """
 from __future__ import annotations
-import argparse,collections,hashlib,json,os,pathlib,random,statistics,subprocess,time
+import argparse,collections,hashlib,json,os,pathlib,random,re,statistics,subprocess,time
 import c5_early_cdcl_bounded as c5
 import c6_cms_inprocessing_factorial as c6
 import c7_standard_solver_bve_crosscheck as c7
 import mre11b_prospective_benchmark as ref
 import r195_native_cms_benchmark as cms
 
-PROTO="DRNAS-C8D-C7-BVE-EARLY-CDCL-19SHA-7ARM-2REP-15S-v1"
+PROTO="DRNAS-C8D-C7-BVE-EARLY-CDCL-19SHA-10ARM-2REP-15S-v1"
 ROOT=pathlib.Path("c8d_out")
 S1=pathlib.Path("c8d_s1_source")/"s1_router"
 REPS=2;CAP=15.0;SHARDS=5
-MODES=("cms_native","cms_dedup_nobve","cms_nobve","cadical","kissat","c8_bve_static","c8_bve_early")
+MODES=("cms_native","cms_dedup_nobve","cms_nobve",
+       "cadical","cadical_noelim","cadical_novivify","cadical_noelim_novivify",
+       "kissat","c8_bve_static","c8_bve_early")
 DIAG_MODES=("cpp_native","cpp_dedup","c6_native_nobve","c6_dedup_nobve")
-DIAG_BUDGETS=(128,1024)
-PROBE_CONFLICTS=256
+EXTERNAL_DIAG=("cadical_default","cadical_noelim")
+ALL_DIAG=DIAG_MODES+EXTERNAL_DIAG
+DIAG_BUDGETS=(100,1000)
+PROBE_CONFLICTS=100
+CADICAL_CONFLICTS=1000
 PILOT_CAP_S=0.65
+CADICAL_PILOT_CAP_S=0.75
 SCAN_CLAUSES=12000
 SCAN_BYTES=1048576
 
@@ -150,6 +156,20 @@ def dynamic_choice(f,pilots):
     if f["binary_fraction"]>=0.90 and da<db*.70 and pa<pb*1.3 and (
         a["wall_s"] < b["wall_s"]*.8):
         return "cms_native","early_native_dominance"
+    # C8 hypothesis: eliminate BVE on instances where real CaDiCaL
+    # early traces show few/no eliminations and no-elim makes decisively
+    # better decisions per conflict without more propagation cost.
+    cd=pilots.get("cadical_default");ne=pilots.get("cadical_noelim")
+    if cd and ne and cd.get("stats") and ne.get("stats") and (
+        cd["status"]=="BUDGET" and ne["status"]=="BUDGET"):
+        a,b=cd["stats"],ne["stats"]
+        if all(k in a and k in b for k in (
+            "eliminated","conflicts","decisions","propagations")) and (
+            a["eliminated"]==0 and a["conflicts"]>=64 and b["conflicts"]>=64):
+            ad=a["decisions"]/a["conflicts"];bd=b["decisions"]/b["conflicts"]
+            ap=a["propagations"]/a["conflicts"];bp=b["propagations"]/b["conflicts"]
+            if bd<ad*.65 and bp<ap*1.2:
+                return "cadical_noelim","C8_actual_BVE_zero_and_early_noelim_decision_gain"
     return baseline
 def selftest():
     f=dict(observed=3000,binary_fraction=.3,horn_fraction=.5,
@@ -197,20 +217,53 @@ def probe(c,rep,mode,budget,cap):
     return dict(mode=mode,budget=budget,status=status,stats=stats,
        wall_s=round(wall,6),sat_witness_verified=verified,
        pilot_is_not_full_PAR2=True)
+CADICAL_STAT_RE=re.compile(r"^c\\s+([A-Za-z][A-Za-z0-9_.-]*):\\s+(\\d+)(?:\\s|$)",re.M)
+CADICAL_KEYS={"conflicts","decisions","propagations","restarts",
+              "eliminated","elimtried","elimphases","elimrounds",
+              "vivified","vivifications","vivifychecks","learned"}
+def cadical_probe(c,rep,mode,budget,cap):
+    """Actual C8 CaDiCaL verbose BVE CDCL aggregates; fresh snapshot process."""
+    need(mode in EXTERNAL_DIAG and budget in (*DIAG_BUDGETS,CADICAL_CONFLICTS),
+         "unregistered external bounded probe")
+    src=c["path"];need(sha(src)==c["sha256"],"CaDiCaL probe source SHA drift")
+    opts=["--no-elim"] if mode=="cadical_noelim" else []
+    cmd=["/usr/bin/cadical",*opts,"-v","-c",str(budget),str(src.resolve())]
+    started=time.perf_counter()
+    try:p=subprocess.run(cmd,capture_output=True,text=True,errors="replace",
+                         check=False,timeout=cap)
+    except subprocess.TimeoutExpired:p=None
+    wall=time.perf_counter()-started
+    stats=None;status="PILOT_TIMEOUT";verified=False
+    if p is not None:
+        need(p.returncode in (0,10,20),"CaDiCaL bounded exit not recognized "+p.stderr[-300:])
+        stats={k:int(v) for k,v in CADICAL_STAT_RE.findall(p.stdout)
+               if k in CADICAL_KEYS}
+        if mode=="cadical_noelim" and "eliminated" in stats:
+            need(stats["eliminated"]==0,"C8 noelim actually eliminated vars")
+        if p.returncode in (10,20):
+            status,model=ref.external_parse(p)
+            if status=="SAT":cms.verify_model(src,model);verified=True
+        else:
+            status="BUDGET"
+    return dict(mode=mode,budget=budget,status=status,stats=stats,
+       wall_s=round(wall,6),sat_witness_verified=verified,
+       C8_real_CaDiCaL_BVE_aggregates_not_proxy=True,
+       pilot_is_not_full_PAR2=True)
 def diagnostic_shard(idx):
     cc=dev_sources()
     need(idx in range(6),"bad C7 diagnostic shard")
     c=cc[idx];rows=[]
     for rep in range(REPS):
-        combo=[(mode,budget) for mode in DIAG_MODES for budget in DIAG_BUDGETS]
+        combo=[(mode,budget) for mode in ALL_DIAG for budget in DIAG_BUDGETS]
         random.Random(PROTO+c["sha256"]+str(rep)).shuffle(combo)
         for mode,budget in combo:
-            a=probe(c,rep,mode,budget,cap=4.0)
+            a=(cadical_probe(c,rep,mode,budget,cap=4.0) if mode in EXTERNAL_DIAG
+               else probe(c,rep,mode,budget,cap=4.0))
             row=dict(protocol=PROTO,sha256=c["sha256"],gbd=c["gbd"],rep=rep,
               seed=seed(c,rep),source_cohort="C7_development_not_blind",**a)
             rows.append(row);save(ROOT/f"diag-{idx}.json",rows)
             print("C8D_DIAG",json.dumps(row,sort_keys=True),flush=True)
-    need(len(rows)==REPS*len(DIAG_MODES)*len(DIAG_BUDGETS),"diagnostic shortfall")
+    need(len(rows)==REPS*len(ALL_DIAG)*len(DIAG_BUDGETS),"diagnostic shortfall")
     print("C8D_DIAG_SHARD_PASS",idx,len(rows),flush=True)
 def run_full(c,rep,mode):
     need(mode in MODES,"invalid full arm")
@@ -232,6 +285,16 @@ def run_full(c,rep,mode):
                 selection="verified_early_terminal_reuse_no_restart"
                 early_terminal=x;break
         if early_terminal is None:
+            for c_mode in EXTERNAL_DIAG:
+                if time.perf_counter()-start>=CAP-.15:break
+                x=cadical_probe(c,rep,c_mode,CADICAL_CONFLICTS,
+                    min(CADICAL_PILOT_CAP_S,max(.05,CAP-(time.perf_counter()-start)-.05)))
+                pilots.append(x);pilot_results[c_mode]=x
+                if x["status"] in ("SAT","UNSAT"):
+                    backend="cadical" if c_mode=="cadical_default" else "cadical_noelim"
+                    selection="C8_CaDiCaL_early_verified_terminal_reuse"
+                    early_terminal=x;break
+        if early_terminal is None:
             backend,selection=dynamic_choice(f,pilot_results)
     remaining=CAP-(time.perf_counter()-start)
     status="TIMEOUT";verified=False;full_stats=None
@@ -241,8 +304,12 @@ def run_full(c,rep,mode):
         # Only terminal bounded SAT/UNSAT can be legitimately reused.
         need(status=="UNSAT" or verified,"early SAT model not checked")
     elif remaining>0.03:
-        if backend=="cadical":
-            cmd=["/usr/bin/cadical",str(src.resolve())]
+        if backend.startswith("cadical"):
+            opts={"cadical":(),"cadical_noelim":("--no-elim",),
+                  "cadical_novivify":("--no-vivify",),
+                  "cadical_noelim_novivify":("--no-elim","--no-vivify")}
+            need(backend in opts,"invalid C8 CaDiCaL factorial mode")
+            cmd=["/usr/bin/cadical",*opts[backend],str(src.resolve())]
         elif backend=="kissat":
             cmd=[str(pathlib.Path("built/bin/kissat_4_0_4").resolve()),str(src.resolve())]
         else:
@@ -256,7 +323,7 @@ def run_full(c,rep,mode):
                              check=False,timeout=remaining,env=env)
         except subprocess.TimeoutExpired:p=None
         if p is not None:
-            if backend in ("cadical","kissat"):
+            if backend.startswith("cadical") or backend=="kissat":
                 status,model=ref.external_parse(p)
             else:
                 need(p.returncode==0,"full native failed "+p.stderr[-500:])
@@ -279,7 +346,7 @@ def run_full(c,rep,mode):
       UNSAT_independent_LRAT=False,wall_s=round(elapsed,6),cap_s=CAP,
       par2_s=round(elapsed if status!="TIMEOUT" else 2*CAP,6),
       native_stats=full_stats,probes_abandoned_restart_not_preserved=True,
-      external_default_seed_not_randomized=(backend in ("cadical","kissat")))
+      external_default_seed_not_randomized=(backend.startswith("cadical") or backend=="kissat"))
 def shard(idx):
     ss=hold_sources();need(idx in range(SHARDS),"bad holdout shard")
     cases=ss[idx::SHARDS];need(len(cases)==(4 if idx<4 else 3),"source-per-shard drift")
@@ -299,28 +366,29 @@ def audit_diag():
     rows=[];seen=set()
     for i in range(6):
         x=json.loads((ROOT/f"diag-{i}.json").read_text())
-        need(len(x)==16,"incomplete early diagnostic")
+        need(len(x)==24,"incomplete early diagnostic")
         rows+=x
-    need(len(rows)==96,"96 diagnostics absent")
+    need(len(rows)==144,"144 diagnostics absent")
     for x in rows:
         c=by_sha.get(x["sha256"])
         need(c is not None and x["protocol"]==PROTO and
              x["seed"]==seed(c,x["rep"]) and
              x["budget"] in DIAG_BUDGETS and
-             x["mode"] in DIAG_MODES,"diagnostic source drift")
+             x["mode"] in ALL_DIAG,"diagnostic source drift")
         key=(x["sha256"],x["rep"],x["mode"],x["budget"])
         need(key not in seen,"duplicate diagnostic");seen.add(key)
         need(x["status"] in ("SAT","UNSAT","BUDGET","PILOT_TIMEOUT"),"diagnostic status invalid")
         if x["status"]=="SAT":need(x["sat_witness_verified"],"unproven diag SAT")
     report=dict(protocol=PROTO,status="C8D_EARLY_DIAG_PASS",
          development_C7_not_blind=True,independent_process_per_budget=True,
-         bounded_diagnostics_not_PAR2=True,source_count=6,attempts=96,
+         bounded_diagnostics_not_PAR2=True,source_count=6,attempts=144,
+         CaDiCaL_C8_actual_elimination_aggregates_recorded=True,
          per_mode_budget={m+":"+str(b):dict(
             attempts=len([x for x in rows if x["mode"]==m and x["budget"]==b]),
             budget_reached=sum(x["status"]=="BUDGET" for x in rows if x["mode"]==m and x["budget"]==b),
             solved_before_limit=sum(x["status"] in ("SAT","UNSAT") for x in rows if x["mode"]==m and x["budget"]==b),
             total_probe_wall_s=round(sum(x["wall_s"] for x in rows if x["mode"]==m and x["budget"]==b),6))
-            for m in DIAG_MODES for b in DIAG_BUDGETS})
+            for m in ALL_DIAG for b in DIAG_BUDGETS})
     save(ROOT/"diagnostic-report.json",report)
     print("C8D_DIAGNOSTIC_FINAL",json.dumps(report,sort_keys=True),flush=True)
 def audit():
@@ -330,7 +398,7 @@ def audit():
         a=json.loads((ROOT/f"shard-{i}.json").read_text())
         need(len(a)==(4 if i<4 else 3)*REPS*len(MODES),"partial full-solve shard")
         rows+=a
-    need(len(rows)==266,"incomplete 266 original paired full trials")
+    need(len(rows)==380,"incomplete 380 original paired full trials")
     for x in rows:
         c=by_sha.get(x["source_sha256"])
         need(c is not None and x["gbd"]==c["gbd"] and x["cohort"]==c["cohort"]
@@ -342,7 +410,7 @@ def audit():
         need(abs(x["par2_s"]-(2*CAP if x["status"]=="TIMEOUT" else x["wall_s"]))<.000002,
              "PAR2 not full E2E")
         if x["mode"]=="c8_bve_early":
-            need(len(x["pilots"]) in (1,2),"must charge actual pilot")
+            need(1<=len(x["pilots"])<=4,"must charge actual pilot")
             if not x["early_terminal_reused"]:
                 b=dynamic_choice(x["source_BVE_proxy"],{p["mode"]:p for p in x["pilots"]})[0]
                 need(b==x["backend"],"early gate changed post hoc")
@@ -351,7 +419,8 @@ def audit():
                  static_choice(x["source_BVE_proxy"])[0]==x["backend"],
                  "static gate drift")
         else:
-            known={"cms_native","cms_dedup_nobve","cms_nobve","cadical","kissat"}
+            known={"cms_native","cms_dedup_nobve","cms_nobve","cadical",
+                   "cadical_noelim","cadical_novivify","cadical_noelim_novivify","kissat"}
             need(x["mode"] in known and x["backend"]==x["mode"] and x["pilots"]==[],
                  "reference mode changed")
         key=(x["source_sha256"],x["rep"])
@@ -385,7 +454,9 @@ def audit():
                             solved=sum(x["status"]!="TIMEOUT" for x in xx if x["mode"]==m))
                       for m in MODES}))
     oracle=round(sum(min(v["par2_s"] for v in pair.values()
-                       if v["mode"] in ("cms_native","cms_dedup_nobve","cms_nobve","cadical","kissat"))
+                       if v["mode"] in ("cms_native","cms_dedup_nobve","cms_nobve",
+                              "cadical","cadical_noelim","cadical_novivify",
+                              "cadical_noelim_novivify","kissat"))
                      for pair in paired.values()),6)
     report=dict(protocol=PROTO,status="C8D_E2E_AUDIT_PASS",
        full_trials=len(rows),source_count=20,repeats=REPS,cap_s=CAP,
@@ -395,7 +466,8 @@ def audit():
        no_pilot_state_reuse=True,pilot_wall_charged=True,
        BVE_proxy_not_actual_internal_BVE_event=True,
        original_SAT_witness_verified=True,UNSAT_independent_LRAT=False,
-       no_auto_promotion=True,oracle_five_backend_PAR2_s=oracle,
+       no_auto_promotion=True,oracle_eight_backend_PAR2_s=oracle,
+       actual_C8_CaDiCaL_BVE_and_vivify_factorial_controls=True,
        scores=scores,per_source=per)
     save(ROOT/"report.json",report)
     print("C8D_FINAL",json.dumps({k:v for k,v in report.items() if k!="per_source"},sort_keys=True),flush=True)
