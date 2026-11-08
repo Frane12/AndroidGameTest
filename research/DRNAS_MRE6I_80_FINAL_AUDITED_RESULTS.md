@@ -35,8 +35,8 @@ performance ranking.
 
 NEW official SAT2026: 4/8 solved per mode. Both fresh SAT inputs
 solved in both repetitions. Both fresh UNSAT inputs timed out at 35s
-for every mode (8 total timeouts across the 2 seeds×4 original cases,
-i.e. 4 timeouts PER MODE). Published external CaDiCaL3 reference
+for every mode (4 timeouts PER MODE on those two UNSAT originals, or
+20 timeout attempts across all five modes). Published external CaDiCaL3 reference
 times for UNSAT originals were 113.24s and 642.71s, so the 35s cap is
 an explicitly difficult comparison; these timeout cases remain fully
 counted in every PAR2 sum, never excluded.
