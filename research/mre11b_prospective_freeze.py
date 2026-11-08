@@ -46,9 +46,18 @@ def freeze():
     getsrc.prior.r32p.CNF_LIMIT=source_limit
     years=collections.Counter()
     cases=[];trace=[]
-    for yr,g in cand:
+    # Phase 0 fixes two viable source SHA per year before filling the last two
+    # slots from the same SHA-ranked pool. All ordering is metadata-only.
+    ordered=[(0,yr,g) for yr in YEARS for y,g in cand if y==yr]
+    ordered +=[(1,yr,g) for yr,g in cand]
+    attempted=set()
+    for phase,yr,g in ordered:
         if len(cases)>=TARGET:break
+        if (yr,g) in attempted:continue
+        if phase==0 and years[yr]>=2:continue
+        if phase==1 and any(years[y]<2 for y in YEARS):continue
         if years[yr]>=4:continue
+        attempted.add((yr,g))
         dst=ROOT/(g+".cnf")
         try:
             compressed=getsrc.get("https://benchmark-database.de/file/"+g,LIMIT,seconds=25)
@@ -78,6 +87,7 @@ def freeze():
         status_not_selection_criterion=True,
         selection="published minisat1m=yes plus SHA rank fixed source geometry and year quota",
         selected_no_mre_timing_or_structure=True,
+        fixed_phase_year_quota_two_each_then_two_SHA_ranked=True,
         historical_register_not_globally_complete=True,
         cap_s=CAP,reps=REPS,arms=list(MODES),trace=trace,
         no_production_promotion=True)
