@@ -1,0 +1,132 @@
+name: DRNAS MRE2 — proof-gated BCP impact 320 paired
+on:
+  push:
+    branches: [experiment/drnas-mre2-bcp-impact-gate-20261108]
+    paths:
+      - 'research/mre2_impact_gate.py'
+      - 'research/mre1_cross_representation.py'
+      - 'research/r195_cms_native_bridge.cpp'
+      - '.github/workflows/drnas-mre2-impact-gate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre2-impact-gate
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile audited CMS bridge; verify MRE1 and MRE2 proof gate
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev g++ libgmp-dev
+          dpkg-query -W libcryptominisat5-dev | grep '5.11.15'
+          python3 -m py_compile research/mre1_cross_representation.py research/mre2_impact_gate.py
+          python3 -u research/mre1_cross_representation.py selftest
+          python3 -u research/mre2_impact_gate.py selftest
+          mkdir -p mre2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o mre2/native -lcryptominisat5
+          sha256sum mre2/native > mre2/native.sha256
+          printf 'p cnf 3 4\n1 2 3 0\n-1 -2 3 0\n-1 2 -3 0\n1 -2 -3 0\n' > mre2/smoke.cnf
+          printf '3 1 1 2 3\n' > mre2/xor.tsv
+          : > mre2/empty.tsv
+          for mode in cms_native source_xor_no_gauss; do
+            mre2/native mre2/smoke.cnf mre2/xor.tsv mre2/empty.tsv "$mode" 42 | grep '^R195_RESULT status=SAT '
+          done
+      - name: Retrieve SHA-locked development set from successful MRE1 run
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42481898277 --repo Frane12/AndroidGameTest -n mre1-inputs -D .
+          sha256sum -c mre1/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          sha256sum r195/frozen/manifest.json > mre2/manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre2-inputs
+          retention-days: 4
+          compression-level: 6
+          path: |
+            r195/frozen/
+            mre2/native
+            mre2/native.sha256
+            mre2/manifest.sha256
+
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre2-inputs
+          path: .
+      - name: Verify native and frozen source hashes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64
+          sha256sum -c mre2/native.sha256
+          sha256sum -c mre2/manifest.sha256
+          chmod +x mre2/native
+          python3 -u research/r195_native_cms_benchmark.py verify
+      - name: Run five-arm 30s full-wall source-paired gate comparison
+        run: |
+          set -euo pipefail
+          python3 -u research/mre2_impact_gate.py shard --shard \${{ matrix.shard }} --binary mre2/native | tee mre2/shard-\${{ matrix.shard }}.log
+          grep -q '^MRE2_SHARD_PASS' mre2/shard-\${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre2-shard-\${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre2/shard-\${{ matrix.shard }}.json
+            mre2/shard-\${{ matrix.shard }}.log
+
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre2-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre2-shard-*
+          merge-multiple: true
+          path: mre2
+      - name: Audit all 320 measurements and paired PAR2
+        run: |
+          set -euo pipefail
+          sha256sum -c mre2/manifest.sha256
+          python3 -u research/mre2_impact_gate.py audit | tee mre2/audit.log
+          cat mre2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE2-FINAL
+          retention-days: 30
+          path: |
+            mre2/report.json
+            mre2/audit.log
