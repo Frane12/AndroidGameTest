@@ -105,12 +105,9 @@ def permutation(clauses,mode,source_sha):
     else:raise AssertionError(mode)
     need(collections.Counter(result)==collections.Counter(clauses),
          "exact raw original clause MULTISET changed")
-    if mode!="reverse_unique_tail":
-        u2,_=split_duplicates(result)
-        # In the front arm duplicate instances are canonically indistinguishable;
-        # 'first occurrence' after reordering is an exact duplicate, so the
-        # first-occurrence distinct-clause sequence is unchanged.
-        need(u2==uniq,"relative first-unique clause order changed")
+    # The original unique-primary subsequence is retained by construction,
+    # but moving copies to the FRONT can change first-encounter order seen by
+    # the solver. That is intentional and reported as a separate causal arm.
     return result
 
 def cases():return base.cases()
