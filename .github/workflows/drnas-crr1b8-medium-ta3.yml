@@ -1,0 +1,140 @@
+name: DRNAS CRR1-B8 — 24 real SAT2025 5s medium scout then 6s proof-gated pairs
+on:
+  push:
+    branches: [experiment/drnas-crr1b8-medium-ta3-20261108]
+    paths: ['.github/workflows/drnas-crr1b8-medium-ta3.yml', 'research/drnas_crr1b8_medium_ta3.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-crr1b8-medium-ta3-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch frozen original SAT2025 TA3 corpus and independent W4 DRAT checker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42429372803 -R Frane12/AndroidGameTest -n w4-input -D .
+          test -s worldsim-w1-frozen.tar.gz
+          tar xzf worldsim-w1-frozen.tar.gz
+          gh run download 42393279231 -R Frane12/AndroidGameTest -n ta3-original24-frozen-source-binary -D .
+          test -s ta3-frozen24-binaries.tar.gz
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4
+          test -s ta3/manifest.json
+          test -d ta3/sources
+          test -s checker/drat-trim
+          python3 -m py_compile research/drnas_crr1a_shadow.py research/drnas_crr1b_active.py research/drnas_crr1b2_telemetry.py research/drnas_crr1b3loose.py research/drnas_crr1b4_value.py research/drnas_crr1b5_discrimination.py research/drnas_crr1b6_conflict_profile.py research/drnas_crr1b7b_easy_xor.py research/drnas_crr1b8_medium_ta3.py
+          mkdir -p crr1b8
+          python3 -u research/drnas_crr1b8_medium_ta3.py prepare | tee crr1b8/prepare.log
+          grep -q '^CRR1B8_SELFTEST_PASS' crr1b8/prepare.log
+          grep -q '^CRR1B8_PREP_PASS' crr1b8/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crr1b8-frozen-TA3-and-checker
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ta3-frozen24-binaries.tar.gz
+            checker/drat-trim
+            crr1b8/manifest.json
+            crr1b8/pins.json
+            crr1b8/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crr1b8-prepare-debug
+          retention-days: 7
+          if-no-files-found: warn
+          path: crr1b8/prepare.log
+  scout_paired:
+    needs: prepare
+    name: CRR1B8 short scout 3 source-originals + eligible pairs shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1b8-frozen-TA3-and-checker
+      - name: Scout SHA-frozen originals and run proof-gated short pairs only on qualifying medium formulas
+        run: |
+          set -euo pipefail
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4
+          python3 -u research/drnas_crr1b8_medium_ta3.py shard --shard ${{ matrix.shard }} | tee crr1b8/shard-${{ matrix.shard }}.log
+          grep -q '^CRR1B8_SHARD_PASS' crr1b8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crr1b8-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            crr1b8/scout-${{ matrix.shard }}.json
+            crr1b8/paired-${{ matrix.shard }}.json
+            crr1b8/shard-${{ matrix.shard }}.log
+  audit:
+    needs: scout_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1b8-frozen-TA3-and-checker
+      - name: Verify 24 original source SHA scans and every actual SAT UNSAT paired result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf ta3-frozen24-binaries.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4
+          mkdir -p crr1b8/collected
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'crr1b8-shard-*' -D crr1b8/collected
+          test "$(find crr1b8/collected -type f -name 'scout-*.json' | wc -l)" -eq 8
+          test "$(find crr1b8/collected -type f -name 'paired-*.json' | wc -l)" -eq 8
+          find crr1b8/collected -type f \( -name 'scout-*.json' -o -name 'paired-*.json' \) -exec cp '{}' crr1b8/ \;
+          python3 -u research/drnas_crr1b8_medium_ta3.py audit | tee crr1b8/audit.log
+          grep -q '^CRR1B8_FINAL' crr1b8/audit.log
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r=json.load(open("crr1b8/report.json"))
+          print("CRR1B8 24 source SHA-medium scout PASS")
+          print("Official SAT2025 scanned",r["scout_cases"])
+          print("Eligible medium source formula count",r["medium_eligible_count"])
+          print("Paired completed",r["paired_trials"])
+          print("Medium list",r["medium_eligible"])
+          for x in r["paired_formulas"]:print(x)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CRR1B8-24-TA3-ORIGINAL-MEDIUM-SHORT-SCOUT-FINAL
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            crr1b8/report.json
+            crr1b8/all-scouts.json
+            crr1b8/all-paired.json
+            crr1b8/audit.log
+            crr1b8/manifest.json
+            crr1b8/pins.json
