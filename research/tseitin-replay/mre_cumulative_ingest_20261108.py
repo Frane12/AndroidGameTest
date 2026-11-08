@@ -199,7 +199,7 @@ def ingest(db,root,index,source_label,s):
   pairs[k][x["mode"]]=x
   proof="SAT_VERIFIED_ORIGINAL" if x["status"]=="SAT" else "UNSAT_EXTERNAL_STATUS_NO_INDEPENDENT_LRAT" if x["status"]=="UNSAT" else "CAP_TIMEOUT_UNRESOLVED"
   j=quote(r)
-  db.execute("INSERT INTO mre_attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  db.execute("INSERT INTO mre_attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
      (run,x["sha"],x["mode"],x["rep"],x["seed"],x["status"],
       x["satcheck"],x["cross"],x["wall"],x["par2"],proof,x["gate"],
       x["eliminated"],x["removed"],x["conflicts"],x["decisions"],
@@ -214,7 +214,7 @@ def ingest(db,root,index,source_label,s):
   for mode,x in group.items():
    if mode==s["baseline"]:continue
    base_done=baseline["status"]!="TIMEOUT";other_done=x["status"]!="TIMEOUT"
-   db.execute("INSERT INTO mre_paired VALUES(?,?,?,?,?,?,?,?,?)",
+   db.execute("INSERT INTO mre_paired VALUES(?,?,?,?,?,?,?,?,?,?)",
      (run,k[0],k[1],mode,s["baseline"],baseline["par2"]-x["par2"],
       int(base_done),int(other_done),int(base_done and not other_done),
       int((not base_done) and other_done)))
@@ -327,7 +327,7 @@ def main():
    result=counts,runs=results)
   (a.out/"mre_ingest_audit.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
  finally:db.close()
- with dbpath.open("rb") as fi,gzip.open(a.out/"mre_evidence.sqlite.gz","wb",mtime=None) as fo:
+ with dbpath.open("rb") as fi,gzip.GzipFile(filename=str(a.out/"mre_evidence.sqlite.gz"),mode="wb",mtime=0) as fo:
   shutil.copyfileobj(fi,fo)
  (a.out/"mre_evidence.sqlite.sha256").write_text(digest(dbpath.read_bytes())+"\n")
  print("MRE_CUMULATIVE_EVIDENCE_PASS",json.dumps(counts,sort_keys=True),flush=True)
