@@ -94,7 +94,7 @@ def prepare(source,mode,tmp):
                 if eligible:
                     probe["attempted"]=True
                     childfile=tmp/"certified-mf2-probe.json"
-                    childcmd=[sys.executable,"research/mre6h_gf2_probe.py",
+                    childcmd=[sys.executable,"research/mre6g_gf2_probe.py",
                               str(pathlib.Path(source).resolve()),
                               str(childfile.resolve()),"--inner-budget",".4"]
                     t=time.perf_counter()
