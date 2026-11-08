@@ -1,0 +1,165 @@
+name: DRNAS C4 — duplicate clause order causal audit 4 SHA 3 arms 3 reps 35s
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c4-duplicate-order-causal-20261108]
+    paths: ['.github/workflows/drnas-c4-duplicate-order-causal.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c4-exact-duplicate-order-selected-4sha
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore frozen C2/C3 originals + verify exact clause-multiset parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen original 12 SHA and C2 reference binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42518662034 -R Frane12/AndroidGameTest -n c3-frozen-sha12-source-c2-binary-reference -D .
+          chmod +x c2/bin/native c2/bin/emit mre10/bin/native
+          sha256sum -c c2_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+      - name: Restore independent frozen C1 source SHA and original manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c4_c1_download
+          gh run download 42511069503 -R Frane12/AndroidGameTest -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D c4_c1_download
+          mv c4_c1_download/mre11b_blind ./mre11b_blind
+          (cd mre11b_blind && sha256sum -c source.sha256)
+      - name: Compile single new tail-order method; prove source multiset unchanged
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p c4/bin c4_out
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE research/c4_native_duplicate_order.cpp -o c4/bin/emit
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror research/c4_native_duplicate_order.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o c4/bin/native
+          chmod +x c4/bin/native c4/bin/emit
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd c4/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/c4_duplicate_order_causal.py
+          python3 -u research/c4_duplicate_order_causal.py selftest | tee c4_out/selftest.log
+          grep -q '^C4_EXACT_MULTIPLICITY_PARITY_PASS' c4_out/selftest.log
+          sha256sum c4/bin/native c4/bin/emit c2/bin/native c2/bin/emit mre10/bin/native > c4_out/binary.sha256
+          echo C4_ORIGINAL_SAT_CNF_MULTIPLICITY_PROOF_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c4-frozen-four-original-SHA-reference-binaries-source-parity
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            c2/bin/native
+            c2/bin/emit
+            c4/bin/native
+            c4/bin/emit
+            mre10/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            c4_out/binary.sha256
+            c4_out/selftest.log
+            c4_out/source-invariants.json
+
+  paired:
+    name: C4 exact original clause count source SHA shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c4-frozen-four-original-SHA-reference-binaries-source-parity
+          path: .
+      - name: Verify SHA + identical pinned binary before each real SAT attempt
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          chmod +x c2/bin/native c2/bin/emit c4/bin/native c4/bin/emit mre10/bin/native
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          sha256sum -c c4_out/binary.sha256
+      - name: Three seed-paired arms only on original unaltered SHA CNFs
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/c4_duplicate_order_causal.py shard --shard ${{ matrix.shard }} | tee c4_out/shard-${{ matrix.shard }}.log
+          grep -q '^C4_SHARD_PASS ${{ matrix.shard }} 9$' c4_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c4-original-paired-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c4_out/shard-${{ matrix.shard }}.json
+            c4_out/shard-${{ matrix.shard }}.log
+
+  audit:
+    name: Final C4 strict 36 original-SHA paired 35s SAT model and PAR2 audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c4-frozen-four-original-SHA-reference-binaries-source-parity
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c4-original-paired-shard-*
+          merge-multiple: true
+          path: c4_out
+      - name: Fail-closed verify all source SHA, per-mode seed pairing and original SAT witnesses
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c4_duplicate_order_causal.py audit | tee c4_out/audit.log
+          grep -q '^C4_FINAL' c4_out/audit.log
+          cat c4_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C4-ORIGINAL-4SHA-36-PAIRED-DUPLICATE-ORDER-CAUSAL-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c4_out/report.json
+            c4_out/audit.log
+            c4_out/shard-*.json
+            c4_out/source-invariants.json
