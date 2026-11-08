@@ -1,0 +1,169 @@
+name: DRNAS C11b — prospective official SAT2026 triple Kissat CaDiCaL noBVE 60s PAR2
+on:
+  push:
+    branches: [experiment/drnas-c11-triple-portfolio-20261109]
+    paths: ['.github/workflows/drnas-c11b-triple-official26.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c11b-prospective-new-official-sha-20261109
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Pretest original-SHA source-only lock, exclude C8D/C9c/C10b/C11a and prove 3-way policy frozen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover C10b prior frozen source registry and C11a 39-SHA development policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c11_prepared_c10b c11a_reference c11b_previous_c10b c11b_official c11b_out
+          gh run download 42532482392 -R Frane12/AndroidGameTest -n c10b-new-SAT2026-8plus-original-SHA-locked-before-benchmark -D c11_prepared_c10b
+          gh run download 42534747410 -R Frane12/AndroidGameTest -n DRNAS-C11A-39SHA-TRIPLE-SOLVER-SOURCE-ONLY-FROZEN-DEVELOPMENT -D c11a_reference
+          test -s c11_prepared_c10b/c10b_official/manifest.json
+          test -s c11a_reference/c11a_out/report.json
+          cp -a c11_prepared_c10b/c10b_official c11b_previous_c10b/
+          cp c11a_reference/c11a_out/report.json c11a_reference/report.json
+          for d in c10a_reference c9_reference c10b_previous_c9c c9c_previous_x5 c9c_previous_r82 c9c_previous_mre6b; do
+            cp -a "c11_prepared_c10b/$d" .
+          done
+          mkdir -p built/bin c7_source c7_out
+          cp c11_prepared_c10b/built/bin/kissat_4_0_4 built/bin/
+          cp c11_prepared_c10b/c7_source/kissat.sha256 c7_source/
+          cp c11_prepared_c10b/c7_out/cadical-version.txt c7_out/
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          python3 -m py_compile research/c11a_triple_retrospective.py research/c11b_official26_freeze.py research/c11b_official26_benchmark.py
+      - name: Freeze 6-12 NEW original SAT2026 CNFs by official verified status and predeclared identity only
+        run: |
+          set -euo pipefail
+          python3 -u research/c11b_official26_freeze.py freeze | tee c11b_official/freeze.log
+          grep -q '^C11B_SOURCE_FROZEN' c11b_official/freeze.log
+          python3 -u research/c11b_official26_freeze.py verify | tee c11b_official/verify.log
+          grep -q '^C11B_SOURCE_SHA_VERIFIED' c11b_official/verify.log
+          (cd c11b_official && sha256sum -c source.sha256)
+          echo C11B_ALL_ORIGINAL_SHA_LOCKED_BEFORE_TIMED_SOLVER_TRIAL
+      - name: Verify standard reference solver SHA/version and C11 three-way SAT witness smoke
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          python3 -u research/c11b_official26_benchmark.py verify | tee c11b_out/verify.log
+          python3 -u research/c11b_official26_benchmark.py smoke | tee c11b_out/smoke.log
+          grep -q '^C11B_STANDARD_BACKENDS_THREE_WAY_SOURCE_RULE_SMOKE_PASS' c11b_out/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c11b-new-official26-source-SHA-and-three-backend-policy-frozen
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c11b_official/*.cnf
+            c11b_official/manifest.json
+            c11b_official/source.sha256
+            c11b_official/freeze.log
+            c11b_official/verify.log
+            c11a_reference/report.json
+            c11b_previous_c10b/c10b_official/manifest.json
+            c10a_reference/report.json
+            c9_reference/report.json
+            c10b_previous_c9c/c9c_official/manifest.json
+            c9c_previous_x5/mre_x5_blind/manifest.json
+            c9c_previous_r82/world/manifest.json
+            c9c_previous_mre6b/manifest.json
+            built/bin/kissat_4_0_4
+            c7_source/kissat.sha256
+            c7_out/cadical-version.txt
+            c11b_out/verify.log
+            c11b_out/smoke.log
+  paired:
+    name: C11b 60s original-SHA 5-arm 2-rep E2E shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c11b-new-official26-source-SHA-and-three-backend-policy-frozen
+          path: .
+      - name: Fail-closed verification of original CNF, historical source exclusion, C11a model and pinned solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          (cd c11b_official && sha256sum -c source.sha256)
+          python3 -u research/c11b_official26_freeze.py verify
+          python3 -u research/c11b_official26_benchmark.py verify
+      - name: Five paired real original SAT/UNSAT backends, 60s cap, SAT witness replay, PAR2 wall
+        run: |
+          set -euo pipefail
+          mkdir -p c11b_out
+          python3 -u research/c11b_official26_benchmark.py shard --shard ${{ matrix.shard }} | tee c11b_out/shard-${{ matrix.shard }}.log
+          grep -q '^C11B_SHARD_PASS ${{ matrix.shard }} ' c11b_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c11b-official26-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c11b_out/shard-${{ matrix.shard }}.json
+            c11b_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C11b FINAL 6plus original SHA 5-arm 60s PAR2 regression and model verification
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c11b-new-official26-source-SHA-and-three-backend-policy-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c11b-official26-shard-*
+          merge-multiple: true
+          path: c11b_out
+      - name: Audit every paired mode original SHA, SAT witness, timeout PAR2 and case-level regret vs Kissat
+        run: |
+          set -euo pipefail
+          (cd c11b_official && sha256sum -c source.sha256)
+          python3 -u research/c11b_official26_benchmark.py audit | tee c11b_out/audit.log
+          grep -q '^C11B_FINAL' c11b_out/audit.log
+          grep '^C11B_FINAL' c11b_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C11B-OFFICIAL26-THREE-BACKEND-SHA-REAL-E2E-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c11b_out/report.json
+            c11b_out/audit.log
+            c11b_out/shard-*.json
+            c11b_official/manifest.json
+            c11a_reference/report.json
