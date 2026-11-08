@@ -180,18 +180,18 @@ def freeze():
             raw,redirect=fetch(GBD+gbd,MAX_COMPRESSED,timeout=20)
             out,kind=decompress(raw)
             n,m=metadata(out)
-            digest=sha_bytes(out)
-            need(digest not in known_hashes,"source SHA previously exposed")
-            need(digest not in {c["sha256"] for c in real},"duplicate CNF SHA")
+            source_sha=sha_bytes(out)
+            need(source_sha not in known_hashes,"source SHA previously exposed")
+            need(source_sha not in {c["sha256"] for c in real},"duplicate CNF SHA")
             name="official-"+gbd+".cnf"
             (FROZEN/name).write_bytes(out)
-            c=dict(name=name,gbd=gbd,sha256=digest,bytes=len(out),
+            c=dict(name=name,gbd=gbd,sha256=source_sha,bytes=len(out),
                    family="official_2026",cohort="official_2026_new_to_tracked",
                    source=GBD+gbd,official_status=labels[gbd],
                    expected=("SAT" if labels[gbd]=="sat-verified" else "UNSAT"),
                    variables=n,clauses=m,compression=kind,raw_sha256=sha_bytes(raw))
             real.append(c)
-            item.update(state="SELECTED",sha256=digest,bytes=len(out))
+            item.update(state="SELECTED",sha256=source_sha,bytes=len(out))
         except Exception as exc:
             item.update(state="EXCLUDED_DOWNLOAD_SIZE_OR_KNOWN_SHA",
                        reason=(type(exc).__name__+": "+str(exc))[:180])
