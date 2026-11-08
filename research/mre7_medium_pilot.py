@@ -241,7 +241,7 @@ def audit():
     summary=dict(protocol=PROTO,measurement_count=48,source_count=6,
         anchor_count=2,official_new_reference_count=4,
         real_SAT2026_all=True,reference_difficulty_range_s=[2,15],
-        35s_full_wall_per_attempt=True,
+        full_35s_wall_per_attempt=True,
         source_new_cohort_preselected_by_published_reference_not_DRNAS=True,
         known_anchor_cohort_reused_not_blind=True,
         new_historical_source_disjoint_not_exhaustive=True,
