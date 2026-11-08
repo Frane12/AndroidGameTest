@@ -322,10 +322,23 @@ def early(binary):
                 wall=time.perf_counter()-begin
                 need(p.returncode==0,"bounded C5 diagnostic crashed: "+p.stderr[-600:])
                 gate=parse_gate(p.stdout,mode)
-                verdict,model,stats=cms.parsed_native(p.stdout)
-                need(verdict in ("SAT","BUDGET","UNKNOWN"),
+                # R195 parser intentionally accepts only complete SAT/UNSAT;
+                # C5 diagnostic needs its own explicit BUDGET-aware telemetry.
+                import re
+                mm=re.search(r"^R195_RESULT status=(SAT|UNSAT|BUDGET|UNKNOWN) conflicts=(\\d+) decisions=(\\d+) propagations=(\\d+) source_rows=(\\d+) derived_rows=(\\d+)$",p.stdout,re.M)
+                need(mm is not None,"bounded native telemetry marker missing")
+                verdict=mm.group(1)
+                stats=dict(conflicts=int(mm.group(2)),
+                    decisions=int(mm.group(3)),
+                    propagations=int(mm.group(4)),
+                    source_rows=int(mm.group(5)),
+                    derived_rows=int(mm.group(6)))
+                need(verdict in ("SAT","BUDGET"),
                      "not bounded causal or SAT verdict")
-                if verdict=="SAT":cms.verify_model(src,model)
+                if verdict=="SAT":
+                    v,model,complete_stats=cms.parsed_native(p.stdout)
+                    need(v=="SAT","bounded SAT parse disagreement")
+                    cms.verify_model(src,model)
                 row=dict(gbd=gbd,sha256=c["sha256"],mode=mode,
                   seed=seed(c,0),conflict_budget=budget,verdict=verdict,
                   bounded_not_end_to_end=True,
