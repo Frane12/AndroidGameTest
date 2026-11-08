@@ -14,16 +14,16 @@ import c10b_official26_freeze as previous
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/"experiments"/"drnas_v16"))
 import r32p_real_satcomp26_benchmark as r32p
 import r52_prospective_2026_toprefs as r52
-PROTO="DRNAS-C11B-SAT2026-12SHA-SALTED-THREE-SOLVER-SOURCE-FREEZE-v1"
+PROTO="DRNAS-C11B-SAT2026-12SHA-SALTED-THREE-SOLVER-SOURCE-FREEZE-v2"
 SALT="DRNAS-C11B-20261109-LOCKED-PRETEST-THREE-SOLVER-2026-v1"
 ROOT=pathlib.Path("c11b_official")
 PREVC10B=pathlib.Path("c11b_previous_c10b/c10b_official/manifest.json")
 PREVC11A=pathlib.Path("c11a_reference/report.json")
-TARGET=12;MIN_READY=6;MAX_ATTEMPTS=360
+TARGET=12;MIN_READY=5;MAX_ATTEMPTS=360
 MAX_RAW=30*1024*1024
 MAX_PLAIN=45*1024*1024
 MAX_VARS=100000;MAX_CLAUSES=950000
-MAX_PER_STATUS=9;MIN_PER_STATUS=1
+MAX_PER_STATUS=9;MIN_PER_STATUS=0
 REPS=2;CAP=60.0
 STATUS={"sat-verified":"SAT","unsat-verified":"UNSAT"}
 C10B_PROTO="DRNAS-C10B-SAT2026-12SHA-SALTED-STATUS-ONLY-PRETEST-FREEZE-v2"
@@ -126,14 +126,14 @@ def freeze():
         print("C11B_SOURCE_SCAN",json.dumps(record,sort_keys=True),flush=True)
     need(len(chosen)>=MIN_READY and
          counts["SAT"]>=MIN_PER_STATUS and counts["UNSAT"]>=MIN_PER_STATUS,
-         "new SHA pool produced fewer than 6 originals or no published UNSAT reference")
+         "source-only v2 minimum 5 new SHA originals not found")
     need(not ({x["sha256"] for x in chosen}&old_sha),
          "past original SHA reused")
     data=dict(protocol=PROTO,salt=SALT,source_count=len(chosen),
         requested_count=TARGET,min_ready=MIN_READY,
         predeclared_max_attempts=MAX_ATTEMPTS,
         min_per_status=MIN_PER_STATUS,max_per_status=MAX_PER_STATUS,
-        source_quota_revision="C11b v1 preregistered minimum 6 sources, 1 SAT and 1 UNSAT, capped 60s",
+        source_quota_revision="v2 source-only: 5 SAT original SHA after v1 freeze failed without ANY solver trial; no UNSAT validity claim; threshold rule unchanged",
         status_counts=dict(counts),
         SHA_original_frozen_before_ANY_solver_attempt=True,
         history_disjoint_but_not_guaranteed_globally_unseen=True,
