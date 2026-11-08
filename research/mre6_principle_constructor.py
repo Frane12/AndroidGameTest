@@ -22,14 +22,32 @@ MIN_SOURCE_DISJOINT=3
 def need(ok,msg):
     if not ok:raise RuntimeError("MRE6_CONSTRUCTOR_FAIL_CLOSED "+str(msg))
 
-def generate(db_path,out):
+def generate(db_path,out,interaction_db):
+    need(pathlib.Path(interaction_db).exists(),
+         "audited factorial interaction SQLite source missing")
     conn=sqlite3.connect(db_path)
+    # The MRE6 final DB has holdout CPU labels; MRE6b audited independently
+    # against the frozen calibration DB. Merge those streams safely here.
+    conn.execute("ATTACH DATABASE ? AS factorial", (str(interaction_db),))
+    conn.execute("""CREATE TABLE IF NOT EXISTS quotient_xor_interaction(
+        source_sha256 TEXT NOT NULL,
+        seed INTEGER NOT NULL,
+        repeat INTEGER NOT NULL,
+        original_no_xor_cpu_s REAL NOT NULL,
+        original_with_xor_cpu_s REAL NOT NULL,
+        quotient_no_xor_cpu_s REAL NOT NULL,
+        quotient_with_xor_cpu_s REAL NOT NULL,
+        quotient_benefit_no_xor_s REAL NOT NULL,
+        quotient_benefit_with_xor_s REAL NOT NULL,
+        cpu_interaction_s REAL NOT NULL,
+        PRIMARY KEY(source_sha256,seed,repeat))""")
+    conn.execute("""INSERT OR REPLACE INTO main.quotient_xor_interaction
+        SELECT * FROM factorial.quotient_xor_interaction""")
+    conn.commit()
+    conn.execute("DETACH DATABASE factorial")
     known={x[0] for x in conn.execute(
         "SELECT DISTINCT source_sha256 FROM observation WHERE split='holdout_seed_only'")}
     need(len(known)>=1,"missing original holdout CPU labels")
-    pairs=conn.execute("""SELECT source_sha256,seed,
-       cpu_interaction_s,quotient_benefit_no_xor_s,quotient_benefit_with_xor_s
-       FROM quotient_xor_interaction ORDER BY source_sha256,seed""") if False else None
     # SQLite factorial ledger has one row per (source, seed, repeat)
     interaction=conn.execute("""SELECT source_sha256,seed,repeat,
        cpu_interaction_s,quotient_benefit_no_xor_s,quotient_benefit_with_xor_s
@@ -120,6 +138,7 @@ if __name__=="__main__":
     p.add_argument("action",choices=("selftest","generate"))
     p.add_argument("--db",default="mre6/principles.sqlite")
     p.add_argument("--out",default="mre6/generated_principles.json")
+    p.add_argument("--interaction-db",default="mre6b/principles.sqlite")
     args=p.parse_args()
     if args.action=="selftest":selftest()
-    else:generate(args.db,args.out)
+    else:generate(args.db,args.out,args.interaction_db)
