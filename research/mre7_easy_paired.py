@@ -20,6 +20,7 @@ MODES=("cms_native","all_equalities","gate_auto","kissat")
 REPS=2
 CAP=8.0
 SHARDS=8
+MIN_FROZEN_CASES=20  # MRE7e selector requires >=20; target is 24, never 30.
 MIN_DROP_FRACTION=0.06
 MIN_ELIM_FRACTION=0.04
 MIN_DROP_CLAUSES=64
@@ -161,7 +162,10 @@ def audit():
         need(path.exists(),"missing benchmark shard "+str(idx))
         rows+=json.loads(path.read_text())
     n=len(manifest["selected_cases"])
-    need(n>=30 and len(rows)==n*REPS*len(MODES),"incomplete or below precommitted 30-source holdout")
+    need(n>=MIN_FROZEN_CASES and len(rows)==n*REPS*len(MODES),
+         "incomplete or below precommitted 20-source MRE7e holdout")
+    need(manifest["selected"]==n and manifest["source_selection_before_mre7e_gate"]
+         and manifest["parent_six_SHA_untouched"],"invalid MRE7e source freeze metadata")
     expected={c["sha256"]:c for c in manifest["selected_cases"]}
     paired=collections.defaultdict(dict)
     for r in rows:
@@ -222,7 +226,8 @@ def selftest():
     original=[(-1,2),(1,-2),(-2,3),(2,-3),(3,4),(5,)]
     result,mapping,decision=gate_decision(original,5)
     need(len(mapping)==2 and not decision["eligible"],"small quotient must abstain")
-    need(len(MODES)==4 and REPS==2 and CAP==8.0 and SHARDS==8,"protocol drift")
+    need(len(MODES)==4 and REPS==2 and CAP==8.0 and SHARDS==8 and MIN_FROZEN_CASES==20,
+         "protocol drift")
     print("MRE7_BENCH_SELFTEST_PASS",PROTO,flush=True)
 
 if __name__=="__main__":
