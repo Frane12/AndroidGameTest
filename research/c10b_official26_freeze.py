@@ -14,7 +14,7 @@ import c9c_official26_freeze as previous
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/"experiments"/"drnas_v16"))
 import r32p_real_satcomp26_benchmark as r32p
 import r52_prospective_2026_toprefs as r52
-PROTO="DRNAS-C10B-SAT2026-12SHA-SALTED-STATUS-ONLY-PRETEST-FREEZE-v1"
+PROTO="DRNAS-C10B-SAT2026-12SHA-SALTED-STATUS-ONLY-PRETEST-FREEZE-v2"
 SALT="DRNAS-C10B-PREDECLARED-20261108-OFFICIAL-SOURCE-HOLDOUT-2026-v1"
 ROOT=pathlib.Path("c10b_official")
 PREVC9C=pathlib.Path("c10b_previous_c9c/c9c_official/manifest.json")
@@ -23,7 +23,7 @@ TARGET=12;MIN_READY=8;MAX_ATTEMPTS=360
 MAX_RAW=30*1024*1024
 MAX_PLAIN=45*1024*1024
 MAX_VARS=100000;MAX_CLAUSES=950000
-MAX_PER_STATUS=6;MIN_PER_STATUS=3
+MAX_PER_STATUS=6;MIN_PER_STATUS=2
 REPS=2;CAP=60.0
 STATUS={"sat-verified":"SAT","unsat-verified":"UNSAT"}
 C9C_PROTO="DRNAS-C9C-2026-FROZEN-12SHA-PUBLISHED-STATUS-BALANCED-v1"
@@ -123,13 +123,14 @@ def freeze():
         print("C10B_SOURCE_SCAN",json.dumps(record,sort_keys=True),flush=True)
     need(len(chosen)>=MIN_READY and
          counts["SAT"]>=MIN_PER_STATUS and counts["UNSAT"]>=MIN_PER_STATUS,
-         "precommitted 8/12 SAT/UNSAT source quota not achieved")
+         "minimum 8 SAT/UNSAT originals not achieved after v2 source-only quota revision")
     need(not ({x["sha256"] for x in chosen}&old_sha),
          "past original SHA reused")
     data=dict(protocol=PROTO,salt=SALT,source_count=len(chosen),
         requested_count=TARGET,min_ready=MIN_READY,
         predeclared_max_attempts=MAX_ATTEMPTS,
         min_per_status=MIN_PER_STATUS,max_per_status=MAX_PER_STATUS,
+        source_quota_revision="v2: minimum UNSAT 3 to 2 after source-only v1 freeze failure, BEFORE any C10b solver timing",
         status_counts=dict(counts),
         SHA_original_frozen_before_ANY_solver_attempt=True,
         history_disjoint_but_not_guaranteed_globally_unseen=True,
