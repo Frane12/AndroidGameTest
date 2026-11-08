@@ -1,0 +1,138 @@
+name: DRNAS TURN2H fresh holdout — certified four-arm 12 SHA 144 paired 60s
+on:
+  push:
+    branches: [experiment/drnas-turn2h-fresh-holdout-20261108]
+    paths: ['.github/workflows/drnas-turn2h-holdout.yml', 'research/drnas_turn2h_holdout.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-turn2h-fresh-holdout-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable original TURN2 sources and compile pinned R28
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42420269832 -R Frane12/AndroidGameTest -n turn2-frozen-original12 -D .
+          gh run download 42429372803 -R Frane12/AndroidGameTest -n w4-input -D .
+          test -s history/w4sources/manifest.json
+          test -s checker/drat-trim
+          test -s turn2-frozen.tar.gz
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 checker/drat-trim
+          mkdir -p optimized turn2h
+          g++ -std=c++17 -O3 -DNDEBUG research/r28_w4_optimized.cpp -o optimized/r28
+          python3 -m py_compile research/drnas_turn1_representation.py research/drnas_turn2_structural.py research/drnas_turn2h_holdout.py
+          python3 -u research/drnas_turn2h_holdout.py prepare | tee turn2h_holdout/prepare.log
+          grep -q '^TURN2H_PREPARE_PASS' turn2h_holdout/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turn2h-fresh-frozen-input
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            turn2-frozen.tar.gz
+            history/w4sources/manifest.json
+            checker/drat-trim
+            turn2_holdout/
+            optimized/r28
+            turn2h_holdout/manifest.json
+            turn2h_holdout/pins.json
+            turn2h_holdout/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: turn2h-fresh-prepare-diagnostics
+          retention-days: 14
+          path: |
+            turn2h_holdout/
+  paired:
+    needs: prepare
+    name: TURN2H prospective four arms three reps 60s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2h-fresh-frozen-input
+      - name: Run frozen, SHA-locked same-job paired ablation
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 checker/drat-trim optimized/r28 checker/drat-trim
+          python3 -u research/drnas_turn2h_holdout.py shard --shard ${{ matrix.shard }} | tee turn2h_holdout/shard-${{ matrix.shard }}.log
+          grep -q '^TURN2H_SHARD_PASS' turn2h_holdout/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: turn2h-fresh-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            turn2h_holdout/shard-${{ matrix.shard }}.json
+            turn2h_holdout/shard-${{ matrix.shard }}.log
+            turn2h_holdout/raw/**/worker.log
+            turn2h_holdout/raw/**/solver.log
+            turn2h_holdout/raw/**/model.json
+            turn2h_holdout/raw/**/proof_validation.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2h-fresh-frozen-input
+      - name: Audit 144 attempts, original SHA, SAT models, certified GF2 UNSAT
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 checker/drat-trim optimized/r28 checker/drat-trim
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'turn2h-fresh-shard-*' -D turn2h_holdout/collected
+          test "$(find turn2h_holdout/collected -name 'shard-*.json' -type f | wc -l)" -eq 12
+          find turn2h_holdout/collected -name 'shard-*.json' -type f -exec cp '{}' turn2h_holdout/ \;
+          python3 -u research/drnas_turn2h_holdout.py audit | tee turn2h_holdout/audit.log
+          grep -q '^TURN2H_FINAL' turn2h_holdout/audit.log
+          cat turn2h_holdout/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN2H-FRESH12-144-CERT-FINAL
+          retention-days: 90
+          path: |
+            turn2h_holdout/report.json
+            turn2h_holdout/report.md
+            turn2h_holdout/all-trials.json
+            turn2h_holdout/audit.log
+            turn2h_holdout/manifest.json
+            turn2h_holdout/pins.json
