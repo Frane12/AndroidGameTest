@@ -115,7 +115,7 @@ def selftest():
                     continue
                 clauses.append(" ".join(
                     str(-v if mask>>i&1 else v) for i,v in enumerate(vars))+" 0")
-        clauses.extend(("3 5 0","-4 5 0","3 -5 0","4 -5 0"))
+        clauses.extend(("3 5 0","-4 5 0","3 -5 0","4 5 0"))
         p.write_text("p cnf 5 "+str(len(clauses))+"\n"+"\n".join(clauses)+"\n")
         ev=cert.extract(p,root/"source.tsv",root/"source-proof.json",max_rows=64)
         need(ev["selected_rows"]==2,"synthetic source parity not extracted")
