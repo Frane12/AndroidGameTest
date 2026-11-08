@@ -5,7 +5,7 @@ from pathlib import Path
 import drnas_worldsim_w1 as w
 import drnas_turn2_structural as t
 ROOT=Path("worldcup_w3")
-PROTO="DRNAS-W3-SAT2026-24x7x2-10s-v1"
+PROTO="DRNAS-W3-SAT2026-24x7x2-10s-no-proof-files-v2"
 CAP=10.0
 REPS=2
 MODES=("kissat_struct_signed",)+w.MODES
@@ -17,13 +17,31 @@ def command(mode,source,proof):
         return [sys.executable,Path(__file__).resolve(),"signed", "--source",source.resolve(),"--proof",proof.resolve()],None
     return old_command(mode,source,proof)
 w.command_for=command
+
+# No large proof files in short exploratory benchmarks. Keep W1 frozen.
+_original_timed_process = w.timed_process
+def no_disk_proofs(command, started, *, cwd=None, env=None, cap=CAP):
+    command = [str(x) for x in command]
+    env = dict(env or {})
+    proof = env.get("W1_PROOF_FILE")
+    # Native solvers disable proof production when the output argument is absent.
+    # Submitted scripts/R28 wrappers retain their interface and discard output.
+    if proof and command[-1] == proof and "--proof" not in command:
+        if command[0] == "bash":
+            command[-1] = os.devnull
+        else:
+            command.pop()
+    env["W1_PROOF_FILE"] = os.devnull
+    return _original_timed_process(command, started, cwd=cwd, env=env, cap=cap)
+w.timed_process = no_disk_proofs
+
 def signed(source,proof):
     n,clauses=t.t1.parse(source)
     transformed,mapping=t.transformation(n,clauses,"kissat_struct_signed")
     with tempfile.TemporaryDirectory(dir=Path(proof).parent) as tmp:
         path=Path(tmp)/"signed.cnf"
         t.t1.write_cnf(path,n,transformed)
-        p=subprocess.run([str(Path(t.KISSAT).resolve()),str(path),str(proof)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        p=subprocess.run([str(Path(t.KISSAT).resolve()),str(path)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
         status,model=w.parse_answer(p.stdout,p.returncode)
         # Reconstruct model before outer harness checks every original clause.
         if status=="SAT":
@@ -42,6 +60,10 @@ def trial(c,m,rep,shard,cap=CAP):
     row=w.trial(c,m,rep,shard,cap=cap,emit=False)
     row["protocol"]=PROTO
     row["independent_unsat_certificate"]=False
+    w.need(row["proof_bytes"] == 0, "unexpected proof file writes")
+    row["proof_requested"] = row["selected"] in ("r28_kissat", "kissat_r28", "cms_r28", "satsuma_iter_kissat_2026")
+    row["proof_output_policy"] = "native disabled; wrapper output discarded to /dev/null"
+    row["command_before_proof_policy"] = row.pop("command")
     # Avoid accumulating large proofs; this test reports UNSAT as unverified.
     folder=w.ROOT/"raw"/str(shard)/c["id"]/str(rep)/m
     import shutil
@@ -68,7 +90,7 @@ def prepare():
     finally: src.unlink(missing_ok=True)
     files=["research/drnas_worldcup_w3.py","research/drnas_turn2_structural.py","research/drnas_turn1_representation.py",".github/workflows/drnas-worldcup-w3.yml"]
     w.save(ROOT/"pins.json",{p:w.digest(p) for p in files})
-    w.save(ROOT/"manifest.json",dict(protocol=PROTO,cases=manifest["cases"],modes=MODES,cap_s=CAP,reps=REPS,trials=336,source_run=42397824391,selection="all frozen W1 24 originals; repeated evaluation, not fresh holdout",candidate_selection="TURN2 signed exploratory signal; not established universal best",independent_unsat_certificate=False,official_ranking=False,proof_policy="requested then deleted for bounded disk; no independent UNSAT certification",timing="includes process start, transformations, selection; original SAT validation off timing"))
+    w.save(ROOT/"manifest.json",dict(protocol=PROTO,cases=manifest["cases"],modes=MODES,cap_s=CAP,reps=REPS,trials=336,source_run=42397824391,selection="all frozen W1 24 originals; repeated evaluation, not fresh holdout",candidate_selection="TURN2 signed exploratory signal; not established universal best",independent_unsat_certificate=False,official_ranking=False,proof_policy="no proof files: native output disabled; wrapper proof stream discarded; UNSAT reported, not certified",timing="includes process start, transformations, selection; original SAT validation off timing"))
     print("W3_PREPARE_PASS",flush=True)
 def verify():
     original()
