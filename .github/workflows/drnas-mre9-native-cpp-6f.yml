@@ -1,0 +1,240 @@
+name: DRNAS MRE9 — native C++ MRE6f-certified gate 270 paired experiments
+on:
+  push:
+    branches: [experiment/drnas-mre9-native-cpp-6f-ref-20261108]
+    paths: ['.github/workflows/drnas-mre9-native-cpp-6f.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre9-native-cpp-6f-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin the MRE6f library, build in-process C++ CMS and prove CNF equivalence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore audited MRE8f reference: 7 SAT2026 plus 6 SAT2024/25 originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42504415829 -R Frane12/AndroidGameTest -n mre8f-frozen-input -D .
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre6e/binary.sha256
+          sha256sum -c mre7_easy/bin.sha256
+          sha256sum -c mre6e/cms-shared.sha256
+          python3 -m py_compile research/mre9_native_cpp_benchmark.py
+          python3 -u research/mre6b_blind_freeze.py verify
+          python3 -u research/mre7_reference_easy_freeze.py verify
+      - name: Compile gate and pinned CMS bridge from exactly the same C++ source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p mre9
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE \
+            -o mre9/standalone research/mre9_native_cms_gate.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            -o mre9/native research/mre9_native_cms_gate.cpp \
+            "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../mre5/lib'
+          chmod +x mre9/native mre9/standalone
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre9/native | tee mre9/ldd.log
+          grep "$PWD/mre5/lib/libcryptominisat5.so" mre9/ldd.log
+          sha256sum mre9/native mre9/standalone > mre9/binaries.sha256
+      - name: Exhaustive truth-table source-CNF equivalence, controls and MRE6f official positive replay
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre9_native_cpp_benchmark.py selftest --standalone mre9/standalone
+          python3 - <<'PY'
+          import sys,json,pathlib,subprocess
+          sys.path.insert(0,"research")
+          import mre8f_6f_reference_gate as prior
+          source=next(s for c,s in prior.source_set("bounded")
+                      if c["gbd"].startswith("2fcd8533"))
+          output=pathlib.Path("mre9/positive-quotient.cnf")
+          cmd=[str(pathlib.Path("mre9/standalone").resolve()),"--emit",
+               str(source),"cpp_gate",str(output)]
+          p=subprocess.run(cmd,check=True,text=True,capture_output=True)
+          print(p.stdout.strip())
+          obj=json.loads(next(x.split(" ",1)[1] for x in p.stdout.splitlines()
+                              if x.startswith("MRE9_GATE ")))
+          assert obj["applied"] is True
+          assert obj["variables_eliminated"]==672
+          assert obj["clauses_removed"]==1344
+          native, mapping, gate=prior.gate_prepare(source,pathlib.Path("mre9"))
+          assert gate["applied"] and len(mapping)==672
+          assert gate["removed_clauses"]==1344
+          print("MRE9_MRE6F_OFFICIAL_POSITIVE_QUOTIENT_MATCH_PASS")
+          PY
+          printf 'p cnf 3 2\n1 2 0\n-2 3 0\n' > mre9/smoke.cnf
+          DRNAS_MAX_CONFLICTS=100 mre9/native mre9/smoke.cnf cpp_native 11 | tee mre9/smoke-native.log
+          grep -q '^R195_RESULT status=SAT' mre9/smoke-native.log
+          DRNAS_MAX_CONFLICTS=100 mre9/native mre9/smoke.cnf cpp_gate 11 | tee mre9/smoke-gate.log
+          grep -q '^R195_RESULT status=SAT' mre9/smoke-gate.log
+          echo MRE9_NATIVE_CMS_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre9-frozen-binaries-original-input
+          retention-days: 10
+          compression-level: 6
+          path: |
+            mre6b_blind/manifest.json
+            mre6b_blind/source.sha256
+            mre6b_blind/*.cnf
+            mre7_easy/manifest.json
+            mre7_easy/source.sha256
+            mre7_easy/*.cnf
+            mre6e/native
+            mre6e/binary.sha256
+            mre6e/cms-shared.sha256
+            mre7_easy/bin/native
+            mre7_easy/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre9/native
+            mre9/standalone
+            mre9/binaries.sha256
+  bounded:
+    name: Original SAT2026 CDCL C++ vs MRE6f 5-arms shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre9-frozen-binaries-original-input
+          path: .
+      - name: Paired 7 SAT2026 original SHAs x 3 seeds x 2 caps x 5 arms
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          sha256sum -c mre9/binaries.sha256
+          sha256sum -c mre6e/binary.sha256
+          chmod +x mre6e/native mre9/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre9/bounded
+          python3 -u research/mre9_native_cpp_benchmark.py shard \
+            --dataset bounded --shard ${{ matrix.shard }} \
+            --refbin mre6e/native --cpp mre9/native \
+            | tee mre9/bounded/shard-${{ matrix.shard }}.log
+          grep -q '^MRE9_SHARD_PASS bounded ${{ matrix.shard }} ' mre9/bounded/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre9-bounded-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre9/bounded/shard-${{ matrix.shard }}.json
+            mre9/bounded/shard-${{ matrix.shard }}.log
+  verdict:
+    name: Original SAT2024/25 real PAR2 C++ vs MRE6f shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre9-frozen-binaries-original-input
+          path: .
+      - name: Exact SHA and seed, original SAT witness and 8s wall PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre9/binaries.sha256
+          sha256sum -c mre7_easy/bin.sha256
+          chmod +x mre7_easy/bin/native mre9/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre9/verdict
+          python3 -u research/mre9_native_cpp_benchmark.py shard \
+            --dataset verdict --shard ${{ matrix.shard }} \
+            --refbin mre7_easy/bin/native --cpp mre9/native \
+            | tee mre9/verdict/shard-${{ matrix.shard }}.log
+          grep -q '^MRE9_SHARD_PASS verdict ${{ matrix.shard }} ' mre9/verdict/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre9-verdict-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre9/verdict/shard-${{ matrix.shard }}.json
+            mre9/verdict/shard-${{ matrix.shard }}.log
+  audit:
+    name: Fail-closed 210 bounded and 60 solver-verdict PAR2 with proof integrity
+    needs: [bounded, verdict]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre9-frozen-binaries-original-input
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre9-bounded-shard-*
+          merge-multiple: true
+          path: mre9/bounded
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre9-verdict-shard-*
+          merge-multiple: true
+          path: mre9/verdict
+      - name: Exact source SHA, same seed, same CMS 5.11.15, full original witness and C++/Python gate parity
+        run: |
+          set -euo pipefail
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre9/binaries.sha256
+          python3 -u research/mre9_native_cpp_benchmark.py audit --dataset bounded | tee mre9/bounded/audit.log
+          python3 -u research/mre9_native_cpp_benchmark.py audit --dataset verdict | tee mre9/verdict/audit.log
+          grep -q '^MRE9_FINAL_BOUNDED' mre9/bounded/audit.log
+          grep -q '^MRE9_FINAL_VERDICT' mre9/verdict/audit.log
+          cat mre9/bounded/audit.log mre9/verdict/audit.log >> "$GITHUB_STEP_SUMMARY"
+          echo MRE9_BOTH_AUDITS_PASS_NO_PROMOTION
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE9-NATIVE-CPP-6F-REFERENCE-270-FINAL
+          retention-days: 30
+          path: |
+            mre9/bounded/report.json
+            mre9/verdict/report.json
+            mre9/bounded/audit.log
+            mre9/verdict/audit.log
+            mre6b_blind/manifest.json
+            mre7_easy/manifest.json
