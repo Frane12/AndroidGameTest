@@ -1,0 +1,160 @@
+name: DRNAS MRE11 — prospective unseen SAT2026 8 SHA 128 verdict 35s eight-arm
+on:
+  push:
+    branches: [experiment/drnas-mre11-prospective-sat2026-20261108]
+    paths: ['.github/workflows/drnas-mre11-prospective.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre11-2026-official-frozen-eight
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze official 2026 disjoint original 4SAT 4UNSAT BEFORE solver comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore prior 2026 SHA source registry and stable CMS/Kissat builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre11_prior mre11_blind mre10/bin
+          gh run download 42495311707 -R Frane12/AndroidGameTest -n mre6b-locked-inputs-CMS -D mre11_prior
+          test -s mre11_prior/mre6b_blind/manifest.json
+          gh run download 42505042425 -R Frane12/AndroidGameTest -n mre7e-pilot16-frozen-originals-and-native-binaries -D .
+          sha256sum -c mre7_easy/bin.sha256
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: BEFORE ANY NEW SOLVING freeze official SHA-ranked 4 verified SAT and 4 verified UNSAT
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre11_prospective_freeze.py
+          python3 -u research/mre11_prospective_freeze.py freeze | tee mre11_blind/source-freeze.log
+          python3 -u research/mre11_prospective_freeze.py verify
+          (cd mre11_blind && sha256sum -c source.sha256)
+          grep -q '^MRE11_FROZEN' mre11_blind/source-freeze.log
+      - name: Compile MRE10 native C++ directly into pinned CMS backend and verify references
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10 cadical
+          mkdir -p mre10/bin
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            research/mre10_native_priority.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o mre10/bin/native
+          chmod +x mre10/bin/native
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre10/bin/native | grep 'libcryptominisat5.so.5.11'
+          cadical --version | tee mre11_blind/cadical-version.txt
+          sha256sum mre10/bin/native built/bin/kissat_4_0_4 > mre11_blind/binary.sha256
+          python3 -m py_compile research/mre11_prospective_benchmark.py
+          echo MRE11_PINNED_CMS_KISSAT_CADICAL_BUILD_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-SHA8-frozen-official2026-CMS-Kissat-CaDiCaL
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre11_blind/manifest.json
+            mre11_blind/source.sha256
+            mre11_blind/source-freeze.log
+            mre11_blind/prior-registry-augmented.txt
+            mre11_blind/*.cnf
+            mre11_blind/binary.sha256
+            mre11_blind/cadical-version.txt
+            mre10/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  solve:
+    name: MRE11 prospective real verdict 8 arms 2 reps 35s source shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-SHA8-frozen-official2026-CMS-Kissat-CaDiCaL
+          path: .
+      - name: Check original SHA and identical binary digests, set up CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10 cadical
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre11_blind && sha256sum -c source.sha256)
+          sha256sum -c mre11_blind/binary.sha256
+          python3 -u research/mre11_prospective_freeze.py verify
+          chmod +x mre10/bin/native built/bin/kissat_4_0_4
+      - name: Solve all 8 candidate and reference arms with 35s full wall cap
+        run: |
+          set -euo pipefail
+          mkdir -p mre11_bench
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre11_prospective_benchmark.py shard \
+            --shard ${{ matrix.shard }} --cpp mre10/bin/native \
+            --kissat built/bin/kissat_4_0_4 --cadical /usr/bin/cadical \
+            | tee mre11_bench/shard-${{ matrix.shard }}.log
+          grep -q '^MRE11_SHARD_PASS ${{ matrix.shard }} 32$' mre11_bench/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-prospective-result-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre11_bench/shard-${{ matrix.shard }}.json
+            mre11_bench/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict prospective 128 SAT/UNSAT original SHA verified PAR2 audit
+    needs: solve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-SHA8-frozen-official2026-CMS-Kissat-CaDiCaL
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre11-prospective-result-shard-*
+          merge-multiple: true
+          path: mre11_bench
+      - name: Verify all original SHA, paired seed, official verdict, original SAT witnesses
+        run: |
+          set -euo pipefail
+          (cd mre11_blind && sha256sum -c source.sha256)
+          python3 -u research/mre11_prospective_benchmark.py audit | tee mre11_bench/audit.log
+          grep -q '^MRE11_FINAL' mre11_bench/audit.log
+          cat mre11_bench/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE11-FRESH-SAT2026-SHA8-128PAIRED-35S-PAR2-AUDIT
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            mre11_bench/report.json
+            mre11_bench/audit.log
