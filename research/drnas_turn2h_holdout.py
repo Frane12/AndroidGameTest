@@ -40,8 +40,9 @@ turn.ROOT = Path("turn2_holdout")
 turn.SOURCE = turn.ROOT / "sources"
 turn.PROTO = "DRNAS-TURN2H-FRESH12-SOURCE-FREEZE-v1"
 
+turn.NCASES = 8  # Only eight eligible SHA-disjoint sources remain in the preregistered queue.
 ROOT = Path("turn2h_holdout")
-CAP, REPS, SHARDS = 60., 3, 12
+CAP, REPS, SHARDS = 60., 3, 8
 MODES = ("kissat_plain", "kissat_struct_signed", "r28_optimized", "turn2_signed_r28")
 PROTO = "DRNAS-TURN2H-FRESH12-4ARMS-3REPS-60S-CERT-v2"
 R28 = Path("optimized/r28").resolve()
@@ -277,7 +278,7 @@ def prepare():
                          "smoke invalid SAT")
     save(ROOT / "manifest.json", dict(protocol=PROTO,
         modes=MODES, cap_s=CAP, repetitions=REPS, shards=SHARDS,
-        cohort="12 SHA-disjoint SAT2026 originals selected before evaluation",
+        cohort="8 SHA-disjoint SAT2026 originals selected before evaluation",
         prospective_exclusions=("turn2/manifest.json","history/w4sources/manifest.json"),
         prospective_manifest_sha256=turn.sha("turn2_holdout/manifest.json"),
         development_not_blind=False, source_sha_locked=True,
@@ -342,7 +343,7 @@ def audit():
              "contradictory verdict")
     expected = {(c["sha256"], rep, mode) for c in cases
                 for rep in range(REPS) for mode in MODES}
-    need(keys == expected and len(allrows) == 144, "missing trials")
+    need(keys == expected and len(allrows) == 96, "missing trials")
     totals = {}
     bykey = {(r["sha256"], r["rep"], r["mode"]): r for r in allrows}
     for mode in MODES:
@@ -377,7 +378,7 @@ def audit():
     save(ROOT / "report.json", report)
     save(ROOT / "all-trials.json", allrows)
     text = ["# TURN2H — Signed + R28 certified hybrid", "",
-      "12 SHA-disjoint SAT2026 originals; 4 arms, 3 reps, 60s cap; not globally blind.",
+      "8 SHA-disjoint SAT2026 originals; 4 arms, 3 reps, 60s cap; not globally blind.",
       "Native UNSAT requires DRAT proof. SAT witnesses checked against original CNF.",
       "", "| Mode | Solved / 36 | SAT | Certified UNSAT | Unproven UNSAT | PAR2 s |",
       "|---|---:|---:|---:|---:|---:|"]
