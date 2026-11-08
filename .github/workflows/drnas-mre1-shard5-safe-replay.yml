@@ -1,0 +1,52 @@
+name: DRNAS MRE1 — safe CRR shard5 targeted replay
+on:
+  push:
+    branches: [experiment/drnas-mre1-crr-gauss-isolation-20261108]
+    paths: ['.github/workflows/drnas-mre1-shard5-safe-replay.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  shard5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build fixed adapter and verify exact frozen inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev g++ libgmp-dev
+          gh run download 42480812617 --repo Frane12/AndroidGameTest -n mre1-inputs -D .
+          sha256sum -c mre1/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 -m py_compile research/mre1_cross_representation.py
+          python3 -u research/mre1_cross_representation.py selftest
+          mkdir -p isolate
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o isolate/native -lcryptominisat5
+      - name: Repeat all 32 measurements of the original failed shard 5
+        run: |
+          set -euo pipefail
+          python3 -u research/mre1_cross_representation.py shard --shard 5 --binary isolate/native | tee isolate/shard5.log
+          grep -q '^MRE1_SHARD_PASS 5 32' isolate/shard5.log
+          python3 - <<'PY'
+          import json
+          rows=json.load(open("mre1/shard-5.json"))
+          assert len(rows)==32
+          assert all(r['proof']=='ORIGINAL_CNF_SAT_MODEL_CHECKED' for r in rows if r['status']=='SAT')
+          assert all(r['native_bridge_mode']=='source_xor_no_gauss' for r in rows if r['mode']=='crr_active')
+          assert any(r['id']=='official-28dcc4119e1bbb5fbd3fdd8f4140f28d.cnf' and r['rep']==1 and r['mode']=='crr_active' and r['status']=='SAT' for r in rows)
+          print('MRE1_SHARD5_SAFE_WITNESS_PASS 32')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre1-shard5-safe-replay
+          retention-days: 7
+          path: |
+            isolate/shard5.log
+            mre1/shard-5.json
