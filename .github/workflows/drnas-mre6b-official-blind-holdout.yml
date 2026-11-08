@@ -1,0 +1,152 @@
+name: DRNAS MRE6b — unseen official SAT2026 source-disjoint 4-arm CPU holdout
+on:
+  push:
+    branches: [experiment/drnas-mre6b-official-unseen-holdout-20261108]
+    paths:
+      - '.github/workflows/drnas-mre6b-official-blind-holdout.yml'
+      - 'research/mre6b_blind_freeze.py'
+      - 'research/mre6b_blind_pilot.py'
+      - 'research/mre6b_official_prior_gbd.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6b-official-newsource-20261108
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze brand-new verified official SAT2026 sources BEFORE any solver use
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Safety selftests plus blind source ranking and original SHA freeze
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre6b_blind_freeze.py research/mre6b_blind_pilot.py
+          python3 -u research/mre6b_blind_freeze.py selftest
+          python3 -u research/mre6b_blind_pilot.py selftest
+          python3 -u research/mre6_principles.py
+          mkdir -p mre6b_blind
+          python3 -u research/mre6b_blind_freeze.py freeze | tee mre6b_blind/freeze.log
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6b_blind_freeze.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6b-blind-original-official-SAT2026
+          retention-days: 12
+          compression-level: 5
+          path: |
+            mre6b_blind/manifest.json
+            mre6b_blind/source.sha256
+            mre6b_blind/*.cnf
+            mre6b_blind/freeze.log
+  pinned:
+    name: Reuse SHA-pinned identical MRE5 instrumented CryptoMiniSat native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch pinned instrumented CMS binary, no rebuild drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42490090624 --repo Frane12/AndroidGameTest -n mre5-inputs -D .
+          sha256sum -c mre5/binaries.sha256
+          test -s mre5/native
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          sha256sum mre5/native mre5/lib/libcryptominisat5.so.5.11
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6b-blind-pinned-CMS
+          retention-days: 12
+          compression-level: 4
+          path: |
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+  paired:
+    name: source-paired original CMS/XOR vs proof-gated MRE6b (shard ${{ matrix.shard }})
+    needs: [freeze, pinned]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-blind-original-official-SAT2026
+          path: mre6b_blind
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-blind-pinned-CMS
+          path: .
+      - name: Verify exact original official SHA, CMS binary and native library SONAME
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6b_blind_freeze.py verify
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Run two repeats on EACH frozen official source, include 18s full-wall cap
+        run: |
+          set -euo pipefail
+          mkdir -p mre6b_blind
+          python3 -u research/mre6b_blind_pilot.py shard --shard ${{ matrix.shard }} --binary mre5/native | tee mre6b_blind/shard-${{ matrix.shard }}.log
+          grep -q '^MRE6B_BLIND_SHARD_PASS ${{ matrix.shard }} ' mre6b_blind/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6b-blind-shard-${{ matrix.shard }}
+          retention-days: 12
+          path: |
+            mre6b_blind/shard-${{ matrix.shard }}.json
+            mre6b_blind/shard-${{ matrix.shard }}.log
+  audit:
+    name: Independent source-disjoint paired PAR2 and certified abstention audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-blind-original-official-SAT2026
+          path: mre6b_blind
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6b-blind-shard-*
+          merge-multiple: true
+          path: mre6b_blind
+      - name: Audit strict frozen source SHA and every matched mode/seed
+        run: |
+          set -euo pipefail
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6b_blind_pilot.py audit | tee mre6b_blind/audit.log
+          cat mre6b_blind/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6B-OFFICIAL-NEW-SOURCE-CPU-FINAL
+          retention-days: 30
+          path: |
+            mre6b_blind/report.json
+            mre6b_blind/manifest.json
+            mre6b_blind/audit.log
