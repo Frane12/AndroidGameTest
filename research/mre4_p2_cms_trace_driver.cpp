@@ -3,7 +3,7 @@
 // source-certified before invoking this binary. This activates CMS's EXISTING
 // in-CDCL Gaussian propagation -- NOT an external DRNAS trail callback yet.
 // Exact four-arm causal ablation: native/import/shadow/derived_active.
-#include <cryptominisat5/cryptominisat.h>
+#include "cryptominisat.h"
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
