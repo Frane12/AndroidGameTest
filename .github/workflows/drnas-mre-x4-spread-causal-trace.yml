@@ -1,0 +1,159 @@
+name: DRNAS MRE X4 — spread CDCL divergence 4 SHA 80 real PAR2 800 bounded
+on:
+  push:
+    branches: [experiment/drnas-mre-x4-spread-causal-trace-20261108]
+    paths: ['.github/workflows/drnas-mre-x4-spread-causal-trace.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x4-causal-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore frozen X3 originals; compile checkpoint binary and verify multiset
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen source, solver reference and library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42524524856 -R Frane12/AndroidGameTest \
+            -n mre-x3-frozen-five-sha-seven-doses-instrumented-native -D .
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          sha256sum -c mre_x3/bin.sha256
+          chmod +x mre_x3/bin/native
+          python3 -m py_compile research/mre_x_benchmark.py research/mre_x2_clause_order_causal.py research/mre_x3_spread_mechanism.py research/mre_x4_early_divergence.py
+          python3 -u research/mre_x3_spread_mechanism.py verify
+      - name: Compile source-identical CMS wrapper with only widened conflict budget guard
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p mre_x4/bin
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            research/mre_x4_checkpoint_native.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o mre_x4/bin/native
+          chmod +x mre_x4/bin/native
+          sha256sum mre_x4/bin/native > mre_x4/bin.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x4/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre_x4_early_divergence.py selftest
+          python3 -u research/mre_x4_early_divergence.py freeze | tee mre_x4/freeze.log
+          python3 -u research/mre_x4_early_divergence.py verify | tee mre_x4/verify.log
+          grep -q '^MRE_X4_FREEZE_PASS 4 5' mre_x4/freeze.log
+          grep -q '^MRE_X4_VERIFY_PASS 4 5' mre_x4/verify.log
+          echo MRE_X4_FROZEN_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x4-four-original-sha-five-orders-checkpoint-cms
+          retention-days: 21
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            mre_x/*.cnf
+            mre_x/manifest.json
+            mre_x/source.sha256
+            mre_x/bin.sha256
+            mre_x2/manifest.json
+            mre_x3/*.cnf
+            mre_x3/manifest.json
+            mre_x4/*.cnf
+            mre_x4/manifest.json
+            mre_x4/bin/native
+            mre_x4/bin.sha256
+            mre_x4/freeze.log
+            mre_x4/verify.log
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: X4 same-SHA seed real 20 and bounded 200 checkpoint shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x4-four-original-sha-five-orders-checkpoint-cms
+          path: .
+      - name: Verify frozen original multiset and pinned binary SHA
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x4/bin.sha256
+          chmod +x mre_x4/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x4/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre_x4_early_divergence.py verify
+      - name: Paired real SAT/UNSAT and ten bounded CDCL checkpoints
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x4_early_divergence.py shard \
+            --shard ${{ matrix.shard }} --native mre_x4/bin/native \
+            | tee mre_x4/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X4_SHARD_PASS ${{ matrix.shard }} 20 200' mre_x4/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x4-paired-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x4/real-${{ matrix.shard }}.json
+            mre_x4/bounded-${{ matrix.shard }}.json
+            mre_x4/repeat-${{ matrix.shard }}.json
+            mre_x4/shard-${{ matrix.shard }}.log
+  audit:
+    name: X4 FINAL exact original witnesses, PAR2 and first aggregate divergence
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x4-four-original-sha-five-orders-checkpoint-cms
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x4-paired-shard-*
+          merge-multiple: true
+          path: mre_x4
+      - name: Strict paired 80 end-to-end and 800 bounded independent audit
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x4/bin.sha256
+          python3 -u research/mre_x4_early_divergence.py audit | tee mre_x4/audit.log
+          grep -q '^MRE_X4_FINAL' mre_x4/audit.log
+          grep '^MRE_X4_FINAL' mre_x4/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE-X4-80-REAL-800-BOUNDED-CAUSAL-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x4/report.json
+            mre_x4/audit.log
+            mre_x4/manifest.json
+            mre_x4/real-*.json
+            mre_x4/bounded-*.json
+            mre_x4/repeat-*.json
