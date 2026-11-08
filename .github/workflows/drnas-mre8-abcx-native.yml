@@ -1,0 +1,151 @@
+name: DRNAS MRE8 — native C++ A B C D E X5 X50 512 paired 8s PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre8-abcx-native-ablation-20261108]
+    paths: ['.github/workflows/drnas-mre8-abcx-native.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre8-abcx-native-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze 16 original SAT SHA, compile native C++ transform, selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch original 16 SHA-frozen cohort and the same pinned CMS library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre7_easy mre8/bin mre5/lib
+          gh run download 42505042425 -R Frane12/AndroidGameTest -n mre7e-pilot16-frozen-originals-and-native-binaries -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          python3 -u research/mre7_extended_easy_freeze.py verify
+          python3 - <<'PY'
+          import json
+          m=json.load(open('mre7_easy/manifest.json'))
+          assert len(m['selected_cases'])==16 and m['parent_six_SHA_untouched']
+          print('MRE8_ORIGINAL_SOURCE_SHA_LOCK_PASS',len(m['selected_cases']))
+          PY
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x mre7_easy/bin/native
+      - name: Compile native C++ and exhaustively verify cross-representation SAT fixture
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/mre8_abcx_transform.cpp -o mre8/bin/transform
+          chmod +x mre8/bin/transform
+          python3 -m py_compile research/mre8_abcx_native_benchmark.py
+          python3 -u research/mre8_abcx_native_benchmark.py selftest --transform mre8/bin/transform
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre7_easy/bin/native | tee mre8/native-ldd.log
+          grep 'libcryptominisat5.so.5.11' mre8/native-ldd.log
+          sha256sum mre8/bin/transform > mre8/transform.sha256
+          cat > mre8/smoke.cnf <<'EOF'
+          p cnf 2 2
+          1 2 0
+          -1 2 0
+          EOF
+          : > mre8/empty.tsv
+          mre7_easy/bin/native mre8/smoke.cnf mre8/empty.tsv mre8/empty.tsv cms_native 12345 > mre8/smoke.log
+          grep -q '^R195_RESULT status=SAT' mre8/smoke.log
+          echo MRE8_NATIVE_CPP_CMS_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre8-native-16SHA-pinned-CMS-transform
+          retention-days: 12
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            mre7_easy/manifest.json
+            mre7_easy/source.sha256
+            mre7_easy/*.cnf
+            mre7_easy/bin/native
+            mre7_easy/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre8/bin/transform
+            mre8/transform.sha256
+  paired:
+    name: MRE8 AB C DE X5 X50 4-seed paired original SHA shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre8-native-16SHA-pinned-CMS-transform
+          path: .
+      - name: Enforce original source, native C++ and CMS binary SHA invariants
+        run: |
+          set -euo pipefail
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          sha256sum -c mre8/transform.sha256
+          chmod +x mre7_easy/bin/native mre8/bin/transform
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre7_easy/bin/native | grep 'libcryptominisat5.so.5.11'
+      - name: Eight factorial ablations at equal seed, 8s cap including C++ reduction
+        run: |
+          set -euo pipefail
+          mkdir -p mre8
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre8_abcx_native_benchmark.py shard --shard ${{ matrix.shard }} --cms mre7_easy/bin/native --transform mre8/bin/transform | tee mre8/shard-${{ matrix.shard }}.log
+          grep -q '^MRE8_SHARD_PASS ${{ matrix.shard }} 64$' mre8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre8-factorial-shard-${{ matrix.shard }}
+          retention-days: 12
+          compression-level: 6
+          path: |
+            mre8/shard-${{ matrix.shard }}.json
+            mre8/shard-${{ matrix.shard }}.log
+  audit:
+    name: MRE8 full 512 paired SAT witness and PAR2 audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre8-native-16SHA-pinned-CMS-transform
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre8-factorial-shard-*
+          merge-multiple: true
+          path: mre8
+      - name: Fail closed unless all 16x4x8 paired trials and SAT models pass
+        run: |
+          set -euo pipefail
+          (cd mre7_easy && sha256sum -c source.sha256)
+          python3 -u research/mre8_abcx_native_benchmark.py audit | tee mre8/audit.log
+          grep -q '^MRE8_FINAL' mre8/audit.log
+          cat mre8/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE8-512-FACTORIAL-PAR2-AUDIT
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre8/report.json
+            mre8/audit.log
