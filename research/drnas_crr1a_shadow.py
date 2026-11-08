@@ -111,7 +111,7 @@ def replay(equations,indices,variables,rhs,clauses):
             ordered=sorted(c,key=lambda x:abs(x))
             signs.add(sum((1<<j) for j,x in enumerate(ordered) if x<0))
         need(len(signs)==len(ids),"reused CNF parity masks")
-        need(all(((m.bit_count()&1)!=bit) in (m in signs)
+        need(all(((m.bit_count()&1)!=bit) == (m in signs)
                  for m in range(1<<len(vs))),"parity premise invalid")
         acc.symmetric_difference_update(vs)
         parity^=bit
@@ -392,7 +392,7 @@ def worker(source,mode,directory):
     cmd=[str(KISSAT.resolve()),str(Path(source).resolve()),str(proof.resolve())]
     result=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
     stdout=result.stdout
-    verdicts=re.findall(r"(?m)^s (SATISFIABLE|UNSATISFIABLE)\\s*$",stdout)
+    verdicts=re.findall(r"(?m)^s (SATISFIABLE|UNSATISFIABLE)\s*$",stdout)
     need(len(verdicts)==1,"missing or ambiguous solver verdict")
     status="SAT" if verdicts[0]=="SATISFIABLE" else "UNSAT"
     need(result.returncode==(10 if status=="SAT" else 20),"solver exit/verdict")
