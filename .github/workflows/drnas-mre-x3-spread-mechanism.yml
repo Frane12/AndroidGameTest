@@ -1,0 +1,196 @@
+name: DRNAS MRE X3 — spread dose mechanism stage CDCL 5 SHA causal test
+on:
+  push:
+    branches: [experiment/drnas-mre-x3-spread-mechanism-20261108]
+    paths: ['.github/workflows/drnas-mre-x3-spread-mechanism.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x3-spread-dose-mechanism-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin same X2 original SHA and CMS library then compile stage instrumented native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover exact X2 frozen sources, seven orderings and old unmodified native
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42523269582 -R Frane12/AndroidGameTest \
+            -n mre-x2-frozen-13-source-native-exact-multisets-seven-orders -D .
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          chmod +x mre_x/bin/native mre_x/bin/emit
+          python3 -m py_compile research/mre_x_benchmark.py research/mre_x2_clause_order_causal.py research/mre_x3_spread_mechanism.py
+          python3 -u research/mre_x2_clause_order_causal.py verify
+      - name: Build same native-CMS solver with ONLY stage-timing instrumentation
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p mre_x3/bin
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            research/mre_x3_stage_native.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o mre_x3/bin/native
+          chmod +x mre_x3/bin/native
+          sha256sum mre_x3/bin/native > mre_x3/bin.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x3/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre_x3_spread_mechanism.py selftest
+          python3 -u research/mre_x3_spread_mechanism.py freeze | tee mre_x3/freeze.log
+          python3 -u research/mre_x3_spread_mechanism.py verify | tee mre_x3/verify.log
+          grep -q '^MRE_X3_FREEZE_PASS 5 7' mre_x3/freeze.log
+          grep -q '^MRE_X3_VERIFY_PASS 5 7' mre_x3/verify.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x3-frozen-five-sha-seven-doses-instrumented-native
+          if-no-files-found: error
+          retention-days: 15
+          compression-level: 6
+          path: |
+            mre_x/*.cnf
+            mre_x/manifest.json
+            mre_x/source.sha256
+            mre_x/bin/native
+            mre_x/bin/emit
+            mre_x/bin.sha256
+            mre_x2/*.cnf
+            mre_x2/manifest.json
+            mre_x3/*.cnf
+            mre_x3/manifest.json
+            mre_x3/bin/native
+            mre_x3/bin.sha256
+            mre_x3/freeze.log
+            mre_x3/verify.log
+            mre5/lib/libcryptominisat5.so.5.11
+
+  paired:
+    name: MRE X3 spread dose REAL PAR2 plus init add solve stage telemetry shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x3-frozen-five-sha-seven-doses-instrumented-native
+          path: .
+      - name: Strict original and transformed source proof plus pinned native SHA
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          sha256sum -c mre_x3/bin.sha256
+          chmod +x mre_x3/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x3_spread_mechanism.py verify
+      - name: Run matched 4 seed 12s real SAT/UNSAT, independent ORIGINAL witness replay
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x3_spread_mechanism.py shard \
+            --shard ${{ matrix.shard }} --native mre_x3/bin/native \
+            | tee mre_x3/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X3_SHARD_PASS ${{ matrix.shard }} ' mre_x3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x3-real-par2-shard-${{ matrix.shard }}
+          retention-days: 15
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            mre_x3/shard-${{ matrix.shard }}.json
+            mre_x3/shard-${{ matrix.shard }}.log
+
+  bounded:
+    name: MRE X3 84 bounded 100 1000 5000 conflict mechanism only NOT SAT PAR2
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x3-frozen-five-sha-seven-doses-instrumented-native
+          path: .
+      - name: Shadow early CDCL conflicts decisions propagations and loading stage
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x3/bin.sha256
+          chmod +x mre_x3/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x3_spread_mechanism.py verify
+          python3 -u research/mre_x3_spread_mechanism.py bounded \
+            --native mre_x3/bin/native | tee mre_x3/bounded.log
+          grep -q '^MRE_X3_BOUNDED_PASS 84' mre_x3/bounded.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x3-84-bounded-early-CDCL-NOT-PAR2
+          if-no-files-found: warn
+          retention-days: 15
+          path: |
+            mre_x3/bounded.json
+            mre_x3/bounded.log
+
+  audit:
+    name: MRE X3 FINAL 140 exact-source real PAR2 and 84 bounded separate causal audit
+    needs: [paired, bounded]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x3-frozen-five-sha-seven-doses-instrumented-native
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x3-real-par2-shard-*
+          merge-multiple: true
+          path: mre_x3
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x3-84-bounded-early-CDCL-NOT-PAR2
+          path: mre_x3
+      - name: Paired audit and explicit bounded distinction without blind claims
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x3/bin.sha256
+          python3 -u research/mre_x3_spread_mechanism.py audit | tee mre_x3/audit.log
+          grep -q '^MRE_X3_FINAL' mre_x3/audit.log
+          grep '^MRE_X3_FINAL' mre_x3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE-X3-SPREAD-DOSE-140-PAR2-84-BOUNDED-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x3/report.json
+            mre_x3/audit.log
+            mre_x3/manifest.json
+            mre_x3/shard-*.json
+            mre_x3/bounded.json
