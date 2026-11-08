@@ -174,7 +174,7 @@ def audit():
         results.append(dict(sha256=c["sha256"],cohort=c["cohort"],
             trained_without_test_formula=True,
             policy=picked["policy"],
-            **{k:v for k,v in result.items() if k!="rows"},
+            **{k:v for k,v in result.items() if k not in ("rows","policy")},
             test=result["rows"][0]))
     chosen,grid=pick(rows)
     baseline=sum(x["reference"]["kissat"]["PAR2_s"]/x["original_cap_s"]
