@@ -1,0 +1,129 @@
+name: DRNAS TURN2SELECT — source-only guarded signed mapping 8 SHA 72 paired 60s
+on:
+  push:
+    branches: [experiment/drnas-turn2select-source-gate-20261108]
+    paths: ['.github/workflows/drnas-turn2select.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-turn2select-gated-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore SHA-frozen 8 SAT2026 originals and preregister source-only gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42477408128 -R Frane12/AndroidGameTest -n turn2h-fresh-frozen-input -D .
+          test -s turn2-frozen.tar.gz
+          test -s turn2_holdout/manifest.json
+          test -s turn2h_holdout/manifest.json
+          tar xzf turn2-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4 optimized/r28
+          python3 -m py_compile research/drnas_turn2h_holdout.py research/drnas_turn2select.py
+          mkdir -p turn2select
+          python3 -u research/drnas_turn2select.py prepare | tee turn2select/prepare.log
+          grep -q '^TURN2SELECT_PREP_PASS' turn2select/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turn2select-frozen-input
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            turn2-frozen.tar.gz
+            checker/drat-trim
+            optimized/r28
+            turn2_holdout/
+            turn2h_holdout/manifest.json
+            turn2h_holdout/pins.json
+            turn2select/manifest.json
+            turn2select/pins.json
+            turn2select/prepare.log
+            history/w4sources/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: turn2select-prepare-diagnostic
+          retention-days: 7
+          if-no-files-found: warn
+          path: turn2select/
+  paired:
+    needs: prepare
+    name: TURN2SELECT source-only three-arm 60s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2select-frozen-input
+      - name: Run randomized paired CPU-affine Kissat, signed, source guard
+        run: |
+          set -euo pipefail
+          tar xzf turn2-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4 optimized/r28
+          python3 -u research/drnas_turn2select.py shard --shard ${{ matrix.shard }} | tee turn2select/shard-${{ matrix.shard }}.log
+          grep -q '^TURN2SELECT_SHARD_PASS' turn2select/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: turn2select-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            turn2select/shard-${{ matrix.shard }}.json
+            turn2select/shard-${{ matrix.shard }}.log
+            turn2select/raw/**/worker.log
+            turn2select/raw/**/proof_validation.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2select-frozen-input
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: turn2select-shard-*
+          merge-multiple: true
+      - name: Check all 72 paired records, SHA, proofs and route decisions
+        run: |
+          set -euo pipefail
+          tar xzf turn2-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4 optimized/r28
+          test "$(find turn2select -maxdepth 1 -name 'shard-*.json' -type f | wc -l)" -eq 8
+          python3 -u research/drnas_turn2select.py audit | tee turn2select/audit.log
+          grep -q '^TURN2SELECT_FINAL' turn2select/audit.log
+          cat turn2select/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN2SELECT-8SHA-72-PAIRED-FINAL
+          if-no-files-found: warn
+          retention-days: 60
+          path: |
+            turn2select/report.json
+            turn2select/all-trials.json
+            turn2select/audit.log
+            turn2select/manifest.json
+            turn2select/pins.json
