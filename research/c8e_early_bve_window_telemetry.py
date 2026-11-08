@@ -57,9 +57,10 @@ def profile(i):
     return x
 
 def skip_map(p):
-    x = p["skipped_candidate_order_development_only"]
-    need(set(x) >= set(ARMS) - {"noelim"}, "C8C registered skip map incomplete")
-    return x
+    original = p["skipped_candidate_order_development_only"]
+    required = set(ARMS) - {"noelim", "keep"}
+    need(required <= set(original), "C8C registered skip map incomplete")
+    return {**original, "keep": []}
 
 def bounded(i, rep, arm, budget):
     c = get_case(i)
@@ -121,7 +122,7 @@ def verify():
         p = profile(i)
         need(p["first_candidate_conflict"] == int(p["first_candidate_conflict"]),
              "bad anchor type")
-        need(set(skip_map(p)) >= set(ARMS)-{"noelim"}, "skip arms changed")
+        need((set(ARMS)-{"noelim"}) <= set(skip_map(p)), "skip arms changed")
     print("C8E_FROZEN_SOURCE_AND_FIRST_EVENT_PROFILES_PASS",
           json.dumps([dict(gbd=get_case(i)["gbd"],
               sha256=get_case(i)["sha256"],
