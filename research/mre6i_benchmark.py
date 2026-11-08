@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""DRNAS MRE6i: source-disjoint official SAT2026 + cheap XOR structural prefilter.
+"""DRNAS MRE6i: proof-safe sampled XOR gate vs in-process GF2.
 
-The exact six original CNF SHAs from completed MRE7 (2 reused diagnostic
-anchors + 4 officially reference-time-selected originals) are reused WITHOUT
-resampling or any post hoc inclusion changes. Each attempt has 35s FULL wall,
-including parsing, proof check, rewriting, solve and original witness check.
-
-Compare identical pinned CMS 5.11.15 backend and native seeds across:
-  native: original CNF, no optional XOR import;
-  xor: original CNF + proof-verified source GF(2) imports (eligible sizes);
-  all_no_xor: simultaneously quotient all provable positive equality classes;
-  all_xor: same quotient plus transported, proof-verified source XOR rows.
-
-All equality edges must appear as both complementary implication clauses
-in the ORIGINAL CNF. A union-find closure then yields a certified bijective
-model lifting. Disabled OTF Gaussian; no UNSAT LRAT is claimed. This is a
-development diagnostic cohort, NOT a new blind holdout.
+Eight frozen source SHAs: 4 new official SAT2026 chosen by external
+CaDiCaL3 reference time ONLY, 2 reused known diagnostic originals,
+and 2 fresh deterministic planted-SAT XOR/CNF mechanistic controls.
+Not an exhaustively verified historical blind holdout. Every trial
+charges parse+pretest+proof+rewrite+CMS solve+SAT witness verification
+inside 35s full wall. Signed substitutions require independent original
+CNF proof replay and full SAT witness reconstruction. No UNSAT LRAT.
 """
 from __future__ import annotations
 import argparse,collections,json,os,pathlib,random,subprocess,sys,tempfile,time
@@ -301,7 +293,7 @@ def trial(case,rep,mode,binary):
             model_ok=False
     out=dict(protocol=PROTO,original_sha256=case["sha256"],source=case["name"],
         source_cohort=case["cohort"],expected=case["expected"],
-        official_reference_s=case["published_reference_s"],mode=mode,
+        official_reference_s=case.get("official_reference_s"),mode=mode,
         rep=rep,seed=previous.seed_of(case["sha256"],rep),
         status=status,full_wall_s=round(elapsed,6),
         par2_s=round(2*CAP if status=="TIMEOUT" else elapsed,6),
@@ -347,7 +339,7 @@ def shard(i,binary):
     print("MRE6I_SHARD_PASS",i,len(done),flush=True)
 
 def audit():
-    frozen.verify(INPUT)
+    frozen.verify()
     manifest=json.loads((INPUT/"manifest.json").read_text())
     records=[]
     for i in range(SHARDS):
@@ -407,7 +399,7 @@ def audit():
     for c in manifest["cases"]:
         found=[r for r in records if r["original_sha256"]==c["sha256"]]
         per_source.append(dict(source=c["name"],cohort=c["cohort"],
-            status=c["expected"],external_reference_s=c["published_reference_s"],
+            status=c["expected"],external_reference_s=c.get("official_reference_s"),
             per_mode={m:dict(
                 solved=sum(r["status"]!="TIMEOUT" for r in found if r["mode"]==m),
                 par2_s=round(sum(r["par2_s"] for r in found if r["mode"]==m),6),
@@ -432,6 +424,7 @@ def audit():
     print("MRE6I_FINAL",json.dumps(report,sort_keys=True),flush=True)
 
 def selftest():
+    frozen.selftest()
     all_eq.selftest()
     graph.selftest()
     fast.selftest()
