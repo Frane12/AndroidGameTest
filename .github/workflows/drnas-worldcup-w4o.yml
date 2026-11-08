@@ -1,0 +1,120 @@
+name: DRNAS WorldCup W4O — short SAT2026 24 originals 6 solvers 432 paired 30s
+on:
+  push:
+    branches: [experiment/drnas-worldcup-short-w4o-20261108]
+    paths: ['.github/workflows/drnas-worldcup-w4o.yml', 'research/drnas_worldcup_w4o.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: worldcup-w4o-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore pinned W1 official sources and six solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42429372803 -R Frane12/AndroidGameTest -n w4-input -D .
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x checker/drat-trim r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          mkdir -p optimized worldcup_w4o
+          g++ -std=c++17 -O3 -DNDEBUG research/r28_w4_optimized.cpp -o optimized/r28
+          python3 -u research/drnas_worldcup_w4o.py prepare | tee worldcup_w4o/prepare.log
+          grep -q '^W4O_PREPARE_PASS' worldcup_w4o/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w4o-input
+          path: |
+            worldsim-w1-frozen.tar.gz
+            history/
+            optimized/r28
+            checker/drat-trim
+            checker/source-commit.txt
+            worldcup_w4o/manifest.json
+            worldcup_w4o/pins.json
+            worldcup_w4o/prepare.log
+          retention-days: 90
+          if-no-files-found: error
+  paired:
+    name: W4O six solvers 30s paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w4o-input}
+      - name: Run sequential randomized single CPU comparisons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x optimized/r28 checker/drat-trim r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          python3 -u research/drnas_worldcup_w4o.py shard --shard ${{ matrix.shard }} | tee worldcup_w4o/shard-${{ matrix.shard }}.log
+          grep -q '^W4O_SHARD_PASS' worldcup_w4o/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w4o-shard-${{ matrix.shard }}
+          path: |
+            worldcup_w4o/shard-${{ matrix.shard }}.json
+            worldcup_w4o/shard-${{ matrix.shard }}.log
+            worldsim_w1/raw/${{ matrix.shard }}/**/stdout.log
+            worldsim_w1/raw/${{ matrix.shard }}/**/certificate.log
+          retention-days: 90
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: w4o-input}
+      - name: Audit complete 432 paired attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x optimized/r28 checker/drat-trim r190_cms_mixed/r28 built/bin/kissat_4_0_4 worldsim_w1/reference/bin/cadical_3_0_1
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'w4o-shard-*' -D worldcup_w4o/collected
+          find worldcup_w4o/collected -name 'shard-*.json' -type f -exec cp '{}' worldcup_w4o/ \;
+          python3 -u research/drnas_worldcup_w4o.py audit | tee worldcup_w4o/audit.log
+          grep -q '^W4O_FINAL' worldcup_w4o/audit.log
+          cat worldcup_w4o/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-WORLDCUP-W4O-432-SHORT-FINAL
+          path: |
+            worldcup_w4o/report.json
+            worldcup_w4o/report.md
+            worldcup_w4o/all-trials.json
+            worldcup_w4o/audit.log
+            worldcup_w4o/manifest.json
+            worldcup_w4o/pins.json
+          retention-days: 90
+
