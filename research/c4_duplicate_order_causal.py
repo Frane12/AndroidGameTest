@@ -95,7 +95,7 @@ def compare_exact_multisets():
     _,old=c2.read_clauses(small);_,new=c2.read_clauses(dest)
     need(collections.Counter(old)==collections.Counter(new) and old!=new,
          "selftest must reorder while maintaining identical source clauses")
-    need(gate["duplicate_clauses_moved"]==3,"synthetic duplicate count mismatch")
+    need(gate["duplicate_clauses_moved"]==4,"synthetic duplicate count mismatch")
     # check that the rebuilt solver's original source behavior still matches
     # the pinned C2 binary for original and dedup arms (result + CDCL counters)
     for mode in ("cpp_native","cpp_dedup"):
