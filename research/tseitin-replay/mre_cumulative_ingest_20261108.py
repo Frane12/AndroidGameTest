@@ -99,7 +99,7 @@ def report_for(root,s):
  check(len(results)==1,"expected exactly ONE independent audit report "+str(p))
  return jload(results[0]),digest(results[0].read_bytes())
 def index_for(root):
- p=root.parent/"artifact_index.tsv"
+ p=root/"artifact_index.tsv"
  check(p.is_file(),"missing GH immutable artifact provenance index")
  values={}
  for l in p.read_text().splitlines():
