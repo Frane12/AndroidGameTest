@@ -1,0 +1,142 @@
+name: DRNAS C3 vs Kissat 4.0.4 — exact frozen SHA12 144 original paired 12s PAR2
+on:
+  push:
+    branches: [experiment/drnas-c3-vs-kissat-sha12-20261108]
+    paths: ['.github/workflows/drnas-c3-vs-kissat-sha12.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c3-vs-kissat-frozen-sha12-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore exact C3 source SHA12/C2 binary plus pinned Kissat 4.0.4, no refetch or retuning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the SAME 12 originals and C2 binary from completed C3 run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42518662034 -R Frane12/AndroidGameTest \
+            -n c3-frozen-sha12-source-c2-binary-reference -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          chmod +x c2/bin/native c2/bin/emit mre10/bin/native
+          sha256sum -c c2_out/binary.sha256
+          python3 -m py_compile research/c3_vs_kissat_sha12.py
+          python3 -u research/c3_vs_kissat_sha12.py verify
+      - name: Recover exact version-pinned historical Kissat 4.0.4 binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p kissat_original_pin built/bin
+          gh run download 42505042425 -R Frane12/AndroidGameTest \
+            -n mre7e-pilot16-frozen-originals-and-native-binaries -D kissat_original_pin
+          cp kissat_original_pin/built/bin/kissat_4_0_4 built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+          built/bin/kissat_4_0_4 --version | tee c3_kissat_version.txt
+          sha256sum c2/bin/native built/bin/kissat_4_0_4 | tee c3_kissat_bin.sha256
+          echo C3_KISSAT_PINNED_BINARIES_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c3-kissat-exact-sha12-and-two-pinned-native-binaries
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            c2/bin/native
+            c2_out/binary.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            c3_kissat_bin.sha256
+            c3_kissat_version.txt
+  paired:
+    name: C3 SHA12 Kissat vs Native vs Dedup (12s cap) shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c3-kissat-exact-sha12-and-two-pinned-native-binaries
+          path: .
+      - name: Verify exact immutable original SHA12 and pinned native/C3 and Kissat binary
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c c3_kissat_bin.sha256
+          chmod +x c2/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c2/bin/native | grep -q libcryptominisat5
+          python3 -u research/c3_vs_kissat_sha12.py verify
+      - name: Three solver arms x three SHA-originals x four repetitions with true end-to-end 12s PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p c3_kissat
+          python3 -u research/c3_vs_kissat_sha12.py shard --shard ${{ matrix.shard }} \
+            --kissat built/bin/kissat_4_0_4 | tee c3_kissat/shard-${{ matrix.shard }}.log
+          grep -q '^C3_KISSAT_SHARD_PASS ${{ matrix.shard }} 36$' c3_kissat/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c3-kissat-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+          path: |
+            c3_kissat/shard-${{ matrix.shard }}.json
+            c3_kissat/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final 144 source-SHA exact PAR2 and 12-by-3 per-formula seconds for chart
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c3-kissat-exact-sha12-and-two-pinned-native-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c3-kissat-shard-*
+          merge-multiple: true
+          path: c3_kissat
+      - name: Fail closed on missing SHA-seed-mode measurements or SAT witness or PAR2
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c c3_kissat_bin.sha256
+          python3 -u research/c3_vs_kissat_sha12.py audit | tee c3_kissat/audit.log
+          grep -q '^C3_KISSAT_FINAL' c3_kissat/audit.log
+          grep '^C3_KISSAT_FINAL' c3_kissat/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-C3-KISSAT-4.0.4-ORIGINAL-SHA12-144-PAR2-CASEGRAPH
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            c3_kissat/report.json
+            c3_kissat/audit.log
+            c3_kissat/shard-*.json
