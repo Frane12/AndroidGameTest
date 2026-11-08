@@ -1,0 +1,125 @@
+name: DRNAS MRE6b — 2x2 native CPU quotient XOR causal ablation
+on:
+  push:
+    branches: [experiment/drnas-mre6-cpu-feedback-principles-20261108]
+    paths:
+      - '.github/workflows/drnas-mre6b-quotient-xor-factorial.yml'
+      - 'research/mre6b_factorial.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6b-quotient-xor-factorial
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact previous MRE6 CPU binary and feedback database
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre6b_factorial.py
+          python3 -u research/mre6b_factorial.py selftest
+          gh run download 42491590558 --repo Frane12/AndroidGameTest -n mre6-frozen-inputs -D .
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          test -s mre6/principles.sqlite
+          python3 - <<'PY'
+          import json,sqlite3
+          p=json.load(open('mre6/frozen_feedback.json'))
+          assert p['online_policy']=='xor' and p['training_sources']==1
+          conn=sqlite3.connect('mre6/principles.sqlite')
+          assert conn.execute('SELECT COUNT(*) FROM observation').fetchone()[0]==32
+          print('MRE6B_FROZEN_FEEDBACK_CHECK_PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6b-frozen
+          retention-days: 4
+          path: |
+            r195/frozen/
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+            mre5/manifest.sha256
+            mre6/principles.sqlite
+            mre6/frozen_feedback.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        seed: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-frozen
+          path: .
+      - name: Verify pinned native CMS CPU timer and input
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          python3 -u research/r195_native_cms_benchmark.py verify
+      - name: Matched original/quotient X source-XOR CPU 2x2 factorial
+        run: |
+          set -euo pipefail
+          python3 -u research/mre6b_factorial.py shard --seed ${{ matrix.seed }} --binary mre5/native | tee mre6b/seed-${{ matrix.seed }}.log
+          grep -q '^MRE6B_SHARD_PASS ${{ matrix.seed }} 12$' mre6b/seed-${{ matrix.seed }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6b-seed-${{ matrix.seed }}
+          retention-days: 10
+          path: |
+            mre6b/seed-${{ matrix.seed }}.json
+            mre6b/seed-${{ matrix.seed }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6b-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6b-seed-*
+          merge-multiple: true
+          path: mre6b
+      - name: Verify complete 48-trial native CPU interaction and append SQLite
+        run: |
+          set -euo pipefail
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/mre6b_factorial.py audit | tee mre6b/audit.log
+          cat mre6b/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6B-EQUIVALENCE-XOR-FACTORIAL-FINAL
+          retention-days: 30
+          path: |
+            mre6b/report.json
+            mre6b/audit.log
+            mre6/principles.sqlite
