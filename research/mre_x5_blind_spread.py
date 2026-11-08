@@ -269,6 +269,9 @@ def shard(idx,binary):
     need(idx in range(SHARDS),"invalid shard")
     rows=[]
     cs=[c for i,c in enumerate(cases()) if i%SHARDS==idx]
+    # Emit an explicit empty JSON artifact for an unused shard when the strict
+    # historical exclusion leaves fewer sources than the fixed shard count.
+    save(OUT/("shard-%d.json"%idx),rows)
     for c in cs:
         for rep in range(REPS):
             modes=list(MODES)
