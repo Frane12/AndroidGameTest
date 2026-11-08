@@ -5,7 +5,7 @@ from pathlib import Path
 import drnas_worldsim_w1 as w
 import drnas_turn2_structural as t
 ROOT=Path("worldcup_w4o")
-PROTO="DRNAS-W4O-SAT2026-24x6x3-30s-v1"
+PROTO="DRNAS-W4OSR-SAT2026-24x6x3-30s-v2"
 CAP=30.0
 REPS=3
 MODES=("r28_optimized","r28_kissat","kissat_404","satsuma_iter_kissat_2026","cms_51115","cadical_301")
@@ -53,10 +53,23 @@ def trial(c,m,rep,shard,cap=CAP):
         checked=False
         if proof.is_file() and proof.stat().st_size:
             try:
-                check=subprocess.run(["checker/drat-trim",str(source),str(proof)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=120)
-                checked=check.returncode==0 and "s VERIFIED" in check.stdout
+                if m=="satsuma_iter_kissat_2026":
+                    # Submitted SAT2026 Satsuma emits binary SR, not DRAT.
+                    sr=Path("worldsim_w1/official/anders/satsuma-iter-kissat/src/dsr-trim/bin/dsr-trim").resolve()
+                    w.need(sr.is_file(), "bundled SR checker missing")
+                    checker=[str(sr), "-f", str(source), str(proof), "/dev/null", "-q"]
+                    required="s VERIFIED UNSAT"
+                    row["proof_checker"]="dsr-trim-SR"
+                else:
+                    checker=["checker/drat-trim", str(source), str(proof)]
+                    required="s VERIFIED"
+                    row["proof_checker"]="drat-trim"
+                check=subprocess.run(checker,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=180)
+                checked=check.returncode==0 and required in check.stdout
                 (proof.parent/"certificate.log").write_text(check.stdout)
-            except subprocess.TimeoutExpired: pass
+            except subprocess.TimeoutExpired:
+                (proof.parent/"certificate.log").write_text("CHECKER_TIMEOUT")
+                row["proof_checker_timeout"]=True
         row["reported_status"]="UNSAT"
         row["independent_unsat_certificate"]=checked
         if checked: row["evidence"]="UNSAT_DRAT_VERIFIED"
@@ -81,6 +94,8 @@ def trial(c,m,rep,shard,cap=CAP):
     return row
 def prepare():
     original()
+    sr=Path("worldsim_w1/official/anders/satsuma-iter-kissat/src/dsr-trim/bin/dsr-trim")
+    w.need(sr.is_file(), "bundled SR proof checker missing")
     manifest=json.loads(Path("worldcup_w4/manifest.json").read_text())
     w.need(len(manifest["cases"])==24,"same W4 cohort")
     ROOT.mkdir(exist_ok=True)
