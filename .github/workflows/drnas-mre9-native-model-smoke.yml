@@ -1,0 +1,93 @@
+name: DRNAS MRE9 Native C++ — active-gate SAT witness and UNSAT smoke
+on:
+  push:
+    branches: [experiment/drnas-mre9-native-cpp-6f-ref-20261108]
+    paths: ['.github/workflows/drnas-mre9-native-model-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mre9-native-model-smoke-20261108
+  cancel-in-progress: false
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download exact audited MRE9 native bridge and frozen CMS shared library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42506543129 -R Frane12/AndroidGameTest -n mre9-frozen-binaries-original-input -D .
+          sha256sum -c mre9/binaries.sha256
+          sha256sum -c mre6e/cms-shared.sha256
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x mre9/native
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre9/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Run independent original-SAT-model replay through ACTIVATED native C++ gate
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u - <<'PY'
+          import json,pathlib,re,subprocess,sys,hashlib
+          sys.path.insert(0,"research")
+          import mre1_cross_representation as mre1
+          import mre6e_conflict_diagnostic as diagnostic
+          import r195_native_cms_benchmark as r195
+
+          folder=pathlib.Path("mre9")
+          n=260
+          eq=[]
+          for v in range(2,n+1):
+              eq.extend([(-1,v),(1,-v)])
+          eq.extend([(1,2)]*300)
+
+          cases={
+              "SAT_ACTIVE":(eq+[(1,)],"SAT",True),
+              "UNSAT_TRIVIAL_ROOT_ACTIVE":(eq+[(1,),(-1,)],"UNSAT",True),
+              "SAT_ABSTAIN_NO_EQ":([tuple([v]) for v in range(1,n+1)],"SAT",False),
+          }
+          report={}
+          for label,(clauses,expected,should_apply) in cases.items():
+              src=folder/(label+".cnf")
+              mre1.write_cnf(src,n,clauses,[])
+              sha=hashlib.sha256(src.read_bytes()).hexdigest()
+              p=subprocess.run([str((folder/"native").resolve()),str(src.resolve()),"cpp_gate","1234"],
+                               capture_output=True,text=True,timeout=10,check=True)
+              gate_line=next((s for s in p.stdout.splitlines() if s.startswith("MRE9_GATE ")),None)
+              assert gate_line,"no C++ gate telemetry"
+              gate=json.loads(gate_line.split(" ",1)[1])
+              assert gate["applied"] == should_apply, (label,gate)
+              status,native,model=diagnostic.parse(p.stdout)
+              assert status==expected,(label,status,expected)
+              if status=="SAT":
+                  r195.verify_model(src,model)
+                  assert len(model)==n
+              if should_apply:
+                  assert gate["variables_eliminated"]==259
+                  assert gate["clauses_removed"]>=256
+              result={"status":status,"gate_applied":gate["applied"],
+                      "original_model_verified":status=="SAT",
+                      "original_source_sha256":sha,
+                      "eliminated":gate["variables_eliminated"],
+                      "removed":gate["clauses_removed"],
+                      "independent_UNSAT_LRAT":False}
+              report[label]=result
+              print("MRE9_ACTIVE_MODEL_CASE_PASS",label,json.dumps(result,sort_keys=True),flush=True)
+          (folder/"active-model-audit.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
+          print("MRE9_ACTIVE_NATIVE_SAT_AND_UNSAT_MODEL_AUDIT_PASS",flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE9-NATIVE-CPP-ACTIVE-MODEL-SMOKE-FINAL
+          retention-days: 30
+          path: |
+            mre9/active-model-audit.json
