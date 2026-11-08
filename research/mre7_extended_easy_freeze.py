@@ -21,6 +21,9 @@ TARGET=24
 MIN_REQUIRED=20
 MAX_PER_YEAR=12
 ROOT=f.ROOT
+# Preserve the original reference-only 0.08–5 second eligibility rule.
+f.MIN_REFERENCE_S=0.08
+f.MAX_REFERENCE_S=5.0
 def need(v,msg):
     if not v:raise RuntimeError("MRE7E_FAIL_CLOSED "+str(msg))
 def sha(s):return hashlib.sha256(s.encode()).hexdigest()
@@ -50,7 +53,7 @@ def pool():
                    if re.fullmatch("[0-9a-f]{32}",x.strip()))
     repo,_=old.inspect_repo_ids(allids)
     existing=json.loads((ROOT/"manifest.json").read_text())
-    need(existing["protocol"]==f.PROTO and len(existing["selected_cases"])==6,
+    need(existing["protocol"]=="DRNAS-MRE7-SAT24SAT25-REFERENCE-SELECTED-EASY-v1" and len(existing["selected_cases"])==6,
          "expected precisely earlier six-source SHA-locked pilot cohort")
     prior_ids.update(c["gbd"] for c in existing["selected_cases"])
     prior_ids.update(repo)
