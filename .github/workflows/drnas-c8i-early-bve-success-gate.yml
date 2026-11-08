@@ -1,0 +1,169 @@
+name: DRNAS C8I — early BVE-success gate on official SAT2026 sources
+on:
+  push:
+    branches:
+      - experiment/drnas-c8i-early-bve-success-gate-official2026-20261108
+    paths:
+      - .github/workflows/drnas-c8i-early-bve-success-gate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c8i-early-bve-success-gate-official2026
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin CaDiCaL 1.7.3 and restore C9c source-only official SHA set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pre-frozen C9c official 2026 sources and Kissat pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42529378612 -R Frane12/AndroidGameTest -n c9c-new-official-2026-10plus-source-only-frozen-before-any-run -D .
+          (cd c9c_official && sha256sum -c source.sha256)
+          sha256sum -c c7_source/kissat.sha256
+          python3 -m py_compile research/c8c_patch_upstream_cadical173.py research/c8h_patch_upstream_cadical173.py research/c8i_patch_early_bve_success_gate.py research/c8i_official_bve_success_gate.py research/c8c_pivot_causal_audit.py
+          python3 - <<'PY'
+          import json,pathlib
+          m=json.loads(pathlib.Path("c9c_official/manifest.json").read_text())
+          assert m["protocol"] == "DRNAS-C9C-2026-FROZEN-12SHA-PUBLISHED-STATUS-BALANCED-v1"
+          assert len(m["cases"]) == 12 and len({x["sha256"] for x in m["cases"]}) == 12
+          print("C8I_12_OFFICIAL_SHA_SOURCE_LOCK_PASS")
+          PY
+      - name: Build pristine and C8I-gated exact upstream CaDiCaL 1.7.3
+        run: |
+          set -euo pipefail
+          mkdir -p c8c/bin c8c_out
+          git clone --quiet --depth 1 --branch rel-1.7.3 https://github.com/arminbiere/cadical.git c8c_original
+          EXPECTED=38e073b389a877b0a0d3c91136d2443ab95fdeba
+          test "$(git -C c8c_original rev-parse HEAD)" = "$EXPECTED"
+          test "$(cat c8c_original/VERSION)" = "1.7.3"
+          cp -a c8c_original c8c_instrumented
+          python3 -u research/c8i_patch_early_bve_success_gate.py c8c_instrumented
+          test "$(git -C c8c_instrumented rev-parse HEAD)" = "$EXPECTED"
+          sha256sum c8c_original/src/elim.cpp c8c_instrumented/src/elim.cpp c8c_original/src/analyze.cpp c8c_instrumented/src/analyze.cpp c8c_original/src/vivify.cpp c8c_instrumented/src/vivify.cpp > c8c_out/source-code.sha256
+          (cd c8c_original && ./configure && make -j2)
+          (cd c8c_instrumented && ./configure && make -j2)
+          cp c8c_original/build/cadical c8c/bin/plain
+          cp c8c_instrumented/build/cadical c8c/bin/instrumented
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          sha256sum c8c/bin/plain c8c/bin/instrumented > c8c_out/binary.sha256
+          c8c/bin/plain --version | tee c8c_out/pristine-version.txt
+          c8c/bin/instrumented --version | tee c8c_out/instrumented-version.txt
+          diff -u c8c_out/pristine-version.txt c8c_out/instrumented-version.txt
+          test "$(c8c/bin/plain --version)" = "1.7.3"
+      - name: Smoke-check compiled builds and SAT-preserving BVE controls
+        run: |
+          set -euo pipefail
+          python3 -u research/c8c_pivot_causal_audit.py smoke | tee c8c_out/smoke.log
+          grep -q '^C8C_SOURCE_PATCH_COMPILED_SAT_AND_SAFE_SKIP_SMOKE_PASS' c8c_out/smoke.log
+          echo C8I_PINNED_BUILDS_AND_SOURCE_LOCK_READY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8i-pinned-cadical173-official12-SHA
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c9c_official/*.cnf
+            c9c_official/manifest.json
+            c9c_official/source.sha256
+            c9c_reference/report.json
+            c7_source/kissat.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c8c_out/binary.sha256
+            c8c_out/source-code.sha256
+            c8c_out/pristine-version.txt
+            c8c_out/instrumented-version.txt
+            c8c_out/smoke.log
+  paired:
+    name: C8I six-arm 20s paired SAT/UNSAT PAR2 official SHA shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8i-pinned-cadical173-official12-SHA
+          path: .
+      - name: Verify solver binaries, Kissat pin, and all frozen formula SHA
+        run: |
+          set -euo pipefail
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          sha256sum -c c8c_out/binary.sha256
+          sha256sum -c c7_source/kissat.sha256
+          (cd c9c_official && sha256sum -c source.sha256)
+      - name: Run source-paired reference, clean BVE ablation, and early-success gate
+        run: |
+          set -euo pipefail
+          mkdir -p c8i_out
+          python3 -u research/c8i_official_bve_success_gate.py shard --shard ${{ matrix.shard }} | tee c8i_out/shard-${{ matrix.shard }}.log
+          grep -q '^C8I_SHARD_PASS ${{ matrix.shard }} 36$' c8i_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8i-official-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c8i_out/shard-${{ matrix.shard }}.json
+            c8i_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C8I final audit of official SHA, witnesses, gate decisions, and PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8i-pinned-cadical173-official12-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c8i-official-shard-*
+          merge-multiple: true
+          path: c8i_out
+      - name: Fail-closed audit of all source-paired trials and decisions
+        run: |
+          set -euo pipefail
+          (cd c9c_official && sha256sum -c source.sha256)
+          python3 -m py_compile research/c8i_official_bve_success_gate.py
+          python3 -u research/c8i_official_bve_success_gate.py audit | tee c8i_out/audit.log
+          grep -q '^C8I_FINAL' c8i_out/audit.log
+          grep '^C8I_CASE' c8i_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C8I-OFFICIAL2026-12SHA-EARLY-BVE-GATE16-6ARM-2REP-20S
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c8i_out/report.json
+            c8i_out/audit.log
+            c8i_out/shard-*.json
+            c8i_out/shard-*.log
+            c9c_official/manifest.json
+            c9c_official/source.sha256
