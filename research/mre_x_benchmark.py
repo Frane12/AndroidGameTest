@@ -325,7 +325,7 @@ def early(binary):
                 # R195 parser intentionally accepts only complete SAT/UNSAT;
                 # C5 diagnostic needs its own explicit BUDGET-aware telemetry.
                 import re
-                mm=re.search(r"^R195_RESULT status=(SAT|UNSAT|BUDGET|UNKNOWN) conflicts=(\\d+) decisions=(\\d+) propagations=(\\d+) source_rows=(\\d+) derived_rows=(\\d+)$",p.stdout,re.M)
+                mm=re.search(r"^R195_RESULT status=(SAT|UNSAT|BUDGET|UNKNOWN) conflicts=(\d+) decisions=(\d+) propagations=(\d+) source_rows=(\d+) derived_rows=(\d+)$",p.stdout,re.M)
                 need(mm is not None,"bounded native telemetry marker missing")
                 verdict=mm.group(1)
                 stats=dict(conflicts=int(mm.group(2)),
