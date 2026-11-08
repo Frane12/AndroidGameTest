@@ -1,0 +1,66 @@
+name: DRNAS T3 — certified GF2 unit-impact counterfactual (no solver rerun)
+on:
+  push:
+    branches: [experiment/drnas-t3-certified-impact-offline-20261108]
+    paths:
+      - .github/workflows/drnas-t3-impact-gate-audit.yml
+      - research/drnas_t3_impact_gate_audit.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-t3-impact-audit-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  t3-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and strict deterministic synthetic gate self-tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_t3_impact_gate_audit.py
+          python3 -u research/drnas_t3_impact_gate_audit.py --selftest
+      - name: Retrieve immutable, already audited TD 440 paired original-CNF trials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/Frane12/AndroidGameTest/actions/runs/42356438634 --jq '.conclusion')" = success
+          gh run download 42356438634 --repo Frane12/AndroidGameTest \
+            -n DRNAS-TD-LAZY-SOURCE-440-PAIRED-FINAL -D t3/input
+          if test -f t3/input/report.json && test -f t3/input/all-trials.json; then
+            echo "T3_INPUT_DIR=t3/input" >> "$GITHUB_ENV"
+          elif test -f t3/input/ultimate_t2/report.json && test -f t3/input/ultimate_t2/all-trials.json; then
+            echo "T3_INPUT_DIR=t3/input/ultimate_t2" >> "$GITHUB_ENV"
+          else
+            echo "TD final artifact missing report.json and/or all-trials.json" >&2
+            exit 1
+          fi
+      - name: Audit source-SHA locked root-unit impact gate against all 40 paired blocks
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_t3_impact_gate_audit.py --input "$T3_INPUT_DIR" --output t3/out | tee t3-audit.log
+          grep -q '^T3_GATE_COUNTERFACTUAL_AUDIT_PASS' t3-audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          r=json.loads(pathlib.Path("t3/out/report.json").read_text())
+          assert r["status"]=="T3_GATE_COUNTERFACTUAL_AUDIT_PASS_NOT_MEASURED"
+          assert r["new_solver_runs"]==0 and r["simulation_only"] and r["not_blind"]
+          assert r["cohorts"]["all"]["n"]==40
+          print("T3_OFFLINE_AUDIT_INTEGRITY_PASS")
+          PY
+          cat t3/out/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-T3-GF2-UNIT-IMPACT-OFFLINE-NEGATIVE-AUDIT
+          retention-days: 90
+          path: |
+            t3/out/report.json
+            t3/out/summary.md
+            t3-audit.log
