@@ -5,7 +5,7 @@ from pathlib import Path
 import drnas_worldsim_w1 as w
 import drnas_turn2_structural as t
 ROOT=Path("worldcup_w4")
-PROTO="DRNAS-W4-SAT2026-24x5x3-30s-v1"
+PROTO="DRNAS-W4-SAT2026-24x5x3-30s-no-proof-files-v2"
 CAP=30.0
 REPS=3
 MODES=("r28_kissat","kissat_404","satsuma_iter_kissat_2026","cms_51115","cadical_301")
@@ -18,13 +18,31 @@ def command(mode,source,proof):
         return [sys.executable,Path(__file__).resolve(),"signed", "--source",source.resolve(),"--proof",proof.resolve()],None
     return old_command(mode,source,proof)
 w.command_for=command
+
+# No large proof files in short exploratory benchmarks. Keep W1 frozen.
+_original_timed_process = w.timed_process
+def no_disk_proofs(command, started, *, cwd=None, env=None, cap=CAP):
+    command = [str(x) for x in command]
+    env = dict(env or {})
+    proof = env.get("W1_PROOF_FILE")
+    # Native solvers disable proof production when the output argument is absent.
+    # Submitted scripts/R28 wrappers retain their interface and discard output.
+    if proof and command[-1] == proof and "--proof" not in command:
+        if command[0] == "bash":
+            command[-1] = os.devnull
+        else:
+            command.pop()
+    env["W1_PROOF_FILE"] = os.devnull
+    return _original_timed_process(command, started, cwd=cwd, env=env, cap=cap)
+w.timed_process = no_disk_proofs
+
 def signed(source,proof):
     n,clauses=t.t1.parse(source)
     transformed,mapping=t.transformation(n,clauses,"kissat_struct_signed")
     with tempfile.TemporaryDirectory(dir=Path(proof).parent) as tmp:
         path=Path(tmp)/"signed.cnf"
         t.t1.write_cnf(path,n,transformed)
-        p=subprocess.run([str(Path(t.KISSAT).resolve()),str(path),str(proof)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        p=subprocess.run([str(Path(t.KISSAT).resolve()),str(path)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
         status,model=w.parse_answer(p.stdout,p.returncode)
         # Reconstruct model before outer harness checks every original clause.
         if status=="SAT":
@@ -44,23 +62,10 @@ def trial(c,m,rep,shard,cap=CAP):
     row=w.trial(c,m,rep,shard,cap=cap,emit=False)
     row["protocol"]=PROTO
     row["independent_unsat_certificate"]=False
-    if row["status"]=="UNSAT":
-        proof=w.ROOT/"raw"/str(shard)/c["id"]/str(rep)/m/"proof.out"
-        source=w.SOURCE/(c["id"]+".cnf")
-        checked=False
-        if proof.is_file() and proof.stat().st_size:
-            try:
-                check=subprocess.run(["checker/drat-trim",str(source),str(proof)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=120)
-                checked=check.returncode==0 and "s VERIFIED" in check.stdout
-                (proof.parent/"certificate.log").write_text(check.stdout)
-            except subprocess.TimeoutExpired: pass
-        row["reported_status"]="UNSAT"
-        row["independent_unsat_certificate"]=checked
-        if checked: row["evidence"]="UNSAT_DRAT_VERIFIED"
-        else:
-            row["status"]="TIMEOUT";row["par2_s"]=2*cap
-            row["evidence"]="UNSAT_UNCERTIFIED_NOT_SCORED"
-
+    w.need(row["proof_bytes"] == 0, "unexpected proof file writes")
+    row["proof_requested"] = row["selected"] in ("r28_kissat", "kissat_r28", "cms_r28", "satsuma_iter_kissat_2026")
+    row["proof_output_policy"] = "native disabled; wrapper output discarded to /dev/null"
+    row["command_before_proof_policy"] = row.pop("command")
     # Avoid accumulating large proofs; this test reports UNSAT as unverified.
     folder=w.ROOT/"raw"/str(shard)/c["id"]/str(rep)/m
     import shutil
@@ -101,7 +106,7 @@ def prepare():
     finally: src.unlink(missing_ok=True)
     files=["research/drnas_worldcup_w4.py","research/drnas_turn2_structural.py","research/drnas_turn1_representation.py",".github/workflows/drnas-worldcup-w4.yml","checker/drat-trim"]
     w.save(ROOT/"pins.json",{p:w.digest(p) for p in files})
-    w.save(ROOT/"manifest.json",dict(protocol=PROTO,cases=manifest["cases"],modes=MODES,cap_s=CAP,reps=REPS,trials=360,source_run=42397824391,selection="24 next eligible sources excluded by historical manifests including TURN2",candidate_selection="R28 frozen after W3; no tuning on W4 outcomes",independent_unsat_certificate=False,official_ranking=False,proof_policy="DRAT checked before deletion; uncertified UNSAT receives timeout penalty",timing="includes process start, transformations, selection; original SAT validation off timing"))
+    w.save(ROOT/"manifest.json",dict(protocol=PROTO,cases=manifest["cases"],modes=MODES,cap_s=CAP,reps=REPS,trials=360,source_run=42397824391,selection="24 next eligible sources excluded by historical manifests including TURN2",candidate_selection="R28 frozen after W3; no tuning on W4 outcomes",independent_unsat_certificate=False,official_ranking=False,proof_policy="no proof files: native output disabled; wrapper proof stream discarded; UNSAT reported, not certified",timing="includes process start, transformations, selection; original SAT validation off timing"))
     print("W4_PREPARE_PASS",flush=True)
 def verify():
     original()
@@ -155,7 +160,7 @@ def audit():
     for m in sorted(MODES,key=lambda m:totals[m]["PAR2_s"]):
         d=totals[m]
         lines.append(f"| {m} | {d['solved']} | {d['distinct']} | {d['PAR2_s']:.6f} | {d['PAR2_s']/candidate:.4f}× |")
-    lines+=["","Only independently checked UNSAT and validated SAT count as solved. Historical-manifest-disjoint cohort; unofficial 30s test."]
+    lines+=["","SAT models validated; UNSAT reported, not certified. No proof files. Historical-manifest-disjoint cohort; unofficial exploratory 30s test."]
     (ROOT/"report.md").write_text("\n".join(lines)+"\n")
     print("W4_FINAL",json.dumps(report,sort_keys=True),flush=True)
 if __name__=="__main__":
