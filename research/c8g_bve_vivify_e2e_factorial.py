@@ -138,6 +138,8 @@ def audit():
     probes = [json.loads(path.read_text()) for path in probe_paths]
     need(len(probes) == 3 and all(len(x["probes"]) == 3 for x in probes),
          "missing no-elim/vivify override probes")
+    need(all(not p["timed_out"] for x in probes for p in x["probes"]),
+         "no-elim/vivify bounded probe did not reach conflict cutoff")
     probe_summary = []
     for x in sorted(probes, key=lambda y: y["gbd"]):
         by_name = {p["arm"]: p for p in x["probes"]}
