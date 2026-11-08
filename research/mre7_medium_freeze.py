@@ -22,9 +22,9 @@ ANCHORS=(
  "official-28dcc4119e1bbb5fbd3fdd8f4140f28d.cnf", # SAT known CMS ~8s
  "official-12cd0c3196589ac8105653cbfe613fc6.cnf", # UNSAT CMS ~2.5s
 )
-MIN_REF,MAX_REF=2.,15.
-MAX_VARS,MAX_CLAUSES=18000,35000
-MAX_RAW,MAX_DIMACS=14*1024**2,18*1024**2
+MIN_REF,MAX_REF=.75,15.
+MAX_VARS,MAX_CLAUSES=80000,150000
+MAX_RAW,MAX_DIMACS=30*1024**2,55*1024**2
 NEW_SOURCES=4
 CAP=35.
 REPS=2
@@ -87,9 +87,9 @@ def select_frozen(root=ROOT):
          "not enough official reference-solved 2-15s candidates")
     selection_log=[]
     r32p.CNF_LIMIT=MAX_DIMACS
-    # One 2-7s and one 7-15s candidate per SAT/UNSAT status, when possible.
+    # One .75-5s and one 5-15s candidate per SAT/UNSAT status, when possible.
     for status in ("SAT","UNSAT"):
-        for lo,hi in ((2.,7.),(7.,15.)):
+        for lo,hi in ((.75,5.),(5.,15.)):
             ordered=sorted((p for p in pool[status]
                             if lo<=p["published_reference_s"]<hi),
                 key=lambda p:digest((SALT+"|"+status+"|"+str(lo)+"|"+p["gbd"]).encode()))
@@ -129,7 +129,7 @@ def select_frozen(root=ROOT):
          "six distinct SHA-locked sources required")
     manifest=dict(protocol=PROTO,selection_salt=SALT,cases=all_cases,
          anchor_count=2,new_reference_count=4,
-         published_reference_bands_s=[[2,7],[7,15]],
+         published_reference_bands_s=[[.75,5],[5,15]],
          published_solver="biere_cadical3[main]",
          external_reference_used_ONLY_to_select_difficulty=True,
          DRNAS_CMS_performance_not_used_for_new_selection=True,
@@ -161,7 +161,7 @@ def verify(root=ROOT):
 
 def selftest():
     need(len(ANCHORS)==2 and len(MODES)==4 and
-         CAP==35. and MIN_REF==2. and MAX_REF==15.,
+         CAP==35. and MIN_REF==.75 and MAX_REF==15.,
          "safety protocol changed")
     print("MRE7_FREEZE_SELFTEST_PASS",PROTO,flush=True)
 
