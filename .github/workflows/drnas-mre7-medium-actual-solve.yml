@@ -1,0 +1,138 @@
+name: DRNAS MRE7 — medium 35s official SAT2026 real solving CPU-gated equivalence
+on:
+  push:
+    branches: [experiment/drnas-mre7-medium-actual-solve-20261108]
+    paths:
+      - '.github/workflows/drnas-mre7-medium-actual-solve.yml'
+      - 'research/mre7_medium_freeze.py'
+      - 'research/mre7_medium_pilot.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre7-medium-official-actual-solving-20261108
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Precommit 2 known-solved and 4 CaDiCaL-reference medium official SAT2026 sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download source SHA-locked CMS+XOR binary and historical holdout list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre7_medium_freeze.py research/mre7_medium_pilot.py
+          python3 -u research/mre7_medium_freeze.py selftest
+          python3 -u research/mre7_medium_pilot.py selftest
+          python3 -u research/mre6_principles.py
+          mkdir -p provenance mre6b_blind mre7_medium
+          gh run download 42490090624 --repo Frane12/AndroidGameTest -n mre5-inputs -D .
+          gh run download 42495311707 --repo Frane12/AndroidGameTest -n DRNAS-MRE6B-UNSEEN-SAT2026-7REAL-FINAL -D provenance
+          test -s provenance/manifest.json
+          cp provenance/manifest.json mre6b_blind/manifest.json
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 -u research/mre7_medium_freeze.py freeze | tee mre7_medium/freeze.log
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_freeze.py verify
+          python3 - <<'PY'
+          import json
+          m=json.load(open('mre7_medium/manifest.json'))
+          assert len(m['cases'])==6
+          assert len([c for c in m['cases'] if c['cohort']=='NEW_official_reference_medium'])==4
+          assert sorted(c['expected'] for c in m['cases'])==['SAT']*3+['UNSAT']*3
+          print('MRE7_MEDIUM_FREEZE_SEALED')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre7-medium-frozen-sources-and-pinned-CMS
+          retention-days: 10
+          compression-level: 6
+          path: |
+            mre7_medium/manifest.json
+            mre7_medium/source.sha256
+            mre7_medium/*.cnf
+            mre7_medium/freeze.log
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+  paired:
+    name: official medium full-solve SHA-paired shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre7-medium-frozen-sources-and-pinned-CMS
+          path: .
+      - name: Verify original SHA, native MRE5 library and matched source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_freeze.py verify
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Real 35s full-wall solving with CPU and proof-gated math-representation feedback
+        run: |
+          set -euo pipefail
+          python3 -u research/mre7_medium_pilot.py shard --shard ${{ matrix.shard }} --binary mre5/native | tee mre7_medium/shard-${{ matrix.shard }}.log
+          grep -q '^MRE7_MEDIUM_SHARD_PASS ${{ matrix.shard }} 16$' mre7_medium/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre7-medium-results-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre7_medium/shard-${{ matrix.shard }}.json
+            mre7_medium/shard-${{ matrix.shard }}.log
+  audit:
+    name: Complete results audit including timeouts, original SAT models and PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre7-medium-frozen-sources-and-pinned-CMS
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre7-medium-results-shard-*
+          merge-multiple: true
+          path: mre7_medium
+      - name: Independent paired-source audit of end-to-end CPU and wall
+        run: |
+          set -euo pipefail
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_pilot.py audit | tee mre7_medium/audit.log
+          cat mre7_medium/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE7-MEDIUM-OFFICIAL-35S-FINAL
+          retention-days: 30
+          path: |
+            mre7_medium/report.json
+            mre7_medium/manifest.json
+            mre7_medium/audit.log
