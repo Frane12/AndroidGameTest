@@ -1,0 +1,131 @@
+name: DRNAS C8F — early BVE event windows and CDCL propagation telemetry
+on:
+  push:
+    branches: [experiment/drnas-c8f-early-bve-window-telemetry-20261108]
+    paths: ['.github/workflows/drnas-c8f-early-bve-window-telemetry.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c8f-first-bve-vivify-factorial-three-frozen-sha
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore source-locked C8C instrumentation, binaries, and first-event profiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pinned CaDiCaL binaries and three source SHA cohort
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c8c_out c8f_out
+          gh run download 42526900862 -R Frane12/AndroidGameTest -n c8c-pristine-instrumented-173-and-frozen-three-SHA -D .
+          mkdir -p c7_restore c7_source/dedup
+          gh run download 42523071479 -R Frane12/AndroidGameTest -n c7-certified-sources-CMS-CaDiCaL-Kissat-pins -D c7_restore
+          cp -a c7_restore/c7_source/dedup/. c7_source/dedup/
+          gh run download 42526900862 -R Frane12/AndroidGameTest -n DRNAS-C8C-CAUSAL-PIVOT-3SHA-48-REAL-SAT-PAR2-TRACE -D .
+          cp profile-*.json trace-*.json c8f_out/
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          sha256sum -c c8c_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -m py_compile research/c8f_early_bve_window_telemetry.py
+          python3 -u research/c8f_early_bve_window_telemetry.py verify | tee c8f_out/verify.log
+          grep -q '^C8F_FROZEN_SOURCE_AND_FIRST_EVENT_PROFILES_PASS' c8f_out/verify.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c8f-frozen-C8C-binaries-SHA-profiles
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 5
+          path: |
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c8c_out/binary.sha256
+            c8f_out/profile-*.json
+            c8f_out/trace-*.json
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            c7_source/dedup/manifest.json
+            c7_source/dedup/*.cnf
+  probes:
+    needs: prepare
+    name: C8F conflict-window telemetry on frozen SAT SHA ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8f-frozen-C8C-binaries-SHA-profiles
+          path: .
+      - name: Verify profile/source and run fixed pre-event/event/post-event bounded windows
+        run: |
+          set -euo pipefail
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          sha256sum -c c8c_out/binary.sha256
+          python3 -u research/c8f_early_bve_window_telemetry.py verify
+          python3 -u research/c8f_early_bve_window_telemetry.py shard --shard ${{ matrix.shard }} | tee c8f_out/shard-${{ matrix.shard }}.log
+          grep -q '^C8F_SHARD_PASS ${{ matrix.shard }} 88$' c8f_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8f-window-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 5
+          path: |
+            c8f_out/shard-${{ matrix.shard }}.json
+            c8f_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: probes
+    name: Audit matched CDCL deltas around first actual BVE event
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8f-frozen-C8C-binaries-SHA-profiles
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c8f-window-shard-*
+          merge-multiple: true
+          path: c8f_out
+      - name: Verify exact source-paired windows and summarize counters (diagnostic only)
+        run: |
+          set -euo pipefail
+          python3 -u research/c8f_early_bve_window_telemetry.py audit | tee c8f_out/audit.log
+          grep -q '^C8F_FINAL' c8f_out/audit.log
+          grep '^C8F_FINAL' c8f_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C8F-first-BVE-vivification-factorial-CDCL-telemetry
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 5
+          path: |
+            c8f_out/report.json
+            c8f_out/audit.log
+            c8f_out/shard-*.json
