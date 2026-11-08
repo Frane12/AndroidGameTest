@@ -1,0 +1,157 @@
+name: DRNAS MRE11-PROSPECTIVE-EASY — new official SAT2021-23 SHA12 5 arms 4 seeds PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre11-prospective-easy-20261108]
+    paths: ['.github/workflows/drnas-mre11-prospective-easy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre11-prospective-easy-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Prospective original-only CMS screen before any MRE11 gate, frozen pinned C++ binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download separate original historical 16 SHA registry and EXACT existing MRE11 C++ binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p old_ref
+          gh run download 42509505558 -R Frane12/AndroidGameTest \
+            -n mre10-SHA16-exact-CMS-inprocess-CPP -D old_ref
+          (cd old_ref/mre7_easy && sha256sum -c source.sha256)
+          gh run download 42513542283 -R Frane12/AndroidGameTest \
+            -n mre11-2026-prospective-frozen-sources-and-native-CPP -D .
+          sha256sum -c mre11/bin.sha256
+          (cd mre11 && sha256sum -c source.sha256)
+          chmod +x mre11/bin/native mre11/bin/standalone
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | tee mre11-prospective-linked.log
+          grep 'libcryptominisat5.so.5.11' mre11-prospective-linked.log
+          python3 -m py_compile research/mre11_prospective_easy.py
+          echo MRE11_PROSPECTIVE_PINNED_CPP_SOURCE_SHA_PASS
+      - name: Install independent UNSAT verifier reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          /usr/bin/cadical --version || true
+      - name: Prospective source-only 2021-23 official Main freeze with CMS original-only reference filter
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre11_prospective_easy.py freeze \
+            --native mre11/bin/native --cadical /usr/bin/cadical \
+            | tee mre11-prospective-freeze.log
+          (cd mre11_prospective && sha256sum -c source.sha256)
+          python3 -u research/mre11_prospective_easy.py verify
+          echo MRE11_PROSPECTIVE_FROZEN_BEFORE_GATE_PASS
+      - name: Only AFTER source freeze, inspect certified MRE11 gate on SHA-locked originals
+        run: |
+          set -euo pipefail
+          python3 -u research/mre11_prospective_easy.py diagnostic \
+            --standalone mre11/bin/standalone \
+            | tee mre11-prospective-diagnostic.log
+          grep -q '^MRE11_PROSP_GATE_AUDIT_PASS' mre11-prospective-diagnostic.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre11-prosp-easy-sourceSHA-frozen-original-and-unchanged-CPP
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            mre11_prospective/manifest.json
+            mre11_prospective/source.sha256
+            mre11_prospective/*.cnf
+            mre11_prospective/gate_diagnostics.json
+            mre11/bin/native
+            mre11/bin/standalone
+            mre11/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre11-prospective-*.log
+  factorial:
+    name: MRE11 prospective source-disjoint reference-easy 12s paired C++ shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-prosp-easy-sourceSHA-frozen-original-and-unchanged-CPP
+          path: .
+      - name: Verify pinned C++ exact SHA and frozen official originals
+        run: |
+          set -euo pipefail
+          sha256sum -c mre11/bin.sha256
+          (cd mre11_prospective && sha256sum -c source.sha256)
+          chmod +x mre11/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre11_prospective_easy.py verify
+      - name: Solve originals SAT/UNSAT with 5 untouched C++ arms 4 SHA paired seeds 12s
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre11_prospective_easy.py shard \
+            --shard ${{ matrix.shard }} --native mre11/bin/native \
+            | tee mre11_prospective/shard-${{ matrix.shard }}.log
+          grep -q '^MRE11_PROSP_SHARD_PASS ${{ matrix.shard }} ' mre11_prospective/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-prosp-easy-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11_prospective/shard-${{ matrix.shard }}.json
+            mre11_prospective/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final original SAT witnesses source SHA paired PAR2 and regression audit
+    needs: factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-prosp-easy-sourceSHA-frozen-original-and-unchanged-CPP
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre11-prosp-easy-shard-*
+          merge-multiple: true
+          path: mre11_prospective
+      - name: Fail closed on incomplete formula/seed/mode pairing or any SAT witness failure
+        run: |
+          set -euo pipefail
+          (cd mre11_prospective && sha256sum -c source.sha256)
+          python3 -u research/mre11_prospective_easy.py audit | tee mre11_prospective/audit.log
+          grep -q '^MRE11_PROSP_FINAL' mre11_prospective/audit.log
+          grep '^MRE11_PROSP_FINAL' mre11_prospective/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE11-PROSPECTIVE-EASY-5ARM-4SEED-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre11_prospective/report.json
+            mre11_prospective/audit.log
+            mre11_prospective/gate_diagnostics.json
