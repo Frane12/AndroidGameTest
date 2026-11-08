@@ -1,0 +1,164 @@
+name: DRNAS C6 — CMS inprocessing BVE x CNF dedup 6 SHA 6 arms 108 paired
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c6-inprocessing-causal-20261108]
+    paths: ['.github/workflows/drnas-c6-inprocessing-factorial.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c6-cms-inprocess-six-SHA-sourcepaired
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore six frozen SHA, pin original C2 binary, compile C6 and parity-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load ORIGINAL six SHA, frozen CMS 5.11.15, C2/C4 binaries from C5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42520894229 -R Frane12/AndroidGameTest -n c5-exact-C2-C4-binaries-six-original-SHA-plus-prior-C4 -D .
+          chmod +x c2/bin/native c2/bin/emit c4/bin/native c4/bin/emit mre10/bin/native
+          sha256sum -c c4_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+      - name: Restore C5 original bounded observations for same SHA/seed link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c6_prior_c5
+          gh run download 42520894229 -R Frane12/AndroidGameTest -n DRNAS-C5-6SHA-162-BOUNDED-CDCL-DYNAMICS-PAIRED-AUDIT -D c6_prior_c5
+          test "$(find c6_prior_c5 -name 'shard-*.json' | wc -l)" -eq 6
+      - name: Compile C6 and prove untouched C2 native/dedup paths remain identical
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p c6/bin c6_out
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror research/c6_native_inprocessing_factorial.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o c6/bin/native
+          chmod +x c6/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c6/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/c6_cms_inprocessing_factorial.py
+          python3 -u research/c6_cms_inprocessing_factorial.py verify | tee c6_out/verify.log
+          python3 -u research/c6_cms_inprocessing_factorial.py selftest | tee c6_out/selftest.log
+          grep -q '^C6_FROZEN_C2_BINARY_PARITY_PASS' c6_out/selftest.log
+          sha256sum c2/bin/native c4/bin/native c6/bin/native > c6_out/binary.sha256
+          echo C6_FROZEN_CONTROL_BINARY_PARITY_AND_SAT_ORIGINAL_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c6-six-original-SHA-C2-control-CMS-inprocessing-binaries
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            mre5/lib/libcryptominisat5.so.5.11
+            c2/bin/native
+            c4/bin/native
+            c6/bin/native
+            c6_out/binary.sha256
+            c6_out/verify.log
+            c6_out/selftest.log
+            c6_prior_c5/
+  paired:
+    name: C6 source SHA shard ${{ matrix.shard }} 6-arm CMS inprocess x dedup
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 26
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c6-six-original-SHA-C2-control-CMS-inprocessing-binaries
+          path: .
+      - name: Verify original source SHA and pinned binary on worker
+        run: |
+          set -euo pipefail
+          chmod +x c2/bin/native c4/bin/native c6/bin/native
+          sha256sum -c c6_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c6/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/c6_cms_inprocessing_factorial.py
+          python3 -u research/c6_cms_inprocessing_factorial.py verify
+      - name: Solve 3 seeds x 6 arms end-to-end 35s wall cap, SAT original replay
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p c6_out
+          python3 -u research/c6_cms_inprocessing_factorial.py shard --shard ${{ matrix.shard }} | tee c6_out/shard-${{ matrix.shard }}.log
+          grep -q '^C6_SHARD_PASS ${{ matrix.shard }} 18$' c6_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c6-CMS-inprocessing-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c6_out/shard-${{ matrix.shard }}.json
+            c6_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C6 FINAL strict 108 original-SHA paired end-to-end PAR2 and C5 early link
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c6-six-original-SHA-C2-control-CMS-inprocessing-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c6-CMS-inprocessing-shard-*
+          merge-multiple: true
+          path: c6_out
+      - name: Fail closed unless all paired original SHA, exact seeds, SAT models and PAR2
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c6_cms_inprocessing_factorial.py audit | tee c6_out/audit.log
+          grep -q '^C6_FINAL' c6_out/audit.log
+          grep '^C6_FINAL' c6_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C6-CMS-INPROCESSING-6SHA-108-E2E-PAIRED-PAR2
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c6_out/report.json
+            c6_out/audit.log
+            c6_out/shard-*.json
