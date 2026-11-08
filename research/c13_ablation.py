@@ -231,7 +231,7 @@ def shard(i):
     cc=cases()
     OUT.mkdir(exist_ok=True)
     xs=[c for j,c in enumerate(cc) if j%SHARDS==i]
-    need(len(xs)==2,"shard source split changed")
+    need(len(xs)==3,"shard source split changed")
     rows=[]
     for x in xs:
         for rep in range(REPS):
@@ -285,7 +285,7 @@ def audit():
           modes={a:dict(PAR2_s=round(sum(r["PAR2_s"] for r in rr if r["arm"]==a),6),
              solved=sum(r["status"]!="TIMEOUT" for r in rr if r["arm"]==a)) for a in ARMS}))
     report=dict(protocol=PROTO,source_count=TARGET,full_trials=len(rows),
-         original_source_SHA_verified=True,dev_test_policy="no model fitted; all 8 are fresh official evaluation relative to indexed C8D C9c C10b; all previous C8I/C11 strategies count as development",
+         original_source_SHA_verified=True,dev_test_policy="no model fitted; all 12 are fresh official evaluation relative to indexed C8D C9c C10b C12; all previous C8I/C11 strategies count as development",
          global_blind_claim=False,no_auto_promotion=True,independent_UNSAT_LRAT=False,
          repeats_are_not_independent_solver_seeds=True,cap_s=CAP,
          frozen_C11_policy=RULE,early_BVE_gate="C8I first 16 candidates, skip remainder if no eliminated vars",
