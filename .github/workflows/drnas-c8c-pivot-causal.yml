@@ -1,0 +1,176 @@
+name: DRNAS C8c — source-instrumented CaDiCaL 1.7.3 first BVE pivot intervention
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c8c-pivot-causal-20261108]
+    paths: ['.github/workflows/drnas-c8c-pivot-causal.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c8c-first-pivot-causal-three-frozen-sha
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Build pinned upstream CaDiCaL 1.7.3 pristine and instrumented; certify original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable C8 original CNFs and historical verified full PAR2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42525830867 -R Frane12/AndroidGameTest -n c8b-frozen-three-SHA-C8-full-reference-and-cadical-pin -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -m py_compile research/c8c_patch_upstream_cadical173.py research/c8c_pivot_causal_audit.py
+          python3 -u research/c8c_pivot_causal_audit.py verify
+      - name: Fetch source at immutable official tag, create pristine and patched trees
+        run: |
+          set -euo pipefail
+          mkdir -p c8c/bin c8c_out
+          git clone --quiet --depth 1 --branch rel-1.7.3 https://github.com/arminbiere/cadical.git c8c_original
+          EXPECTED=38e073b389a877b0a0d3c91136d2443ab95fdeba
+          test "$(git -C c8c_original rev-parse HEAD)" = "$EXPECTED"
+          test "$(cat c8c_original/VERSION)" = "1.7.3"
+          cp -a c8c_original c8c_instrumented
+          python3 -u research/c8c_patch_upstream_cadical173.py c8c_instrumented
+          test "$(git -C c8c_instrumented rev-parse HEAD)" = "$EXPECTED"
+          sha256sum c8c_original/src/elim.cpp c8c_instrumented/src/elim.cpp c8c_original/src/vivify.cpp c8c_instrumented/src/vivify.cpp > c8c_out/source-code.sha256
+      - name: Build both CaDiCaL variants with identical compiler flags
+        run: |
+          set -euo pipefail
+          (cd c8c_original && ./configure && make -j2)
+          (cd c8c_instrumented && ./configure && make -j2)
+          cp c8c_original/build/cadical c8c/bin/plain
+          cp c8c_instrumented/build/cadical c8c/bin/instrumented
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          sha256sum c8c/bin/plain c8c/bin/instrumented > c8c_out/binary.sha256
+          c8c/bin/plain --version | tee c8c_out/pristine-version.txt
+          c8c/bin/instrumented --version | tee c8c_out/instrumented-version.txt
+          diff -u c8c_out/pristine-version.txt c8c_out/instrumented-version.txt
+          test "$(c8c/bin/plain --version)" = "1.7.3"
+      - name: Model-check both builds and independently verify SAT-preserving skip control
+        run: |
+          set -euo pipefail
+          python3 -u research/c8c_pivot_causal_audit.py smoke | tee c8c_out/smoke.log
+          grep -q '^C8C_SOURCE_PATCH_COMPILED_SAT_AND_SAFE_SKIP_SMOKE_PASS' c8c_out/smoke.log
+          echo C8C_CADICAL173_PRISTINE_PATCHED_BUILD_AND_SAT_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8c-pristine-instrumented-173-and-frozen-three-SHA
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            c7_source/dedup/manifest.json
+            c7_source/dedup/*.cnf
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c8c_out/binary.sha256
+            c8c_out/source-code.sha256
+            c8c_out/pristine-version.txt
+            c8c_out/instrumented-version.txt
+            c8c_out/smoke.log
+            c8b_c8_previous/report.json
+            c8_out/cadical-version.txt
+  profile-and-test:
+    name: C8c trace genuine pivot outcomes and 16 SAT ablations on original SHA ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 26
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8c-pristine-instrumented-173-and-frozen-three-SHA
+          path: .
+      - name: Verify pinned same source SHA and compiled binary hash
+        run: |
+          set -euo pipefail
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          sha256sum -c c8c_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c8c_pivot_causal_audit.py verify
+      - name: Trace actual BVE candidate order, exact resolvent additions, vivification and parity
+        run: |
+          set -euo pipefail
+          mkdir -p c8c_out
+          python3 -u research/c8c_pivot_causal_audit.py profile --shard ${{ matrix.shard }} | tee c8c_out/profile-${{ matrix.shard }}.log
+          grep -q '^C8C_PROFILE_PASS' c8c_out/profile-${{ matrix.shard }}.log
+      - name: Solve original CNF with preregistered sound BVE block interventions and verify SAT
+        run: |
+          set -euo pipefail
+          python3 -u research/c8c_pivot_causal_audit.py bench --shard ${{ matrix.shard }} | tee c8c_out/bench-${{ matrix.shard }}.log
+          grep -q '^C8C_BENCH_SHARD_PASS ${{ matrix.shard }} 16$' c8c_out/bench-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8c-original-SHA-pivot-causal-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c8c_out/profile-${{ matrix.shard }}.json
+            c8c_out/trace-${{ matrix.shard }}.json
+            c8c_out/bench-${{ matrix.shard }}.json
+            c8c_out/profile-${{ matrix.shard }}.log
+            c8c_out/bench-${{ matrix.shard }}.log
+  audit:
+    name: C8c FINAL 48 source-checked SAT trials and pivot trace causal comparisons
+    needs: profile-and-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8c-pristine-instrumented-173-and-frozen-three-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c8c-original-SHA-pivot-causal-shard-*
+          merge-multiple: true
+          path: c8c_out
+      - name: Fail-closed verify all original SHA, trace parity and exact pairwise PAR2
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c8c_pivot_causal_audit.py audit | tee c8c_out/audit.log
+          grep -q '^C8C_FINAL' c8c_out/audit.log
+          grep '^C8C_CASE' c8c_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C8C-CAUSAL-PIVOT-3SHA-48-REAL-SAT-PAR2-TRACE
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c8c_out/report.json
+            c8c_out/audit.log
+            c8c_out/profile-*.json
+            c8c_out/trace-*.json
+            c8c_out/bench-*.json
