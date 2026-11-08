@@ -67,3 +67,8 @@ Svaka brojka u nastavku dolazi iz uspješnog završnog SAT/UNSAT audita. Ubrzanj
 5. **LRAT/DRAT dokazni sustav za UNSAT**, originalna SAT provjera i zadržavanje R28 frozen fallbacka. Bez audita ne promovirati metodu u produkciju.
 
 **Konačna procjena:** napredak u kvaliteti algoritamske interpretacije i revizijskom standardu je značajan. Kandidat s najviše *provjerenog praktičnog potencijala* trenutačno je originalno-CNF certificirana C++ redukcija (clean + equality), ali bez pouzdanog gatea uzrokuje regresije. Najbrži put do vjerodostojnog napretka nije daljnje povećavanje broja eliminiranih varijabli, nego razumjeti **kada i zašto redukcija mijenja CDCL trajektoriju** te dokazati to u novom službenom benchmarku.
+
+
+## G. Naknadno pokrenuto, još NE upisano u potvrđenu bazu
+
+**MRE11-L35:** GitHub run [42514613031](https://github.com/Frane12/AndroidGameTest/actions/runs/42514613031) je pri posljednjoj provjeri 2026-11-08 19:35 UTC **još u tijeku**. Dulji limit 35 s na istih sedam službenih SAT2026 originala, pet metoda i četiri seeda. Priprema i shard 3 bili su zeleni; shardovi 0, 1 i 2 još su se izvršavali. Nijedan rezultat iz tog nepotpunog runa nije dodan u 1.892 auditirane pokušaje niti mu je pripisan konačan PAR2. U novom ingestu ga dodati tek nakon završnog original-SHA SAT/UNSAT audita, ne kao predviđanje.
