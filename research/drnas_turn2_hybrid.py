@@ -230,7 +230,7 @@ def prepare():
                     "--directory", str(directory)],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, timeout=15)
-                need(result.returncode == 0, "smoke crash " + mode + " " + result.stdout[-800:] + result.stderr[-800:])
+                need(result.returncode == 0, "smoke crash " + mode + " " + (result.stdout or "")[-1600:] + (result.stderr or "")[-1600:])
                 event = json.loads(result.stdout.splitlines()[-1])
                 need(event["verdict"] == expected, "smoke wrong result " + mode)
                 if expected == "SAT":
