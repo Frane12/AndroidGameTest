@@ -66,7 +66,7 @@ int main(int argc,char**argv) {
     try {
         check(argc==6,"usage: r195_native CNF SOURCE_ROWS DERIVED_ROWS MODE SEED");
         const string cnf=argv[1],src_rows=argv[2],derived_rows=argv[3],mode=argv[4];
-        check(mode=="native"||mode=="source_import"||mode=="derived_shadow"||
+        check(mode=="cms_native"||mode=="source_xor_import"||mode=="derived_shadow"||
               mode=="derived_active","unsupported mode");
         unsigned seed=unsigned(stoul(argv[5]));
         unsigned n=0;
@@ -88,7 +88,7 @@ int main(int argc,char**argv) {
             }
         }
         Stats stats;
-        if(mode!="native"){
+        if(mode!="cms_native"){
             const auto source=load_rows(src_rows,n);
             for(const auto& row:source){
                 cms.add_xor_clause(row.first,row.second);
