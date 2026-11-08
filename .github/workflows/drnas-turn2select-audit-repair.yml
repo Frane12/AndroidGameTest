@@ -1,0 +1,62 @@
+name: DRNAS TURN2SELECT — audit repair from frozen eight shard artifacts
+on:
+  push:
+    branches: [experiment/drnas-turn2select-source-gate-20261108]
+    paths: ['.github/workflows/drnas-turn2select-audit-repair.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-turn2select-audit-repair-20261108
+  cancel-in-progress: false
+jobs:
+  audit_repair:
+    name: Verify frozen 72 source-paired results without rerunning solvers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore previous pinned binary and frozen CNF input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42479858350 -R Frane12/AndroidGameTest -n turn2select-frozen-input -D .
+          test -s turn2-frozen.tar.gz
+          test -s turn2select/manifest.json
+          test -s turn2select/pins.json
+          tar xzf turn2-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4 optimized/r28
+      - name: Gather the eight completed shard JSONs into expected audit directory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p turn2select/collected
+          gh run download 42479858350 -R Frane12/AndroidGameTest -p 'turn2select-shard-*' -D turn2select/collected
+          find turn2select/collected -type f -name 'shard-*.json' -print
+          count="$(find turn2select/collected -type f -name 'shard-*.json' | wc -l)"
+          test "$count" -eq 8
+          find turn2select/collected -type f -name 'shard-*.json' -exec cp '{}' turn2select/ \;
+          test "$(find turn2select -maxdepth 1 -type f -name 'shard-*.json' | wc -l)" -eq 8
+      - name: Rerun source SHA, certificate and route consistency audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_turn2select.py audit | tee turn2select/audit-repaired.log
+          grep -q '^TURN2SELECT_FINAL' turn2select/audit-repaired.log
+          cat turn2select/audit-repaired.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN2SELECT-8SHA-72-REPAIRED-AUDIT
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            turn2select/report.json
+            turn2select/all-trials.json
+            turn2select/audit-repaired.log
+            turn2select/manifest.json
+            turn2select/pins.json
