@@ -159,7 +159,7 @@ def run():
                  internal_reserve_s=MARGIN_S,
                  solver_binaries=pin["binaries"],completed=len(rows),
                  native_unsat_independent_lrat=False,
-                 "status":"T5D_PINNED_STATISTICS_PASS")
+                 status="T5D_PINNED_STATISTICS_PASS")
     (OUT/"report.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
     print("T5D_PINNED_STATISTICS_PASS",json.dumps({
         "trials":len(rows),"sources":len(TARGETS),"prior_T5_run":RUN,
