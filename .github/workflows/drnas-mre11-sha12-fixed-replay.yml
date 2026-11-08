@@ -1,0 +1,110 @@
+name: DRNAS MRE11 — fixed SHA12 replay 5 native C++ arms 4 seeds PAR2 (no scan)
+on:
+  push:
+    branches: [experiment/drnas-mre11-sha12-fixed-replay-20261108]
+    paths: ['.github/workflows/drnas-mre11-sha12-fixed-replay.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre11-sha12-fixed-replay-20261108
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Frozen originals native C++ 5-arm 4-seed 12s PAR2 shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download EXISTING immutable source SHA12 and pinned C++ binary (NO source discovery or screening)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42515830079 -R Frane12/AndroidGameTest \
+            -n mre11-easy12-reference-screened-sha12-immutable-cpp -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          test -f mre5/lib/libcryptominisat5.so.5.11
+          chmod +x mre11/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre11_easy_benchmark.py
+          python3 -u research/mre11_easy_benchmark.py verify
+          python3 - <<'PY'
+          import json
+          m=json.load(open("mre11_easy/manifest.json"))
+          assert len(m["cases"])==12 and m["expected_trials"]==240, "not exact frozen 12"
+          assert m["modes"]==["cpp_native","cpp_clean","cpp_rename","cpp_joint","cpp_mre11_sel"], "arm drift"
+          assert m["repetitions"]==4 and m["cap_s"]==12.0, "seed or cap drift"
+          assert m["source_reuse_development_not_blind"] is True, "cohort provenance drift"
+          print("MRE11_FIXED_SHA12_NO_SCAN_VERIFIED", len(m["cases"]), m["expected_trials"])
+          PY
+      - name: Solve only pinned 12 originals — native C++ real SAT/UNSAT, paired seeds, 12s wall cap
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre11_easy_benchmark.py shard \
+            --shard ${{ matrix.shard }} --native mre11/bin/native \
+            | tee mre11_easy/shard-${{ matrix.shard }}.log
+          grep -q '^MRE11_EASY12_SHARD_PASS ${{ matrix.shard }} 60$' mre11_easy/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-fixed-replay-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11_easy/shard-${{ matrix.shard }}.json
+            mre11_easy/shard-${{ matrix.shard }}.log
+
+  audit:
+    name: Final SHA-paired 240 trial PAR2 — SAT witnesses and UNSAT crosscheck provenance
+    runs-on: ubuntu-24.04
+    needs: replay
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load SAME immutable frozen SHA12 (never refreeze)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42515830079 -R Frane12/AndroidGameTest \
+            -n mre11-easy12-reference-screened-sha12-immutable-cpp -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          python3 -u research/mre11_easy_benchmark.py verify
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre11-fixed-replay-shard-*
+          merge-multiple: true
+          path: mre11_easy
+      - name: Require all 240 source-SHA-seed-mode trials and verified SAT solutions, calculate PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/mre11_easy_benchmark.py audit | tee mre11_easy/replay-audit.log
+          grep -q '^MRE11_EASY12_FINAL' mre11_easy/replay-audit.log
+          grep '^MRE11_EASY12_FINAL' mre11_easy/replay-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE11-FIXED-SHA12-REPLAY-5ARM-4SEED-PAR2
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            mre11_easy/report.json
+            mre11_easy/replay-audit.log
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
