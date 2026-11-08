@@ -216,7 +216,7 @@ def benchmark():
                 impact_promotions=sum(x["impact_promotions"] for x in subset),
                 residual_hot_vars=sum(x["t_gate"].get("residual_hot_vars",0) for x in subset))''',"impact-summary")
     start=s.index('    for ref,cand in ((')
-    end=s.index(':\n         deltas=',start)
+    end=s.index(':\n        deltas=',start)
     s=s[:start]+'''    for ref,cand in (("t_clean","t_shadow"),
                      ("t_clean","td_lazy_source"),
                      ("t_clean","t4_impact_shadow"),
