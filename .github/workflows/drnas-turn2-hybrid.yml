@@ -1,0 +1,131 @@
+name: DRNAS TURN2H — Signed plus certified R28 12 original 144 paired 60s
+on:
+  push:
+    branches: [experiment/drnas-turn2-r28-hybrid-20261108]
+    paths: ['.github/workflows/drnas-turn2-hybrid.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-turn2h-original12-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable original TURN2 sources and compile pinned R28
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42420269832 -R Frane12/AndroidGameTest -n turn2-frozen-original12 -D .
+          test -s turn2-frozen.tar.gz
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4
+          mkdir -p optimized
+          g++ -std=c++17 -O3 -DNDEBUG research/r28_w4_optimized.cpp -o optimized/r28
+          python3 -m py_compile research/drnas_turn1_representation.py research/drnas_turn2_structural.py research/drnas_turn2_hybrid.py
+          python3 -u research/drnas_turn2_hybrid.py prepare | tee turn2h/prepare.log
+          grep -q '^TURN2H_PREPARE_PASS' turn2h/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turn2h-frozen-input
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            turn2-frozen.tar.gz
+            optimized/r28
+            turn2h/manifest.json
+            turn2h/pins.json
+            turn2h/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: turn2h-prepare-diagnostics
+          retention-days: 14
+          path: |
+            turn2h/
+  paired:
+    needs: prepare
+    name: TURN2H original four arms three reps 60s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2h-frozen-input
+      - name: Run frozen, SHA-locked same-job paired ablation
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 optimized/r28
+          python3 -u research/drnas_turn2_hybrid.py shard --shard ${{ matrix.shard }} | tee turn2h/shard-${{ matrix.shard }}.log
+          grep -q '^TURN2H_SHARD_PASS' turn2h/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: turn2h-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            turn2h/shard-${{ matrix.shard }}.json
+            turn2h/shard-${{ matrix.shard }}.log
+            turn2h/raw/**/worker.log
+            turn2h/raw/**/solver.log
+            turn2h/raw/**/model.json
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: turn2h-frozen-input
+      - name: Audit 144 attempts, original SHA, SAT models, certified GF2 UNSAT
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          tar xzf turn2-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 optimized/r28
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'turn2h-shard-*' -D turn2h/collected
+          test "$(find turn2h/collected -name 'shard-*.json' -type f | wc -l)" -eq 12
+          find turn2h/collected -name 'shard-*.json' -type f -exec cp '{}' turn2h/ \;
+          python3 -u research/drnas_turn2_hybrid.py audit | tee turn2h/audit.log
+          grep -q '^TURN2H_FINAL' turn2h/audit.log
+          cat turn2h/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-TURN2H-R28-144-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            turn2h/report.json
+            turn2h/report.md
+            turn2h/all-trials.json
+            turn2h/audit.log
+            turn2h/manifest.json
+            turn2h/pins.json
