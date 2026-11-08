@@ -288,7 +288,11 @@ def trial(case, rep, mode, binary):
                   proofs if mode == "crr_active" else [])
         write_xors(rowfile, rows)
         empty.write_text("")
-        cms_mode = "cms_native" if mode == "cms_native" else "source_xor_import"
+        # CRR Active retains source XOR rows and certified CNF lemmas but
+        # disables OTF Gauss after reproducible bad SAT witness on shard 5.
+        cms_mode = ("cms_native" if mode == "cms_native" else
+                    "source_xor_no_gauss" if mode == "crr_active"
+                    else "source_xor_import")
         remaining = CAP-(time.perf_counter()-started)
         if remaining >= 0.1:
             try:
@@ -318,6 +322,8 @@ def trial(case, rep, mode, binary):
                 prep_s=stats["prep_s"], source_rows=len(rows),
                 derived_clauses=stats.get("derived_clauses", 0),
                 rounds=stats.get("rounds", 0),
+                 native_bridge_mode=cms_mode,
+                 otf_gauss_enabled=mode in ("source_xor", "crr_shadow"),
                 proof="ORIGINAL_CNF_SAT_MODEL_CHECKED" if result == "SAT"
                       else "UNSAT_NOT_INDEPENDENT_LRAT" if result == "UNSAT"
                       else "CAP_TIMEOUT",
@@ -398,7 +404,11 @@ def audit():
                   source_count=len(cases), measurements=len(rows),
                   independent_UNSAT_LRAT=False,
                   original_SAT_model_verified=True,
-                  full_wall_includes_preprocessing=True, totals=totals)
+                  full_wall_includes_preprocessing=True,
+                   crr_active_otf_gauss=False,
+                   source_xor_shadow_otf_gauss=True,
+                   otf_gauss_confounded_comparison=True,
+                   totals=totals)
     (ROOT/"report.json").write_text(json.dumps(report, indent=2,
                                                sort_keys=True)+"\n")
     print("MRE1_FINAL", json.dumps(report, sort_keys=True), flush=True)
