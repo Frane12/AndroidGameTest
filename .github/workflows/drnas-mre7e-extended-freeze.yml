@@ -1,0 +1,55 @@
+name: DRNAS MRE7e — extend original6 to 20+ easy official SAT2021–2025
+on:
+  push:
+    branches: [experiment/drnas-mre7-extended-2021-2025-20261108]
+    paths: ['.github/workflows/drnas-mre7e-extended-freeze.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exactly six earlier SHA-frozen real sources and pinned CMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre7_easy mre5/lib
+          gh run download 42501143598 -R Frane12/AndroidGameTest -n DRNAS-MRE7-ORIGINALS-REFERENCE-ONLY-COHORT -D mre7_easy
+          (cd mre7_easy && sha256sum -c source.sha256)
+          python3 -u research/mre7_reference_easy_freeze.py verify
+          gh run download 42495094599 -R Frane12/AndroidGameTest -n mre6b-blind-pinned-CMS -D mre5
+          sha256sum -c mre5/binaries.sha256
+          python3 -m py_compile research/mre7_extended_easy_freeze.py
+      - name: Independently reference-screen original SAT2021–2023 GBD candidates
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x mre5/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          python3 -u research/mre7_extended_easy_freeze.py freeze \
+            --binary mre5/native --cadical /usr/bin/cadical | tee mre7_easy/extension.log
+          grep -q '^MRE7E_FREEZE_FINAL' mre7_easy/extension.log
+          python3 -u research/mre7_extended_easy_freeze.py verify
+          echo MRE7E_20PLUS_ORIGINAL_SOURCE_FREEZE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE7E-20PLUS-SHA-LOCKED-ORIGINAL-EASY-CNFS
+          retention-days: 15
+          compression-level: 6
+          path: |
+            mre7_easy/manifest.json
+            mre7_easy/source.sha256
+            mre7_easy/*.cnf
+            mre7_easy/extension.log
