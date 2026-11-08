@@ -150,10 +150,15 @@ def selftest():
             need(gate["taut_clauses_removed"]==1 and gate["duplicate_clauses_removed"]==3 and gate["duplicate_literals_removed"]==1,
                  "full clean expected known ablation effects")
     # Rebuilt native mode must reproduce frozen original program's decisions.
+    parity=[]
     for exe in ("mre10/bin/native","c2/bin/native"):
         run=subprocess.run([exe,str(p),"cpp_native","42"],capture_output=True,text=True,check=True)
-        need(cms.parsed_native(run.stdout)[0]=="SAT","native smoke reference status failed")
-    print("C2_SELFTEST_PASS truth_tables=5 assignments=16 frozen_native_parity=SAT",flush=True)
+        status,model,stats=cms.parsed_native(run.stdout)
+        need(status=="SAT","native smoke reference status failed")
+        cms.verify_model(p,model)
+        parity.append((status,stats))
+    need(parity[0]==parity[1],"frozen native binary vs C2 native CDCL counters differ")
+    print("C2_SELFTEST_PASS truth_tables=5 assignments=16 frozen_native_exact_CDCL_stats=true",flush=True)
 def audit():
     d=manifest();rows=[]
     for shard_id in range(len(GBDS)):
