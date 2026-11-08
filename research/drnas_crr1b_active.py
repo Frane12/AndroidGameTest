@@ -304,7 +304,6 @@ def worker(source,mode,directory):
         need(len(extra)==len(certs),"certificate count mismatch")
         if extra:
             path=Path(directory)/"augmented.cnf"
-            a.a if False else None
             # The original formula is preserved in full; only proven clauses appended.
             with path.open("w") as out:
                 out.write("p cnf %d %d\n"%(n,len(original)+len(extra)))
