@@ -1,0 +1,162 @@
+name: DRNAS YalSAT live scout vs CMS R193 48 SHA paired 480 trials
+on:
+  push:
+    branches: [experiment/drnas-yalsat-scout-20261108]
+    paths:
+      - 'research/drnas_yalsat_scout.py'
+      - '.github/workflows/drnas-yalsat-scout.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-yalsat-scout-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned upstream YalSAT from exact source commit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_yalsat_scout.py
+          mkdir -p drnas_yalsat
+          git clone -q https://github.com/arminbiere/yalsat.git /tmp/drnas-yalsat
+          git -C /tmp/drnas-yalsat checkout -q a0fd39f072f2d4693dd5a1977de3c3d3f69c8850
+          test "$(git -C /tmp/drnas-yalsat rev-parse HEAD)" = a0fd39f072f2d4693dd5a1977de3c3d3f69c8850
+          (cd /tmp/drnas-yalsat && ./configure.sh && make -j2)
+          cp /tmp/drnas-yalsat/yalsat drnas_yalsat/yalsat
+          chmod +x drnas_yalsat/yalsat
+          test -x drnas_yalsat/yalsat
+      - name: Download frozen R193 CaDiCaL binary and original SHA sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D drnas_yalsat
+          chmod +x drnas_yalsat/r193-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("drnas_yalsat")
+          src=json.loads((p/"pin.json").read_text())
+          assert src["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          for f,k in (("frozen/manifest.json","manifest_sha256"),("r193-driver","binary_sha256")):
+              assert hashlib.sha256((p/f).read_bytes()).hexdigest()==src[k]
+          build={"yalsat_commit":"a0fd39f072f2d4693dd5a1977de3c3d3f69c8850",
+                 "yalsat_binary_sha256":hashlib.sha256((p/"yalsat").read_bytes()).hexdigest(),
+                 "r193_binary_sha256":src["binary_sha256"],"original_source_manifest_sha256":src["manifest_sha256"],
+                 "r193_cadical_commit":src["cadical_commit"]}
+          (p/"drnas-yalsat-pin.json").write_text(json.dumps(build,sort_keys=True,indent=2))
+          print("DRNAS_YALSAT_PIN_PASS",json.dumps(build,sort_keys=True))
+          PY
+          python3 research/drnas_yalsat_scout.py verify
+      - name: YalSAT and DRNAS hybrid SAT witness smoke
+        run: |
+          set -euo pipefail
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > drnas_yalsat/smoke.cnf
+          set +e
+          drnas_yalsat/yalsat drnas_yalsat/smoke.cnf 42 > drnas_yalsat/yalsat-smoke.log 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 10
+          grep -q '^s SATISFIABLE' drnas_yalsat/yalsat-smoke.log
+          grep -q '^v ' drnas_yalsat/yalsat-smoke.log
+          drnas_yalsat/r193-driver drnas_yalsat/smoke.cnf 2 dual_keep_default 0 > drnas_yalsat/r193-smoke.log
+          grep -q '^R182_STATUS status=SAT' drnas_yalsat/r193-smoke.log
+          echo DRNAS_YALSAT_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-yalsat-pinned-original
+          retention-days: 90
+          path: |
+            drnas_yalsat/frozen/
+            drnas_yalsat/yalsat
+            drnas_yalsat/r193-driver
+            drnas_yalsat/drnas-yalsat-pin.json
+            drnas_yalsat/yalsat-smoke.log
+            drnas_yalsat/r193-smoke.log
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    name: DRNAS YalSAT SHA-paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-yalsat-pinned-original
+          path: drnas_yalsat
+      - name: Install CMS and verify binary SHA pins
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5
+          chmod +x drnas_yalsat/yalsat drnas_yalsat/r193-driver
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          p=pathlib.Path("drnas_yalsat")
+          pin=json.loads((p/"drnas-yalsat-pin.json").read_text())
+          for f,k in (("yalsat","yalsat_binary_sha256"),("r193-driver","r193_binary_sha256"),
+                      ("frozen/manifest.json","original_source_manifest_sha256")):
+              assert hashlib.sha256((p/f).read_bytes()).hexdigest()==pin[k]
+          print("DRNAS_YALSAT_SHARD_PIN_PASS")
+          PY
+          python3 research/drnas_yalsat_scout.py verify
+      - name: Run original source-paired YalSAT live scout with DRNAS fallback
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_yalsat_scout.py shard --shard ${{ matrix.shard }} --binary drnas_yalsat/r193-driver --cms cryptominisat5 --yals drnas_yalsat/yalsat | tee drnas_yalsat/shard-${{ matrix.shard }}.log
+          grep -q '^DRNAS_YALSAT_SHARD_PASS ' drnas_yalsat/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-yalsat-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            drnas_yalsat/shard-${{ matrix.shard }}.json
+            drnas_yalsat/shard-${{ matrix.shard }}.log
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-yalsat-pinned-original
+          path: drnas_yalsat
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-yalsat-shard-*
+          merge-multiple: true
+          path: drnas_yalsat
+      - name: Strict 48 CNF x 2 reps x 5 modes paired PAR2 original-SHA audit
+        run: |
+          set -euo pipefail
+          test "$(find drnas_yalsat -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_yalsat_scout.py audit | tee drnas_yalsat/audit.log
+          grep -q '^DRNAS_YALSAT_FINAL ' drnas_yalsat/audit.log
+          cat drnas_yalsat/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-YALSAT-SCOUT-PAIRED-FINAL
+          retention-days: 90
+          path: |
+            drnas_yalsat/report.json
+            drnas_yalsat/all-trials.json
+            drnas_yalsat/audit.log
