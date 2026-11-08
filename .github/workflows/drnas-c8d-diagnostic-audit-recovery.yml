@@ -1,0 +1,61 @@
+name: DRNAS C8D — diagnostic-only recovery of 144 bounded C7 CMS/C8 CaDiCaL records
+on:
+  push:
+    branches: [experiment/drnas-c8d-bve-early-cdcl-selector-20261108]
+    paths:
+      - '.github/workflows/drnas-c8d-diagnostic-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit_only:
+    name: Recover 144 completed C8D early CDCL records and audit with no rerun
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover exact six diagnostic artifacts and immutable original SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42526134599 -R Frane12/AndroidGameTest \
+            -n c8d-SHA6-C7-SHA19-source-BVE-certified-CMS-Kissat -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          (cd c8d_s1_source/s1_router && sha256sum -c sources.sha256)
+          mkdir -p c8d_out
+          for i in 0 1 2 3 4 5; do
+            mkdir -p "recovery-$i"
+            gh run download 42526134599 -R Frane12/AndroidGameTest \
+              -n "c8d-early-C7-shard-$i" -D "recovery-$i"
+            mapfile -t matches < <(find "recovery-$i" -type f -name "diag-$i.json")
+            test "${#matches[@]}" -eq 1
+            cp "${matches[0]}" "c8d_out/diag-$i.json"
+            python3 - "$i" <<'PY'
+          import json,pathlib,sys
+          i=int(sys.argv[1])
+          records=json.loads(pathlib.Path(f"c8d_out/diag-{i}.json").read_text())
+          assert len(records)==24,(i,len(records))
+          print("C8D_RECOVERED_DIAGNOSTIC_SHARD",i,len(records),flush=True)
+          PY
+          done
+          python3 -m py_compile research/c8d_bve_early_cdcl_selector.py
+      - name: Fail closed 144 source-SHA-paired bounded CDCL telemetry
+        run: |
+          set -euo pipefail
+          python3 -u research/c8d_bve_early_cdcl_selector.py audit_diagnostic | tee c8d_out/diagnostic-audit.log
+          grep -q '^C8D_DIAGNOSTIC_FINAL' c8d_out/diagnostic-audit.log
+          grep '^C8D_DIAGNOSTIC_FINAL' c8d_out/diagnostic-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-C8D-144-BOUNDED-DIAGNOSTIC-RECOVERY-NO-SOLVER-RERUN
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            c8d_out/diagnostic-report.json
+            c8d_out/diagnostic-audit.log
+            c8d_out/diag-*.json
