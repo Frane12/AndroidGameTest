@@ -1,0 +1,56 @@
+name: DRNAS MRE6g — audit 60 already solved 35s trials without rerun
+on:
+  push:
+    branches: [experiment/drnas-mre6g-implication-scc-gf2-20261108]
+    paths:
+      - '.github/workflows/drnas-mre6g-audit-60-only.yml'
+      - 'research/mre6g_audit_corrected.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit_existing_60:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover SHA-frozen input manifest and all 60 successful MRE6g measurements
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre6g
+          gh run download 42505145407 --repo Frane12/AndroidGameTest -n mre6g-pinned-six-originals-and-CMS -D .
+          for i in 0 1 2; do
+            gh run download 42505145407 --repo Frane12/AndroidGameTest -n "mre6g-results-shard-$i" -D mre6g
+            test -s "mre6g/shard-$i.json"
+          done
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_freeze.py verify
+          python3 - <<'PY'
+          import json
+          all_rows=[]
+          for i in range(3):
+              x=json.load(open(f"mre6g/shard-{i}.json"))
+              assert len(x)==20,(i,len(x))
+              all_rows+=x
+          assert len(all_rows)==60
+          print("MRE6G_UNCHANGED_SHA_PAIRED_60_TRIALS_RECOVERED")
+          PY
+      - name: Full original-SHA paired independent SAT/UNSAT and PAR2 audit, 60 instead of 48
+        run: |
+          set -euo pipefail
+          python3 -u research/mre6g_audit_corrected.py | tee mre6g/audit-60.log
+          grep -q '^MRE6G_FINAL' mre6g/audit-60.log
+          cat mre6g/audit-60.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6G-60-AUDITED-FINAL
+          retention-days: 30
+          path: |
+            mre6g/report.json
+            mre6g/audit-60.log
+            mre7_medium/manifest.json
