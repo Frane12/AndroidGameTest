@@ -1,0 +1,126 @@
+name: DRNAS R193 vs CryptoMiniSat 100 SHA paired 2700 trials
+on:
+  push:
+    branches:
+      - experiment/drnas-r193-vs-cms100-20261108
+    paths:
+      - '.github/workflows/drnas-r193-vs-cms100.yml'
+      - 'research/r193_vs_cms100_benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r193-vs-cms100
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download pinned R193 original native and source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r193cms100
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D r193cms100
+          chmod +x r193cms100/r193-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r193cms100")
+          pin=json.loads((p/"pin.json").read_text())
+          assert pin["cadical_commit"]=="31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          for f,k in (("frozen/manifest.json","manifest_sha256"),("r193-driver","binary_sha256")):
+              assert hashlib.sha256((p/f).read_bytes()).hexdigest()==pin[k]
+          print("R193_CMS100_PIN_PASS",pin)
+          PY
+          python3 research/r193_vs_cms100_benchmark.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r193-cms100-pinned-source
+          retention-days: 90
+          path: |
+            r193cms100/frozen/
+            r193cms100/r193-driver
+            r193cms100/pin.json
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+    name: 100-paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193-cms100-pinned-source
+          path: r193cms100
+      - name: Install CryptoMiniSat and verify source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5
+          chmod +x r193cms100/r193-driver
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("r193cms100")
+          pin=json.loads((p/"pin.json").read_text())
+          for f,k in (("frozen/manifest.json","manifest_sha256"),("r193-driver","binary_sha256")):
+              assert hashlib.sha256((p/f).read_bytes()).hexdigest()==pin[k]
+          PY
+      - name: Run R193 hybrid, pure CaDiCaL, CMS on exact paired CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/r193_vs_cms100_benchmark.py shard --shard ${{ matrix.shard }} --cdcl r193cms100/r193-driver --cms cryptominisat5 | tee r193cms100/shard-${{ matrix.shard }}.log
+          grep -q '^R193_CMS100_SHARD_PASS ' r193cms100/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r193-cms100-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            r193cms100/shard-*.json
+            r193cms100/shard-*.log
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r193-cms100-pinned-source
+          path: r193cms100
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r193-cms100-shard-*
+          merge-multiple: true
+          path: r193cms100
+      - name: Audit 100 distinct SHA matched 2700 trials and SAT witnesses
+        run: |
+          set -euo pipefail
+          test "$(find r193cms100 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 20
+          python3 -u research/r193_vs_cms100_benchmark.py audit | tee r193cms100/audit.log
+          grep -q '^R193_CMS100_FINAL ' r193cms100/audit.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-R193-VS-CMS100-FINAL
+          retention-days: 90
+          path: |
+            r193cms100/report.json
+            r193cms100/all-trials.json
+            r193cms100/audit.log
