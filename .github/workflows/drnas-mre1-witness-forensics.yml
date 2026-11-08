@@ -1,0 +1,77 @@
+name: DRNAS MRE1 witness forensics — one source, no benchmark
+on:
+  push:
+    branches: [experiment/drnas-mre1-witness-forensics-20261108]
+    paths: ['.github/workflows/drnas-mre1-witness-forensics.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  witness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile CMS adapters and fetch exact frozen source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev cryptominisat g++ libgmp-dev
+          mkdir -p forensic
+          gh run download 42479610158 --repo Frane12/AndroidGameTest -n mre1-inputs -D forensic
+          cp research/r195_cms_native_bridge.cpp forensic/adapter_no_gauss.cpp
+          sed -i 's/cms.set_allow_otf_gauss();/\/\* OTF Gauss disabled for isolation \*\//' forensic/adapter_no_gauss.cpp
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o forensic/native_original -lcryptominisat5
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror forensic/adapter_no_gauss.cpp -o forensic/native_no_gauss -lcryptominisat5
+          sha256sum forensic/native_original forensic/native_no_gauss
+      - name: Deterministic original witness diagnosis (CMS only vs source XOR)
+        run: |
+          set -euo pipefail
+          python3 -u - <<'PY' | tee forensic/diagnosis.log
+          import pathlib, sys, json, hashlib, subprocess, time
+          sys.path.insert(0,"research")
+          import r195_native_cms_benchmark as r195
+          import mre1_cross_representation as mre1
+          import r164_pure_exact_gf2 as exact
+          source=pathlib.Path("forensic/r195/frozen/official-28dcc4119e1bbb5fbd3fdd8f4140f28d.cnf")
+          expected_sha="b2c2008e5d24a7aa82499d1486af2550a53a7167e46836c4b9977846204ad483"
+          assert r195.digest(source)==expected_sha,"wrong source SHA"
+          n, original=exact.parse_dimacs(source)
+          rows=r195.certified_source_rows(original)[:150]
+          mre1.replay_source_xors(original,rows)
+          mre1.write_xors(pathlib.Path("forensic/source.tsv"),rows)
+          pathlib.Path("forensic/empty.tsv").write_text("")
+          seed=int(hashlib.sha256((mre1.PROTO+expected_sha+"0").encode()).hexdigest()[:8],16)
+          print("DIAG_SETUP",json.dumps({"n":n,"clauses":len(original),"seed":seed,"source_rows":len(rows),"sha":expected_sha}),flush=True)
+          summary=[]
+          for b in ("native_original","native_no_gauss"):
+            for mode in ("cms_native","source_xor_import"):
+              for rep in range(2):
+                t=time.perf_counter()
+                p=subprocess.run([str(pathlib.Path("forensic")/b),str(source),"forensic/source.tsv","forensic/empty.tsv",mode,str(seed)],text=True,capture_output=True,timeout=45)
+                record={"binary":b,"mode":mode,"repeat":rep,"runtime_s":round(time.perf_counter()-t,3),"code":p.returncode}
+                if p.returncode:
+                  record["error"]=p.stderr[-1400:]
+                else:
+                  status,model,stats=r195.parsed_native(p.stdout)
+                  invalid=[]
+                  if status=="SAT":
+                    for i,c in enumerate(original):
+                      if not any(model.get(abs(l),False)==(l>0) for l in c):
+                        if len(invalid)<4: invalid.append({"index":i,"clause":list(c),"model_values":{str(abs(l)):model.get(abs(l)) for l in c}})
+                  record.update({"status":status,"model_size":len(model),"bad_clause_samples":invalid,"stats":stats})
+                summary.append(record)
+                print("DIAG_TRIAL",json.dumps(record,sort_keys=True),flush=True)
+          print("DIAG_SUMMARY",json.dumps(summary,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre1-witness-forensics
+          retention-days: 7
+          path: |
+            forensic/diagnosis.log
