@@ -169,7 +169,8 @@ def freeze():
     ranked=sorted((gbd for gbd in ids if
            gbd not in known_ids and labels[gbd] in ("sat-verified","unsat-verified")),
            key=lambda x:sha_bytes((SALT+x).encode()))
-    need(len(ranked)>=MAX_ATTEMPTS,"unseen eligible official pool too small")
+    need(len(ranked)>=MIN_REAL,"too few unseen eligible official 2026 candidates")
+    print("Y005_FRESH_CANDIDATE_POOL",len(ranked),"MAX_ATTEMPTS",min(MAX_ATTEMPTS,len(ranked)),flush=True)
     real=[];attempts=[]
     for index,gbd in enumerate(ranked[:MAX_ATTEMPTS]):
         if len(real)>=TARGET_REAL:break
