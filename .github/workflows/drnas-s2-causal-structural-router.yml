@@ -1,0 +1,131 @@
+name: DRNAS S2 — S1-trained CaDiCaL-default router vs CMS Kissat 12 original SHA 240 PAR2
+on:
+  push:
+    branches: [experiment/drnas-s2-causal-structural-router-20261108]
+    paths: ['.github/workflows/drnas-s2-causal-structural-router.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-s2-20261108-c3sha12
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze C3 SHA12 original sources and CMS Kissat 4.0.4 reference binaries, S2 rules selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore prior C3 original SHA12 and exact two reference binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42520001305 -R Frane12/AndroidGameTest \
+            -n c3-kissat-exact-sha12-and-two-pinned-native-binaries -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c c3_kissat_bin.sha256
+          chmod +x c2/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c2/bin/native | grep -q libcryptominisat5
+          python3 -m py_compile research/drnas_s2_causal_router.py
+          python3 -u research/drnas_s2_causal_router.py selftest
+          python3 -u research/drnas_s2_causal_router.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s2-C3-original-SHA12-pinned-CMS-Kissat
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 5
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            c2/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            c3_kissat_bin.sha256
+  paired:
+    name: S2 5-arm original SHA12 four reps 12s shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: s2-C3-original-SHA12-pinned-CMS-Kissat
+          path: .
+      - name: Verify immutable original sources and pinned binaries, install CaDiCaL
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c c3_kissat_bin.sha256
+          chmod +x c2/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c2/bin/native | grep -q libcryptominisat5
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          python3 -u research/drnas_s2_causal_router.py selftest
+          python3 -u research/drnas_s2_causal_router.py verify
+      - name: Compare native CMS Kissat CaDiCaL and 2 S2 structural selectors
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p s2_router
+          python3 -u research/drnas_s2_causal_router.py shard \
+            --shard ${{ matrix.shard }} | tee s2_router/shard-${{ matrix.shard }}.log
+          grep -q '^S2_SHARD_PASS ${{ matrix.shard }} 60$' s2_router/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s2-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 5
+          path: |
+            s2_router/shard-${{ matrix.shard }}.json
+            s2_router/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 240 source SHA and source-only router PAR2 with per-formula results
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: s2-C3-original-SHA12-pinned-CMS-Kissat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s2-shard-*
+          merge-multiple: true
+          path: s2_router
+      - name: Fail-closed complete source-paired SAT witness and PAR2 audit
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -u research/drnas_s2_causal_router.py audit | tee s2_router/audit.log
+          grep -q '^S2_FINAL' s2_router/audit.log
+          grep '^S2_FINAL' s2_router/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-S2-C3-SHA12-240-PAIRED-PAR2
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            s2_router/report.json
+            s2_router/audit.log
+            s2_router/shard-*.json
