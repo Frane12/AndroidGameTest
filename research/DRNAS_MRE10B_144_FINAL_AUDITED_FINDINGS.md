@@ -54,7 +54,7 @@ across 3 paired seed reps:
 | Mode | solved | PAR2 |
 |---|---:|---:|
 | Native CMS | 2/3 | 40.805667 |
-| C++ native wrapper | 2/3 | 40.825? (from per-trial rounding) |
+| C++ native wrapper | 2/3 | 40.826030 |
 | C++ clean only | **3/3** | **21.931896** |
 | C++ joint | **1/3** | **67.059342** |
 
