@@ -1,0 +1,129 @@
+name: DRNAS MRE1 CRR proof-replayed 256 paired
+on:
+  push:
+    branches: [experiment/drnas-mre1-cross-representation-20261108]
+    paths: ['research/mre1_cross_representation.py', '.github/workflows/drnas-mre1-crr.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre1-crr
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned native CMS; replay MRE1 mathematical proofs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev cryptominisat g++ libgmp-dev
+          dpkg-query -W libcryptominisat5-dev | grep '5.11.15'
+          python3 -m py_compile research/mre1_cross_representation.py
+          python3 -u research/mre1_cross_representation.py selftest
+          mkdir -p mre1
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o mre1/native -lcryptominisat5
+          sha256sum mre1/native > mre1/native.sha256
+      - name: Check native adapter mode names
+        run: |
+          set -euo pipefail
+          mkdir -p mre1/smoke
+          printf 'p cnf 3 4\n1 2 3 0\n-1 -2 3 0\n-1 2 -3 0\n1 -2 -3 0\n' > mre1/smoke/t.cnf
+          printf '3 1 1 2 3\n' > mre1/smoke/xor.tsv
+          : > mre1/smoke/empty.tsv
+          for mode in native source_import; do
+            mre1/native mre1/smoke/t.cnf mre1/smoke/xor.tsv mre1/smoke/empty.tsv "$mode" 42 | grep '^R195_RESULT status=SAT '
+          done
+      - name: Verify frozen R195 development CNF SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42476352031 --repo Frane12/AndroidGameTest -n y005-fresh2026-source-frozen -D .
+          python3 -u research/r195_native_cms_benchmark.py freeze
+          python3 -u research/r195_native_cms_benchmark.py verify
+          sha256sum r195/frozen/manifest.json > mre1/manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre1-inputs
+          retention-days: 3
+          compression-level: 6
+          path: |
+            r195/frozen/
+            mre1/native
+            mre1/native.sha256
+            mre1/manifest.sha256
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre1-inputs
+          path: .
+      - name: Check SHA and CMS runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64
+          sha256sum -c mre1/native.sha256
+          sha256sum -c mre1/manifest.sha256
+          chmod +x mre1/native
+          python3 -u research/r195_native_cms_benchmark.py verify
+      - name: Run four-arm 30s wall cap
+        run: |
+          set -euo pipefail
+          python3 -u research/mre1_cross_representation.py shard --shard ${{ matrix.shard }} --binary mre1/native | tee mre1/shard-${{ matrix.shard }}.log
+          grep -q '^MRE1_SHARD_PASS' mre1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre1-shard-${{ matrix.shard }}
+          retention-days: 7
+          path: |
+            mre1/shard-${{ matrix.shard }}.json
+            mre1/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre1-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre1-shard-*
+          merge-multiple: true
+          path: mre1
+      - name: Audit paired results and complete PAR2
+        run: |
+          set -euo pipefail
+          sha256sum -c mre1/manifest.sha256
+          python3 -u research/mre1_cross_representation.py audit | tee mre1/audit.log
+          cat mre1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE1-CRR-FINAL
+          retention-days: 30
+          path: |
+            mre1/report.json
+            mre1/audit.log
