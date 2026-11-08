@@ -1,0 +1,175 @@
+name: DRNAS C10b — new official2026 8-12 SHA 60s real Kissat CaDiCaL C9 C10 portfolio
+on:
+  push:
+    branches: [experiment/drnas-c10-structural-portfolio-20261108]
+    paths: ['.github/workflows/drnas-c10b-official26-portfolio.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c10b-2026-new-official-original-sha-locked
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Lock new 8-12 official2026 SHA source-only, exclude C9c C9b C8D and R82
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore C10a frozen previous policy, C9/C9c prior source registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c10a_reference c10b_previous_c9c c9_reference
+          mkdir -p c9c_previous_x5 c9c_previous_r82 c9c_previous_mre6b
+          mkdir -p c10b_official c10b_out
+          gh run download 42532050779 -R Frane12/AndroidGameTest -n DRNAS-C10A-31-SOURCE-SHA-STRUCTURAL-RETROSPECTIVE-PORTFOLIO -D c10a_reference
+          gh run download 42527824455 -R Frane12/AndroidGameTest -n DRNAS-C9-LOFO-SOURCE19-RISK-LIMITED-PORTFOLIO-AUDIT -D c9_reference
+          gh run download 42529378612 -R Frane12/AndroidGameTest -n c9c-new-official-2026-10plus-source-only-frozen-before-any-run -D c10b_previous_c9c
+          gh run download 42527549486 -R Frane12/AndroidGameTest -n mre-x5-official-2026-source-only-frozen-before-solvers -D c9c_previous_x5
+          gh run download 41756938173 -R Frane12/AndroidGameTest -n DRNAS-R82-WIDE-OFFICIAL-2025-2026-FINAL -D c9c_previous_r82
+          gh run download 42495094599 -R Frane12/AndroidGameTest -n mre6b-blind-original-official-SAT2026 -D c9c_previous_mre6b
+          test -s c10a_reference/report.json
+          test -s c9_reference/report.json
+          test -s c10b_previous_c9c/c9c_official/manifest.json
+          test -s c9c_previous_x5/mre_x5_blind/manifest.json
+          test -s c9c_previous_r82/world/manifest.json
+          test -s c9c_previous_mre6b/manifest.json
+          python3 -m py_compile research/c10b_official26_freeze.py research/c10b_official26_benchmark.py
+      - name: Select newly SHA-disjoint official SAT2026 originals BEFORE benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/c10b_official26_freeze.py freeze | tee c10b_official/freeze.log
+          grep -q '^C10B_SOURCE_FROZEN' c10b_official/freeze.log
+          python3 -u research/c10b_official26_freeze.py verify | tee c10b_official/verify.log
+          grep -q '^C10B_SOURCE_SHA_VERIFIED' c10b_official/verify.log
+          (cd c10b_official && sha256sum -c source.sha256)
+          echo C10B_SOURCES_FROZEN_BEFORE_ANY_SOLVER
+      - name: Restore same Kissat4.0.4 binary SHA and CaDiCaL1.7.3 version as C9c
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c10b_c7source built/bin c7_source c7_out
+          gh run download 42523071479 -R Frane12/AndroidGameTest -n c7-certified-sources-CMS-CaDiCaL-Kissat-pins -D c10b_c7source
+          cp c10b_c7source/built/bin/kissat_4_0_4 built/bin/
+          cp c10b_c7source/c7_source/kissat.sha256 c7_source/
+          cp c10b_c7source/c7_out/cadical-version.txt c7_out/
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          python3 -u research/c10b_official26_benchmark.py verify | tee c10b_out/verify.log
+          python3 -u research/c10b_official26_benchmark.py smoke | tee c10b_out/smoke.log
+          grep -q '^C10B_STANDARD_BACKENDS_SOURCE_RULE_SAT_WITNESS_SMOKE_PASS' c10b_out/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c10b-new-SAT2026-8plus-original-SHA-locked-before-benchmark
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c10b_official/*.cnf
+            c10b_official/manifest.json
+            c10b_official/source.sha256
+            c10b_official/freeze.log
+            c10b_official/verify.log
+            c10a_reference/report.json
+            c9_reference/report.json
+            c10b_previous_c9c/c9c_official/manifest.json
+            c9c_previous_x5/mre_x5_blind/manifest.json
+            c9c_previous_r82/world/manifest.json
+            c9c_previous_mre6b/manifest.json
+            built/bin/kissat_4_0_4
+            c7_source/kissat.sha256
+            c7_out/cadical-version.txt
+            c10b_out/verify.log
+            c10b_out/smoke.log
+  paired:
+    name: C10b SHA-frozen official2026 60s CaDiCaL Kissat C9 C10 shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 52
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c10b-new-SAT2026-8plus-original-SHA-locked-before-benchmark
+          path: .
+      - name: Fail-closed verify source, locked C10a policy, and pinned standard binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          (cd c10b_official && sha256sum -c source.sha256)
+          python3 -u research/c10b_official26_freeze.py verify
+          python3 -u research/c10b_official26_benchmark.py verify
+      - name: Run original SHA full E2E real SAT/UNSAT 60s PAR2; verify original SAT witness
+        run: |
+          set -euo pipefail
+          mkdir -p c10b_out
+          python3 -u research/c10b_official26_benchmark.py shard --shard ${{ matrix.shard }} | tee c10b_out/shard-${{ matrix.shard }}.log
+          grep -q '^C10B_SHARD_PASS ${{ matrix.shard }} ' c10b_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c10b-official2026-paired-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c10b_out/shard-${{ matrix.shard }}.json
+            c10b_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C10b FINAL 8plus SHA real 60s PAR2 source-only structural selector vs Kissat
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c10b-new-SAT2026-8plus-original-SHA-locked-before-benchmark
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c10b-official2026-paired-shard-*
+          merge-multiple: true
+          path: c10b_out
+      - name: Audit all original SHA source, SAT witness, status, paired modes and PAR2 regression
+        run: |
+          set -euo pipefail
+          (cd c10b_official && sha256sum -c source.sha256)
+          python3 -u research/c10b_official26_benchmark.py audit | tee c10b_out/audit.log
+          grep -q '^C10B_FINAL' c10b_out/audit.log
+          grep '^C10B_FINAL' c10b_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C10B-OFFICIAL2026-8PLUS-SHA-CADICAL-KISSAT-C9-C10-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c10b_out/report.json
+            c10b_out/audit.log
+            c10b_out/shard-*.json
+            c10b_official/manifest.json
+            c10a_reference/report.json
