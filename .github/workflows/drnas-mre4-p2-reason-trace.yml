@@ -1,0 +1,197 @@
+name: DRNAS MRE4 P2 — CMS native watched reason trace + preserved R28
+on:
+  push:
+    branches: [experiment/drnas-mre4-p2-cms-reason-trace-20261108]
+    paths:
+      - 'research/mre4_p2_patch_cms.py'
+      - 'research/mre4_p2_cms_trace_driver.cpp'
+      - 'research/mre4_p2_reason_benchmark.py'
+      - '.github/workflows/drnas-mre4-p2-reason-trace.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre4-p2-cms-reason-trace
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Build upstream SHA-pinned CMS source instrumented for DRNAS clause ID watch usage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Selftests R28 preservation, proof replay, P2 parser
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre4_p2_patch_cms.py research/mre4_p2_reason_benchmark.py
+          python3 research/r164_pure_exact_gf2.py --selftest
+          python3 research/mre1_cross_representation.py selftest
+          python3 research/mre2_impact_gate.py selftest
+          python3 research/mre4_safe_causal.py selftest
+          python3 research/mre4_p2_reason_benchmark.py selftest
+      - name: Install build deps and freeze exact official CMS 5.11.15 source revision
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build g++ git libgmp-dev zlib1g-dev libboost-program-options-dev libboost-serialization-dev
+          mkdir -p mre4_p2
+          git clone --depth 1 --branch 5.11.15 -q https://github.com/msoos/cryptominisat.git /tmp/mre4-p2-cms-src
+          test "$(git -C /tmp/mre4-p2-cms-src rev-parse HEAD)" = "3b709118fd08eb1d15f25e0e239dbc596f967b60"
+          python3 research/mre4_p2_patch_cms.py /tmp/mre4-p2-cms-src | tee mre4_p2/patch.log
+          test -f /tmp/mre4-p2-cms-src/drnas-mre4-p2-patch.json
+          cp /tmp/mre4-p2-cms-src/drnas-mre4-p2-patch.json mre4_p2/patch.json
+      - name: Build source instrumented CMS shared library, then compile separately audited R28-preserving adapter
+        run: |
+          set -euo pipefail
+          cmake -S /tmp/mre4-p2-cms-src -B /tmp/mre4-p2-cms-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DONLY_SIMPLE=ON -DENABLE_TESTING=OFF -DSTATS=OFF \
+            -DNOBOSPHORUS=ON -DNOBREAKID=ON -DNOZLIB=ON \
+            -DENABLE_ASSERTIONS=ON
+          cmake --build /tmp/mre4-p2-cms-build --target cryptominisat5 -j 3
+          mkdir -p mre4_p2/native_lib
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            research/mre4_p2_cms_trace_driver.cpp \
+            -I/tmp/mre4-p2-cms-src/src \
+            -I/tmp/mre4-p2-cms-build/include \
+            -L/tmp/mre4-p2-cms-build/lib \
+            -Wl,-rpath,'$ORIGIN/native_lib' \
+            -o mre4_p2/mre4_instrumented_cms -lcryptominisat5
+          soname="$(readelf -d /tmp/mre4-p2-cms-build/lib/libcryptominisat5.so | awk -F'[][]' '/SONAME/ {print $2}')"
+          test -n "$soname"
+          cp -L /tmp/mre4-p2-cms-build/lib/libcryptominisat5.so "mre4_p2/native_lib/$soname"
+          sha256sum mre4_p2/mre4_instrumented_cms mre4_p2/native_lib/"$soname" > mre4_p2/native-binaries.sha256
+          nm -D "mre4_p2/native_lib/$soname" | grep 'drnas_mre4_trace_dump'
+          LD_LIBRARY_PATH="$PWD/mre4_p2/native_lib" ldd mre4_p2/mre4_instrumented_cms
+      - name: Fail-closed direct native instrumentation smoke with logically implied 2-clause
+        run: |
+          set -euo pipefail
+          mkdir -p mre4_p2/smoke
+          cat > mre4_p2/smoke/original.cnf <<'EOF'
+          p cnf 4 3
+          1 2 0
+          -1 3 0
+          -3 4 0
+          EOF
+          : > mre4_p2/smoke/source.tsv
+          echo '2 3 0' > mre4_p2/smoke/lemma.cnf
+          LD_LIBRARY_PATH="$PWD/mre4_p2/native_lib" mre4_p2/mre4_instrumented_cms \
+            mre4_p2/smoke/original.cnf mre4_p2/smoke/source.tsv \
+            mre4_p2/smoke/lemma.cnf mre4_trace_active 37 | tee mre4_p2/smoke/active.log
+          grep -q '^R195_RESULT status=SAT ' mre4_p2/smoke/active.log
+          grep -q '^MRE4_NATIVE_TRACE tagged=1 ' mre4_p2/smoke/active.log
+          LD_LIBRARY_PATH="$PWD/mre4_p2/native_lib" mre4_p2/mre4_instrumented_cms \
+            mre4_p2/smoke/original.cnf mre4_p2/smoke/source.tsv \
+            mre4_p2/smoke/lemma.cnf mre4_trace_shadow 37 | tee mre4_p2/smoke/shadow.log
+          grep -q '^MRE4_NATIVE_TRACE tagged=0 ' mre4_p2/smoke/shadow.log
+          echo 'MRE4_P2_NATIVE_WATCH_TAG_SMOKE_PASS'
+      - name: Retrieve frozen MRE4 P1 development originals; preserve same R28 reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p r195
+          gh run download 42478671195 --repo Frane12/AndroidGameTest \
+             -n r195-frozen-verified-sources-binary -D r195
+          sha256sum -c r195/manifest.sha256
+          python3 research/r195_native_cms_benchmark.py verify
+          sha256sum r195/frozen/manifest.json > mre4_p2/manifest.sha256
+          echo 'MRE4_P2_32_SHA_FROZEN_SOURCES_PASS'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre4-p2-instrumented-binary-32sha
+          retention-days: 12
+          compression-level: 1
+          path: |
+            r195/frozen/
+            mre4_p2/native_lib/
+            mre4_p2/mre4_instrumented_cms
+            mre4_p2/native-binaries.sha256
+            mre4_p2/manifest.sha256
+            mre4_p2/patch.json
+            mre4_p2/smoke/
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    name: P2 native watched-reason causal ablation shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-p2-instrumented-binary-32sha
+          path: .
+      - name: Check binary SHA, source SHA and pinned patched upstream
+        run: |
+          set -euo pipefail
+          chmod +x mre4_p2/mre4_instrumented_cms
+          sha256sum -c mre4_p2/native-binaries.sha256
+          sha256sum -c mre4_p2/manifest.sha256
+          python3 research/r195_native_cms_benchmark.py verify
+          python3 - <<'PY'
+          import json
+          d=json.load(open('mre4_p2/patch.json'))
+          assert d['upstream']=='3b709118fd08eb1d15f25e0e239dbc596f967b60'
+          print('MRE4_P2_SOURCE_PATCH_SHA_PASS')
+          PY
+          ldd mre4_p2/mre4_instrumented_cms | grep cryptominisat5
+      - name: P2 5-arm same-source R28+native-watch-reason 30s
+        run: |
+          set -euo pipefail
+          python3 -u research/mre4_p2_reason_benchmark.py shard \
+             --shard ${{ matrix.shard }} --binary mre4_p2/mre4_instrumented_cms \
+             | tee mre4_p2/shard-${{ matrix.shard }}.log
+          grep -q '^MRE4_P2_SHARD_PASS' mre4_p2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre4-p2-shard-${{ matrix.shard }}
+          retention-days: 35
+          compression-level: 1
+          path: |
+            mre4_p2/shard-${{ matrix.shard }}.json
+            mre4_p2/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre4-p2-instrumented-binary-32sha
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre4-p2-shard-*
+          merge-multiple: true
+          path: mre4_p2
+      - name: Strict witnessed SAT, source SHA, true native BCP events and matched 320 trials
+        run: |
+          set -euo pipefail
+          sha256sum -c mre4_p2/manifest.sha256
+          test "$(find mre4_p2 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/mre4_p2_reason_benchmark.py audit | tee mre4_p2/audit.log
+          grep -q '^MRE4_P2_FINAL' mre4_p2/audit.log
+          cat mre4_p2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE4-P2-CMS-REAL-WATCH-REASONS-FINAL
+          retention-days: 75
+          path: |
+            mre4_p2/report.json
+            mre4_p2/all-trials.json
+            mre4_p2/audit.log
+            mre4_p2/patch.json
