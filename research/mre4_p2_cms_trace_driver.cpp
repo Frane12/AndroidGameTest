@@ -14,6 +14,7 @@
 #include <vector>
 using namespace std;
 using namespace CMSat;
+static void check(bool,const string&);
 extern "C" void drnas_mre4_trace_import(int enabled);
 extern "C" void drnas_mre4_trace_solve(int enabled);
 extern "C" void drnas_mre4_trace_dump();
