@@ -1,0 +1,97 @@
+name: DRNAS C5 — early CDCL 100 1000 5000 conflicts native dedup tail 108 bounded
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c5-early-conflict-dynamics-20261108]
+    paths: ['.github/workflows/drnas-c5-early-cdcl-dynamics.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c5-early-conflict-original-sha
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: C5 3 seeds x 3 arms x 3 bounded checkpoints original SHA shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 42519684428
+          github-token: ${{ github.token }}
+          name: c4-frozen-four-original-SHA-reference-binaries-source-parity
+          path: .
+      - name: Verify original SHA and unchanged C2/C4 binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          chmod +x c2/bin/native c4/bin/native
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          sha256sum -c c4_out/binary.sha256
+          python3 -m py_compile research/c5_early_cdcl_dynamics.py
+      - name: Frozen 100 1000 5000 conflict-budget diagnostic (not end-to-end PAR2)
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/c5_early_cdcl_dynamics.py shard --shard ${{ matrix.shard }} | tee c5_out/shard-${{ matrix.shard }}.log
+          grep -q '^C5_SHARD_PASS ${{ matrix.shard }} 27$' c5_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c5-early-bounded-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c5_out/shard-${{ matrix.shard }}.json
+            c5_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C5 108 bounded original SHA early CDCL telemetry audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 42519684428
+          github-token: ${{ github.token }}
+          name: c4-frozen-four-original-SHA-reference-binaries-source-parity
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c5-early-bounded-shard-*
+          merge-multiple: true
+          path: c5_out
+      - name: Verify complete source-paired bounded dynamics, not full SAT PAR2
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c5_early_cdcl_dynamics.py audit | tee c5_out/audit.log
+          grep -q '^C5_FINAL' c5_out/audit.log
+          cat c5_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C5-EARLY-CDCL-108-BOUNDED-TELEMETRY-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c5_out/report.json
+            c5_out/audit.log
+            c5_out/shard-*.json
