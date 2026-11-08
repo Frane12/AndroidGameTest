@@ -68,7 +68,7 @@ def capture(mode,case,rep):
     external_deadline=time.monotonic_ns()+int(cap*1e9)
     reserved_deadline=external_deadline-int(MARGIN_S*1e9)
     env=dict(os.environ)
-    env["ULTIMATE_T_MODE"]=mode
+    env["ULTIMATE_T_MODE"]="clean" if mode=="t_clean" else mode
     env["ULTIMATE_R2_DEADLINE_NS"]=str(reserved_deadline)
     script=("import sys,os;"
             "sys.path.insert(0,'research');"
