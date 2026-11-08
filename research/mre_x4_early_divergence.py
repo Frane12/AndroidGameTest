@@ -188,7 +188,8 @@ def run(c,rep,mode,binary,budget=None):
                if s.startswith("MRE_X3_STAGE ")]
         need(len(steps)==1,"missing stage telemetry")
         stages=json.loads(steps[0])
-        need(stages["working_clauses"]==x2.parse(src)[1].__len__() and
+        expected_count=next(row["clauses"] for row in json.loads((OUT/"manifest.json").read_text())["cases"] if row["sha256"]==c["sha256"])
+        need(stages["working_clauses"]==expected_count and
              stages["clauses_loaded"]<=stages["working_clauses"],
              "incorrect number of clauses loaded")
         match=MARKER.search(p.stdout)
