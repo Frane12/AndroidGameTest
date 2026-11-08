@@ -1,0 +1,166 @@
+name: DRNAS MRE6e — short bounded CDCL 7 SAT2026 56 paired counter probes
+on:
+  push:
+    branches: [experiment/drnas-mre6e-bounded-cdcl-20261108]
+    paths: ['.github/workflows/drnas-mre6e-bounded-cdcl.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6e-bounded-cdcl-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore 7 frozen official SHAs and build bounded CMS bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download prior certified source-locked originals and SAME pinned CMS lib
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre6b_blind mre5/lib mre6e
+          gh run download 42495094599 --repo Frane12/AndroidGameTest -n mre6b-blind-original-official-SAT2026 -D mre6b_blind
+          gh run download 42495094599 --repo Frane12/AndroidGameTest -n mre6b-blind-pinned-CMS -D mre5
+          sha256sum -c mre5/binaries.sha256
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -m py_compile research/mre6e_conflict_diagnostic.py research/mre6d_paired.py
+          python3 -u research/mre6b_blind_freeze.py verify
+          python3 -u research/mre6e_conflict_diagnostic.py selftest
+          python3 - <<'PY'
+          import json
+          p=json.load(open("mre6b_blind/manifest.json"))
+          assert p["original_source_count"]==7
+          assert p["statuses"]=={"SAT":4,"UNSAT":3}
+          print("MRE6E_UNCHANGED_PRE_FROZEN_ORIGINALS_PASS")
+          PY
+      - name: Build lightweight CMS 5.11.15 conflict-budget bridge, no library rebuild
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("research/r195_cms_native_bridge.cpp").read_text()
+          def once(a,b):
+              global s
+              assert s.count(a)==1, ("ANCHOR_MISMATCH",a)
+              s=s.replace(a,b,1)
+          once("#include <algorithm>","#include <algorithm>\n#include <cstdlib>")
+          once("        cms.set_verbosity(0);",
+               """        cms.set_verbosity(0);
+        const char* cap_raw = std::getenv("DRNAS_MAX_CONFLICTS");
+        check(cap_raw != nullptr && *cap_raw, "missing DRNAS_MAX_CONFLICTS");
+        const uint64_t cap = std::stoull(std::string(cap_raw));
+        check(cap == 1000 || cap == 5000 || cap == 100,
+              "conflict limit outside precommitted diagnostic");
+        cms.set_max_confl(cap);""")
+          once('        string result="TIMEOUT";','        string result="BUDGET";')
+          Path("mre6e/native.cpp").write_text(s)
+          print("MRE6E_NATIVE_CONFLICT_CAPPED_CPP_PATCH_PASS")
+          PY
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -o mre6e/native mre6e/native.cpp \
+            -Wl,-rpath,'$ORIGIN/../mre5/lib' "$PWD/mre5/lib/libcryptominisat5.so.5.11"
+          chmod +x mre6e/native
+          ldd mre6e/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          sha256sum mre6e/native > mre6e/binary.sha256
+          cat > mre6e/smoke.cnf <<'EOF'
+          p cnf 3 2
+          1 2 0
+          -2 3 0
+          EOF
+          : > mre6e/empty.tsv
+          DRNAS_MAX_CONFLICTS=100 mre6e/native mre6e/smoke.cnf mre6e/empty.tsv mre6e/empty.tsv cms_native 11 | tee mre6e/smoke.log
+          grep -q '^R195_RESULT status=SAT ' mre6e/smoke.log
+          echo MRE6E_CMS_PINNED_LIB_AND_BOUNDED_BRIDGE_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6e-frozen-7-CMS-pinned-bounded
+          retention-days: 10
+          compression-level: 6
+          path: |
+            mre6b_blind/manifest.json
+            mre6b_blind/source.sha256
+            mre6b_blind/*.cnf
+            mre5/lib/libcryptominisat5.so.5.11
+            mre6e/native
+            mre6e/binary.sha256
+  paired:
+    name: MRE6e 1000/5000 conflicts source paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6e-frozen-7-CMS-pinned-bounded
+          path: .
+      - name: Verify original CNFs, exact native binary and pinned CMS lib
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          sha256sum -c mre6e/binary.sha256
+          python3 -u research/mre6b_blind_freeze.py verify
+          chmod +x mre6e/native
+          ldd mre6e/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: Run 56 bounded probes total, original SHA and paired seed
+        run: |
+          set -euo pipefail
+          python3 -u research/mre6e_conflict_diagnostic.py shard --shard ${{ matrix.shard }} --binary mre6e/native | tee mre6e/shard-${{ matrix.shard }}.log
+          grep -q '^MRE6E_SHARD_PASS ${{ matrix.shard }} ' mre6e/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6e-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre6e/shard-${{ matrix.shard }}.json
+            mre6e/shard-${{ matrix.shard }}.log
+  audit:
+    name: Fail-closed audit 56 paired bounded CDCL counters
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6e-frozen-7-CMS-pinned-bounded
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6e-shard-*
+          merge-multiple: true
+          path: mre6e
+      - name: Validate every source SHA, paired controls, status and CDCL telemetry
+        run: |
+          set -euo pipefail
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 -u research/mre6e_conflict_diagnostic.py audit | tee mre6e/audit.log
+          grep -q '^MRE6E_FINAL' mre6e/audit.log
+          cat mre6e/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6E-7OFFICIAL-56-BOUNDED-CDCL-AUDIT
+          retention-days: 30
+          path: |
+            mre6e/report.json
+            mre6e/audit.log
+            mre6b_blind/manifest.json
