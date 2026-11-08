@@ -171,10 +171,10 @@ def ingest(db,root,index,source_label,s):
  check(set(scores)==modes and s["baseline"] in modes,"reported mode names do not match raw")
  proto={r.get("proto",r.get("protocol")) for r in data}
  check(len(proto)==1 and rr["protocol"] in proto,"audit vs raw protocol drift")
- db.execute("INSERT INTO mre_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+ db.execute("INSERT INTO mre_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   (run,source_label,run,audit,s["sha"],rr["protocol"],s["novelty"],
    s["holdout"],cap,s["cases"],s["reps"],s["modes"],s["baseline"],
-   len(data),1,sha_report))
+   len(data),1,0,sha_report))
  seen=set(); pairs=collections.defaultdict(dict); source_map={}
  metrics=collections.defaultdict(lambda:dict(solved=0,par2=0.,n=0))
  for r in data:
