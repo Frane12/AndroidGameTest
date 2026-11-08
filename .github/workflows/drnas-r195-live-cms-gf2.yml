@@ -1,0 +1,165 @@
+name: DRNAS R195 native CMS GF2 in-CDCL stage1 256 SHA paired
+on:
+  push:
+    branches: [experiment/drnas-r195-live-cms-gf2-20261108]
+    paths:
+      - 'research/r195_cms_native_bridge.cpp'
+      - 'research/r195_native_cms_benchmark.py'
+      - '.github/workflows/drnas-r195-live-cms-gf2.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r195-live-cms-gf2
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Build CMS C++ bridge, freeze original SHA and prove XOR rows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Native CMS headers, pinned version, compiler and Python selftest
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev cryptominisat g++ libgmp-dev
+          dpkg-query -W -f='${Version}\n' libcryptominisat5-dev | grep '^5\.11\.15'
+          python3 -m py_compile research/r195_native_cms_benchmark.py
+          python3 -u research/r195_native_cms_benchmark.py selftest
+          mkdir -p r195
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o r195/r195_native -lcryptominisat5
+          sha256sum r195/r195_native | tee r195/native-binary.sha256
+          ldd r195/r195_native | grep cryptominisat
+      - name: Native CMS smoke on exact source-XOR and shadow modes
+        run: |
+          set -euo pipefail
+          mkdir -p r195/smoke
+          cat > r195/smoke/three.cnf <<'EOF'
+          p cnf 3 4
+          1 2 3 0
+          -1 -2 3 0
+          -1 2 -3 0
+          1 -2 -3 0
+          EOF
+          echo '3 1 1 2 3' > r195/smoke/xor.tsv
+          : > r195/smoke/empty.tsv
+          for mode in cms_native source_xor_import derived_shadow derived_active; do
+            r195/r195_native r195/smoke/three.cnf r195/smoke/xor.tsv r195/smoke/empty.tsv "$mode" 42 | tee "r195/smoke/$mode.log"
+            grep -q '^R195_RESULT status=SAT ' "r195/smoke/$mode.log"
+          done
+          echo 'R195_NATIVE_SMOKE_PASS'
+      - name: Download SHA-locked original official2026 from prior frozen archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42476352031 --repo Frane12/AndroidGameTest -n y005-fresh2026-source-frozen -D .
+          test -f drnas_yalsat_unseen/frozen/manifest.json
+          python3 -u research/r195_native_cms_benchmark.py freeze
+          python3 -u research/r195_native_cms_benchmark.py verify
+          sha256sum r195/frozen/manifest.json > r195/manifest.sha256
+      - name: Certified-source and derived-row provenance smoke
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,sys,json
+          sys.path.insert(0,"research")
+          import r195_native_cms_benchmark as r195
+          c=next(x for x in r195.cases() if x["cohort"]=="new_mixed_xor_cnf")
+          r195.prep(r195.FROZEN/c["name"],"r195/test-source.tsv",
+                    "r195/test-derived.tsv","r195/test-proof.json",True)
+          proof=json.loads(pathlib.Path("r195/test-proof.json").read_text())
+          assert proof["source_rows_imported"]>=10,proof
+          assert proof["derived_rows_proven"]>=4,proof
+          print("R195_CERTIFIED_SOURCE_DERIVED_SMOKE_PASS",proof["source_rows_imported"],proof["derived_rows_proven"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r195-frozen-verified-sources-binary
+          retention-days: 10
+          compression-level: 1
+          path: |
+            r195/frozen/
+            r195/manifest.sha256
+            r195/r195_native
+            r195/native-binary.sha256
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    name: R195 native 4-arm SHA-paired shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r195-frozen-verified-sources-binary
+          path: r195
+      - name: Verify source manifest and native binary pin, install CMS runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64
+          test -f r195/frozen/manifest.json
+          sha256sum -c r195/manifest.sha256
+          sha256sum -c r195/native-binary.sha256
+          chmod +x r195/r195_native
+          python3 research/r195_native_cms_benchmark.py verify
+      - name: Run 4-arm 30s full-wall CMS native/XOR source/shadow/active
+        run: |
+          set -euo pipefail
+          taskset -pc "$$"
+          python3 -u research/r195_native_cms_benchmark.py shard --shard ${{ matrix.shard }} --binary r195/r195_native | tee r195/shard-${{ matrix.shard }}.log
+          grep -q '^R195_SHARD_PASS' r195/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r195-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 1
+          path: |
+            r195/shard-${{ matrix.shard }}.json
+            r195/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r195-frozen-verified-sources-binary
+          path: r195
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r195-shard-*
+          merge-multiple: true
+          path: r195
+      - name: Strict 32 SHA x 2 repetitions x 4 arms and proof policy audit
+        run: |
+          set -euo pipefail
+          sha256sum -c r195/manifest.sha256
+          test "$(find r195 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/r195_native_cms_benchmark.py audit | tee r195/audit.log
+          grep -q '^R195_FINAL' r195/audit.log
+          cat r195/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-R195-NATIVE-CMS-GF2-STAGE1-FINAL
+          retention-days: 60
+          path: |
+            r195/report.json
+            r195/all-trials.json
+            r195/audit.log
