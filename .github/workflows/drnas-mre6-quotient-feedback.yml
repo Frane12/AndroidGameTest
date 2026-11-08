@@ -1,0 +1,151 @@
+name: DRNAS MRE6 — certified quotient CPU feedback 84 paired fresh-seed
+on:
+  push:
+    branches: [experiment/drnas-mre6-cpu-feedback-principles-20261108]
+    paths:
+      - '.github/workflows/drnas-mre6-quotient-feedback.yml'
+      - 'research/mre6_principles.py'
+      - 'research/mre6_cpu_feedback.py'
+      - 'research/mre6_pilot.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6-quotient-feedback-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify soundness and CPU feedback safety; reuse pinned CMS MRE5 library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre6_principles.py research/mre6_cpu_feedback.py research/mre6_pilot.py
+          python3 -u research/mre1_cross_representation.py selftest
+          python3 -u research/mre2_impact_gate.py selftest
+          python3 -u research/mre6_principles.py
+          python3 -u research/mre6_cpu_feedback.py selftest
+          python3 -u research/mre6_pilot.py selftest
+          mkdir -p mre6/calibration
+          gh run download 42490090624 --repo Frane12/AndroidGameTest -n mre5-inputs -D .
+          gh run download 42490090624 --repo Frane12/AndroidGameTest -n mre5-seed-0 -D mre6/calibration
+          gh run download 42490090624 --repo Frane12/AndroidGameTest -n mre5-seed-1 -D mre6/calibration
+          for i in 0 1; do
+            if [ ! -s "mre6/calibration/seed-$i.json" ]; then
+              file="$(find mre6/calibration -type f -name "seed-$i.json" -print -quit)"
+              test -n "$file"
+              cp "$file" "mre6/calibration/seed-$i.json"
+            fi
+            test -s "mre6/calibration/seed-$i.json"
+          done
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 -u research/mre6_cpu_feedback.py train
+          test -s mre6/frozen_feedback.json
+          test -s mre6/principles.sqlite
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import mre4_trace_pilot as p
+          import mre6_principles as r
+          shared=p.setup()
+          case,source,n,original,rows,proofs,selected,tags=shared
+          candidates=r.build_principles(original,rows,proofs)
+          assert any(x['keep']==12 and x['remove']==224 for x in candidates), candidates
+          print('MRE6_CERTIFIED_EQUIVALENCE_PASS',[(x['keep'],x['remove']) for x in candidates])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6-frozen-inputs
+          retention-days: 4
+          compression-level: 6
+          path: |
+            r195/frozen/
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+            mre5/manifest.sha256
+            mre6/calibration/seed-0.json
+            mre6/calibration/seed-1.json
+            mre6/principles.sqlite
+            mre6/frozen_feedback.json
+  fresh_seed:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        seed: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6-frozen-inputs
+          path: .
+      - name: Verify exact MRE5 CPU-enabled native library and original frozen SAT CNF
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: CPU compare true equivalence quotient versus watched certified lemmas
+        run: |
+          set -euo pipefail
+          python3 -u research/mre6_pilot.py shard --seed ${{ matrix.seed }} --binary mre5/native | tee mre6/seed-${{ matrix.seed }}.log
+          grep -q '^MRE6_SHARD_PASS ${{ matrix.seed }} 21$' mre6/seed-${{ matrix.seed }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6-seed-${{ matrix.seed }}
+          retention-days: 10
+          path: |
+            mre6/seed-${{ matrix.seed }}.json
+            mre6/seed-${{ matrix.seed }}.log
+  audit:
+    needs: fresh_seed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6-frozen-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6-seed-*
+          merge-multiple: true
+          path: mre6
+      - name: Independently audit fresh-seed CPU, witnesses and immutable calibration
+        run: |
+          set -euo pipefail
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/mre6_cpu_feedback.py audit | tee mre6/audit.log
+          cat mre6/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6-CPU-PRINCIPLE-FEEDBACK-FINAL
+          retention-days: 30
+          path: |
+            mre6/report.json
+            mre6/audit.log
+            mre6/principles.sqlite
+            mre6/frozen_feedback.json
