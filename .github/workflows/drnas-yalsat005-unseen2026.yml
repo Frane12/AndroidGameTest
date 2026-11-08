@@ -1,0 +1,156 @@
+name: DRNAS YalSAT 0.05s plus CMS unseen SAT2026 holdout
+on:
+  push:
+    branches: [experiment/drnas-yalsat005-unseen2026-20261108]
+    paths:
+      - 'research/drnas_yalsat005_unseen2026.py'
+      - '.github/workflows/drnas-yalsat005-unseen2026.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-yalsat005-unseen2026
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze source-new official SAT2026 and synthetic holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static benchmark checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_yalsat_scout.py research/drnas_yalsat005_unseen2026.py
+          python3 -u research/drnas_yalsat005_unseen2026.py selftest
+      - name: Fetch pinned actual YalSAT binary and R1/R2 exposure manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p drnas_yalsat
+          gh run download 42435569125 --repo Frane12/AndroidGameTest -n drnas-yalsat-pinned-original -D drnas_yalsat
+          chmod +x drnas_yalsat/yalsat
+          python3 - <<'PY'
+          import hashlib,pathlib,json
+          p=pathlib.Path("drnas_yalsat")
+          pin=json.loads((p/"drnas-yalsat-pin.json").read_text())
+          for name,key in (("yalsat","yalsat_binary_sha256"),
+                           ("frozen/manifest.json","original_source_manifest_sha256")):
+              actual=hashlib.sha256((p/name).read_bytes()).hexdigest()
+              assert actual==pin[key],(name,actual,pin[key])
+          assert pin["yalsat_commit"]=="a0fd39f072f2d4693dd5a1977de3c3d3f69c8850"
+          print("Y005_PINNED_UPSTREAM_PASS",pin["yalsat_binary_sha256"])
+          PY
+      - name: Freeze NEW canonical official 2026 and NEW deterministic synthetic CNF SHA
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_yalsat005_unseen2026.py freeze | tee drnas-yalsat005-freeze.log
+          grep -q '^Y005_FRESH_FREEZE_PASS ' drnas-yalsat005-freeze.log
+          python3 -u research/drnas_yalsat005_unseen2026.py verify
+          sha256sum drnas_yalsat_unseen/frozen/manifest.json > drnas_yalsat_unseen/manifest.sha256
+          python3 - <<'PY'
+          import json,pathlib
+          m=json.loads(pathlib.Path("drnas_yalsat_unseen/frozen/manifest.json").read_text())
+          print("Y005_FRESH_OFFICIAL_SELECTED",m["official_count"],
+                "SYNTHETIC",m["synthetic_count"],
+                "SOURCE_EXCLUSION_CHECKED",
+                m["prior_checked_in_32hex_exclusion_count"],
+                m["prior_checked_in_64hex_exclusion_count"])
+          assert m["official_count"]>=6 and m["synthetic_count"]==16
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: y005-fresh2026-source-frozen
+          retention-days: 14
+          compression-level: 1
+          path: |
+            drnas_yalsat_unseen/frozen/
+            drnas_yalsat_unseen/manifest.sha256
+            drnas_yalsat/yalsat
+            drnas_yalsat/drnas-yalsat-pin.json
+            drnas-yalsat005-freeze.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    name: Y005 unseen CMS-vs-scout shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: y005-fresh2026-source-frozen
+          path: .
+      - name: Install CMS 5.11.15 and source/binary integrity check
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5
+          chmod +x drnas_yalsat/yalsat
+          sha256sum -c drnas_yalsat_unseen/manifest.sha256
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          pin=json.loads(pathlib.Path("drnas_yalsat/drnas-yalsat-pin.json").read_text())
+          assert hashlib.sha256(pathlib.Path("drnas_yalsat/yalsat").read_bytes()).hexdigest()==pin["yalsat_binary_sha256"]
+          print("Y005_SOURCE_AND_BINARY_SHA_PASS")
+          PY
+          python3 research/drnas_yalsat005_unseen2026.py verify
+      - name: Run exact source- and seed-paired 30s YalSAT005 vs pure CMS
+        run: |
+          set -euo pipefail
+          mkdir -p drnas_yalsat_unseen
+          python3 -u research/drnas_yalsat005_unseen2026.py shard --shard ${{ matrix.shard }} --yals drnas_yalsat/yalsat --cms cryptominisat5 | tee drnas_yalsat_unseen/shard-${{ matrix.shard }}.log
+          grep -q '^Y005_FRESH_SHARD_PASS' drnas_yalsat_unseen/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: y005-fresh2026-shard-${{ matrix.shard }}
+          retention-days: 45
+          compression-level: 1
+          path: |
+            drnas_yalsat_unseen/shard-${{ matrix.shard }}.json
+            drnas_yalsat_unseen/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: y005-fresh2026-source-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: y005-fresh2026-shard-*
+          merge-multiple: true
+          path: drnas_yalsat_unseen
+      - name: Independent SHA-pair and PAR2 audit for all official and synthetic attempts
+        run: |
+          set -euo pipefail
+          sha256sum -c drnas_yalsat_unseen/manifest.sha256
+          test "$(find drnas_yalsat_unseen -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_yalsat005_unseen2026.py audit | tee drnas_yalsat_unseen/audit.log
+          grep -q '^Y005_FRESH_FINAL' drnas_yalsat_unseen/audit.log
+          cat drnas_yalsat_unseen/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-YALSAT005-UNSEEN2026-FINAL
+          retention-days: 90
+          path: |
+            drnas_yalsat_unseen/report.json
+            drnas_yalsat_unseen/all-trials.json
+            drnas_yalsat_unseen/audit.log
