@@ -1,0 +1,148 @@
+name: DRNAS MRE11 — Medium Diverse24 10 families 5 native C++ arms 4 seeds 6s PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre11-diverse-medium24-20261108]
+    paths: ['.github/workflows/drnas-mre11-diverse-medium24.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre11-diverse-medium24-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Baseline-calibrate max 50 native-only candidates, freeze 4 official + 20 generated SHA and CaDiCaL check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve existing frozen easy12 sources and PINNED MRE11 C++ binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42515830079 -R Frane12/AndroidGameTest \
+            -n mre11-easy12-reference-screened-sha12-immutable-cpp -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          chmod +x mre11/bin/native mre11/bin/standalone
+          test -f mre5/lib/libcryptominisat5.so.5.11
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd mre11/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre11_medium_diverse24.py
+          echo MRE11_MEDIUM_PINNED_CPP_OK
+      - name: Install independent CaDiCaL for SAT/UNSAT reference checking only
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+      - name: Calibrate exactly five candidate sizes per family with only native CMS, then freeze 24 originals
+        run: |
+          set -euo pipefail
+          python3 -u research/mre11_medium_diverse24.py freeze --native mre11/bin/native --cadical /usr/bin/cadical \
+            | tee mre11-medium-freeze.log
+          (cd mre11_medium24 && sha256sum -c source.sha256)
+          python3 -u research/mre11_medium_diverse24.py verify
+          python3 -u research/mre11_medium_diverse24.py diagnostic \
+            --standalone mre11/bin/standalone | tee mre11-medium-gates.log
+          grep -q '^MRE11_DIVERSE_PARITY_PASS' mre11-medium-gates.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre11-medium24-fixed-24SHA-pinned-exact-Cpp
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            mre11_medium24/*.cnf
+            mre11_medium24/manifest.json
+            mre11_medium24/source.sha256
+            mre11_medium24/gate_diagnostics.json
+            mre11/bin/native
+            mre11/bin/standalone
+            mre11/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre11-medium-*.log
+  factorial:
+    name: Easy diverse 24 original end-to-end SAT/UNSAT pinned C++ shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-medium24-fixed-24SHA-pinned-exact-Cpp
+          path: .
+      - name: Original SHA, exact binary and frozen cohort verification
+        run: |
+          set -euo pipefail
+          (cd mre11_medium24 && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          chmod +x mre11/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd mre11/bin/native | grep -q libcryptominisat5
+          python3 -u research/mre11_medium_diverse24.py verify
+      - name: Five C++ arms four SHA-paired seeds 6s cap including preprocessing
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre11_medium_diverse24.py shard \
+            --shard ${{ matrix.shard }} --native mre11/bin/native \
+            | tee mre11_medium24/shard-${{ matrix.shard }}.log
+          grep -q '^MRE11_DIVERSE_SHARD_PASS ${{ matrix.shard }} 120$' mre11_medium24/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-medium24-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11_medium24/shard-${{ matrix.shard }}.json
+            mre11_medium24/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final 480 paired trial PAR2 by family, original SAT witness and UNSAT check
+    needs: factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-medium24-fixed-24SHA-pinned-exact-Cpp
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre11-medium24-shard-*
+          merge-multiple: true
+          path: mre11_medium24
+      - name: Fail closed on incomplete source SHA seed mode pairing, SAT witness or PAR2
+        run: |
+          set -euo pipefail
+          (cd mre11_medium24 && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          python3 -u research/mre11_medium_diverse24.py audit | tee mre11_medium24/audit.log
+          grep -q '^MRE11_DIVERSE_FINAL' mre11_medium24/audit.log
+          grep '^MRE11_DIVERSE_FINAL' mre11_medium24/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE11-DIVERSE-MEDIUM24-5ARM-4SEED-6S-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre11_medium24/report.json
+            mre11_medium24/audit.log
+            mre11_medium24/manifest.json
+            mre11_medium24/source.sha256
+            mre11_medium24/gate_diagnostics.json
