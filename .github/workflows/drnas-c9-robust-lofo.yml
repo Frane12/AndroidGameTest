@@ -1,0 +1,54 @@
+name: DRNAS C9 — structural conservative leave-one-formula-out portfolio 19 SHA
+on:
+  push:
+    branches: [experiment/drnas-c9-robust-lofo-portfolio-20261108]
+    paths: ['.github/workflows/drnas-c9-robust-lofo.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c9-19sha-offline-portfolio-guard-no-solver
+  cancel-in-progress: false
+jobs:
+  C9_LOFO_ONLY:
+    name: Audit 380 frozen 19SHA E2E rows and 19 fold risk-controlled source-only routing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download complete immutable C8D final 380 trial SHA19 artifact (no solver reruns)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c9_prior_c8d c9_out
+          gh run download 42526134599 -R Frane12/AndroidGameTest -n DRNAS-C8D-380-PAR2-ORIGINAL-SHA19-BVE-EARLY-CDCL -D c9_prior_c8d
+          test -s c9_prior_c8d/report.json
+          for i in 0 1 2 3 4; do
+            test -s c9_prior_c8d/shard-$i.json
+          done
+          python3 -m py_compile research/c9_lofo_risk_limited_portfolio.py
+          python3 -u research/c9_lofo_risk_limited_portfolio.py verify | tee c9_out/verify.log
+          grep -q '^C9_PRIOR_19SHA_380_REAL_ROWS_VALIDATED' c9_out/verify.log
+      - name: Full source-grouped leave-one-formula-out with risk-limited single-rule routing and charged source scan
+        run: |
+          set -euo pipefail
+          python3 -u research/c9_lofo_risk_limited_portfolio.py score | tee c9_out/audit.log
+          grep -q '^C9_FINAL' c9_out/audit.log
+          grep -q '^C9_LOFO_CASE' c9_out/audit.log
+          grep '^C9_FINAL' c9_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+          echo "Analysis only — no new real SAT execution and no prospective blind claim" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C9-LOFO-SOURCE19-RISK-LIMITED-PORTFOLIO-AUDIT
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+          path: |
+            c9_out/report.json
+            c9_out/audit.log
+            c9_out/verify.log
