@@ -159,7 +159,7 @@ def selftest(binary):
         fixtures.append(("MRE11_SOURCE_SELECT_RENAME",7,eq))
         clean=[(1,2)]*81+[(1,3),(-1,3)]
         fixtures.append(("MRE11_SOURCE_SELECT_CLEAN",3,clean))
-        fixtures.append(("MRE11_ABSTAIN_NO_STRONG_SOURCE_SIGNAL",3,[(1,2),(2,3),(-2,3)])
+        fixtures.append(("MRE11_ABSTAIN_NO_STRONG_SOURCE_SIGNAL",3,[(1,2),(2,3),(-2,3)]))
         for want,n,cl in fixtures:
             src.write_text("p cnf %d %d\n"%(n,len(cl))+
                            "".join(" ".join(map(str,c))+" 0\n" for c in cl))
