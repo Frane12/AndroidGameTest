@@ -184,7 +184,7 @@ def prepare():
             "research/drnas_crr1a_shadow.py",
             ".github/workflows/drnas-crr1b7b-easy-xor.yml",
             "history/w4sources/manifest.json",
-            "crr1b7/manifest.json"]
+            "crr1b7b/manifest.json"]
     save(ROOT/"pins.json",{p:a.sha(p) for p in pinned})
     verify()
     print("CRR1B7B_PREP_PASS",a.sha(ROOT/"manifest.json"),flush=True)
