@@ -489,7 +489,7 @@ def audit():
                            for r in subset],
                 "b3_redundancy":[r["bridge"].get("b3_redundancy",{})
                           if r["bridge"] and mode=="b3_filtered" else None
-                          for r in subset]}}
+                          for r in subset]}
     report={"status":"CRR1B3_AUDIT_PASS",
         "protocol":PROTO,"attempts":len(rows),"formulas":len(cc),
         "posthoc_development":True,"promotion_allowed":False,
