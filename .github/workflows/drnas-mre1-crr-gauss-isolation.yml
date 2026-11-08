@@ -1,0 +1,82 @@
+name: DRNAS MRE1 CRR — isolate shard5 invalid witness
+on:
+  push:
+    branches: [experiment/drnas-mre1-crr-gauss-isolation-20261108]
+    paths: ['.github/workflows/drnas-mre1-crr-gauss-isolation.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  isolate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build paired CMS adapters and retrieve exact frozen formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev g++ libgmp-dev
+          mkdir -p isolate
+          gh run download 42480812617 --repo Frane12/AndroidGameTest -n mre1-inputs -D .
+          cp research/r195_cms_native_bridge.cpp isolate/no_gauss.cpp
+          sed -i 's/if(mode!="cms_native") cms.set_allow_otf_gauss();/\/\* OTF disabled for isolation in all arms \*\//' isolate/no_gauss.cpp
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -lcryptominisat5 -o isolate/current
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror isolate/no_gauss.cpp -lcryptominisat5 -o isolate/no_gauss
+          sha256sum isolate/current isolate/no_gauss
+      - name: Replay same official SHA, identical modes and seeds, verify every original clause
+        run: |
+          set -euo pipefail
+          python3 -u - <<'PY' | tee isolate/results.log
+          import pathlib, sys, json, hashlib, subprocess, time
+          sys.path.insert(0, 'research')
+          import mre1_cross_representation as mre1
+          import r195_native_cms_benchmark as r195
+          import r164_pure_exact_gf2 as exact
+          src=pathlib.Path('r195/frozen/official-28dcc4119e1bbb5fbd3fdd8f4140f28d.cnf')
+          sha='b2c2008e5d24a7aa82499d1486af2550a53a7167e46836c4b9977846204ad483'
+          assert r195.digest(src)==sha
+          n,original=exact.parse_dimacs(src)
+          rows,proofs,meta=mre1.derive(original,max_s=5)
+          assert len(proofs)>0 and meta['proof_replayed']
+          mre1.verify_proofs(original,rows,proofs)
+          print('ISOLATE_SETUP', json.dumps(dict(sha=sha,vars=n,clauses=len(original),derived=len(proofs),source_rows=len(rows),proof_replayed=meta['proof_replayed'])),flush=True)
+          mre1.write_xors(pathlib.Path('isolate/source.tsv'),rows)
+          pathlib.Path('isolate/empty.tsv').write_text('')
+          mre1.write_cnf(pathlib.Path('isolate/augmented.cnf'),n,original,proofs)
+          failures=[]
+          results=[]
+          for rep in (0,1):
+            seed=int(hashlib.sha256((mre1.PROTO+sha+str(rep)).encode()).hexdigest()[:8],16)
+            for adapter in ('current','no_gauss'):
+              for mode in ('cms_native','source_xor','crr_shadow','crr_active'):
+                cnf = src if mode!='crr_active' else pathlib.Path('isolate/augmented.cnf')
+                native_mode='cms_native' if mode=='cms_native' else 'source_xor_import'
+                t=time.perf_counter()
+                p=subprocess.run([str(pathlib.Path('isolate')/adapter),str(cnf),
+                  'isolate/source.tsv','isolate/empty.tsv',native_mode,str(seed)],
+                  capture_output=True,text=True,timeout=45)
+                record=dict(rep=rep,seed=seed,adapter=adapter,mode=mode,
+                            elapsed_s=round(time.perf_counter()-t,3),exit=p.returncode)
+                if p.returncode==0:
+                  verdict, model, stats=r195.parsed_native(p.stdout)
+                  bad=[i for i,c in enumerate(original) if verdict=='SAT' and not any(model.get(abs(l),False)==(l>0) for l in c)]
+                  record.update(verdict=verdict,bad_original_count=len(bad),first_bad=bad[:3],stats=stats)
+                else:
+                  record['error']=p.stderr.strip()[-350:]
+                if p.returncode or record.get('bad_original_count',0):
+                  failures.append(record)
+                results.append(record)
+                print('ISOLATE_TRIAL',json.dumps(record,sort_keys=True),flush=True)
+          print('ISOLATE_SUMMARY',json.dumps(dict(trials=len(results),failures=failures),sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre1-shard5-gauss-isolation
+          retention-days: 7
+          path: isolate/results.log
