@@ -67,7 +67,8 @@ int main(int argc,char**argv) {
         check(argc==6,"usage: r195_native CNF SOURCE_ROWS DERIVED_ROWS MODE SEED");
         const string cnf=argv[1],src_rows=argv[2],derived_rows=argv[3],mode=argv[4];
         check(mode=="cms_native"||mode=="source_xor_import"||mode=="derived_shadow"||
-              mode=="derived_active","unsupported mode");
+              mode=="derived_active"||mode=="source_xor_no_gauss",
+              "unsupported mode");
         unsigned seed=unsigned(stoul(argv[5]));
         unsigned n=0;
         const auto clauses=load_cnf(cnf,n);
@@ -78,7 +79,12 @@ int main(int argc,char**argv) {
         // CryptoMiniSat 5.11.15 witness audit: OTF Gauss without imported XOR
         // produced an invalid SAT model on frozen SHA b2c2008e... (2/2).
         // Keep OTF Gauss for certified-XOR arms; native baseline omits it.
-        if(mode!="cms_native") cms.set_allow_otf_gauss();
+        // Isolated shard-5 SAT witness issue: OTF Gauss + 8 replayed CRR
+        // clauses generated invalid SAT model at seed=3670242714.
+        // The source_xor_no_gauss mode preserves XOR import but disables
+        // the opportunistic Gaussian routine. Keep independent model checks.
+        if(mode!="cms_native" && mode!="source_xor_no_gauss")
+            cms.set_allow_otf_gauss();
         cms.new_vars(n);
         for(const auto& c:clauses) {
             vector<Lit> lits;
