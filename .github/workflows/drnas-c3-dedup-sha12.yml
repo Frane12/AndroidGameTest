@@ -1,0 +1,183 @@
+name: DRNAS C3 — 12 SHA-disjoint originals dedup vs native Clean CaDiCaL 192 paired
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c3-dedup-sha12-validation-20261108]
+    paths: ['.github/workflows/drnas-c3-dedup-sha12.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c3-dedup-frozen-sha12-paired
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Restore frozen C2 C++ binary and source-disjoint MRE11 SHA12 originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore PREEXISTING C2 frozen binary and exact CMS library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42517527400 -R Frane12/AndroidGameTest -n c2-SHA8-original-CMS-pins-and-ablation-native -D .
+          chmod +x c2/bin/native c2/bin/emit mre10/bin/native
+          sha256sum -c c2_out/binary.sha256
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+      - name: Restore PREEXISTING frozen official SAT2021-25 SHA12 manifest (no source selection)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c3_source
+          gh run download 42515830079 -R Frane12/AndroidGameTest -n mre11-easy12-reference-screened-sha12-immutable-cpp -D c3_source
+          (cd c3_source && sha256sum -c mre11/bin.sha256)
+          mv c3_source/mre11_easy ./mre11_easy
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -m py_compile research/c3_dedup_sha12_validation.py
+          python3 -u research/c3_dedup_sha12_validation.py verify
+          mkdir -p c3_out
+      - name: Independent source-only duplicate inventory before any CDCL attempt
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10 cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd c2/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 - <<'PY' | tee c3_out/source-duplicates.log
+          import json,pathlib,subprocess,sys,tempfile
+          sys.path.insert(0,'research')
+          import c3_dedup_sha12_validation as c3
+          import c2_cnf_clean_ablation as c2
+          cases=c3.original_cases()
+          rows=[]
+          with tempfile.TemporaryDirectory() as tmp:
+              for case in cases:
+                  original=c3.SRC/case['filename']
+                  n,clauses=c2.read_clauses(original)
+                  seen=set();duplicate=0
+                  for clause in clauses:
+                      key=tuple(sorted(set(clause)))
+                      if key in seen:duplicate+=1
+                      else:seen.add(key)
+                  out=pathlib.Path(tmp)/'dedup.cnf'
+                  p=subprocess.run(['c2/bin/emit','--emit',str(original),'cpp_dedup',str(out)],capture_output=True,text=True,check=True)
+                  gate=c2.parse_native_gate(p.stdout,'cpp_dedup')
+                  assert gate['duplicate_clauses_removed']==duplicate, 'independent source dedup mismatch'
+                  assert gate['taut_clauses_removed']==0 and gate['variables_eliminated']==0
+                  rows.append(dict(sha256=case['sha256'],gbd=case['gbd'],clauses=len(clauses),duplicates=duplicate))
+                  print('C3_SOURCE_DUPLICATES',json.dumps(rows[-1],sort_keys=True),flush=True)
+          pathlib.Path('c3_out/duplicate-inventory.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          assert len(rows)==12
+          print('C3_SOURCE_ONLY_PRESCAN_PASS',len(rows))
+          PY
+          cadical --version | tee c3_out/cadical-version.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c3-frozen-sha12-source-c2-binary-reference
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            c2/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            c2_out/binary.sha256
+            c2/bin/emit
+            mre10/bin/native
+            c3_out/duplicate-inventory.json
+            c3_out/source-duplicates.log
+            c3_out/cadical-version.txt
+
+  paired:
+    name: C3 frozen SHA-disjoint 4-arm 4-seed 12s PAR2 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c3-frozen-sha12-source-c2-binary-reference
+          path: .
+      - name: Assert same source CNFs, binaries, seed and witness verifier before solving
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10 cadical
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x c2/bin/native c2/bin/emit mre10/bin/native
+          sha256sum -c c2_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -u research/c3_dedup_sha12_validation.py verify
+      - name: Run exact paired 3 sources x 4 seeds x 4 modes with original SAT replay
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          mkdir -p c3_out
+          python3 -u research/c3_dedup_sha12_validation.py shard --shard ${{ matrix.shard }} | tee c3_out/shard-${{ matrix.shard }}.log
+          grep -q '^C3_SHARD_PASS ${{ matrix.shard }} 48$' c3_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c3-source-paired-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c3_out/shard-${{ matrix.shard }}.json
+            c3_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C3 FINAL exact 192 original SHA 4-arm solved PAR2 and regression audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c3-frozen-sha12-source-c2-binary-reference
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c3-source-paired-shard-*
+          merge-multiple: true
+          path: c3_out
+      - name: Fail closed unless 12 original SHA x 4 seed x 4 arm and original verdict
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -u research/c3_dedup_sha12_validation.py audit | tee c3_out/audit.log
+          grep -q '^C3_FINAL' c3_out/audit.log
+          cat c3_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C3-192-SHA-DISJOINT-DEDUP-NATIVE-CLEAN-CADICAL-PAR2
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+          path: |
+            c3_out/report.json
+            c3_out/audit.log
+            c3_out/duplicate-inventory.json
+            c3_out/shard-*.json
