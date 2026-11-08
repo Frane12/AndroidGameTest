@@ -126,7 +126,7 @@ def native():
         (t_source&&mode!="td_lazy_source"&&!impact));''',"incremental")
     s=patch(s,'''                              mode=="td_lazy_source");''','''                              mode=="td_lazy_source"||impact);''',"watchlazy")
     s=patch(s,'''mode!="td_lazy_source")
-             throw runtime_error("R166X_BAD_MODE");''','''mode!="td_lazy_source"&&
+            throw runtime_error("R166X_BAD_MODE");''','''mode!="td_lazy_source"&&
              mode!="t4_impact_active"&&mode!="t4_impact_shadow")
              throw runtime_error("R166X_BAD_MODE");''',"allowed")
     line='<<" shadow_candidates="<<bridge.shadow_candidates'
