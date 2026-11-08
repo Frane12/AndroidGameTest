@@ -14,13 +14,13 @@ import mre6d_all_equalities as equal
 import r164_pure_exact_gf2 as exact
 import r195_native_cms_benchmark as r195
 
-PROTO="DRNAS-MRE7E-EXTENDED-4ARMS-2REPS-8S-v1"
+PROTO="DRNAS-MRE7E-PILOT16-4ARMS-2REPS-8S-20261108-v1"
 ROOT=pathlib.Path("mre7_bench")
 MODES=("cms_native","all_equalities","gate_auto","kissat")
 REPS=2
 CAP=8.0
 SHARDS=8
-MIN_FROZEN_CASES=20  # MRE7e selector requires >=20; target is 24, never 30.
+MIN_FROZEN_CASES=16  # Separate exploratory pilot, explicitly NOT the 20+ holdout.
 MIN_DROP_FRACTION=0.06
 MIN_ELIM_FRACTION=0.04
 MIN_DROP_CLAUSES=64
@@ -162,8 +162,8 @@ def audit():
         need(path.exists(),"missing benchmark shard "+str(idx))
         rows+=json.loads(path.read_text())
     n=len(manifest["selected_cases"])
-    need(n>=MIN_FROZEN_CASES and len(rows)==n*REPS*len(MODES),
-         "incomplete or below precommitted 20-source MRE7e holdout")
+    need(n==MIN_FROZEN_CASES and len(rows)==n*REPS*len(MODES),
+         "incomplete or different from exactly 16 frozen pilot originals")
     need(manifest["selected"]==n and manifest["source_selection_before_mre7e_gate"]
          and manifest["parent_six_SHA_untouched"],"invalid MRE7e source freeze metadata")
     expected={c["sha256"]:c for c in manifest["selected_cases"]}
@@ -213,6 +213,7 @@ def audit():
         selection_conditioned_on_reference_easiness=True,
         extension_after_six_case_pilot=True,
         not_global_unseen_guaranteed=True,
+        exploratory_pilot_only=True,main_20plus_holdout_failed=True,
         source_disjoint_declared_registry=True,history_registry_not_exhaustive=True,
         no_posthoc_source_exclusion=True,independent_unsat_lrat=False,
         SAT_original_model_check_required=True,all_scores=scores,
@@ -226,7 +227,7 @@ def selftest():
     original=[(-1,2),(1,-2),(-2,3),(2,-3),(3,4),(5,)]
     result,mapping,decision=gate_decision(original,5)
     need(len(mapping)==2 and not decision["eligible"],"small quotient must abstain")
-    need(len(MODES)==4 and REPS==2 and CAP==8.0 and SHARDS==8 and MIN_FROZEN_CASES==20,
+    need(len(MODES)==4 and REPS==2 and CAP==8.0 and SHARDS==8 and MIN_FROZEN_CASES==16,
          "protocol drift")
     print("MRE7_BENCH_SELFTEST_PASS",PROTO,flush=True)
 
