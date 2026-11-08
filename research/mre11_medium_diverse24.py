@@ -66,10 +66,13 @@ def generated(family,i):
             rows.append((vs,rhs))
         if family=="mixed_xor_unsat":
             expected="UNSAT"
-            # Full-rank planted system, plus a flipped 3-XOR: verify with CaDiCaL.
-            vs=tuple(sorted(rnd.sample(range(1,n+1),3)))
-            while vs in used:vs=tuple(sorted(rnd.sample(range(1,n+1),3)))
-            rows.append((vs,1-sum(witness[v] for v in vs)%2))
+            # Four distinct 3-XOR rows whose left sides XOR to zero.
+            # Flipping precisely one RHS is a deterministic UNSAT certificate.
+            a,b,c,d,e,f=rnd.sample(range(1,n+1),6)
+            gadget=((a,b,c),(a,d,e),(b,d,f),(c,e,f))
+            for j,vs in enumerate(gadget):
+                rhs=sum(witness[v] for v in vs)%2
+                rows.append((tuple(sorted(vs)),rhs^(j==3)))
         for vs,rhs in rows:xor3(vs,rhs)
         planted(n)
     elif family in ("graph_3color_sat","graph_3color_unsat"):
@@ -129,13 +132,12 @@ def generated(family,i):
             clause((-a,b))
     elif family=="equivalence_sat":
         n=500+400*i
+        witness=[False]+[bool(rnd.getrandbits(1)) for _ in range(n)]
         for v in range(2,n//2):
             clause((-1,v));clause((1,-v))
-        # Induced duplicate quotient without contradictory planted assignments.
-        for _ in range(3*n):
-            a,b=rnd.sample(range(2,n//2),2)
-            lit=(1 if rnd.getrandbits(1) else -1)
-            clause((lit, a if lit==1 else -a, b))
+            witness[v]=witness[1]
+        # Additional 3-CNF is constructed SAT under the SAME equivalence witness.
+        planted(3*n)
     elif family=="duplicate_clean_sat":
         n=200+100*i
         witness=[False]+[bool(rnd.getrandbits(1)) for _ in range(n)]
