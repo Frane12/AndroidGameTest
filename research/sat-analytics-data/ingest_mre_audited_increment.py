@@ -71,7 +71,7 @@ def ingest(db,rawroot,registry,outdir):
             trials.extend(obj)
         need(len(trials)==spec["expected_attempts"],
              runid+" attempts "+str(len(trials))+" != "+str(spec["expected_attempts"]))
-        db.execute("""INSERT INTO mre_audit_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        db.execute("""INSERT INTO mre_audit_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
           (runid,spec["family"],spec["run"],source_run,spec["job"],
            spec["scores"][0] and trials[0].get("protocol",trials[0].get("proto")),
            spec["cohort"],spec["sources"],spec["reps"],spec["cap"],
