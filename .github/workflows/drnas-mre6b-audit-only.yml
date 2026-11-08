@@ -1,0 +1,51 @@
+name: DRNAS MRE6b — audit exact 48 already finished CPU trials
+on:
+  push:
+    branches: [experiment/drnas-mre6-cpu-feedback-principles-20261108]
+    paths: ['.github/workflows/drnas-mre6b-audit-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit_completed_data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover all 48 completed native SAT results without rerunning CPU trials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre6b
+          gh run download 42492134752 --repo Frane12/AndroidGameTest -n mre6b-frozen -D .
+          for i in 0 1 2 3; do
+            gh run download 42492134752 --repo Frane12/AndroidGameTest -n "mre6b-seed-$i" -D mre6b
+            test -s "mre6b/seed-$i.json"
+          done
+          sha256sum -c mre5/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 - <<'PY'
+          import json
+          for seed in range(4):
+              a=json.load(open(f'mre6b/seed-{seed}.json'))
+              assert len(a)==12,(seed,len(a))
+              assert all(x['status']=='SAT' and x['original_sat_witness_verified'] for x in a)
+          print('MRE6B_EXACT_48_TRIALS_RECOVERED')
+          PY
+      - name: Compute paired 2x2 CPU interaction and append SQLite evidence
+        run: |
+          set -euo pipefail
+          python3 -u research/mre6b_factorial.py audit | tee mre6b/audit.log
+          cat mre6b/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6B-FACTORIAL-AUDITED-FINAL
+          retention-days: 30
+          path: |
+            mre6b/report.json
+            mre6b/audit.log
+            mre6/principles.sqlite
