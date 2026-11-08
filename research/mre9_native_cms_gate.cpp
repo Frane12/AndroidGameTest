@@ -99,6 +99,7 @@ static Gate certified_gate(const CNF& original,const string& mode){
     auto start=Clock::now();
     need(mode=="cpp_gate" || mode=="cpp_all" || mode=="cpp_native","mode");
     Gate result;
+    if(mode!="cpp_native")need(original.clauses.size()<=MAX_CLAUSES,"too many clauses for safe native gate");
     if(mode=="cpp_native"){
         result.reason="NATIVE_UNMODIFIED";
         return result;
@@ -218,8 +219,7 @@ static void result_line(const string& status,SATSolver* p){
         <<" decisions="<<decisions<<" propagations="<<propagations
         <<" source_rows=0 derived_rows=0\n";
 }
-static void native_solve(const CNF& original,const Gate& gate,
-                         const string& mode,unsigned seed){
+static void native_solve(const CNF& original,const Gate& gate,unsigned seed){
     const auto& working=gate.applied?gate.reduced:original.clauses;
     SATSolver cms;
     cms.set_num_threads(1);
@@ -303,7 +303,7 @@ int main(int argc,char**argv){
         double parse_s=elapsed(t);
         Gate gate=certified_gate(original,mode);
         print_gate(gate,mode,parse_s);
-        native_solve(original,gate,mode,unsigned(s));
+        native_solve(original,gate,unsigned(s));
 #endif
         return 0;
     }catch(const exception& e){
