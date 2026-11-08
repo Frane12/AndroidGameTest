@@ -13,7 +13,7 @@ import mre6d_all_equalities as equal
 import r164_pure_exact_gf2 as exact
 import r195_native_cms_benchmark as r195
 
-PROTO="DRNAS-MRE7-FAST-PROSPECTIVE-4ARMS-2REPS-8S-v1"
+PROTO="DRNAS-MRE7-FAST-PROSPECTIVE-30SHA-4ARMS-2REPS-8S-v2"
 ROOT=pathlib.Path("mre7_bench")
 MODES=("cms_native","all_equalities","gate_auto","kissat")
 REPS=2
@@ -160,7 +160,7 @@ def audit():
         need(path.exists(),"missing benchmark shard "+str(idx))
         rows+=json.loads(path.read_text())
     n=len(manifest["selected_cases"])
-    need(n>=20 and len(rows)==n*REPS*len(MODES),"incomplete or small holdout")
+    need(n>=30 and len(rows)==n*REPS*len(MODES),"incomplete or below precommitted 30-source holdout")
     expected={c["sha256"]:c for c in manifest["selected_cases"]}
     paired=collections.defaultdict(dict)
     for r in rows:
