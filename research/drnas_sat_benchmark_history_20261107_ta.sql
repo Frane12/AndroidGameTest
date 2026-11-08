@@ -895,3 +895,18 @@ INSERT INTO research_findings (finding_id,evidence_level,claim,supporting_cohort
 COMMIT;
 -- Caution: different cohort_id rows MUST NOT be treated as paired, e.g. R196 vs R197 or TA vs R2T.
 -- SELECT c.version,m.mode,m.solved,m.trials,m.par2_s FROM benchmark_cohorts c JOIN benchmark_modes m USING(cohort_id) WHERE c.version LIKE 'Ultimate T%' OR c.version LIKE 'Ultimate R2T%' ORDER BY c.version,m.mode;
+
+-- 2026-11-09 00:52 Europe/Zagreb: incremental status reconciliation.
+-- Source: GitHub Actions latest-attempt job status; numeric cohort metrics below from prior audited reporting.
+-- No unverified C11B/C12/C8I PAR2 or source-SHA details are inferred from job success.
+INSERT INTO build_status (version,branch,status,last_evidence_url,notes) VALUES
+('C11A three-backend frozen policy','experiment/drnas-c11a-three-backend-20261108','JOBS_SUCCESS','https://github.com/Frane12/AndroidGameTest/actions/runs/42534747410','One policy-recovery job succeeded. Previously reported developmental C8D 38/38 PAR2 94.70 vs Kissat 253.68; C9C 8/24 2154.72 tie; C10B 4/16 1564.78 vs Kissat 1701.96. Not blind; no independent holdout claim.'),
+('C8H BVE vivification causal ablation','experiment/drnas-c8h-20261108','JOBS_SUCCESS','https://github.com/Frane12/AndroidGameTest/actions/runs/42533156950','All five jobs including fail-closed audit successful. 3 frozen originals, 81 trials, nine arms; previously reported PAR2 default 9.400, no-BVE 27.527, no-BVE-no-vivification 9.140. Not generalizable.'),
+('C11B prospective three-backend','experiment/drnas-c11b-20261108','FINAL_JOB_FAILURE','https://github.com/Frane12/AndroidGameTest/actions/runs/42535319191','Pretest and all four shards succeeded, FINAL audit job failed. Audit artifact exists, but failure cause and paired results not yet independently inspected; DO NOT promote.'),
+('C12 early BVE R28','experiment/drnas-c12-20261108','JOBS_SUCCESS','https://github.com/Frane12/AndroidGameTest/actions/runs/42535300094','Prepare, all four 30s shards and 128-trial fail-closed final audit job succeeded; paired results require reading audit artifact before numeric entry.'),
+('C8I early BVE gate16','experiment/drnas-c8i-20261108','JOBS_SUCCESS','https://github.com/Frane12/AndroidGameTest/actions/runs/42534555190','Prepare, all four 20s shards and final source/witness/PAR2 audit job succeeded; numeric results not yet independently extracted.')
+ON CONFLICT(version) DO NOTHING;
+INSERT INTO research_findings (finding_id,evidence_level,claim,supporting_cohort_id,evidence_url,caveat,proposed_test) VALUES
+('C11B_FINAL_AUDIT_FAILURE_20261109','CI_STATUS_CONFIRMED','C11B four E2E shards and source lock succeeded, but final audit job failed. Artifact DRNAS-C11B-OFFICIAL26-THREE-BACKEND-SHA-REAL-E2E-PAR2-AUDIT exists; no validated final paired PAR2 recorded.',NULL,'https://github.com/Frane12/AndroidGameTest/actions/runs/42535319191','Failure root cause not established; do not assume algorithmic regression or correctness failure.','Inspect final audit logs/artifact; only then minimal experimental-branch fix if reproducible, and rerun only failed job where safe.'),
+('C8H_BVE_VIVIFICATION_INTERACTION_20261109','PRIOR_AUDIT_REPORTED','C8H 3-original 81-attempt ablation: no BVE PAR2 27.527 vs default 9.400, while no BVE plus no vivification PAR2 9.140. Suggests nonadditive preprocessing interaction.',NULL,'https://github.com/Frane12/AndroidGameTest/actions/runs/42533156950','Small development set, not independent holdout or broad speedup.','Use C8I/C12 paired original-SHA outcomes and targeted ablation before changing solver.')
+ON CONFLICT(finding_id) DO NOTHING;
