@@ -99,7 +99,10 @@ def parity_selftest():
     # No silent change in the compiled C6 solver's original path.
     # Both controls must produce identical full model and CDCL counts on one
     # SAT source and one UNSAT source; the original source is independently checked.
-    samples=[sources()[0],sources()[5]]
+    # 220bb8aa (index 0) can exceed 35 s even for frozen native.
+    # Choose a positive-duplicate SAT formula that C4 solved promptly
+    # and a fast previously crosschecked UNSAT no-duplicate control.
+    samples=[sources()[1],sources()[5]]
     confirmed=[]
     for item in samples:
         for mode in CONTROL_MODES:
