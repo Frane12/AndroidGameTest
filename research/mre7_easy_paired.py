@@ -13,12 +13,12 @@ import mre6d_all_equalities as equal
 import r164_pure_exact_gf2 as exact
 import r195_native_cms_benchmark as r195
 
-PROTO="DRNAS-MRE7-FAST-PROSPECTIVE-4ARMS-2REPS-8S-v1"
+PROTO="DRNAS-MRE7-PILOT6-REFERENCE-SELECTED-4ARMS-2REPS-8S-v1"
 ROOT=pathlib.Path("mre7_bench")
 MODES=("cms_native","all_equalities","gate_auto","kissat")
 REPS=2
 CAP=8.0
-SHARDS=8
+SHARDS=3
 MIN_DROP_FRACTION=0.06
 MIN_ELIM_FRACTION=0.04
 MIN_DROP_CLAUSES=64
@@ -160,7 +160,7 @@ def audit():
         need(path.exists(),"missing benchmark shard "+str(idx))
         rows+=json.loads(path.read_text())
     n=len(manifest["selected_cases"])
-    need(n>=20 and len(rows)==n*REPS*len(MODES),"incomplete or small holdout")
+    need(6<=n<20 and len(rows)==n*REPS*len(MODES),"incomplete or non-pilot cohort")
     expected={c["sha256"]:c for c in manifest["selected_cases"]}
     paired=collections.defaultdict(dict)
     for r in rows:
@@ -204,10 +204,10 @@ def audit():
             baseline_par2_s=base["par2_s"],gate_par2_s=gate["par2_s"]))
     report=dict(protocol=PROTO,source_selection=manifest["protocol"],
         source_count=n,measurements=len(rows),repeats=REPS,
-        total_wall_cap_s=CAP,holdout_preselected_using_reference_only=True,
-        selection_conditioned_on_reference_easiness=True,
+        total_wall_cap_s=CAP,pilot_reference_preselected_only=True,
+        selection_conditioned_on_reference_easiness=True,\n        source_count_insufficient_for_20_case_holdout=True,
         source_disjoint_declared_registry=True,history_registry_not_exhaustive=True,
-        no_posthoc_source_exclusion=True,independent_unsat_lrat=False,
+        no_posthoc_source_exclusion=True,independent_unsat_lrat=False,\n        pilot_only_no_promotion=True,
         SAT_original_model_check_required=True,all_scores=scores,
         cases=comparisons,not_auto_promoted=True)
     ROOT.mkdir(parents=True,exist_ok=True)
@@ -219,7 +219,7 @@ def selftest():
     original=[(-1,2),(1,-2),(-2,3),(2,-3),(3,4),(5,)]
     result,mapping,decision=gate_decision(original,5)
     need(len(mapping)==2 and not decision["eligible"],"small quotient must abstain")
-    need(len(MODES)==4 and REPS==2 and CAP==8.0 and SHARDS==8,"protocol drift")
+    need(len(MODES)==4 and REPS==2 and CAP==8.0 and SHARDS==3,"protocol drift")
     print("MRE7_BENCH_SELFTEST_PASS",PROTO,flush=True)
 
 if __name__=="__main__":
