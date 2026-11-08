@@ -132,7 +132,7 @@ def insert(conn,r):
     total_visits=sum(z["visits"] for z in tagged.values()) if tagged else 0
     total_units=sum(z["units"] for z in tagged.values()) if tagged else 0
     conn.execute("""INSERT INTO observation VALUES
-      (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+      (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (r["sha"],r["split"],r["seed"],r["repeat"],r["mode"],r["trace_enabled"],
          r["cpu"],r["solve_wall"],r["wrapper_wall"],r["decisions"],
          r["conflicts"],r["propagations"],w.get("visits"),w.get("units"),
@@ -220,7 +220,7 @@ def fit(conn):
 
 def train(path,out,db):
     need(not pathlib.Path(db).exists(),"DB already exists; calibration must freeze once")
-    files=[pathlib.Path(path)/"seed-%d.json"%i for i in range(2)]
+    files=[pathlib.Path(path)/("seed-%d.json" % i) for i in range(2)]
     data=[]
     for filename in files:
         need(filename.exists(),"calibration shard missing: "+str(filename))
