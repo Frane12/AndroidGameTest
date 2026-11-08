@@ -16,8 +16,8 @@ SHARDS = 4
 ARMS = ("cadical", "instrumented_control", "skip_all_bve",
         "gate16", "cadical_noelim", "kissat")
 GATE_RE = re.compile(
-    r"^C8I_GATE_DECISION candidates=16 early_successes=(\\d+) "
-    r"disabled=([01]) conflicts=(\\d+)$"
+    r"^C8I_GATE_DECISION candidates=16 early_successes=(\d+) "
+    r"disabled=([01]) conflicts=(\d+)$"
 )
 
 def need(ok, msg):
@@ -139,7 +139,7 @@ def shard(i):
                 print("C8I_TRIAL " + json.dumps(row, sort_keys=True), flush=True)
     need(len(rows) == 3 * len(ARMS) * REPS, "incorrect shard trial count")
     (OUT / ("shard-%d.json" % i)).write_text(
-        json.dumps(rows, indent=2, sort_keys=True) + "\\n")
+        json.dumps(rows, indent=2, sort_keys=True) + "\n")
     print("C8I_SHARD_PASS %d %d" % (i, len(rows)), flush=True)
 
 def audit():
