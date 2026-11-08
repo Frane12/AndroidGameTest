@@ -20,6 +20,7 @@ import mre4_trace_pilot as mre4
 import mre5_cpu_watch_cost as mre5
 import mre6_principles as principles
 import mre1_cross_representation as mre1
+import mre2_impact_gate as mre2
 import r195_native_cms_benchmark as r195
 
 PROTO="DRNAS-MRE6-QUOTIENT-CPU-HOLDOUT-v1"
