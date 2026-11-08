@@ -1,0 +1,168 @@
+name: DRNAS C9c — official SAT2026 10-12 frozen SHA 60s PAR2 CaDiCaL BVE gate vs Kissat
+on:
+  push:
+    branches: [experiment/drnas-c9c-official2026-12sha-frozen-bve-20261108]
+    paths: ['.github/workflows/drnas-c9c-official26-bve.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c9c-official26-12sha-source-lock-no-race
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: C9c prospective official2026 SALT 10-12 original SHA before any solver probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Load C9 locked rule and exact prior source registries including X5/R82/MRE6B
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c9_reference c9c_previous_x5 c9c_previous_r82 c9c_previous_mre6b
+          mkdir -p c9c_official c9c_out
+          gh run download 42527824455 -R Frane12/AndroidGameTest -n DRNAS-C9-LOFO-SOURCE19-RISK-LIMITED-PORTFOLIO-AUDIT -D c9c_previous_c9
+          cp c9c_previous_c9/report.json c9_reference/report.json
+          gh run download 42527549486 -R Frane12/AndroidGameTest -n mre-x5-official-2026-source-only-frozen-before-solvers -D c9c_previous_x5
+          gh run download 41756938173 -R Frane12/AndroidGameTest -n DRNAS-R82-WIDE-OFFICIAL-2025-2026-FINAL -D c9c_previous_r82
+          gh run download 42495094599 -R Frane12/AndroidGameTest -n mre6b-blind-original-official-SAT2026 -D c9c_previous_mre6b
+          test -s c9c_previous_x5/mre_x5_blind/manifest.json
+          test -s c9c_previous_r82/world/manifest.json
+          test -s c9c_previous_mre6b/manifest.json
+          python3 -m py_compile research/c9c_official26_freeze.py research/c9c_official26_bve_gate.py
+      - name: Source-only select verified official2026 10-12 SAT/UNSAT originals with SHA lock
+        run: |
+          set -euo pipefail
+          python3 -u research/c9c_official26_freeze.py freeze | tee c9c_official/freeze.log
+          grep -q '^C9C_SOURCE_FROZEN' c9c_official/freeze.log
+          python3 -u research/c9c_official26_freeze.py verify | tee c9c_official/verify.log
+          grep -q '^C9C_SOURCE_SHA_VERIFIED' c9c_official/verify.log
+          (cd c9c_official && sha256sum -c source.sha256)
+          echo C9C_OFFICIAL_2026_SHA_FREEZE_FINISHED_BEFORE_ANY_BENCHMARK
+      - name: Restore immutable standard CaDiCaL 1.7.3 and SHA-pinned Kissat 4.0.4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c9c_c7source built/bin c7_source c7_out
+          gh run download 42523071479 -R Frane12/AndroidGameTest -n c7-certified-sources-CMS-CaDiCaL-Kissat-pins -D c9c_c7source
+          cp c9c_c7source/built/bin/kissat_4_0_4 built/bin/
+          cp c9c_c7source/c7_source/kissat.sha256 c7_source/
+          cp c9c_c7source/c7_out/cadical-version.txt c7_out/
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          python3 -u research/c9c_official26_bve_gate.py verify | tee c9c_out/verify.log
+          python3 -u research/c9c_official26_bve_gate.py smoke | tee c9c_out/smoke.log
+          grep -q '^C9C_STANDARD_SOLVER_SAT_WITNESS_SMOKE_PASS' c9c_out/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c9c-new-official-2026-10plus-source-only-frozen-before-any-run
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c9c_official/*.cnf
+            c9c_official/manifest.json
+            c9c_official/source.sha256
+            c9c_official/freeze.log
+            c9c_official/verify.log
+            c9_reference/report.json
+            c9c_previous_x5/mre_x5_blind/manifest.json
+            c9c_previous_r82/world/manifest.json
+            c9c_previous_mre6b/manifest.json
+            built/bin/kissat_4_0_4
+            c7_source/kissat.sha256
+            c7_out/cadical-version.txt
+            c9c_out/verify.log
+            c9c_out/smoke.log
+  paired:
+    name: C9c original SHA 60s 4-arm x 2 repeat shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c9c-new-official-2026-10plus-source-only-frozen-before-any-run
+          path: .
+      - name: Verify original SHA/frozen 19-SHA policy/standards before benchmarks
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c c7_source/kissat.sha256
+          (cd c9c_official && sha256sum -c source.sha256)
+          python3 -u research/c9c_official26_freeze.py verify
+          python3 -u research/c9c_official26_bve_gate.py verify
+      - name: Real 60s E2E SAT/UNSAT PAR2 standard solver and source-header C9 rule
+        run: |
+          set -euo pipefail
+          mkdir -p c9c_out
+          python3 -u research/c9c_official26_bve_gate.py shard --shard ${{ matrix.shard }} | tee c9c_out/shard-${{ matrix.shard }}.log
+          grep -q '^C9C_SHARD_PASS ${{ matrix.shard }} ' c9c_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c9c-2026-paired-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c9c_out/shard-${{ matrix.shard }}.json
+            c9c_out/shard-${{ matrix.shard }}.log
+  audit:
+    name: C9c FINAL 10plus distinct official SHA source-paired 60s PAR2 and no-regression audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c9c-new-official-2026-10plus-source-only-frozen-before-any-run
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c9c-2026-paired-shard-*
+          merge-multiple: true
+          path: c9c_out
+      - name: Audit every original SHA, paired run, model witness, timeout PAR2, formula regret
+        run: |
+          set -euo pipefail
+          (cd c9c_official && sha256sum -c source.sha256)
+          python3 -u research/c9c_official26_bve_gate.py audit | tee c9c_out/audit.log
+          grep -q '^C9C_FINAL' c9c_out/audit.log
+          grep '^C9C_FINAL' c9c_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C9C-OFFICIAL26-10PLUS-SHA-60S-E2E-PAR2-SELECTOR-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c9c_out/report.json
+            c9c_out/audit.log
+            c9c_out/shard-*.json
+            c9c_official/manifest.json
+            c9_reference/report.json
