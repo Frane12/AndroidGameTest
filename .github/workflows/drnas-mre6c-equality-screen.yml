@@ -1,0 +1,100 @@
+name: DRNAS MRE6c — seven locked CNFs equality screening
+on:
+  push:
+    branches: [experiment/drnas-mre6b-equality-screen-20261108]
+    paths: ['.github/workflows/drnas-mre6c-equality-screen.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6c-equality-screen
+  cancel-in-progress: false
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover the exact seven frozen originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42495311707 --repo Frane12/AndroidGameTest -n mre6b-locked-inputs-CMS -D .
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          python3 research/mre6b_blind_freeze.py verify
+      - name: Test equality screening and measure all seven originals
+        run: |
+          set -euo pipefail
+          mkdir -p mre6c_screen
+          python3 -u - <<'PY' | tee mre6c_screen/screen.log
+          import sys,json,pathlib,tempfile,time,statistics
+          sys.path.insert(0,"research")
+          import mre6b_equality_screen as screen
+          import mre6b_blind_pilot as old
+          import mre6_principles as m6
+          with tempfile.TemporaryDirectory() as tmp:
+              p=pathlib.Path(tmp)/"test.cnf"
+              p.write_text("p cnf 3 5\n-1 2 0\n1 -2 0\n-2 3 0\n2 -3 0\n1 3 0\n")
+              r=screen.screen(p)
+              assert r["direct_unique_pairs"]==2
+              assert r["independent_merges"]==2
+              assert r["equality_classes"]==1
+              assert r["projected_unique_clauses"]==1
+              assert r["tautologies_after_mapping"]==4
+              p.write_text("p cnf 2 2\n-1 2 0\n-1 2 0\n")
+              r=screen.screen(p)
+              assert r["direct_unique_pairs"]==0 and r["independent_merges"]==0
+          print("MRE6C_SCREEN_SELFTEST_PASS",flush=True)
+          mf=json.load(open("mre6b_blind/manifest.json"))
+          assert len(mf["cases"])==7
+          report=[]
+          for case in mf["cases"]:
+              path=pathlib.Path("mre6b_blind")/case["filename"]
+              assert old.freeze.sha256(path.read_bytes())==case["sha256"]
+              measurements=[screen.screen(path) for _ in range(3)]
+              structural=[{k:v for k,v in r.items() if k!="elapsed_s"} for r in measurements]
+              assert structural[0]==structural[1]==structural[2]
+              n,cnf=old.exact.parse_dimacs(path)
+              direct=set(old.find_direct_equalities(cnf))
+              assert len(direct)==measurements[0]["direct_unique_pairs"]
+              start=time.perf_counter()
+              rows,proofs,stats=old.mre1.derive(cnf,max_s=old.MAX_DERIVE_S)
+              assert stats["proof_replayed"]
+              chosen,total=old.choose_certified_principle(cnf,rows,proofs)
+              old_s=time.perf_counter()-start
+              derived={(p["keep"],p["remove"]) for p in m6.build_principles(cnf,rows,proofs)}
+              assert total==len(direct|derived)
+              selected=None
+              if chosen:
+                  transformed,_,evidence=m6.apply_quotient(cnf,rows,chosen)
+                  selected={"keep_id":chosen["keep"],"remove_id":chosen["remove"],
+                            "certificate":chosen["proof_type"],"clauses_after":len(transformed),
+                            "replaced_occurrences":evidence["cnf"]["replaced_occurrences"]}
+              result={"gbd":case["gbd"],"source_sha256":case["sha256"],
+                      "direct_screen":structural[0],
+                      "screen_times_s":[r["elapsed_s"] for r in measurements],
+                      "screen_median_s":statistics.median(r["elapsed_s"] for r in measurements),
+                      "legacy_discovery_and_selection_s":old_s,
+                      "legacy_total_unique_pairs":total,
+                      "derived_pairs_not_direct":len(derived-direct),
+                      "legacy_selected_single_equality":selected}
+              report.append(result)
+              print("MRE6C_SCREEN_CASE",json.dumps(result,sort_keys=True),flush=True)
+          payload={"protocol":"MRE6C-LOCKED7-STRUCTURAL-SCREEN-v1",
+                   "diagnostic_cohort_not_new_holdout":True,
+                   "solver_speedup_not_measured":True,"cases":report}
+          pathlib.Path("mre6c_screen/report.json").write_text(json.dumps(payload,indent=2)+"\n")
+          print("MRE6C_SCREEN_PASS",len(report),flush=True)
+          PY
+          grep -q '^MRE6C_SCREEN_PASS 7' mre6c_screen/screen.log
+          cat mre6c_screen/screen.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE6C-equality-screen
+          retention-days: 10
+          path: mre6c_screen/
