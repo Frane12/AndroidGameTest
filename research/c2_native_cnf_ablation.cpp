@@ -271,7 +271,7 @@ static void print_gate(const Gate& g,const string& mode,double parse_s){
         <<",\"removed_fraction\":"<<g.fraction
         <<",\"native_parse_s\":"<<parse_s
         <<",\"native_gate_s\":"<<g.reduce_s
-        <<",\"certificate\":\"two_original_CNF_binary_clauses_transitive_closure\"}"
+        <<",\"certificate\":\""<<((mode=="cpp_dedup"||mode=="cpp_taut"||mode=="cpp_local")? "original_CNF_clause_identity":"two_original_CNF_binary_clauses_transitive_closure")<<"\"}"
         <<"\n";
 }
 #ifndef MRE9_STANDALONE
