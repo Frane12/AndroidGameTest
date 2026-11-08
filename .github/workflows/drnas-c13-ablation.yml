@@ -1,0 +1,338 @@
+name: DRNAS C13 — C12 component ablation on fresh official SAT2026 sources
+# Intentionally isolated experimental workflow; frozen V15.3.1 and analytics SQLite untouched.
+on:
+  push:
+    branches: [experiment/drnas-c13-c12-ablation-20261109]
+    paths: ['.github/workflows/drnas-c13-ablation.yml','research/c13_ablation.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c13-bve-r28-official26-first-prospective
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze 12 new official SHA before benchmarking and pin all solver binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pre-existing source registries and SHA-pinned Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p prior_c8d prior_c9c prior_c10b prior_c12 built/bin c13_out c13_bin
+          gh run download 42526134599 -R Frane12/AndroidGameTest -n DRNAS-C8D-380-PAR2-ORIGINAL-SHA19-BVE-EARLY-CDCL -D prior_c8d
+          gh run download 42529378612 -R Frane12/AndroidGameTest -n c9c-new-official-2026-10plus-source-only-frozen-before-any-run -D prior_c9c
+          gh run download 42532482392 -R Frane12/AndroidGameTest -n c10b-new-SAT2026-8plus-original-SHA-locked-before-benchmark -D prior_c10b
+          gh run download 42535300094 -R Frane12/AndroidGameTest -n DRNAS-C12-8SHA-128-E2E-PAIRED-R28-BVE-CDCL-PAR2-AUDIT -D prior_c12
+          test -s prior_c8d/report.json
+          test -s prior_c9c/c9c_official/manifest.json
+          test -s prior_c10b/c10b_official/manifest.json
+          test -s prior_c9c/built/bin/kissat_4_0_4
+          cp prior_c9c/built/bin/kissat_4_0_4 built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+          sha256sum -c prior_c9c/c7_source/kissat.sha256
+          python3 -m py_compile research/c13_ablation.py research/c8i_patch_early_bve_success_gate.py
+      - name: Pre-register and freeze 12 new original SHA official SAT2026 formulas
+        run: |
+          set -euo pipefail
+          python3 -u research/c13_ablation.py freeze | tee c13_out/freeze.log
+          grep -q '^C13_SOURCE_FROZEN' c13_out/freeze.log
+          (cd c13_sources && sha256sum -c source.sha256)
+          python3 -u research/c13_ablation.py verify
+      - name: Build exact pinned CaDiCaL 1.7.3, live C8I gate, and R28 exact GF2 proof front end
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch rel-1.7.3 https://github.com/arminbiere/cadical.git c13_cadical_original
+          test "$(git -C c13_cadical_original rev-parse HEAD)" = "38e073b389a877b0a0d3c91136d2443ab95fdeba"
+          test "$(cat c13_cadical_original/VERSION)" = "1.7.3"
+          cp -a c13_cadical_original c13_cadical_gate
+          python3 -u research/c8i_patch_early_bve_success_gate.py c13_cadical_gate
+          (cd c13_cadical_original && ./configure && make -j2)
+          (cd c13_cadical_gate && ./configure && make -j2)
+          mkdir -p c8c/bin
+          cp c13_cadical_original/build/cadical c8c/bin/plain
+          cp c13_cadical_gate/build/cadical c8c/bin/instrumented
+          g++ -std=c++17 -O3 -Wall -Wextra experiments/drnas_v16/r28_exact_gf2.cpp -o c13_bin/r28_gf2
+          chmod +x c8c/bin/plain c8c/bin/instrumented c13_bin/r28_gf2
+          test "$(c8c/bin/plain --version)" = "1.7.3"
+          test "$(c8c/bin/instrumented --version)" = "1.7.3"
+          sha256sum c8c/bin/plain c8c/bin/instrumented c13_bin/r28_gf2 built/bin/kissat_4_0_4 > c13_bin/binary.sha256
+          sha256sum -c c13_bin/binary.sha256
+          python3 - <<'PY'
+          import pathlib,subprocess
+          f=pathlib.Path("c13_bin/smoke.cnf");f.write_text("p cnf 2 2\n1 2 0\n-1 2 0\n")
+          for cmd in (["c8c/bin/plain",str(f)],["c8c/bin/instrumented",str(f)],
+                      ["built/bin/kissat_4_0_4",str(f)],
+                      ["c13_bin/r28_gf2",str(f),str(pathlib.Path("built/bin/kissat_4_0_4").resolve())]):
+              p=subprocess.run(cmd,capture_output=True,text=True,timeout=8)
+              assert p.returncode==10 and "SATISFIABLE" in p.stdout,(cmd,p.returncode,p.stderr[-500:])
+          print("C13_PINNED_4_BACKENDS_SAT_SMOKE_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-pinned-backends-and-frozen-official-SHA
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_sources/*.cnf
+            c13_sources/manifest.json
+            c13_sources/source.sha256
+            prior_c8d/report.json
+            prior_c9c/c9c_official/manifest.json
+            prior_c10b/c10b_official/manifest.json
+            c13_out/freeze.log
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c13_bin/r28_gf2
+            c13_bin/binary.sha256
+  trials:
+    needs: prepare
+    name: 6 policies source-paired real 30s E2E official2026 shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c13-pinned-backends-and-frozen-official-SHA
+          path: .
+      - name: Verify immutable binaries and all original CNF SHA
+        run: |
+          set -euo pipefail
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4 c13_bin/r28_gf2
+          sha256sum -c c13_bin/binary.sha256
+          (cd c13_sources && sha256sum -c source.sha256)
+          python3 research/c13_ablation.py verify
+      - name: Execute paired real SAT/UNSAT arms including all paid pilot overhead
+        run: |
+          set -euo pipefail
+          mkdir -p c13_out
+          python3 -u research/c13_ablation.py shard --shard ${{ matrix.shard }} | tee c13_out/shard-${{ matrix.shard }}.log
+          grep -q '^C13_SHARD_PASS ${{ matrix.shard }} 54
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/shard-${{ matrix.shard }}.json
+            c13_out/shard-${{ matrix.shard }}.log
+  final_audit:
+    needs: trials
+    name: Fail-closed 216-trial original-SHA witness PAR2 paired audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c13-pinned-backends-and-frozen-official-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c13-shard-*
+          merge-multiple: true
+          path: c13_out
+      - name: Verify all new original SHA, paired keys and SAT models, aggregate true PAR2
+        run: |
+          set -euo pipefail
+          (cd c13_sources && sha256sum -c source.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          python3 -m py_compile research/c13_ablation.py
+          python3 -u research/c13_ablation.py audit | tee c13_out/audit.log
+          grep -q '^C13_FINAL' c13_out/audit.log
+          grep '^C13_FINAL' c13_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C13-12SHA-128-E2E-PAIRED-R28-BVE-CDCL-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/report.json
+            c13_out/audit.log
+            c13_out/shard-*.json
+            c13_out/shard-*.log
+            c13_sources/manifest.json
+            c13_sources/source.sha256
+            c13_bin/binary.sha256
+ c13_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/shard-${{ matrix.shard }}.json
+            c13_out/shard-${{ matrix.shard }}.log
+  final_audit:
+    needs: trials
+    name: Fail-closed 216-trial original-SHA witness PAR2 paired audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c13-pinned-backends-and-frozen-official-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c13-shard-*
+          merge-multiple: true
+          path: c13_out
+      - name: Verify all new original SHA, paired keys and SAT models, aggregate true PAR2
+        run: |
+          set -euo pipefail
+          (cd c13_sources && sha256sum -c source.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          python3 -m py_compile research/c13_ablation.py
+          python3 -u research/c13_ablation.py audit | tee c13_out/audit.log
+          grep -q '^C13_FINAL' c13_out/audit.log
+          grep '^C13_FINAL' c13_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C13-12SHA-128-E2E-PAIRED-R28-BVE-CDCL-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/report.json
+            c13_out/audit.log
+            c13_out/shard-*.json
+            c13_out/shard-*.log
+            c13_sources/manifest.json
+            c13_sources/source.sha256
+            c13_bin/binary.sha256
+ c13_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/shard-${{ matrix.shard }}.json
+            c13_out/shard-${{ matrix.shard }}.log
+  final_audit:
+    needs: trials
+    name: Fail-closed 216-trial original-SHA witness PAR2 paired audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c13-pinned-backends-and-frozen-official-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c13-shard-*
+          merge-multiple: true
+          path: c13_out
+      - name: Verify all new original SHA, paired keys and SAT models, aggregate true PAR2
+        run: |
+          set -euo pipefail
+          (cd c13_sources && sha256sum -c source.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          python3 -m py_compile research/c13_ablation.py
+          python3 -u research/c13_ablation.py audit | tee c13_out/audit.log
+          grep -q '^C13_FINAL' c13_out/audit.log
+          grep '^C13_FINAL' c13_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C13-12SHA-128-E2E-PAIRED-R28-BVE-CDCL-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/report.json
+            c13_out/audit.log
+            c13_out/shard-*.json
+            c13_out/shard-*.log
+            c13_sources/manifest.json
+            c13_sources/source.sha256
+            c13_bin/binary.sha256
+ c13_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/shard-${{ matrix.shard }}.json
+            c13_out/shard-${{ matrix.shard }}.log
+  final_audit:
+    needs: trials
+    name: Fail-closed 216-trial original-SHA witness PAR2 paired audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c13-pinned-backends-and-frozen-official-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c13-shard-*
+          merge-multiple: true
+          path: c13_out
+      - name: Verify all new original SHA, paired keys and SAT models, aggregate true PAR2
+        run: |
+          set -euo pipefail
+          (cd c13_sources && sha256sum -c source.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          python3 -m py_compile research/c13_ablation.py
+          python3 -u research/c13_ablation.py audit | tee c13_out/audit.log
+          grep -q '^C13_FINAL' c13_out/audit.log
+          grep '^C13_FINAL' c13_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C13-12SHA-128-E2E-PAIRED-R28-BVE-CDCL-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c13_out/report.json
+            c13_out/audit.log
+            c13_out/shard-*.json
+            c13_out/shard-*.log
+            c13_sources/manifest.json
+            c13_sources/source.sha256
+            c13_bin/binary.sha256
