@@ -133,9 +133,9 @@ def _refine(c,records,a,b,coarse,key,label):
                 resolution_conflicts=upper-lower,
                 extra_windows=len(measured),recheck_passed=ok)
 def _prior_c8():
-    f=PRIOR/"report.json"
-    need(f.is_file(),"original C8 report missing")
-    report=json.loads(f.read_text())
+    matches=list(PRIOR.rglob("report.json"))
+    need(len(matches)==1,"exactly one original C8 report expected")
+    report=json.loads(matches[0].read_text())
     need(report["full_trial_count"]==36 and
          report["diagnostic_trace_count"]==60 and
          report["source_SHA3"]==[c["sha256"] for c in sources()] and
