@@ -1,0 +1,171 @@
+name: DRNAS AlphaMapleSAT Mallob Shared Intelligence 24 SHA paired
+on:
+  push:
+    branches: [experiment/drnas-alpha-mallob-shared-20261108]
+    paths:
+      - 'research/drnas_alpha_mallob_shared.py'
+      - '.github/workflows/drnas-alpha-mallob-shared.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-alpha-mallob-shared
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install verified Mallob build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openmpi-bin libopenmpi-dev gdb cmake make g++ libgmp-dev libboost-all-dev libhwloc-dev libnuma-dev libssl-dev libzstd-dev
+      - name: Pin upstream AlphaMapleSAT and Mallob by exact git commit
+        run: |
+          set -euo pipefail
+          mkdir -p external
+          git clone -q https://github.com/piyush-J/AlphaMapleSAT.git external/AlphaMapleSAT
+          git -C external/AlphaMapleSAT checkout -q 215224bb04c46b8c220f413a4c3e64962741812b
+          git clone -q https://github.com/domschrei/mallob.git external/mallob
+          git -C external/mallob checkout -q 486be632791fac57a03dabeb6d50b799c5e06fe9
+          test "$(git -C external/AlphaMapleSAT rev-parse HEAD)" = 215224bb04c46b8c220f413a4c3e64962741812b
+          test "$(git -C external/mallob rev-parse HEAD)" = 486be632791fac57a03dabeb6d50b799c5e06fe9
+          python -m pip install --upgrade pip
+          python -m pip install -r external/AlphaMapleSAT/alphamaplesat/requirements.txt
+          python - <<'PY'
+          import numpy,wandb,pysat,coloredlogs
+          print("AMDS_ALPHA_IMPORT_PASS",numpy.__version__,wandb.__version__)
+          PY
+      - name: Build REAL MallobSat minimal Kissat backend
+        working-directory: external/mallob
+        run: |
+          set -euo pipefail
+          MALLOB_MINIMAL=1 bash scripts/setup/cmake-make.sh build -DMALLOB_APP_SAT=1 -DMALLOB_USE_KISSAT=1
+          test -x build/mallob
+          build/mallob -h > build/mallob-help.txt 2>&1 || true
+          grep -i -q 'mono' build/mallob-help.txt
+      - name: Fetch SHA frozen R193 formulas (not a fresh holdout)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p alpha_mallob_shared
+          gh run download 42295688082 --repo Frane12/AndroidGameTest -n r193-frozen102-native -D alpha_mallob_shared
+          python -u research/drnas_alpha_mallob_shared.py verify
+      - name: Mallob original engine smoke, UNSAT only
+        run: |
+          set -euo pipefail
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > external/mallob/amds-smoke.cnf
+          (
+            cd external/mallob
+            timeout 45s build/mallob -mono=amds-smoke.cnf -mono-app=SAT -t=2 -satsolver=k -s2f=amds-smoke.sol | tee amds-smoke.log
+          )
+          python - <<'PY'
+          import pathlib
+          p=pathlib.Path("external/mallob/amds-smoke.log")
+          txt=p.read_text()
+          print("AMDS_MALLOB_SMOKE_TAIL",txt[-1800:])
+          for f in pathlib.Path("external/mallob").glob("amds-smoke.sol*"):
+              print("AMDS_SOLUTION_FILE",f.name,f.read_text(errors="replace")[-700:])
+          assert ("UNSAT" in txt or any("UNSAT" in f.read_text(errors="replace") for f in pathlib.Path("external/mallob").glob("amds-smoke.sol*")))
+          print("AMDS_MALLOB_REAL_SMOKE_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amds-pinned-binaries-and-inputs
+          retention-days: 14
+          compression-level: 1
+          path: |
+            external/mallob/build/
+            external/AlphaMapleSAT/alphamaplesat/
+            alpha_mallob_shared/frozen/
+            external/mallob/amds-smoke.log
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    name: Alpha-Mallob-DRNAS shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install runtime and fetch SHA pinned Mallob and Alpha
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openmpi-bin libopenmpi-dev libgmp-dev libboost-all-dev libhwloc-dev libnuma-dev
+          git clone -q https://github.com/domschrei/mallob.git external/mallob
+          git -C external/mallob checkout -q 486be632791fac57a03dabeb6d50b799c5e06fe9
+          git clone -q https://github.com/piyush-J/AlphaMapleSAT.git external/AlphaMapleSAT
+          git -C external/AlphaMapleSAT checkout -q 215224bb04c46b8c220f413a4c3e64962741812b
+          python -m pip install -r external/AlphaMapleSAT/alphamaplesat/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: amds-pinned-binaries-and-inputs
+          path: .
+      - name: Verify Mallob binary and frozen formula SHA
+        run: |
+          set -euo pipefail
+          chmod +x external/mallob/build/mallob
+          test -x external/mallob/build/mallob
+          python research/drnas_alpha_mallob_shared.py verify
+      - name: Run real AlphaMapleSAT cuber through Mallob with DRNAS shared priority
+        run: |
+          set -euo pipefail
+          python -u research/drnas_alpha_mallob_shared.py shard --shard ${{ matrix.shard }} | tee alpha_mallob_shared/shard-${{ matrix.shard }}.log
+          grep -q '^AMDS_SHARD_PASS' alpha_mallob_shared/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: amds-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            alpha_mallob_shared/shard-${{ matrix.shard }}.json
+            alpha_mallob_shared/shard-${{ matrix.shard }}.log
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: amds-pinned-binaries-and-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: amds-shard-*
+          merge-multiple: true
+          path: alpha_mallob_shared
+      - name: Strict SHA paired audit and PAR2
+        run: |
+          set -euo pipefail
+          test "$(find alpha_mallob_shared -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+          python3 -u research/drnas_alpha_mallob_shared.py audit | tee alpha_mallob_shared/audit.log
+          grep -q '^AMDS_FINAL ' alpha_mallob_shared/audit.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-ALPHAMAPLESAT-MALLOB-SHARED-FINAL
+          retention-days: 90
+          path: |
+            alpha_mallob_shared/report.json
+            alpha_mallob_shared/all-trials.json
+            alpha_mallob_shared/audit.log
