@@ -178,46 +178,6 @@ def filter_novel(n,original,extra,certs,max_added=B3_MAX_ADDED):
     stats["analysis_s"]=round(time.perf_counter()-start,6)
     return accepted,accepted_cert,stats
 
-def selftest():
-    b2.selftest()
-    # Real b3 candidate from a valid original-CNF XOR reduction with
-    # a distinct non-parity clause linking the XOR variable to another.
-    original=a.fixture_xor((1,2),0)+a.fixture_xor((1,2,3),1)+[(3,4)]
-    extra,cert,base=b2.make_bridge(4,original)
-    need(extra and base["status"]=="READY","B2 algebraic input fixture")
-    selected,cert_sel,stat=filter_novel(4,original,extra,cert)
-    need(len(selected)>0 and stat["selected"]==len(selected),
-         "B3 relevant certified unit must survive")
-    need(b.certify_added(original,cert_sel)==set(selected),"B3 proof replay")
-    # No external nonparity CNF touch -> bounded XOR-only mode may pass.
-    pure=a.fixture_xor((1,2),0)+a.fixture_xor((1,2,3),1)
-    extra,cert,_=b2.make_bridge(3,pure)
-    selected,_,stat=filter_novel(3,pure,extra,cert)
-    need(not selected and stat["irrelevant_no_cross_CNF"]>0,
-         "B3 cross-CNF relevance filter failed")
-    graph,_=b.graph_from_original([],time.perf_counter()+2)
-    graph[-1].append(2);graph[-2].append(1)
-    need(b.graph_implies(graph,(1,2),time.perf_counter()+2),
-         "dynamic graph should contain accepted implication")
-    # Zero-candidate fast path must not scan 100k irrelevant clauses.
-    _sel,_cert,_meta=filter_novel(3,[(1,2),(2,3)],[],[])
-    need(_meta["status"]=="SKIPPED" and _meta["reason"]=="NO_NOVEL_INPUT_CANDIDATES",
-         "zero-candidate work skip failed")
-    # Explicit BCP correctness and mathematical-unit novelty tests.
-    probe=PropagationOracle([(1,2),(-2,3)],time.perf_counter()+2)
-    inferred=probe.run((-1,),time.perf_counter()+2)
-    need(not inferred["conflict"] and inferred["fixed"].get(2) is True and
-         inferred["fixed"].get(3) is True,"BCP chained implications failed")
-    need(propagation_gain(probe,(1,3),time.perf_counter()+2)[0]==0,
-         "BCP should discard already propagated binary clause")
-    pure=a.fixture_xor((1,2),0)+a.fixture_xor((1,2,3),1)
-    newc,newcert,_=b2.make_bridge(3,pure)
-    keep,certs,impact=select_propagation(3,pure,newc,newcert,8)
-    need(len(keep)>0 and impact["final_marginal_probe_units"]>0 and
-         b.certify_added(pure,certs)==set(keep),
-         "certified BCP novelty calibration failed")
-    print("CRR1B4_SELFTEST_PASS",flush=True)
-
 class PropagationOracle:
     """Event-driven exact CNF unit propagation under specified assumptions.
 
@@ -647,7 +607,21 @@ def selftest():
     chosen,_,stat=filter_novel(3,pure,extra,cert)
     need(chosen and stat["zero_cross_admitted"]>0,
          "relaxed filter must admit bounded XOR-supported candidates")
-    print("CRR1B3_SELFTEST_PASS",flush=True)
+    oracle=PropagationOracle([(1,2),(-2,3)],time.perf_counter()+2)
+    implied=oracle.run((-1,),time.perf_counter()+2)
+    need(not implied["conflict"] and implied["fixed"].get(2) is True
+         and implied["fixed"].get(3) is True,
+         "BCP chained implications must propagate")
+    need(propagation_gain(oracle,(1,3),time.perf_counter()+2)[0]==0,
+         "BCP novelty must reject a UP-redundant clause")
+    pure=a.fixture_xor((1,2),0)+a.fixture_xor((1,2,3),1)
+    candidates,certificates,meta=b2.make_bridge(3,pure)
+    selected,selected_cert,impact=select_propagation(
+        3,pure,candidates,certificates,8)
+    need(selected and impact["final_marginal_probe_units"]>0 and
+         b.certify_added(pure,selected_cert)==set(selected),
+         "B4 certified novel propagation fixture failed")
+    print("CRR1B4_SELFTEST_PASS",flush=True)
 
 def verify():
     cc=focused_cases()
