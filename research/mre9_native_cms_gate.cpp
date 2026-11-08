@@ -184,7 +184,7 @@ static Gate certified_gate(const CNF& original,const string& mode){
     result.reduce_s=elapsed(start);
     return result;
 }
-static void write_dimacs(const string& filename,unsigned n,
+[[maybe_unused]] static void write_dimacs(const string& filename,unsigned n,
                          const vector<vector<int>>& clauses){
     ofstream out(filename);
     need(bool(out),"cannot write certified CNF");
