@@ -1,0 +1,51 @@
+name: DRNAS MRE X — isolated C5 bounded 100 1000 CDCL diagnostics only
+on:
+  push:
+    branches: [experiment/drnas-mre-x-20261108]
+    paths: ['.github/workflows/drnas-mre-x-c5-bounded-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x-bounded-telemetry-repair-only-20261108
+  cancel-in-progress: false
+jobs:
+  early_only:
+    name: Use existing frozen 13 SHA and native binary; NO main PAR2 reruns
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover EXACT original completed MRE X prepare artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42521334746 -R Frane12/AndroidGameTest \
+            -n mre-x-13-original-sha-source-and-certified-seven-native-arms -D .
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          chmod +x mre_x/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre_x_benchmark.py
+      - name: Native 100 and 1000-conflict early CDCL, never full SAT benchmark
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x_benchmark.py early \
+            --native mre_x/bin/native | tee mre_x/early_cdcl.log
+          grep -q '^MRE_X_BOUNDED_C5_TELEMETRY_PASS 24' mre_x/early_cdcl.log
+          echo MRE_X_EARLY_C5_BOUNDED_DIAGNOSTIC_NOT_PAR2_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE-X-ONLY-C5-24-BOUNDED-EARLY-CDCL-NOT-PAR2
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mre_x/early_cdcl_diagnostic.json
+            mre_x/early_cdcl.log
