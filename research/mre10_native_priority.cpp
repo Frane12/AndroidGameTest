@@ -165,6 +165,7 @@ static Gate certified_gate(const CNF& original,const string& mode){
     unordered_set<string> seen;
     if(active_clean)seen.reserve(original.clauses.size()*2+1);
     vector<vector<int>> rewritten;
+    bool anyChanged=false;
     rewritten.reserve(original.clauses.size());
     for(const auto& clause:original.clauses){
         vector<int> mapped;mapped.reserve(clause.size());
@@ -179,17 +180,21 @@ static Gate certified_gate(const CNF& original,const string& mode){
             bool taut=false;
             for(int lit:sorted)
                 if(binary_search(sorted.begin(),sorted.end(),-lit)){taut=true;break;}
-            if(taut)continue;
+            if(taut){anyChanged=true;continue;}
             string key=sorted.empty()?string():
                 string(reinterpret_cast<const char*>(sorted.data()),
                        sorted.size()*sizeof(int));
-            if(!seen.insert(key).second)continue;
+            if(!seen.insert(key).second){anyChanged=true;continue;}
             unordered_set<int> local;
             local.reserve(mapped.size()*2+1);
             vector<int> stable;stable.reserve(mapped.size());
             for(int lit:mapped)if(local.insert(lit).second)stable.push_back(lit);
+            anyChanged=anyChanged||(stable!=clause);
             rewritten.push_back(std::move(stable));
-        }else rewritten.push_back(std::move(mapped));
+        }else{
+            anyChanged=anyChanged||(mapped!=clause);
+            rewritten.push_back(std::move(mapped));
+        }
     }
     need(rewritten.size()<=original.clauses.size(),"rewrite added clauses");
     result.removed=unsigned(original.clauses.size()-rewritten.size());
@@ -201,8 +206,7 @@ static Gate certified_gate(const CNF& original,const string& mode){
     }
     // Clean-only must have identity map; all other variants preserve exact source
     // positive-equivalence proof. Do not assert speed benefits from modifications.
-    result.applied=(active_rename&&result.eliminated>0)||
-                    (active_clean&&result.removed>0);
+    result.applied=anyChanged;
     if(result.applied){
         if(result.reason=="NATIVE_NO_TRANSFORM")
             result.reason="APPLY_ORIGINAL_CERTIFIED_TRANSFORMATION";
