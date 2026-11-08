@@ -9,7 +9,7 @@ C8F provides bounded first-event CDCL telemetry separately. This benchmark
 checks the full solve after isolating the no-elim/vivify option interaction.
 """
 from __future__ import annotations
-import collections, hashlib, json, pathlib, random, sys
+import collections, hashlib, json, os, pathlib, random, subprocess
 import c8c_pivot_causal_audit as c8c
 import c7_standard_solver_bve_crosscheck as c7
 
@@ -62,11 +62,38 @@ def configuration(arm, choices):
             opts = ["--no-vivify"]
     return binary, opts, env
 
+def probe(c, p, choices, arm):
+    binary, opts, env_extra = configuration(arm, choices)
+    budget = p["first_candidate_conflict"] + 512
+    cmd = [str(pathlib.Path(c8c.BIN[binary]).resolve()),
+           "-c", str(budget), "-v", *opts, str(pathlib.Path(c["path"]).resolve())]
+    env = os.environ.copy()
+    env.pop("DRNAS_C8C_TRACE", None)
+    env.pop("DRNAS_C8C_SKIP_VARS", None)
+    env.update(env_extra)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              errors="replace", timeout=12.0, check=False,
+                              env=env)
+        status, model = c8c.ref.external_parse(proc)
+        if status == "SAT":
+            c8c.cms.verify_model(c["path"], model)
+        need(status != "UNSAT", "bounded diagnostic contradicted frozen SAT")
+        stats, _ = c8c.c8.parse_stats(proc.stdout)
+        return dict(arm=arm, budget=budget, status=status, stats=stats,
+                    timed_out=False)
+    except subprocess.TimeoutExpired:
+        return dict(arm=arm, budget=budget, status="WALL_TIMEOUT",
+                    stats={}, timed_out=True)
+
 def bench(shard):
     c, p = case(shard)
     choices = p["skipped_candidate_order_development_only"]
     OUT.mkdir(exist_ok=True)
     rows = []
+    probe_rows = [probe(c, p, choices, arm)
+                  for arm in ("noelim", "noelim_force_vivify",
+                              "noelim_novivify")]
     seed = int(hashlib.sha256((PROTO + "|" + c["sha256"]).encode()).hexdigest()[:8], 16)
     for rep in range(REPS):
         order = list(ARMS)
@@ -105,6 +132,28 @@ def audit():
     need(len(rows) == 3 * len(ARMS) * REPS,
          "expected complete three-source factorial")
     need(len({r["source_sha256"] for r in rows}) == 3, "source set mismatch")
+    probe_paths = sorted(OUT.glob("probe-*.json"))
+    probes = [json.loads(path.read_text()) for path in probe_paths]
+    need(len(probes) == 3 and all(len(x["probes"]) == 3 for x in probes),
+         "missing no-elim/vivify override probes")
+    probe_summary = []
+    for x in sorted(probes, key=lambda y: y["gbd"]):
+        by_name = {p["arm"]: p for p in x["probes"]}
+        noelim = by_name["noelim"]["stats"]
+        force = by_name["noelim_force_vivify"]["stats"]
+        no_viv = by_name["noelim_novivify"]["stats"]
+        need(noelim.get("eliminated", 0) == 0
+             and force.get("eliminated", 0) == 0
+             and no_viv.get("eliminated", 0) == 0,
+             "no-elim probe unexpectedly eliminated variables")
+        need(no_viv.get("vivifychecks", 0) == 0,
+             "explicit --no-vivify did not disable vivification")
+        probe_summary.append(dict(
+            gbd=x["gbd"],
+            noelim_vivifychecks=noelim.get("vivifychecks", 0),
+            forced_vivifychecks=force.get("vivifychecks", 0),
+            explicit_no_vivify_checks=no_viv.get("vivifychecks", 0),
+            vivify_flag_restores_work=(force.get("vivifychecks", 0) > 0)))
     need(all(r["original_SAT_witness_verified"] for r in rows
              if r["status"] == "SAT"), "unverified SAT witness")
     need(not any(r["status"] == "UNSAT" for r in rows),
@@ -145,6 +194,7 @@ def audit():
                   original_SAT_models_checked=True, independent_solver_seeds=False,
                   independent_UNSAT_LRAT=False,
                   bounded_CDCL_telemetry_source="C8F separate bounded diagnostic; not PAR2",
+                  noelim_vivify_override_probe=probe_summary,
                   no_auto_promotion=True, scores=scores, per_source=per_source)
     (OUT / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("C8G_FINAL " + json.dumps(dict(attempts=len(rows), scores=scores),
