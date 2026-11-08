@@ -1,0 +1,145 @@
+name: DRNAS CRR1-B7 — 2 easy original W4 plus 2 synthetic XOR 36 paired 6s
+on:
+  push:
+    branches: [experiment/drnas-crr1b7-easy-short-20261108]
+    paths: ['.github/workflows/drnas-crr1b7-easy-short.yml', 'research/drnas_crr1b7_easy_short.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-crr1b7-easy-short-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore W4 SAT2026 originals; build and SHA-lock distinct small XOR controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42429372803 -R Frane12/AndroidGameTest -n w4-input -D .
+          test -s worldsim-w1-frozen.tar.gz
+          test -s history/w4sources/manifest.json
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_crr1a_shadow.py research/drnas_crr1b_active.py research/drnas_crr1b2_telemetry.py research/drnas_crr1b3loose.py research/drnas_crr1b4_value.py research/drnas_crr1b5_discrimination.py research/drnas_crr1b6_conflict_profile.py research/drnas_crr1b7_easy_short.py
+          mkdir -p crr1b7
+          python3 -u research/drnas_crr1b7_easy_short.py prepare | tee crr1b7/prepare.log
+          grep -q '^CRR1B7_SELFTEST_PASS' crr1b7/prepare.log
+          grep -q '^CRR1B7_PREP_PASS' crr1b7/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crr1b7-frozen-input
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            worldsim-w1-frozen.tar.gz
+            history/w4sources/
+            checker/drat-trim
+            built/bin/kissat_4_0_4
+            crr1b7/sources/
+            crr1b7/manifest.json
+            crr1b7/pins.json
+            crr1b7/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crr1b7-prepare-debug
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            crr1b7/prepare.log
+            crr1b7/manifest.json
+  paired:
+    needs: prepare
+    name: CRR1B7 easy short 6s ${{ matrix.scope }} shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - shard: 0
+            scope: official-easy-SAT
+          - shard: 1
+            scope: official-easy-UNSAT
+          - shard: 2
+            scope: synthetic-XOR-SAT
+          - shard: 3
+            scope: synthetic-XOR-UNSAT
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1b7-frozen-input
+      - name: Source-paired plain Kissat vs B3L8 vs B5multi8 full solve with 6-second cap
+        run: |
+          set -euo pipefail
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4
+          python3 -u research/drnas_crr1b7_easy_short.py shard --shard ${{ matrix.shard }} | tee crr1b7/shard-${{ matrix.shard }}.log
+          grep -q '^CRR1B7_SHARD_PASS' crr1b7/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crr1b7-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            crr1b7/shard-${{ matrix.shard }}.json
+            crr1b7/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1b7-frozen-input
+      - name: Verify all 36 SHA paired SAT models, UNSAT DRAT and split official vs synthetic cohorts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x checker/drat-trim built/bin/kissat_4_0_4
+          mkdir -p crr1b7/collected
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'crr1b7-shard-*' -D crr1b7/collected
+          test "$(find crr1b7/collected -type f -name 'shard-*.json' | wc -l)" -eq 4
+          find crr1b7/collected -type f -name 'shard-*.json' -exec cp '{}' crr1b7/ \;
+          python3 -u research/drnas_crr1b7_easy_short.py audit | tee crr1b7/audit.log
+          grep -q '^CRR1B7_FINAL' crr1b7/audit.log
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r=json.load(open("crr1b7/report.json"))
+          print("CRR1B7 6-second easy-formulas audit PASS")
+          print("Full solve attempts",r["attempts"],"cap",r["cap_s"])
+          for c,metrics in r["by_cohort"].items():
+              print(c,metrics)
+          for p in r["paired"]:
+              print(p)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CRR1B7-2OFFICIAL-2XOR-36-EASY-SHORT-6S-FINAL
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            crr1b7/report.json
+            crr1b7/all-trials.json
+            crr1b7/audit.log
+            crr1b7/manifest.json
+            crr1b7/pins.json
