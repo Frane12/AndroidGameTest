@@ -1,0 +1,213 @@
+name: DRNAS C8D — BVE causal geometry x early bounded CDCL 96 probes + 266 E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-c8d-bve-early-cdcl-selector-20261108]
+    paths:
+      - '.github/workflows/drnas-c8d-bve-early-cdcl.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c8d-bve-early-dynamics-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin C7 certified CMS BVE factorial and Kissat, SHA-exclude C7 overlap from S1 sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover all C7 frozen original SHA and C2/C6 native solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42523071479 -R Frane12/AndroidGameTest \
+            -n c7-certified-sources-CMS-CaDiCaL-Kissat-pins -D .
+          gh run download 42521887927 -R Frane12/AndroidGameTest \
+            -n s1-frozen-20SHA-C3-disjoint-two-reference-cohorts-CMS-Kissat -D c8d_s1_source
+          chmod +x c2/bin/native c6/bin/native built/bin/kissat_4_0_4
+          sha256sum -c c6_out/binary.sha256
+          sha256sum -c c7_source/kissat.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          (cd c8d_s1_source/s1_router && sha256sum -c sources.sha256)
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c6/bin/native | grep -q libcryptominisat5
+          python3 -m py_compile research/c8d_bve_early_cdcl_selector.py
+          python3 -u research/c8d_bve_early_cdcl_selector.py selftest
+          python3 -u research/c8d_bve_early_cdcl_selector.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c8d-SHA6-C7-SHA19-source-BVE-certified-CMS-Kissat
+          retention-days: 14
+          compression-level: 5
+          if-no-files-found: error
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            c7_source/
+            c2/bin/native
+            c6/bin/native
+            c6_out/binary.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            c8d_s1_source/s1_router/manifest.json
+            c8d_s1_source/s1_router/sources.sha256
+            c8d_s1_source/s1_router/sources/*.cnf
+  early:
+    needs: prepare
+    name: C8D C7 development early CDCL BVE factorial 128-1024 conflicts shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8d-SHA6-C7-SHA19-source-BVE-certified-CMS-Kissat
+          path: .
+      - name: Bound CDCL conflicts for BVE on/off and certified duplicates on/off
+        run: |
+          set -euo pipefail
+          chmod +x c2/bin/native c6/bin/native
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/c8d_bve_early_cdcl_selector.py diagnostic \
+            --shard ${{ matrix.shard }} | tee c8d-diagnostic-${{ matrix.shard }}.log
+          grep -q '^C8D_DIAG_SHARD_PASS ${{ matrix.shard }} 16$' c8d-diagnostic-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c8d-early-C7-shard-${{ matrix.shard }}
+          retention-days: 14
+          path: |
+            c8d_out/diag-${{ matrix.shard }}.json
+            c8d-diagnostic-${{ matrix.shard }}.log
+  diagnostic_audit:
+    name: Audit 96 C7 bounded CDCL probes (NOT full PAR2)
+    needs: early
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c8d-early-C7-shard-*
+          merge-multiple: true
+          path: c8d_out
+      - name: Audit source-paired BVE early conflicts decisions propagations
+        run: |
+          set -euo pipefail
+          python3 -u research/c8d_bve_early_cdcl_selector.py audit_diagnostic | tee c8d-early-audit.log
+          grep -q '^C8D_DIAGNOSTIC_FINAL' c8d-early-audit.log
+          grep '^C8D_DIAGNOSTIC_FINAL' c8d-early-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: C8D-C7-96-BOUNDED-BVE-EARLY-CDCL-DIAGNOSTIC-NOT-PAR2
+          retention-days: 30
+          path: |
+            c8d_out/diagnostic-report.json
+            c8d_out/diag-*.json
+            c8d-early-audit.log
+  paired:
+    needs: prepare
+    name: C8D original 19 SHA 7 arms 2 seeds 15s charged-pilot PAR2 shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8d-SHA6-C7-SHA19-source-BVE-certified-CMS-Kissat
+          path: .
+      - name: Validate frozen SHA, pinned CMS and Kissat and install standard CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          chmod +x c2/bin/native c6/bin/native built/bin/kissat_4_0_4
+          sha256sum -c c6_out/binary.sha256
+          sha256sum -c c7_source/kissat.sha256
+          (cd c8d_s1_source/s1_router && sha256sum -c sources.sha256)
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c6/bin/native | grep -q libcryptominisat5
+          python3 -u research/c8d_bve_early_cdcl_selector.py verify
+          python3 -u research/c8d_bve_early_cdcl_selector.py selftest
+      - name: Full 266 paired SAT UNSAT attempts; pilot overhead in wall; verify original SAT models
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p c8d_out
+          python3 -u research/c8d_bve_early_cdcl_selector.py shard \
+            --shard ${{ matrix.shard }} | tee c8d_out/shard-${{ matrix.shard }}.log
+          grep -q '^C8D_SHARD_PASS ${{ matrix.shard }}' c8d_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c8d-paired-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 5
+          path: |
+            c8d_out/shard-${{ matrix.shard }}.json
+            c8d_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: Independent C8D 266-trial SHA19 7-arm end-to-end PAR2 and selector regret audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c8d-SHA6-C7-SHA19-source-BVE-certified-CMS-Kissat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c8d-paired-shard-*
+          merge-multiple: true
+          path: c8d_out
+      - name: Fail-closed audit 19 original SHA, model checks, pilot costs and PAR2
+        run: |
+          set -euo pipefail
+          (cd c8d_s1_source/s1_router && sha256sum -c sources.sha256)
+          python3 -u research/c8d_bve_early_cdcl_selector.py audit | tee c8d_out/audit.log
+          grep -q '^C8D_FINAL' c8d_out/audit.log
+          grep '^C8D_FINAL' c8d_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-C8D-266-PAR2-ORIGINAL-SHA19-BVE-EARLY-CDCL
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            c8d_out/report.json
+            c8d_out/audit.log
+            c8d_out/shard-*.json
