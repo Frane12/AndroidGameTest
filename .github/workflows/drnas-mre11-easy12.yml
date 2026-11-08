@@ -1,0 +1,142 @@
+name: DRNAS MRE11-EASY12 — 12 reference-easy originals 5 native C++ arms 4 seeds 12s PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre11-easy-20261108]
+    paths: ['.github/workflows/drnas-mre11-easy12.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre11-easy12-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Original SHA freeze of 12 reference-easy MRE7E 2021-25 formulas and exact MRE11 binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover immutable MRE7E source and MRE11 exact original compiled binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42509505558 -R Frane12/AndroidGameTest \
+            -n mre10-SHA16-exact-CMS-inprocess-CPP -D .
+          gh run download 42513542283 -R Frane12/AndroidGameTest \
+            -n mre11-2026-prospective-frozen-sources-and-native-CPP -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          chmod +x mre11/bin/native mre11/bin/standalone
+          test -f mre5/lib/libcryptominisat5.so.5.11
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | tee mre11-easy12-linked.log
+          grep -q 'libcryptominisat5.so.5.11' mre11-easy12-linked.log
+          python3 -m py_compile research/mre11_easy_benchmark.py
+          echo MRE11_EASY12_ORIGINAL_CPP_BINARY_OK
+      - name: Freeze 12 previously CMS-screened easy originals by reference only, no MRE11 results
+        run: |
+          set -euo pipefail
+          python3 -u research/mre11_easy_benchmark.py freeze | tee mre11-easy12-freeze.log
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -u research/mre11_easy_benchmark.py verify
+          python3 -u research/mre11_easy_benchmark.py policy \
+            --standalone mre11/bin/standalone | tee mre11-easy12-policy.log
+          grep -q '^MRE11_EASY12_GATE_PARITY_PASS 12' mre11-easy12-policy.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre11-easy12-reference-screened-sha12-immutable-cpp
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11_easy/*.cnf
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/gate_diagnostics.json
+            mre11/bin/native
+            mre11/bin/standalone
+            mre11/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre11-easy12-*.log
+  factorial:
+    name: MRE11-EASY12 real SAT/UNSAT reference-easy source paired shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-easy12-reference-screened-sha12-immutable-cpp
+          path: .
+      - name: Exact SHA check and strict preservation of 12-second cap
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          sha256sum -c mre11/bin.sha256
+          chmod +x mre11/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre11/bin/native | grep libcryptominisat5
+          python3 -u research/mre11_easy_benchmark.py verify
+      - name: 12s five-arm four-seed end-to-end original source SAT/UNSAT PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre11_easy_benchmark.py shard \
+            --shard ${{ matrix.shard }} --native mre11/bin/native \
+            | tee mre11_easy/shard-${{ matrix.shard }}.log
+          grep -q '^MRE11_EASY12_SHARD_PASS ${{ matrix.shard }} 60$' mre11_easy/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre11-easy12-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 6
+          path: |
+            mre11_easy/shard-${{ matrix.shard }}.json
+            mre11_easy/shard-${{ matrix.shard }}.log
+  audit:
+    name: MRE11-EASY12 final 240 paired trials and PAR2 with no blind claims
+    needs: factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre11-easy12-reference-screened-sha12-immutable-cpp
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre11-easy12-shard-*
+          merge-multiple: true
+          path: mre11_easy
+      - name: Frozen SHA and native real SAT/UNSAT PAR2 audit
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -u research/mre11_easy_benchmark.py audit | tee mre11_easy/audit.log
+          grep -q '^MRE11_EASY12_FINAL' mre11_easy/audit.log
+          grep '^MRE11_EASY12_FINAL' mre11_easy/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE11-EASY12-5ARM-4SEED-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre11_easy/report.json
+            mre11_easy/audit.log
+            mre11_easy/gate_diagnostics.json
