@@ -1,0 +1,150 @@
+name: DRNAS MRE10 — R28-safe C++ and MRE8 joint 640 paired 8s PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre10-priority-six-20261108]
+    paths: ['.github/workflows/drnas-mre10-priority-six.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre10-priority-six-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Immutable 16 SHA, 6f C++ port, exhaustive proof and exact C-joint parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover MRE8 and MRE7 source SHA frozen original 16 and pinned CMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre10/bin mre7_easy/bin mre5/lib
+          gh run download 42505042425 -R Frane12/AndroidGameTest -n mre7e-pilot16-frozen-originals-and-native-binaries -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          python3 research/mre7_extended_easy_freeze.py verify
+          chmod +x mre7_easy/bin/native
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+      - name: Build MRE9-derived in-process C++ and verify all original clauses
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE \
+            research/mre10_native_priority.cpp -o mre10/bin/standalone
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            research/mre10_native_priority.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o mre10/bin/native
+          chmod +x mre10/bin/standalone mre10/bin/native
+          python3 -m py_compile research/mre10_priority_benchmark.py
+          python3 -u research/mre10_priority_benchmark.py selftest
+          python3 -u research/mre10_priority_benchmark.py parity --standalone mre10/bin/standalone
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre10/bin/native | tee mre10/ldd.log
+          grep 'libcryptominisat5.so.5.11' mre10/ldd.log
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' > mre10/smoke.cnf
+          mre10/bin/native mre10/smoke.cnf cpp_joint 101 | tee mre10/smoke.log
+          grep -q '^R195_RESULT status=SAT' mre10/smoke.log
+          sha256sum mre10/bin/native mre10/bin/standalone > mre10/binaries.sha256
+          echo MRE10_C_JOINT_NATIVE_CPP_MODEL_AND_ORIGINAL_SHA_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre10-SHA16-exact-CMS-inprocess-CPP
+          if-no-files-found: error
+          retention-days: 12
+          compression-level: 6
+          path: |
+            mre7_easy/manifest.json
+            mre7_easy/source.sha256
+            mre7_easy/*.cnf
+            mre7_easy/bin/native
+            mre7_easy/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            mre10/bin/native
+            mre10/bin/standalone
+            mre10/binaries.sha256
+  factorial:
+    name: MRE10 10 arms 4 seed SHA pair real SAT/PAR2 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre10-SHA16-exact-CMS-inprocess-CPP
+          path: .
+      - name: Enforce reference SHA and transform SHA
+        run: |
+          set -euo pipefail
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          sha256sum -c mre10/binaries.sha256
+          chmod +x mre7_easy/bin/native mre10/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre10/bin/native | grep 'libcryptominisat5.so.5.11'
+      - name: All 10 arms original SAT and independent original witness
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          mkdir -p mre10
+          python3 -u research/mre10_priority_benchmark.py shard \
+            --shard ${{ matrix.shard }} --ext mre7_easy/bin/native --cpp mre10/bin/native \
+            | tee mre10/shard-${{ matrix.shard }}.log
+          grep -q '^MRE10_SHARD_PASS ${{ matrix.shard }} 80$' mre10/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre10-factorial-shard-${{ matrix.shard }}
+          retention-days: 12
+          compression-level: 6
+          path: |
+            mre10/shard-${{ matrix.shard }}.json
+            mre10/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 640 paired SAT/UNSAT PAR2 and regression without promotion
+    needs: factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre10-SHA16-exact-CMS-inprocess-CPP
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre10-factorial-shard-*
+          merge-multiple: true
+          path: mre10
+      - name: Full original 16 x 4 x 10 audit
+        run: |
+          set -euo pipefail
+          (cd mre7_easy && sha256sum -c source.sha256)
+          python3 -u research/mre10_priority_benchmark.py audit | tee mre10/audit.log
+          grep -q '^MRE10_FINAL' mre10/audit.log
+          cat mre10/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE10-640-PAR2-PRIORITY-SIX-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre10/report.json
+            mre10/audit.log
