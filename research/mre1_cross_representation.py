@@ -280,7 +280,7 @@ def trial(case, rep, mode, binary):
                   proofs if mode == "crr_active" else [])
         write_xors(rowfile, rows)
         empty.write_text("")
-        cms_mode = "native" if mode == "cms_native" else "source_import"
+        cms_mode = "cms_native" if mode == "cms_native" else "source_xor_import"
         remaining = CAP-(time.perf_counter()-started)
         if remaining >= 0.1:
             try:
