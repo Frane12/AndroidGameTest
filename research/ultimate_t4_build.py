@@ -84,13 +84,13 @@ def native():
         if(monitor.cb_propagate()!=-3 || monitor.impact_promotions!=1 ||
            monitor.impact_hot_candidates!=1)
             throw runtime_error("T4_PROMOTION_SELFTEST_FAIL");
-        vector<int> reason;
+        vector<int> t4_reason;
         while(true) {
             int v=monitor.cb_add_reason_clause_lit(-3);
             if(!v)break;
-            reason.push_back(v);
+            t4_reason.push_back(v);
         }
-        if(reason!=vector<int>({-3,-1,-2})||
+        if(t4_reason!=vector<int>({-3,-1,-2})||
            monitor.reason_clauses_completed!=1)
             throw runtime_error("T4_REASON_SELFTEST_FAIL");
         monitor.notify_assignment({-3});
