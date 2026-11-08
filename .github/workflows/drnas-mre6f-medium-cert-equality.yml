@@ -1,0 +1,135 @@
+name: DRNAS MRE6f — medium original SAT2026 48 paired 35s certified equality
+on:
+  push:
+    branches: [experiment/drnas-mre6f-medium-certified-equality-20261108]
+    paths:
+      - '.github/workflows/drnas-mre6f-medium-cert-equality.yml'
+      - 'research/mre6f_medium_benchmark.py'
+      - 'research/mre6d_all_equalities.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre6f-actual-35s-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore EXACT six MRE7 official SAT2026 originals and source-pinned CMS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify proof-safe all-equality quotient and frozen 35-second protocol
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre6f_medium_benchmark.py research/mre6d_all_equalities.py
+          python3 -u research/mre6f_medium_benchmark.py selftest
+          mkdir -p mre6f
+          gh run download 42500214333 --repo Frane12/AndroidGameTest -n mre7-medium-frozen-sources-and-pinned-CMS -D .
+          sha256sum -c mre5/binaries.sha256
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_freeze.py verify
+          python3 - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          m=json.loads(Path("mre7_medium/manifest.json").read_text())
+          assert len(m["cases"])==6
+          assert sum(c["cohort"]=="REUSED_known_solved_diagnostic" for c in m["cases"])==2
+          assert sum(c["cohort"]=="NEW_official_reference_medium" for c in m["cases"])==4
+          assert sum(c["expected"]=="SAT" for c in m["cases"])==3
+          assert sum(c["expected"]=="UNSAT" for c in m["cases"])==3
+          print("MRE6F_SAME_MRE7_FROZEN_SIX_PASS",hashlib.sha256(
+             Path("mre7_medium/manifest.json").read_bytes()).hexdigest())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre6f-pinned-six-originals-and-CMS
+          retention-days: 10
+          compression-level: 6
+          path: |
+            mre7_medium/manifest.json
+            mre7_medium/source.sha256
+            mre7_medium/*.cnf
+            mre5/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre5/binaries.sha256
+  paired:
+    needs: prepare
+    name: MRE6f 35s true SAT-solving paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6f-pinned-six-originals-and-CMS
+          path: .
+      - name: Verify 6 frozen real original CNFs and same CMS binary
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          sha256sum -c mre5/binaries.sha256
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre7_medium_freeze.py verify
+          chmod +x mre5/native
+          ldd mre5/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+      - name: 16 source-paired full 35s CMS solving and original SAT witness checks
+        run: |
+          set -euo pipefail
+          mkdir -p mre6f
+          python3 -u research/mre6f_medium_benchmark.py shard --shard ${{ matrix.shard }} --binary mre5/native | tee mre6f/shard-${{ matrix.shard }}.log
+          grep -q '^MRE6F_SHARD_PASS ${{ matrix.shard }} 16$' mre6f/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre6f-results-shard-${{ matrix.shard }}
+          retention-days: 12
+          path: |
+            mre6f/shard-${{ matrix.shard }}.json
+            mre6f/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: Independent 48-case SHA-paired SAT/UNSAT PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre6f-pinned-six-originals-and-CMS
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre6f-results-shard-*
+          merge-multiple: true
+          path: mre6f
+      - name: Original SHA and paired solved/PAR2 evidence audit
+        run: |
+          set -euo pipefail
+          (cd mre7_medium && sha256sum -c source.sha256)
+          python3 -u research/mre6f_medium_benchmark.py audit | tee mre6f/audit.log
+          grep -q '^MRE6F_FINAL' mre6f/audit.log
+          cat mre6f/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE6F-MEDIUM-35S-48-FINAL
+          retention-days: 30
+          path: |
+            mre6f/report.json
+            mre6f/audit.log
+            mre7_medium/manifest.json
