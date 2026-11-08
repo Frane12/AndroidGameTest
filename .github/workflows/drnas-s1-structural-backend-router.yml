@@ -1,0 +1,152 @@
+name: DRNAS S1 — frozen structural CMS Kissat CaDiCaL router 20 originals 200 PAR2
+on:
+  push:
+    branches: [experiment/drnas-s1-structural-backend-router-20261108]
+    paths: ['.github/workflows/drnas-s1-structural-backend-router.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-s1-sha20-structural-router-20261108
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore 20 ORIGINAL pinned SHA source-disjoint from C3, frozen native CMS/Kissat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover immutable C3 C2 binary and Kissat from prior completed paired run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42520001305 -R Frane12/AndroidGameTest \
+            -n c3-kissat-exact-sha12-and-two-pinned-native-binaries -D .
+          sha256sum -c c3_kissat_bin.sha256
+          sha256sum -c c2_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          chmod +x c2/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c2/bin/native | grep libcryptominisat5
+          built/bin/kissat_4_0_4 --version | tee s1-kissat-version.txt
+          python3 -m py_compile research/drnas_s1_structural_router.py
+          python3 -u research/drnas_s1_structural_router.py selftest
+      - name: Recover PREEXISTING 8+12 reference-frozen original CNF sources, no internet scanning
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p s1_import11 s1_import10
+          gh run download 42511069503 -R Frane12/AndroidGameTest \
+            -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D s1_import11
+          gh run download 42511332725 -R Frane12/AndroidGameTest \
+            -n mre10b-12new-SHA-CMS-CPP -D s1_import10
+          (cd s1_import11/mre11b_blind && sha256sum -c source.sha256)
+          (cd s1_import10/mre10b_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_s1_structural_router.py freeze | tee s1-freeze.log
+          (cd s1_router && sha256sum -c sources.sha256)
+          python3 -u research/drnas_s1_structural_router.py verify
+          grep -q '^S1_FROZEN_20_SHA_DISJOINT_PASS' s1-freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s1-frozen-20SHA-C3-disjoint-two-reference-cohorts-CMS-Kissat
+          retention-days: 14
+          compression-level: 5
+          if-no-files-found: error
+          path: |
+            s1_router/manifest.json
+            s1_router/sources.sha256
+            s1_router/sources/*.cnf
+            c2/bin/native
+            c2_out/binary.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            c3_kissat_bin.sha256
+            s1-freeze.log
+            s1-kissat-version.txt
+  solve:
+    name: Paired SHA20 5-arm 2-rep true end-to-end 15s PAR2 shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: s1-frozen-20SHA-C3-disjoint-two-reference-cohorts-CMS-Kissat
+          path: .
+      - name: Verify all source SHA and two pinned baselines; install independent CaDiCaL
+        run: |
+          set -euo pipefail
+          sha256sum -c c3_kissat_bin.sha256
+          (cd s1_router && sha256sum -c sources.sha256)
+          chmod +x c2/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c2/bin/native | grep libcryptominisat5
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          python3 -u research/drnas_s1_structural_router.py verify
+          python3 -u research/drnas_s1_structural_router.py selftest
+      - name: CMS Kissat CaDiCaL and frozen 2/3-way source router charged preprocessing
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_s1_structural_router.py shard \
+            --shard ${{ matrix.shard }} | tee s1_router/shard-${{ matrix.shard }}.log
+          grep -q '^S1_SHARD_PASS ${{ matrix.shard }} 40$' s1_router/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s1-shard-${{ matrix.shard }}
+          retention-days: 14
+          compression-level: 5
+          path: |
+            s1_router/shard-${{ matrix.shard }}.json
+            s1_router/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit all 200 source SHA paired, SAT witnesses, UNSAT agreement and PAR2 regressions
+    needs: solve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: s1-frozen-20SHA-C3-disjoint-two-reference-cohorts-CMS-Kissat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s1-shard-*
+          merge-multiple: true
+          path: s1_router
+      - name: Fail closed if any of 200 real SAT trials absent or unsound
+        run: |
+          set -euo pipefail
+          (cd s1_router && sha256sum -c sources.sha256)
+          python3 -u research/drnas_s1_structural_router.py audit | tee s1_router/audit.log
+          grep -q '^S1_FINAL' s1_router/audit.log
+          grep '^S1_FINAL' s1_router/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-S1-SOURCE-ONLY-CMS-KISSAT-CADICAL-SHA20-200-PAIRED-PAR2
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            s1_router/manifest.json
+            s1_router/sources.sha256
+            s1_router/report.json
+            s1_router/audit.log
+            s1_router/shard-*.json
