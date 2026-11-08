@@ -96,10 +96,15 @@ def freeze():
         if status is None:continue
         try:sec=float(x["runtime"])
         except (ValueError,TypeError):continue
-        if .75<=sec<15:
+        if .75<=sec<3600:
             reference.append(dict(gbd=g,expected=status,official_reference_s=sec))
     for expected in ("SAT","UNSAT"):
-        for lo,hi in ((.75,5.),(5.,15.)):
+        # SAT has two short reference-time bands; in this particular
+        # historical-exclusion registry no FRESH UNSAT had CaDiCaL3
+        # runtime below 5s. Predeclare broader external-only UNSAT
+        # bands, never select by DRNAS runtime or structure.
+        bands=((.75,5.),(5.,15.)) if expected=="SAT" else ((.75,180.),(180.,3600.))
+        for lo,hi in bands:
             pool=[p for p in reference if p["expected"]==expected and
                   lo<=p["official_reference_s"]<hi]
             pool.sort(key=lambda p:digest((SALT+"|"+expected+"|"+
@@ -108,6 +113,7 @@ def freeze():
             accepted=False
             for c in pool[:60]:
                 g=c["gbd"]
+                if g in known:continue
                 try:
                     raw,redir=r32p.request_url(
                       "https://benchmark-database.de/file/"+g,MAX_RAW,seconds=45)
@@ -129,6 +135,7 @@ def freeze():
                     attempts.append(dict(gbd=g,action="frozen",sha256=sha,
                                          expected=expected,reference_s=c["official_reference_s"]))
                     print("MRE6I_NEW2026_FROZEN",json.dumps(attempts[-1],sort_keys=True),flush=True)
+                    known.add(g)
                     accepted=True
                     break
                 except Exception as e:
