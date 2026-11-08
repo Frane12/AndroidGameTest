@@ -200,7 +200,7 @@ def selftest():
          ((1,4),1) in rr and x["removed_tautological_rows"]==1,
          "GF2 cancelled terms incorrectly")
     pr=dict(principle="certified_equality",keep=1,remove=2,proof_replayed=True)
-    lifted=validate_reconstruction(original,cnf,pr,{1:True,2:False,3:False,4:True})
+    lifted=validate_reconstruction(original,cnf,pr,{1:True,2:False,3:True,4:True})
     need(lifted[2] is True,"SAT witness not reconstructed")
     print("MRE6_QUOTIENT_SELFTEST_PASS",
           json.dumps(dict(cnf_stats=st,xor=x),sort_keys=True),flush=True)
