@@ -1,0 +1,205 @@
+name: DRNAS MRE8f - MRE6f reference gate SAT2026 and real SAT pilot
+on:
+  push:
+    branches: [experiment/drnas-mre8f-6f-reference-gate-20261108]
+    paths: ['.github/workflows/drnas-mre8f-6f-reference-gate.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mre8f-6f-ref-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore 7 MRE6f sources and 6 MRE7 originals with exact native binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable source and binary artifacts, test certified gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42499473274 -R Frane12/AndroidGameTest -n mre6e-frozen-7-CMS-pinned-bounded -D .
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          sha256sum -c mre6e/binary.sha256
+          sha256sum mre5/lib/libcryptominisat5.so.5.11 > mre6e/cms-shared.sha256
+          gh run download 42502481195 -R Frane12/AndroidGameTest -n mre7-pilot6-frozen-originals-and-native-binaries -D .
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          sha256sum -c mre6e/cms-shared.sha256
+          python3 -m py_compile research/mre8f_6f_reference_gate.py
+          python3 -u research/mre8f_6f_reference_gate.py selftest
+          python3 - <<'PY'
+          import json
+          a=json.load(open("mre6b_blind/manifest.json"))
+          b=json.load(open("mre7_easy/manifest.json"))
+          assert len(a["cases"])==7 and len(b["selected_cases"])==6
+          assert {c["gbd"][:8] for c in a["cases"]}>={"2fcd8533","a45aefde","de8c42d5"}
+          assert len({c["sha256"] for c in a["cases"]+b["selected_cases"]})==13
+          print("MRE8F_FROZEN_SOURCE_PASS")
+          PY
+      - name: Both native CMS bridges smoke
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          chmod +x mre6e/native mre7_easy/bin/native
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre6e/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          LD_LIBRARY_PATH="$PWD/mre5/lib" ldd mre7_easy/bin/native | grep "$PWD/mre5/lib/libcryptominisat5.so"
+          printf 'p cnf 3 2\n1 2 0\n-2 3 0\n' > mre6e/smoke8f.cnf
+          : > mre6e/empty8f.tsv
+          DRNAS_MAX_CONFLICTS=100 LD_LIBRARY_PATH="$PWD/mre5/lib" mre6e/native mre6e/smoke8f.cnf mre6e/empty8f.tsv mre6e/empty8f.tsv source_xor_no_gauss 11 | tee mre6e/smoke8f.log
+          grep -q '^R195_RESULT status=SAT' mre6e/smoke8f.log
+          LD_LIBRARY_PATH="$PWD/mre5/lib" mre7_easy/bin/native mre6e/smoke8f.cnf mre6e/empty8f.tsv mre6e/empty8f.tsv source_xor_no_gauss 11 | tee mre7_easy/smoke8f.log
+          grep -q '^R195_RESULT status=SAT' mre7_easy/smoke8f.log
+          echo MRE8F_CMS_SMOKE_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre8f-frozen-input
+          retention-days: 10
+          compression-level: 6
+          path: |
+            mre6b_blind/manifest.json
+            mre6b_blind/source.sha256
+            mre6b_blind/*.cnf
+            mre6e/native
+            mre6e/binary.sha256
+            mre6e/cms-shared.sha256
+            mre7_easy/manifest.json
+            mre7_easy/source.sha256
+            mre7_easy/*.cnf
+            mre7_easy/bin/native
+            mre7_easy/bin.sha256
+            mre5/lib/libcryptominisat5.so.5.11
+  bounded:
+    name: Bounded CDCL MRE6f reference shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre8f-frozen-input
+          path: .
+      - name: Validate and run three same-SHA same-seed arms at 1000 and 5000 conflicts
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          sha256sum -c mre6e/binary.sha256
+          chmod +x mre6e/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre8f/bounded
+          python3 -u research/mre8f_6f_reference_gate.py shard --dataset bounded --shard ${{ matrix.shard }} --binary mre6e/native | tee mre8f/bounded/shard-${{ matrix.shard }}.log
+          grep -q '^MRE8F_SHARD_PASS bounded ${{ matrix.shard }} ' mre8f/bounded/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre8f-bounded-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre8f/bounded/shard-${{ matrix.shard }}.json
+            mre8f/bounded/shard-${{ matrix.shard }}.log
+  verdict:
+    name: SAT-to-verdict original witness PAR2 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre8f-frozen-input
+          path: .
+      - name: Verify and run real SAT-to-verdict on 6 original SAT2024/25 pilot cases
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgmp10
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          (cd mre7_easy && sha256sum -c source.sha256)
+          sha256sum -c mre7_easy/bin.sha256
+          chmod +x mre7_easy/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre8f/verdict
+          python3 -u research/mre8f_6f_reference_gate.py shard --dataset verdict --shard ${{ matrix.shard }} --binary mre7_easy/bin/native | tee mre8f/verdict/shard-${{ matrix.shard }}.log
+          grep -q '^MRE8F_SHARD_PASS verdict ${{ matrix.shard }} ' mre8f/verdict/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre8f-verdict-shard-${{ matrix.shard }}
+          retention-days: 10
+          path: |
+            mre8f/verdict/shard-${{ matrix.shard }}.json
+            mre8f/verdict/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 126 bounded CDCL and 36 real-SAT PAR2 without promotion
+    needs: [bounded, verdict]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre8f-frozen-input
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre8f-bounded-shard-*
+          merge-multiple: true
+          path: mre8f/bounded
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre8f-verdict-shard-*
+          merge-multiple: true
+          path: mre8f/verdict
+      - name: Fail-closed SHA, original witness and paired PAR2 score
+        run: |
+          set -euo pipefail
+          (cd mre6b_blind && sha256sum -c source.sha256)
+          (cd mre7_easy && sha256sum -c source.sha256)
+          python3 -u research/mre8f_6f_reference_gate.py audit --dataset bounded | tee mre8f/bounded/audit.log
+          python3 -u research/mre8f_6f_reference_gate.py audit --dataset verdict | tee mre8f/verdict/audit.log
+          grep -q '^MRE8F_BOUNDED_FINAL' mre8f/bounded/audit.log
+          grep -q '^MRE8F_VERDICT_FINAL' mre8f/verdict/audit.log
+          cat mre8f/bounded/audit.log mre8f/verdict/audit.log >> "$GITHUB_STEP_SUMMARY"
+          echo MRE8F_AUDITS_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE8F-MRE6F-REFERENCE-7PLUS6-FINAL
+          retention-days: 30
+          path: |
+            mre8f/bounded/report.json
+            mre8f/verdict/report.json
+            mre8f/bounded/audit.log
+            mre8f/verdict/audit.log
+            mre6b_blind/manifest.json
+            mre7_easy/manifest.json
