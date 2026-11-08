@@ -1,0 +1,65 @@
+name: DRNAS C3 — audit-only frozen 192 paired trials no benchmark reruns
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c3-dedup-sha12-validation-20261108]
+    paths: ['.github/workflows/drnas-c3-audit-only.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c3-audit-only-42518662034
+  cancel-in-progress: false
+jobs:
+  audit-only:
+    name: Reconstruct original C3 SHA12 192/192 without solving
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable source manifest and all 192 original measurement rows from run 42518662034
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42518662034 -R Frane12/AndroidGameTest -n c3-frozen-sha12-source-c2-binary-reference -D .
+          mkdir -p c3_out
+          for i in 0 1 2 3; do
+            gh run download 42518662034 -R Frane12/AndroidGameTest -n c3-source-paired-shard-$i -D c3_out
+            test -s c3_out/shard-$i.json
+          done
+          (cd mre11_easy && sha256sum -c source.sha256)
+          python3 -m py_compile research/c3_dedup_sha12_validation.py
+          python3 -u research/c3_dedup_sha12_validation.py verify
+          python3 - <<'PY'
+          import json
+          total=0
+          for i in range(4):
+              a=json.load(open(f'c3_out/shard-{i}.json'))
+              assert len(a)==48, f'original frozen shard {i} incomplete'
+              total+=len(a)
+              assert {x['build_sha'] for x in a}=={'a1d67f91e420bcc62cdb0f5a67778e682c7c6b66'}, 'original build changed'
+          assert total==192
+          print('C3_AUDIT_ONLY_PRIOR_SHA_192_PASS',total)
+          PY
+      - name: Strict original-SHA SAT-witness and per-mode PAR2 audit (NO solver execution)
+        run: |
+          set -euo pipefail
+          python3 -u research/c3_dedup_sha12_validation.py audit | tee c3_out/audit-only.log
+          grep -q '^C3_FINAL' c3_out/audit-only.log
+          cat c3_out/audit-only.log >> "$GITHUB_STEP_SUMMARY"
+          echo C3_AUDIT_ONLY_SUCCESS_ORIGINAL_RUN_42518662034
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C3-AUDIT-ONLY-ORIGINAL-192-PAR2
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c3_out/report.json
+            c3_out/audit-only.log
+            c3_out/shard-*.json
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
