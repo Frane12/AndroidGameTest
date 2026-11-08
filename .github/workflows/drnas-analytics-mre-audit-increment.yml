@@ -1,0 +1,96 @@
+name: DRNAS SAT — append 1892 audited MRE attempts into cumulative SQLite
+on:
+  push:
+    branches: [experiment/drnas-analytics-mre-audit-update-20261108]
+    paths:
+      - '.github/workflows/drnas-analytics-mre-audit-increment.yml'
+      - 'research/sat-analytics-data/ingest_mre_audited_increment.py'
+      - 'research/sat-analytics-data/current/mre_audited_run_registry_20261108.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-analytics-mre-increment-20261108
+  cancel-in-progress: false
+jobs:
+  audited_additive_sqlite:
+    name: Preserve V15.3.1 SQLite and append 8 MRE runs, 1892 verified attempts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify original cumulative SQLite is intact and new scripts are syntactically valid
+        run: |
+          set -euo pipefail
+          test -s research/sat-analytics-data/current/sat_analytics.sqlite
+          python3 -m py_compile research/sat-analytics-data/ingest_mre_audited_increment.py
+          python3 - <<'PY'
+          import sqlite3, pathlib
+          p=pathlib.Path("research/sat-analytics-data/current/sat_analytics.sqlite")
+          with p.open("rb") as stream:
+              assert stream.read(16)==b"SQLite format 3\x00","historical database is not SQLite"
+          con=sqlite3.connect(p)
+          old={r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+          assert {"datasets","formulas","attempts","telemetry"}<=old,old
+          print("DRNAS_ANALYTICS_OLD_DATABASE_PRESERVED",p.stat().st_size,sorted(old)[:20])
+          con.close()
+          PY
+      - name: Recover immutable 40 result shards from eight previously audited GitHub Actions runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_raw
+          gh run download 42509505558 -R Frane12/AndroidGameTest -p 'mre10-factorial-shard-*' -D mre_raw/MRE10_original
+          gh run download 42513793922 -R Frane12/AndroidGameTest -p 'mre10-factorial-shard-*' -D mre_raw/MRE10_exact_repeat
+          gh run download 42511332725 -R Frane12/AndroidGameTest -p 'mre10b-results-shard-*' -D mre_raw/MRE10b_external_reference
+          gh run download 42511069503 -R Frane12/AndroidGameTest -p 'mre11b-prospective-result-shard-*' -D mre_raw/MRE11b_source_only
+          gh run download 42513542283 -R Frane12/AndroidGameTest -p 'mre11-factorial-shard-*' -D mre_raw/MRE11_official2026_short
+          gh run download 42505145407 -R Frane12/AndroidGameTest -p 'mre6g-results-shard-*' -D mre_raw/MRE6g
+          gh run download 42507215971 -R Frane12/AndroidGameTest -p 'mre6h-results-shard-*' -D mre_raw/MRE6h
+          gh run download 42509063941 -R Frane12/AndroidGameTest -p 'mre6i-results-shard-*' -D mre_raw/MRE6i
+          python3 - <<'PY'
+          from pathlib import Path
+          expected={"MRE10_original":8,"MRE10_exact_repeat":8,
+           "MRE10b_external_reference":6,"MRE11b_source_only":4,
+           "MRE11_official2026_short":4,"MRE6g":3,"MRE6h":3,"MRE6i":4}
+          for name,n in expected.items():
+              paths=list((Path("mre_raw")/name).rglob("shard-*.json"))
+              assert len(paths)==n,(name,n,len(paths))
+              print("MRE_AUDITED_SOURCE_ARTIFACTS",name,n)
+          assert sum(expected.values())==40
+          PY
+      - name: Append and verify every original SHA/native-seed paired SAT/UNSAT result
+        run: |
+          set -euo pipefail
+          python3 -u research/sat-analytics-data/ingest_mre_audited_increment.py --source-root mre_raw --out mre_analytics_out | tee mre_analytics_out/ingest.log
+          grep -q '^MRE_ANALYTICS_FINAL' mre_analytics_out/ingest.log
+          python3 - <<'PY'
+          import sqlite3, json
+          p="research/sat-analytics-data/current/sat_analytics.sqlite"
+          db=sqlite3.connect(p)
+          v=db.execute("SELECT count(*) FROM mre_audit_attempts").fetchone()[0]
+          x=db.execute("SELECT count(*) FROM mre_audit_runs").fetchone()[0]
+          assert (v,x)==(1892,8),(v,x)
+          print("DRNAS_SQLITE_APPEND_AUDITED",x,v)
+          db.close()
+          PY
+          sha256sum research/sat-analytics-data/current/sat_analytics.sqlite > mre_analytics_out/updated-sqlite.sha256
+          cat mre_analytics_out/mre_ingest_audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-CUMULATIVE-SQLITE-MRE-1892-20261108
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            research/sat-analytics-data/current/sat_analytics.sqlite
+            research/sat-analytics-data/current/mre_audited_run_registry_20261108.json
+            research/sat-analytics-data/current/mre_audited_modes_20261108.csv
+            mre_analytics_out/mre_new_mode_summary.csv
+            mre_analytics_out/mre_ingest_audit.json
+            mre_analytics_out/updated-sqlite.sha256
+            mre_analytics_out/ingest.log
