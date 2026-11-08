@@ -58,7 +58,8 @@ def prior():
     d=json.loads(c8.read_text())
     need(d["source_count"]==19,"C8D exclusion source count mismatch")
     for x in d["per_source"]:
-        shas.add(x["sha256"]);ids.add(x["gbd"])
+        shas.add(x["sha256"])
+        if x.get("gbd"): ids.add(x["gbd"])
     provenance[str(c8)]=digest(c8)
     return ids,shas,provenance
 
