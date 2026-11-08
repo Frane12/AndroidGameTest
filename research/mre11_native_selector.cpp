@@ -368,7 +368,7 @@ int main(int argc,char**argv){
         auto t=Clock::now();
         CNF original=parse_dimacs(file);
         double parse_s=elapsed(t);
-        Gate gate=certified_gate(original,mode);
+        Gate gate=(mode=="cpp_mre11_sel")?mre11_selector(original):certified_gate(original,mode);
         print_gate(gate,mode,parse_s);
         native_solve(original,gate,unsigned(s));
 #endif
