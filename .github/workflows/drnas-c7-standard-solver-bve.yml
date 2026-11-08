@@ -1,0 +1,183 @@
+name: DRNAS C7 — CaDiCaL Kissat CMS BVE dedup 6SHA 120 real paired 25s
+on:
+  push:
+    branches: [experiment/drnas-cdcl-c7-world-standard-bve-20261108]
+    paths: ['.github/workflows/drnas-c7-standard-solver-bve.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c7-standard-three-solvers-bve-original-sha6
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore frozen C2/C6 CMS + Kissat 4.0.4, certify dedup CNF, CaDiCaL option smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen C2 standalone duplicate remover and exact source originals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42520894229 -R Frane12/AndroidGameTest -n c5-exact-C2-C4-binaries-six-original-SHA-plus-prior-C4 -D .
+          sha256sum -c c4_out/binary.sha256
+          gh run download 42521744096 -R Frane12/AndroidGameTest -n c6-six-original-SHA-C2-control-CMS-inprocessing-binaries -D .
+          sha256sum -c c6_out/binary.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          chmod +x c2/bin/emit c2/bin/native c6/bin/native
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+      - name: Restore SHA-frozen Kissat 4.0.4 reference from MRE11b original artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c7_kissat_original
+          gh run download 42511069503 -R Frane12/AndroidGameTest -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D c7_kissat_original
+          mkdir -p built/bin c7_source
+          cp c7_kissat_original/built/bin/kissat_4_0_4 built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+          grep 'built/bin/kissat_4_0_4' c7_kissat_original/mre11b_blind/binary.sha256 | sha256sum -c -
+          sha256sum built/bin/kissat_4_0_4 > c7_source/kissat.sha256
+      - name: Install same CaDiCaL 24.04 package, prove options and replay SAT witnesses
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          mkdir -p c7_out
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c6/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/c7_standard_solver_bve_crosscheck.py
+          python3 -u research/c7_standard_solver_bve_crosscheck.py freeze | tee c7_out/freeze.log
+          python3 -u research/c7_standard_solver_bve_crosscheck.py verify | tee c7_out/verify.log
+          python3 -u research/c7_standard_solver_bve_crosscheck.py smoke | tee c7_out/smoke.log
+          grep -q '^C7_STANDARD_SOLVER_OPTIONS_AND_WITNESS_SMOKE_PASS' c7_out/smoke.log
+          echo C7_ALL_THREE_REFERENCE_SOLVERS_AND_SHA_CERTIFICATE_PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c7-certified-sources-CMS-CaDiCaL-Kissat-pins
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre11_easy/manifest.json
+            mre11_easy/source.sha256
+            mre11_easy/*.cnf
+            mre11b_blind/manifest.json
+            mre11b_blind/source.sha256
+            mre11b_blind/*.cnf
+            c2/bin/emit
+            c2/bin/native
+            c6/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            c4_out/binary.sha256
+            c6_out/binary.sha256
+            c7_source/
+            c7_out/freeze.log
+            c7_out/verify.log
+            c7_out/smoke.log
+            c7_out/cadical-version.txt
+            c7_out/kissat-version.txt
+  paired:
+    name: C7 10-arm 2-repeat original SHA shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c7-certified-sources-CMS-CaDiCaL-Kissat-pins
+          path: .
+      - name: Verify reference SHA and same CaDiCaL installation on each worker
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libgmp10
+          chmod +x c2/bin/emit c2/bin/native c6/bin/native built/bin/kissat_4_0_4
+          sha256sum -c c6_out/binary.sha256
+          sha256sum -c c7_source/kissat.sha256
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so
+          ln -sf libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd c2/bin/native | grep -q 'libcryptominisat5.so.5.11'
+          python3 -u research/c7_standard_solver_bve_crosscheck.py verify
+          test "$(cadical --version)" = "$(cat c7_out/cadical-version.txt)"
+      - name: Solve same frozen original SHA versus CaDiCaL and Kissat and CMS (120 real E2E)
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p c7_out
+          python3 -u research/c7_standard_solver_bve_crosscheck.py shard --shard ${{ matrix.shard }} | tee c7_out/shard-${{ matrix.shard }}.log
+          grep -q '^C7_SHARD_PASS ${{ matrix.shard }} 20$' c7_out/shard-${{ matrix.shard }}.log
+      - name: Optional stats-only verbose runs, explicitly excluded from PAR2
+        if: success()
+        run: |
+          set -euo pipefail
+          python3 -u research/c7_standard_solver_bve_crosscheck.py diagnostics --shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c7-reference-solvers-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c7_out/shard-${{ matrix.shard }}.json
+            c7_out/shard-${{ matrix.shard }}.log
+            c7_out/diagnostic-${{ matrix.shard }}.json
+  audit:
+    name: C7 FINAL 120 10-arm SHA6 SAT witnesses PAR2 and standard solver interaction
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c7-certified-sources-CMS-CaDiCaL-Kissat-pins
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c7-reference-solvers-shard-*
+          merge-multiple: true
+          path: c7_out
+      - name: Verify every SHA, original SAT verdict, verified source-dedup witness and paired PAR2
+        run: |
+          set -euo pipefail
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          python3 -u research/c7_standard_solver_bve_crosscheck.py audit | tee c7_out/audit.log
+          grep -q '^C7_FINAL' c7_out/audit.log
+          grep '^C7_FINAL' c7_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C7-120-3WORLD-SOLVER-CMS-CADICAL-KISSAT-BVE-DEDUP-PAR2
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c7_out/report.json
+            c7_out/audit.log
+            c7_out/shard-*.json
+            c7_out/diagnostic-*.json
+            c7_source/dedup/manifest.json
