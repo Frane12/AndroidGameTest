@@ -143,7 +143,7 @@ def audit():
         need(len(part)==expect,"partial shard")
         rows+=part
     need(len(rows)==len(cc)*REPS*len(ARMS),
-         "missing all 4 arm x 2 repeat E2E trials")
+         "missing all 5 arm x 2 repeat E2E trials")
     keys=collections.defaultdict(set)
     for r in rows:
         c=bysha.get(r["sha256"])
@@ -208,7 +208,7 @@ def audit():
     report=dict(protocol=PROTO,
        original_source_count=len(cc),
        end_to_end_real_trials=len(rows),
-       source_origin_run="C10b original source SHA-only freeze before all solver tests",
+       source_origin_run="C11b original source SHA-only freeze before all solver tests",
        source_status_balance=dict(collections.Counter(x["prior_status"] for x in cc)),
        original_SHA_verified=True,
        portfolio_rule_frozen_before_source_selection=C11_RULE,
@@ -225,7 +225,7 @@ def audit():
        max_case_gain_s=round(max([0]+savings),6),
        total_gain_vs_Kissat_s=round(kiss-scores["c11_triple"]["PAR2_s"],6),
        total_gain_excluding_largest_single_gain_s=round(
-           kiss-scores["c10_structural"]["PAR2_s"]-max([0]+savings),6),
+           kiss-scores["c11_triple"]["PAR2_s"]-max([0]+savings),6),
        scores=scores,per_source=per)
     OUT.mkdir(exist_ok=True)
     (OUT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
