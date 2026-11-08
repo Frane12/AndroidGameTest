@@ -1,0 +1,130 @@
+name: DRNAS CRR1-A — certified CNF GF2 shadow 24 SAT2026 144 paired 15s
+on:
+  push:
+    branches: [experiment/drnas-crr1a-shadow-20261108]
+    paths: ['.github/workflows/drnas-crr1a-shadow.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-crr1a-shadow-20261108
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore the 24 original W4 SAT2026 SHA-frozen sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42429372803 -R Frane12/AndroidGameTest -n w4-input -D .
+          test -s worldsim-w1-frozen.tar.gz
+          test -s history/w4sources/manifest.json
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 checker/drat-trim
+          python3 -m py_compile research/drnas_crr1a_shadow.py
+          python3 -u research/drnas_crr1a_shadow.py selftest
+          mkdir -p crr1a
+          python3 -u research/drnas_crr1a_shadow.py prepare | tee crr1a/prepare.log
+          grep -q '^CRR1A_PREPARE_PASS' crr1a/prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crr1a-frozen-input
+          retention-days: 45
+          if-no-files-found: error
+          path: |
+            worldsim-w1-frozen.tar.gz
+            history/w4sources/
+            checker/drat-trim
+            built/bin/kissat_4_0_4
+            crr1a/manifest.json
+            crr1a/pins.json
+            crr1a/prepare.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crr1a-prepare-failure
+          retention-days: 7
+          if-no-files-found: warn
+          path: crr1a/
+  paired:
+    needs: prepare
+    name: CRR1A original CNF shadow vs Kissat shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1a-frozen-input
+      - name: Paired one-CPU source-SHA trials with charged shadow overhead
+        run: |
+          set -euo pipefail
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 checker/drat-trim
+          python3 -u research/drnas_crr1a_shadow.py shard --shard ${{ matrix.shard }} | tee crr1a/shard-${{ matrix.shard }}.log
+          grep -q '^CRR1A_SHARD_PASS' crr1a/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crr1a-shard-${{ matrix.shard }}
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            crr1a/shard-${{ matrix.shard }}.json
+            crr1a/shard-${{ matrix.shard }}.log
+            crr1a/raw/**/proof_validation.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: crr1a-frozen-input
+      - name: Gather all eight SHA-paired shard result files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar xzf worldsim-w1-frozen.tar.gz
+          chmod +x built/bin/kissat_4_0_4 checker/drat-trim
+          mkdir -p crr1a/collected
+          gh run download "${{ github.run_id }}" -R Frane12/AndroidGameTest -p 'crr1a-shard-*' -D crr1a/collected
+          test "$(find crr1a/collected -type f -name 'shard-*.json' | wc -l)" -eq 8
+          find crr1a/collected -type f -name 'shard-*.json' -exec cp '{}' crr1a/ \;
+          test "$(find crr1a -maxdepth 1 -type f -name 'shard-*.json' | wc -l)" -eq 8
+      - name: Audit 144 paired trials, verified certificates and novelty metrics
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_crr1a_shadow.py audit | tee crr1a/audit.log
+          grep -q '^CRR1A_FINAL' crr1a/audit.log
+          cat crr1a/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CRR1A-W4-24SHA-144-PAIRED-FINAL
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            crr1a/report.json
+            crr1a/all-trials.json
+            crr1a/audit.log
+            crr1a/manifest.json
+            crr1a/pins.json
