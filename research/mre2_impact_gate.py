@@ -216,7 +216,8 @@ def selftest():
     need(not duplicate and dup_stats["rejected"] == 1,
          "redundant binary implication accepted")
     # New, but only one directional implication: gate rejects at threshold 2.
-    one, one_stats = gate([(1, 3)], [{"clause": (1, 2)}], budget_s=5)
+    one, one_stats = gate([(1, 2, 3), (-3, 2)],
+                               [{"clause": (1, 2)}], budget_s=5)
     need(not one and one_stats["rejected"] == 1,
          "one weak implication should be rejected")
     print("MRE2_SELFTEST_PASS",
