@@ -1,0 +1,131 @@
+name: DRNAS MRE3 P1 — two real SAT2026 CDCL clause ablation 48 trials
+on:
+  push:
+    branches: [experiment/drnas-mre3-twoformula-cdcl-ablation-20261108]
+    paths:
+      - '.github/workflows/drnas-mre3-twoformula-ablation.yml'
+      - 'research/mre3_cdcl_clause_ablation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre3-twoformula-ablation
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build pinned CMS and confirm MRE1/MRE2/MRE3 safety selftests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-dev g++ libgmp-dev
+          dpkg-query -W libcryptominisat5-dev | grep '5.11.15'
+          python3 -m py_compile research/mre3_cdcl_clause_ablation.py
+          python3 -u research/mre1_cross_representation.py selftest
+          python3 -u research/mre2_impact_gate.py selftest
+          python3 -u research/mre3_cdcl_clause_ablation.py selftest
+          mkdir -p mre3_p1
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/r195_cms_native_bridge.cpp -o mre3_p1/native -lcryptominisat5
+          sha256sum mre3_p1/native > mre3_p1/native.sha256
+      - name: Retrieve SHA-locked two SAT2026 originals and verify hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42485082475 --repo Frane12/AndroidGameTest -n mre2-cdcl-inputs -D .
+          sha256sum -c mre2_cdcl_p1/manifest.sha256
+          python3 -u research/r195_native_cms_benchmark.py verify
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import mre3_cdcl_clause_ablation as p
+          for i in (0,1):
+            c=p.pilot.select_case(i)
+            n,m=p.header_count(p.r195.FROZEN/c['name'])
+            print('MRE3_TARGET',i,c['name'],c['sha256'],c['expected'],n,m)
+            if i==1:
+              assert m>p.MAX_GATE_CNF,'no early guard applicability'
+          PY
+          sha256sum r195/frozen/manifest.json > mre3_p1/manifest.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre3-inputs
+          retention-days: 4
+          compression-level: 6
+          path: |
+            r195/frozen/
+            mre3_p1/native
+            mre3_p1/native.sha256
+            mre3_p1/manifest.sha256
+  case:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case_no: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre3-inputs
+          path: .
+      - name: Verify CMS binary and source SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64
+          sha256sum -c mre3_p1/native.sha256
+          sha256sum -c mre3_p1/manifest.sha256
+          chmod +x mre3_p1/native
+          python3 -u research/r195_native_cms_benchmark.py verify
+      - name: Measure native CDCL counters with exactly one selected DRNAS lemma
+        run: |
+          set -euo pipefail
+          python3 -u research/mre3_cdcl_clause_ablation.py case --case-no ${{ matrix.case_no }} --binary mre3_p1/native | tee mre3_p1/case-${{ matrix.case_no }}.log
+          grep -q '^MRE3_CASE_PASS ${{ matrix.case_no }} ' mre3_p1/case-${{ matrix.case_no }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre3-case-${{ matrix.case_no }}
+          retention-days: 10
+          path: |
+            mre3_p1/case-${{ matrix.case_no }}.json
+            mre3_p1/case-${{ matrix.case_no }}.log
+  audit:
+    needs: case
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre3-case-*
+          merge-multiple: true
+          path: mre3_p1
+      - name: Audit paired source seeds, SAT witness and native CDCL counters
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre3_cdcl_clause_ablation.py
+          python3 -u research/mre3_cdcl_clause_ablation.py audit | tee mre3_p1/audit.log
+          cat mre3_p1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE3-CDCL-FINAL
+          retention-days: 30
+          path: |
+            mre3_p1/report.json
+            mre3_p1/audit.log
