@@ -1,0 +1,209 @@
+name: DRNAS MRE X — MRE11 C3 hybrid native 13 originals 7 strategies 4 seed PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre-x-20261108]
+    paths: ['.github/workflows/drnas-mre-x-hybrid.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x-c3-mre11-20261108
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore exact C3/C4 SHA originals, compile seven-arm MRE X and certify equivalence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover existing frozen original C3/C4 reference files and exact original MRE11 binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42519684428 -R Frane12/AndroidGameTest \
+            -n c4-frozen-four-original-SHA-reference-binaries-source-parity -D .
+          (cd mre11_easy && sha256sum -c source.sha256)
+          (cd mre11b_blind && sha256sum -c source.sha256)
+          sha256sum -c c4_out/binary.sha256
+          mkdir -p mre11_ref
+          gh run download 42515830079 -R Frane12/AndroidGameTest \
+            -n mre11-easy12-reference-screened-sha12-immutable-cpp -D mre11_ref
+          (cd mre11_ref && sha256sum -c mre11/bin.sha256)
+          chmod +x mre11_ref/mre11/bin/standalone
+          test -f mre5/lib/libcryptominisat5.so.5.11
+          python3 -m py_compile research/mre_x_benchmark.py
+          echo MRE_X_SOURCE_AND_REFERENCE_BINARIES_PINNED_PASS
+      - name: Build MRE X source-certified MRE11 C3 C4 composition, no modification of R28
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p mre_x/bin
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE \
+            research/mre_x_native.cpp -o mre_x/bin/emit
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            research/mre_x_native.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o mre_x/bin/native
+          chmod +x mre_x/bin/native mre_x/bin/emit
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x/bin/native | tee mre_x/ldd.log
+          grep 'libcryptominisat5.so.5.11' mre_x/ldd.log
+          sha256sum mre_x/bin/native mre_x/bin/emit > mre_x/bin.sha256
+          python3 -u research/mre_x_benchmark.py selftest \
+            --native mre_x/bin/native --emit mre_x/bin/emit \
+            | tee mre_x/selftest.log
+          grep -q '^MRE_X_CERTIFIED_COMPOSE_BRUTE_FORCE_SELFTEST_PASS' mre_x/selftest.log
+      - name: Freeze 13 ORIGINAL SHA from C3/C4 development cohort BEFORE any MRE X test
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_x_benchmark.py freeze | tee mre_x/freeze.log
+          (cd mre_x && sha256sum -c source.sha256)
+          python3 -u research/mre_x_benchmark.py verify
+          python3 -u research/mre_x_benchmark.py parity \
+            --emit mre_x/bin/emit --reference mre11_ref/mre11/bin/standalone \
+            | tee mre_x/mre11_exact_policy_parity.log
+          grep -q '^MRE_X_ORIGINAL_MRE11_CERTIFIED_POLICY_PARITY_PASS 13' \
+            mre_x/mre11_exact_policy_parity.log
+          python3 -u research/mre_x_benchmark.py diagnostic \
+            --emit mre_x/bin/emit | tee mre_x/certificate_inventory.log
+          grep -q '^MRE_X_CERTIFICATE_INVENTORY_PASS 13' mre_x/certificate_inventory.log
+          echo MRE_X_ORIGINAL_13_SHA_C3_MRE11_C4_CERTIFIED_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x-13-original-sha-source-and-certified-seven-native-arms
+          if-no-files-found: error
+          retention-days: 21
+          compression-level: 6
+          path: |
+            mre_x/*.cnf
+            mre_x/manifest.json
+            mre_x/source.sha256
+            mre_x/bin/native
+            mre_x/bin/emit
+            mre_x/bin.sha256
+            mre_x/structural.json
+            mre_x/*.log
+            mre5/lib/libcryptominisat5.so.5.11
+
+  paired:
+    name: MRE X C3 MRE11 7 arms 4 seeds original SAT PAR2 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x-13-original-sha-source-and-certified-seven-native-arms
+          path: .
+      - name: Validate exact original SHA, pinned CMS native binary, no changed references
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          chmod +x mre_x/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -u research/mre_x_benchmark.py verify
+      - name: Real SAT/UNSAT end-to-end, 12s wall cap, independent source-model check
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x_benchmark.py shard \
+            --shard ${{ matrix.shard }} --native mre_x/bin/native \
+            | tee mre_x/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X_SHARD_PASS ${{ matrix.shard }} ' \
+            mre_x/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x-seven-arm-paired-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 21
+          compression-level: 6
+          path: |
+            mre_x/shard-${{ matrix.shard }}.json
+            mre_x/shard-${{ matrix.shard }}.log
+
+  early_cdcl:
+    name: Separate C5-style bounded causal dynamics, NOT a complete SAT PAR2
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x-13-original-sha-source-and-certified-seven-native-arms
+          path: .
+      - name: Exact SHA plus separate bounded 100 1000 conflict diagnosis
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          chmod +x mre_x/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x_benchmark.py early \
+            --native mre_x/bin/native | tee mre_x/early_cdcl.log
+          grep -q '^MRE_X_BOUNDED_C5_TELEMETRY_PASS 24' mre_x/early_cdcl.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x-c5-style-early-cdcl-24-bounded-not-par2
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x/early_cdcl_diagnostic.json
+            mre_x/early_cdcl.log
+
+  audit:
+    name: MRE X FINAL 364 paired 7-arm original-SHA real SAT PAR2 and regression audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x-13-original-sha-source-and-certified-seven-native-arms
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x-seven-arm-paired-shard-*
+          merge-multiple: true
+          path: mre_x
+      - name: Strict SHA13 and 4-seed paired audit, original SAT model verification and PAR2
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x/bin.sha256
+          python3 -u research/mre_x_benchmark.py audit \
+            | tee mre_x/audit.log
+          grep -q '^MRE_X_FINAL' mre_x/audit.log
+          grep '^MRE_X_FINAL' mre_x/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE-X-13SHA-7ARM-4SEED-12s-PAR2-FINAL
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            mre_x/report.json
+            mre_x/audit.log
+            mre_x/structural.json
+            mre_x/manifest.json
+            mre_x/source.sha256
