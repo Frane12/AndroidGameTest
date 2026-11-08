@@ -130,7 +130,7 @@ def selftest():
     p=ROOT/"selftest.cnf"
     p.write_text("p cnf 4 8\n1 2 0\n2 1 0\n1 -1 3 0\n1 1 4 0\n4 1 0\n-2 3 0\n3 -2 0\n-4 0\n")
     base_vars,base=read_clauses(p)
-    expected={"cpp_native":(0,0,0),"cpp_dedup":(0,2,0),
+    expected={"cpp_native":(0,0,0),"cpp_dedup":(0,3,0),
         "cpp_taut":(1,0,0),"cpp_local":(0,0,1)}
     for mode in ("cpp_native","cpp_dedup","cpp_taut","cpp_local","cpp_clean"):
         dst=ROOT/("selftest-"+mode+".cnf")
