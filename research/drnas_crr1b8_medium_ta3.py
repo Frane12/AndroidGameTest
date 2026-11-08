@@ -121,10 +121,39 @@ def verify():
         need(a.sha(f)==digest,"pinned source drift "+f)
     return split_cases()
 
+def parse_ta3(path):
+    """Validate large TA3 DIMACS sources beyond W4's artificial 180k cap."""
+    header=None;clauses=[];pending=[]
+    with Path(path).open() as fp:
+        for line in fp:
+            item=line.strip()
+            if not item or item.startswith(("c","%")):continue
+            if item.startswith("p "):
+                fields=item.split()
+                need(header is None and len(fields)==4 and
+                     fields[:2]==["p","cnf"],"invalid TA3 DIMACS header")
+                n,total=map(int,fields[2:])
+                need(1<=n<=2500000 and 0<=total<=3500000,
+                     "source exceeds independent TA3 safety bounds")
+                header=(n,total)
+                continue
+            need(header is not None,"DIMACS body before header")
+            for word in item.split():
+                lit=int(word)
+                need(abs(lit)<=header[0],"out of bounds TA3 literal")
+                if lit:pending.append(lit)
+                else:
+                    clauses.append(tuple(pending));pending=[]
+                    need(len(clauses)<=header[1],"excess TA3 clauses")
+    need(header is not None and not pending and
+         len(clauses)==header[1],"incomplete TA3 source DIMACS")
+    return header[0],clauses
+
+
 def scout(c,shard):
     path=Path("ta3/sources")/(c["id"]+".cnf")
     need(a.sha(path)==c["sha256"],"scout original SHA drift")
-    n,original=a.parse(path)
+    n,original=parse_ta3(path)
     t0=time.perf_counter()
     proposed,proofs,discovery=b2.make_bridge(n,original)
     if proposed:
@@ -179,7 +208,8 @@ def scout(c,shard):
     if proof.exists():proof.unlink()
     eligible=(status in ("SAT","UNSAT") and
        MIN_MEDIUM<=native_s<=MAX_MEDIUM and
-       stats is not None and (stats.get("conflicts") or 0)>=1 and len(proposed)>=1)
+       stats is not None and (stats.get("conflicts") or 0)>=1 and len(proposed)>=1
+       and n<=200000 and len(original)<=180000)
     result={"id":c["id"],"sha256":c["sha256"],"shard":shard,
          "family":c.get("family"),"cohort":"original_SAT2025_TA3",
          "status":status,"proof":evidence,"native_s":round(native_s,6),
@@ -187,7 +217,9 @@ def scout(c,shard):
          "new_certified_clauses":len(proposed),
          "complete_xor_equations":discovery.get("complete_xor_equations"),
          "discovery_status":discovery.get("status"),
-         "native":stats,"medium_eligible":bool(eligible)}
+         "native":stats,"medium_eligible":bool(eligible),
+         "paired_parser_supported":n<=200000 and len(original)<=180000,
+         "source_variables":n,"source_clauses":len(original)}
     return result
 
 def shard(i):
