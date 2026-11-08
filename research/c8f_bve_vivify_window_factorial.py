@@ -80,7 +80,7 @@ def bounded(i, rep, arm, budget):
     if arm in ("novivify", "noelim_novivify") or arm.endswith("_novivify"):
         cmd.append("--no-vivify")
     base_arm = arm.removesuffix("_novivify")
-    if base_arm not in ("keep", "noelim"):
+    if base_arm not in ("keep", "novivify", "noelim"):
         selected = choices[base_arm]
     cmd.append(str(pathlib.Path(c["path"]).resolve()))
     env = os.environ.copy()
