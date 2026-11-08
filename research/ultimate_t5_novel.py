@@ -53,7 +53,7 @@ def derive(source,evidence,out_dir,max_rows=MAX_SELECTED):
         proof=0
         for i in indices:
             need(0<=i<len(selected),"original source index outside proof")
-            proof^=1<<i
+            proof^=1<<(i+1)
         need(gf.verify_proof([(tuple(gf.bits(x)),y) for x,y in selected],
                              m,parity,proof)==indices,
              "derived row is not the stated combination")
