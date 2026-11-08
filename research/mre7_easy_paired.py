@@ -9,13 +9,12 @@ CaDiCaL agreement at pre-screen but not an LRAT; label explicitly.
 from __future__ import annotations
 import argparse,collections,hashlib,json,math,os,pathlib,random,re,statistics,subprocess,tempfile,time
 import mre7_reference_easy_freeze as frozen
-# The extension freeze kept the first six byte-identical and added new originals.
 frozen.PROTO="DRNAS-MRE7E-OLDER2021-2023-EXTENDED-EASY-20261108-v1"
 import mre6d_all_equalities as equal
 import r164_pure_exact_gf2 as exact
 import r195_native_cms_benchmark as r195
 
-PROTO="DRNAS-MRE7-FAST-PROSPECTIVE-30SHA-4ARMS-2REPS-8S-v2"
+PROTO="DRNAS-MRE7E-EXTENDED-4ARMS-2REPS-8S-v1"
 ROOT=pathlib.Path("mre7_bench")
 MODES=("cms_native","all_equalities","gate_auto","kissat")
 REPS=2
@@ -149,8 +148,7 @@ def shard(idx,cms_binary,kissat_binary):
             for mode in modes:
                 r=trial(case,rep,mode,cms_binary,kissat_binary)
                 rows.append(r)
-                (ROOT/("shard-%d.json"%idx)).write_text(json.dumps(rows,sort_keys=True)+"
-")
+                (ROOT/("shard-%d.json"%idx)).write_text(json.dumps(rows,sort_keys=True)+"\n")
                 print("MRE7_TRIAL",json.dumps(r,sort_keys=True),flush=True)
     need(len(rows)==len(cases)*REPS*len(MODES),"incomplete source shard")
     print("MRE7_SHARD_PASS",idx,len(cases),len(rows),flush=True)
@@ -209,14 +207,14 @@ def audit():
         source_count=n,measurements=len(rows),repeats=REPS,
         total_wall_cap_s=CAP,holdout_preselected_using_reference_only=True,
         selection_conditioned_on_reference_easiness=True,
+        extension_after_six_case_pilot=True,
+        not_global_unseen_guaranteed=True,
         source_disjoint_declared_registry=True,history_registry_not_exhaustive=True,
-        never_claim_universally_unseen=True,
         no_posthoc_source_exclusion=True,independent_unsat_lrat=False,
         SAT_original_model_check_required=True,all_scores=scores,
         cases=comparisons,not_auto_promoted=True)
     ROOT.mkdir(parents=True,exist_ok=True)
-    (ROOT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"
-")
+    (ROOT/"report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
     print("MRE7_FINAL",json.dumps({k:v for k,v in report.items() if k!="cases"},
         sort_keys=True),flush=True)
 
