@@ -78,7 +78,7 @@ def trial(case,rep,mode,cms_binary,kissat_binary):
             seed=seed_for(case,rep)
             if mode=="kissat":
                 args=[str(pathlib.Path(kissat_binary).resolve()),
-                      "--quiet",str(runsource.resolve())]
+                      str(runsource.resolve())]
             else:
                 empty=root/"empty.tsv";empty.write_text("")
                 args=[str(pathlib.Path(cms_binary).resolve()),
