@@ -112,7 +112,8 @@ def select_graph(case,work,source,aug,n,original,all_lemmas,mode,pinned):
     return chosen,data,pcpu
 def trial(case,arm,rep):
     need(arm in ARMS and rep in (0,1),"bad trial arm or rep")
-    check()
+    # Frozen roster and binary hashes are checked once per shard; every trial
+    # independently checks its own exact original SHA inside the E2E path.
     pinned=prev.core()
     os.sched_setaffinity(0,{pinned})
     source=pathlib.Path(case["path"])
