@@ -1,0 +1,114 @@
+name: DRNAS X23G - track binary implication SCC graph versus X23 count gates
+on:
+  push:
+    branches: [experiment/drnas-x23g-binary-implication-graph-20261109]
+    paths:
+      - research/drnas_x23g_binary_graph.py
+      - research/DRNAS_X23G_BINARY_GRAPH_PROTOCOL.md
+      - .github/workflows/drnas-x23g-binary-graph.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x23g-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Pin original X22 SHA and UNSAT references, test graph SCC and freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore SHA frozen X22 originals, C++ reducer, and independent original-solver agreement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n DRNAS-X22-CPP-ASYNC-288-E2E-FINAL -D prior_x22
+          test -s prior_x22/report.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py research/drnas_x23_adaptive_gate.py research/drnas_x23g_binary_graph.py
+          python3 -u research/drnas_x23g_binary_graph.py selftest
+          python3 -u research/drnas_x23g_binary_graph.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x23g-frozen-sha-originals-pinned-x22-reference
+          retention-days: 21
+          path: |
+            mre_x23g/manifest.json
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: X23G 36 original SHA graph-monitoring E2E trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x23g-frozen-sha-originals-pinned-x22-reference, path: .}
+      - name: Original SHA paired E2E 15s with 2 pinned logical CPUs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x23g_binary_graph.py shard --shard ${{ matrix.shard }} | tee mre_x23g/shard-${{ matrix.shard }}.log
+          grep -q '^X23G_SHARD_PASS ${{ matrix.shard }} 36$' mre_x23g/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x23g-result-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x23g/shard-${{ matrix.shard }}.json
+            mre_x23g/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final 288 E2E original SHA audited graph SCC PAR2 and CPU comparison
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x23g-frozen-sha-originals-pinned-x22-reference, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x23g-result-*
+          path: mre_x23g
+          merge-multiple: true
+      - name: Enforce proof replay, cross-check reference original UNSAT and report PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x23g_binary_graph.py audit | tee mre_x23g/audit.log
+          grep '^X23G_FINAL ' mre_x23g/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X23G-288-BINARY-GRAPH-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x23g/manifest.json
+            mre_x23g/report.json
+            mre_x23g/audit.log
+            mre_x23g/shard-*.json
