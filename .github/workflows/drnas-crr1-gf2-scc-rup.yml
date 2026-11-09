@@ -1,0 +1,46 @@
+name: DRNAS CRR1 - GF2 SCC RUP proof-safe smoke
+on:
+  push:
+    branches: [experiment/drnas-crr1-gf2-scc-rup-20261109]
+    paths:
+      - 'research/drnas_crr1_gf2_scc_rup.py'
+      - '.github/workflows/drnas-crr1-gf2-scc-rup.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-crr1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  proof-safe-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and cross-representation selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_crr1_gf2_scc_rup.py
+          python3 research/drnas_crr1_gf2_scc_rup.py selftest
+      - name: Independently verify emitted lemmas against original CNF
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import importlib.util,random,tempfile,pathlib,itertools
+          path='research/drnas_crr1_gf2_scc_rup.py'
+          spec=importlib.util.spec_from_file_location('crr1',path)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          random.seed(260911)
+          def sat(n,cs):
+              return {bits for bits in itertools.product((False,True),repeat=n) if all(any(bits[abs(x)-1]==(x>0) for x in c) for c in cs)}
+          with tempfile.TemporaryDirectory() as d:
+              for k in range(60):
+                  n=random.randrange(2,7)
+                  cs=[tuple(random.choice((-1,1))*random.randint(1,n) for _ in range(random.randint(1,3))) for _ in range(random.randint(1,18))]
+                  p=pathlib.Path(d);src=p/'i.cnf';dst=p/'o.cnf';rep=p/'r.json'
+                  src.write_text(f'p cnf {n} {len(cs)}\n'+''.join(' '.join(map(str,c))+' 0\n' for c in cs))
+                  m.run(str(src),str(dst),str(rep))
+                  _,out=m.parse(dst)
+                  assert sat(n,cs)==sat(n,out),f'model mismatch {k}'
+          print('CRR1_EXHAUSTIVE_60_PASS')
+          PY
