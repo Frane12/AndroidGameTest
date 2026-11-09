@@ -1,0 +1,129 @@
+name: DRNAS MRE14 — Structural Synergy exact D96 Cdepth2 Spread100 selective NoVivify
+on:
+  push:
+    branches: [experiment/drnas-mre14-structural-synergy-20261109]
+    paths:
+      - 'research/mre14_structural_synergy.py'
+      - '.github/workflows/drnas-mre14-structural-synergy.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre14-structural-synergy-frozen-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Parse Python and exhaustively replay SAT meaning of C D and Spread100
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre14_structural_synergy.py research/mre13_abcd_parallel.py research/mre12_exact_quotient.py
+          python3 -u research/mre14_structural_synergy.py selftest | tee mre14-selftest.log
+          grep -q '^MRE14_EXACT_SELFTEST_PASS ' mre14-selftest.log
+      - name: Fetch frozen MRE13 sources, frozen MRE X3 duplicate originals and pinned CaDiCaL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42546055940 -R Frane12/AndroidGameTest -n mre13-frozen-source-backend -D .
+          gh run download 42524524856 -R Frane12/AndroidGameTest -n mre-x3-frozen-five-sha-seven-doses-instrumented-native -D .
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          chmod +x c8c/bin/instrumented
+          python3 -u research/mre14_structural_synergy.py smoke
+      - name: Preregister SHA-locked reused and four new official SAT2026 source files
+        run: |
+          set -euo pipefail
+          python3 -u research/mre14_structural_synergy.py freeze | tee mre14-freeze.log
+          python3 -u research/mre14_structural_synergy.py verify
+          sha256sum mre14_sources/manifest.json > mre14-manifest.sha256
+          grep -q '^MRE14_FREEZE_PASS ' mre14-freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre14-frozen-original-sha-and-pinned-cadical
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 4
+          path: |
+            mre14_sources/
+            mre14-manifest.sha256
+            c8c/bin/instrumented
+            c15d_out/binary.sha256
+            mre14-selftest.log
+            mre14-freeze.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre14-frozen-original-sha-and-pinned-cadical
+          path: .
+      - name: Verify source SHA, binary SHA, and exact manifest before paired E2E
+        run: |
+          set -euo pipefail
+          sha256sum -c mre14-manifest.sha256
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          chmod +x c8c/bin/instrumented
+          python3 -u research/mre14_structural_synergy.py verify
+      - name: Run six same-source arms with independent CaDiCaL seeds and 12s end-to-end limit
+        run: |
+          set -euo pipefail
+          python3 -u research/mre14_structural_synergy.py shard --shard ${{ matrix.shard }} | tee mre14-shard-${{ matrix.shard }}.log
+          grep -q '^MRE14_SHARD_PASS ${{ matrix.shard }} ' mre14-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre14-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mre14_out/shard-${{ matrix.shard }}.json
+            mre14-shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre14-frozen-original-sha-and-pinned-cadical
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre14-shard-*
+          merge-multiple: true
+          path: .
+      - name: Fail closed on any missing SHA, seed pair, mathematical invariant or original SAT witness
+        run: |
+          set -euo pipefail
+          sha256sum -c mre14-manifest.sha256
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          python3 -u research/mre14_structural_synergy.py audit | tee mre14-audit.log
+          grep '^MRE14_FINAL ' mre14-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MRE14-STRUCTURAL-SYNERGY-SIX-ARM-PAR2-FINAL
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            mre14_out/report.json
+            mre14_sources/manifest.json
+            mre14-audit.log
