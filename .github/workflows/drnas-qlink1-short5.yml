@@ -1,0 +1,134 @@
+name: DRNAS QLINK1 - proof-carrying guarded messages 192 paired short5 E2E
+on:
+  push:
+    branches: [experiment/drnas-qlink-proof-carrying-messages-20261109]
+    paths:
+      - 'research/drnas_qlink1_messages.py'
+      - 'research/DRNAS_QLINK_PROOF_CARRYING_LANGUAGE_PROTOCOL.md'
+      - '.github/workflows/drnas-qlink1-short5.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-qlink1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Verify conditional message proofs and freeze 104-source training 24-eval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original-SHA-pinned LEGO3 training, native GF2 and references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42606777902 -R Frane12/AndroidGameTest -n lego3-frozen-original-train-eval-and-native -D .
+          test -s mre_lego3/manifest.json
+          test -s mre_lego3/model.json
+          test -s prior_x22/report.json
+          test -s mre_x24/bin/gf2_proof
+          mkdir -p mre_lego1 mre_qlink1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_qlink1_messages.py
+          python3 -u research/drnas_qlink1_messages.py selftest
+          python3 -u research/drnas_qlink1_messages.py freeze | tee mre_qlink1/freeze.log
+          grep -q '^QLINK1_FROZEN ' mre_qlink1/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qlink1-frozen-proof-model-and-real-sources
+          retention-days: 21
+          path: |
+            mre_qlink1/manifest.json
+            mre_qlink1/table.json
+            mre_qlink1/train_log.json
+            mre_qlink1/freeze.log
+            mre_lego3/manifest.json
+            mre_lego3/model.json
+            mre_lego3/train_report.json
+            mre_lego3/train_summary.json
+            mre_x24/bin/gf2_proof
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: QLINK1 48 E2E short5 proof guarded messages shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: qlink1-frozen-proof-model-and-real-sources
+          path: .
+      - name: Four matched 5s arms, original SHA SAT models and guarded truth proofs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_qlink1_messages.py shard --shard ${{ matrix.shard }} | tee mre_qlink1/shard-${{ matrix.shard }}.log
+          grep -q '^QLINK1_SHARD_PASS ${{ matrix.shard }} 48$' mre_qlink1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qlink1-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_qlink1/shard-${{ matrix.shard }}.json
+            mre_qlink1/shard-${{ matrix.shard }}.log
+  audit:
+    name: QLINK1 final 192 E2E guarded-reason proof, PAR2 CPU and cohort audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: qlink1-frozen-proof-model-and-real-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qlink1-results-*
+          path: mre_qlink1
+          merge-multiple: true
+      - name: Require source SAT witness and original UNSAT reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_qlink1_messages.py audit | tee mre_qlink1/audit.log
+          grep '^QLINK1_FINAL ' mre_qlink1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-QLINK1-192-PROOF-GUARDED-SHORT5-FINAL
+          retention-days: 30
+          path: |
+            mre_qlink1/report.json
+            mre_qlink1/manifest.json
+            mre_qlink1/table.json
+            mre_qlink1/train_log.json
+            mre_qlink1/audit.log
+            mre_qlink1/shard-*.json
