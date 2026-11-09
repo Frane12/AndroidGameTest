@@ -139,3 +139,10 @@ SQL status records updated in research/drnas_sat_benchmark_history_20261107_ta.s
 | All duplicate placement dose improves CDCL | MRE X3 spread25 loses vs original | Nonlinear order-dependent branching/restarts | Repeat fixed-dose interpolation on new SHA-disjoint sources with identical order multiset and multiple seeds |
 
 **Active test at time of this audit:** [C13 follow-up 42537515529](https://github.com/Frane12/AndroidGameTest/actions/runs/42537515529) has successful source preparation, four E2E shards in progress, no final decision. Earlier [C13 42537361190](https://github.com/Frane12/AndroidGameTest/actions/runs/42537361190) failed at preparation because missing `research/c13_r28_bve_prospective.py`; newer branch already contains workflow correction, so do not duplicate. This section records observations without launching a new cohort.
+
+
+### R166x original Gaussian lineage (separate from 25-source R165 comparison)
+
+[Original R166x mixed-Gaussian audit 42149883686](https://github.com/Frane12/AndroidGameTest/actions/runs/42149883686): 8 frozen original source SHA x2 repeats x9 arms=144 attempts; mixed caps 5s/30s. Clean plus direct/full/feedback/incremental/watchlazy/cooldown all 0/16 solved PAR2 560. Certified Gaussian variants 2/16 solved PAR2 about 540.576, improvement 3.4686% vs Clean; these two attempts may be the same source repeated, thus not two independent formula wins. Gaussian cooldown had 65,803 proposed GF2 implications, 1,968 native completed reasons, 130 Gaussian units. Direct incremental had 558,396,914 row events but no solved cases. This is development evidence with no independent UNSAT LRAT; do not extrapolate to all mixed CNF.
+
+[Separate R165 world crosscheck 42149824021](https://github.com/Frane12/AndroidGameTest/actions/runs/42149824021): 25 originals x2, 11 configurations, R165 exact router 26/50 PAR2 640.896460 vs pure CaDiCaL/Kissat 0/50 PAR2 900 and CMS 8/50 PAR2 847.049336. This is a **different** original cohort; median uncensored paired speedup vs Clean is undefined due to zero jointly solved cases. Never present 42149824021 and 42149883686 as a paired R165-to-R166x regression comparison.
