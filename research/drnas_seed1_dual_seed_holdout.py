@@ -50,9 +50,9 @@ def save(path,value):
     path.write_text(json.dumps(value,sort_keys=True,indent=2)+"\n")
 def seeds(case,rep):
     sha=case["sha256"]
-    a=int(hashlib.sha256(("SEED1|A|"+sha+"|"+str(rep)).encode()).hexdigest()[:8],16)
-    b=int(hashlib.sha256(("SEED1|B|"+sha+"|"+str(rep)).encode()).hexdigest()[:8],16)
-    need(a!=b,"seed collision")
+    a=int(hashlib.sha256(("SEED1|A|"+sha+"|"+str(rep)).encode()).hexdigest()[:7],16)
+    b=int(hashlib.sha256(("SEED1|B|"+sha+"|"+str(rep)).encode()).hexdigest()[:7],16)
+    need(a!=b and 0<=a<=268435455 and 0<=b<=268435455,"seed collision or range")
     return a,b
 def options():
     for p in (NATIVE,KISSAT,CAD):
@@ -142,7 +142,7 @@ def freeze():
         UNSAT_requires_Kissat_CaDiCaL_original_agreement=True,
         one_cpu_arms=[a for a in ARMS if "_2cpu" not in a],
         two_cpu_arms=[a for a in ARMS if "_2cpu" in a],
-        seeds="SHA salted two independent uint32 seeds per source/rep; no outcome tuning",
+        seeds="SHA salted two independent 28-bit nonnegative seeds per source/rep; no outcome tuning",
         seed_policy_frozen_before_any_trial=True,
         cpu_affinity="one pinned logical CPU per child, two for simultaneous arms",
         code_sha256=digest(__file__),binary_sha256=binaries)
