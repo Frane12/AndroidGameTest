@@ -1,0 +1,148 @@
+name: DRNAS EQUIV7 - 48 disjoint fresh CNF SHA structural selector 576 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-equiv7-router-48fresh-20261109]
+    paths:
+      - .github/workflows/drnas-equiv7-router-48fresh.yml
+      - research/drnas_equiv7_structural_router.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv7-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-only preselection, exclude X20/X21/EQUIV6, toy proof and 48 disjoint CNF
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore immutable old/new CaDiCaL, Native, Kissat and old X20 registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42612525200 -R Frane12/AndroidGameTest -n equiv5-frozen-originals-binaries-and-source-options -D .
+          test -s mre_x20/manifest.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv5/bin/cadical_3_0_1
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D prior_x22
+          mkdir -p prior_equiv6
+          gh run download 42614287853 -R Frane12/AndroidGameTest -n equiv6-sourceonly-16SHA-pinned-binaries -D prior_equiv6
+          test -s prior_equiv6/mre_equiv6/manifest.json
+          test -s prior_x22/mre_x22/manifest.json
+          mkdir -p mre_equiv7/bin mre_equiv7/cases
+          cp mre_equiv5/bin/cadical_3_0_1 mre_equiv7/bin/cadical_3_0_1
+      - name: Validate pinned binary, fixed source-only routing and original SAT toy
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_equiv7_structural_router.py
+          python3 -u research/drnas_equiv7_structural_router.py selftest | tee mre_equiv7/selftest.log
+          grep -q '^EQUIV7_SELFTEST_PASS ' mre_equiv7/selftest.log
+      - name: Fetch official source-only non-outcome-screened 2021-2023 CNF and freeze SHA
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_equiv7_structural_router.py freeze | tee mre_equiv7/freeze.log
+          python3 -u research/drnas_equiv7_structural_router.py verify
+          grep -q '^EQUIV7_FROZEN ' mre_equiv7/freeze.log
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv7-sourceonly-48SHA-pinned-binaries
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            mre_x4/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre_equiv7/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_equiv7/freeze.log
+            mre_equiv7/selftest.log
+            mre_equiv7/selection-progress.json
+  paired:
+    name: EQUIV7 48 SHA-paired router vs controls 72 E2E shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv7-sourceonly-48SHA-pinned-binaries
+          path: .
+      - name: Original SHA, same CPU, route versus placebo and reference solver trials
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv7_structural_router.py verify
+          python3 -u research/drnas_equiv7_structural_router.py shard --shard ${{ matrix.shard }} | tee mre_equiv7/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV7_SHARD_PASS ${{ matrix.shard }} 72$' mre_equiv7/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv7-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_equiv7/shard-${{ matrix.shard }}.json
+            mre_equiv7/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 576 original SHA E2E PAR2 and 48-source paired gains/consensus
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv7-sourceonly-48SHA-pinned-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv7-shard-*
+          path: mre_equiv7
+          merge-multiple: true
+      - name: Fail-closed original SHA verdict audit and CPU/PAR2 comparison
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv7_structural_router.py verify
+          python3 -u research/drnas_equiv7_structural_router.py audit | tee mre_equiv7/audit.log
+          grep '^EQUIV7_FINAL ' mre_equiv7/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV7-FRESH-SOURCEONLY-576-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_equiv7/manifest.json
+            mre_equiv7/selection-progress.json
+            mre_equiv7/report.json
+            mre_equiv7/audit.log
+            mre_equiv7/shard-*.json
