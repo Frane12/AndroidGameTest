@@ -32,35 +32,43 @@ def save(p,content):
 def prepare():
     ROOT.mkdir(parents=True,exist_ok=True)
     manifests=[
-      ("c15d_sources/manifest.json","c15d_sources"),
-      ("prior_c13/c13_sources/manifest.json","prior_c13/c13_sources")
+      ("c15d_sources/manifest.json","c15d_sources","c15d",12),
+      ("prior_c12/c12_sources/manifest.json","prior_c12/c12_sources","official2026_C12_historical",8),
+      ("prior_c13/c13_sources/manifest.json","prior_c13/c13_sources","official2026_C13_historical",12),
     ]
-    cc=[]
-    for idx,(name,directory) in enumerate(manifests):
+    cc=[];seen=set();duplicates=[];counts=collections.Counter()
+    for name,directory,cohort,expected in manifests:
         m=pathlib.Path(name)
         need(m.is_file(),"source manifest absent "+name)
         d=json.loads(m.read_text())
-        need(len(d["cases"])==12,"expected 12 original SHA per historical source cohort")
-        for x in d["cases"]:
+        need(len(d["cases"])==expected,"unexpected historical source cohort size")
+        for x in sorted(d["cases"],key=lambda x:x["sha256"]):
             p=pathlib.Path(directory)/x["filename"]
             need(p.is_file() and digest(p)==x["sha256"],"original source SHA changed "+str(p))
             need(x["status"] in ("SAT","UNSAT"),"missing reference status")
+            if x["sha256"] in seen:
+                duplicates.append(dict(sha256=x["sha256"],gbd=x["gbd"],cohort=cohort))
+                continue
+            seen.add(x["sha256"])
+            if len(cc)>=24: continue
+            case_cohort=x["cohort"] if cohort=="c15d" else cohort
             cc.append(dict(filename=str(p),sha256=x["sha256"],gbd=x["gbd"],
-                 cohort=x["cohort"] if idx==0 else "official2026_C13_historical",
-                 status=x["status"]))
+                 cohort=case_cohort,status=x["status"]))
+            counts[case_cohort]+=1
     need(len(cc)==24 and len({x["sha256"] for x in cc})==24,
-         "24-source strict SHA dedup failed")
-    cc=sorted(cc,key=lambda x:(x["cohort"],x["gbd"]))
+         "insufficient distinct source SHA to freeze 24 originals")
     manifest=dict(protocol=PROTO,cases=cc,source_count=24,cap_s=CAP,
         all_source_SHAs_frozen_prior_to_timing=True,
-        all_sources_previously_seen_in_C13_or_C15D=True,
-        not_new_blind_holdout=True,
-        independent_solver_seeds=False,independent_UNSAT_LRAT=False,
-        baseline_p2_is_same_C_binary=True,
+        source_sha_duplicates_excluded=duplicates,
+        source_counts=dict(counts),
+        all_sources_previously_seen_in_C12_C13_or_C15D=True,
+        not_new_blind_holdout=True,independent_solver_seeds=False,
+        independent_UNSAT_LRAT=False,baseline_p2_is_same_C_binary=True,
         experiments_frozen=("p2pin","p2fast","p2reverse"),
         no_auto_promotion=True)
     save(ROOT/"manifest.json",manifest)
-    print("C16P2A_FROZEN",json.dumps(dict(sources=24,cohorts=2,manifest_sha256=digest(ROOT/"manifest.json")),sort_keys=True),flush=True)
+    print("C16P2A_FROZEN",json.dumps(dict(sources=24,excluded_duplicate_SHA=len(duplicates),
+         cohorts=dict(counts),manifest_sha256=digest(ROOT/"manifest.json")),sort_keys=True),flush=True)
 def cases():
     m=ROOT/"manifest.json"
     need(m.is_file(),"missing frozen source manifest")
@@ -72,7 +80,7 @@ def cases():
         p=pathlib.Path(x["filename"])
         need(p.exists() and digest(p)==x["sha256"],"original SHA verification failed")
         need(x["cohort"] in ("development_c14","development_c8h","prospective_official",
-                              "official2026_C13_historical"),"cohort drift")
+                              "official2026_C12_historical","official2026_C13_historical"),"cohort drift")
         need(x["status"] in ("SAT","UNSAT"),"reference drift")
     return cc
 def smoke():
@@ -215,7 +223,7 @@ def audit():
              "p2reverse":"same two processes launched in reversed order"},
       no_adaptive_routing=True,no_auto_promotion=True,
       cohorts={k:aggregate(rows if k=="all" else [r for r in rows if r["cohort"]==k])
-             for k in ("all","development_c14","development_c8h","prospective_official","official2026_C13_historical") if k=="all" or any(r["cohort"]==k for r in rows)},
+             for k in ("all","development_c14","development_c8h","prospective_official","official2026_C12_historical","official2026_C13_historical") if k=="all" or any(r["cohort"]==k for r in rows)},
       per_case=[dict(gbd=x["gbd"],cohort=x["cohort"],
          arms={a:dict(PAR2_s=round(sum(r["PAR2_s"] for r in rows if r["source_sha256"]==x["sha256"] and r["arm"]==a),6),
                       solved=sum(r["status"]!="UNKNOWN" for r in rows if r["source_sha256"]==x["sha256"] and r["arm"]==a)) for a in MODES}) for x in cc])
