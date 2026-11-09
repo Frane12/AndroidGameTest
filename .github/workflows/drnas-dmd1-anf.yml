@@ -1,0 +1,99 @@
+name: DRNAS DMD1 - ANF automatic discovery 24 original CNF plus proof-checked controls
+on:
+  push:
+    branches: [experiment/drnas-dmd1-anf-discovery-20261109]
+    paths:
+      - .github/workflows/drnas-dmd1-anf.yml
+      - research/dmd1_anf.cpp
+      - research/dmd1_bench.py
+      - research/DMD1_ANF_PROTOCOL.md
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    name: Build native C++ and 42 exhaustive proof/semantic selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          mkdir -p mre_dmd1/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd1/bin/dmd1_anf
+          python3 -u research/dmd1_bench.py selftest | tee dmd1-selftest.log
+          grep -q '^DMD1_SELFTEST_PASS ' dmd1-selftest.log
+  bench:
+    name: DMD1 paired one-core E2E shard ${{ matrix.shard }}
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore exact previously frozen 48 original SHA and Kissat binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Build DMD1 and run proof-checked full E2E measurements
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd1/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd1/bin/dmd1_anf
+          python3 -u research/dmd1_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd1/shard-${{ matrix.shard }}.log
+          grep -q '^DMD1_SHARD_PASS ${{ matrix.shard }} ' mre_dmd1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd1-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd1/shard-${{ matrix.shard }}.json
+            mre_dmd1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 224 SHA-paired E2E PAR2, witnesses, and proof integrity
+    needs: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore original CNFs and audited shard JSON
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd1-shard-*
+          path: mre_dmd1
+          merge-multiple: true
+      - name: Strict freeze, sample and PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd1_bench.py audit | tee mre_dmd1/audit.log
+          grep '^DMD1_FINAL ' mre_dmd1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD1-ANF-224-E2E-VERIFIED-FINAL
+          retention-days: 21
+          path: |
+            mre_dmd1/audit.json
+            mre_dmd1/audit.log
+            mre_dmd1/shard-*.json
