@@ -1,0 +1,121 @@
+name: DRNAS LEGO2 - proof hidden motifs positive-negative real 96 short 5s E2E
+on:
+  push:
+    branches: [experiment/drnas-lego2-positive-real-short5-20261109]
+    paths:
+      - 'research/drnas_lego2_positive_real.py'
+      - 'research/DRNAS_LEGO2_POSITIVE_REAL_PROTOCOL.md'
+      - '.github/workflows/drnas-lego2-positive-real-short5.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-lego2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile GF2, replay recursive positive/negative proofs, freeze learned table
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore SHA-pinned X22 source and two solver reference; compile native and train
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n DRNAS-X22-CPP-ASYNC-288-E2E-FINAL -D prior_x22
+          test -s prior_x22/report.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cadical
+          mkdir -p mre_x24/bin mre_lego1 mre_lego2
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x24_gf2_proof_first.cpp -o mre_x24/bin/gf2_proof
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py research/drnas_x24_gf2_proof_first.py research/drnas_lego1_proof_grammar.py research/drnas_lego2_positive_real.py
+          python3 -u research/drnas_lego2_positive_real.py selftest
+          python3 -u research/drnas_lego2_positive_real.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lego2-frozen-native-train-eval-sources
+          retention-days: 21
+          path: |
+            mre_x24/bin/gf2_proof
+            mre_lego2/manifest.json
+            mre_lego2/model.json
+            mre_lego2/train_report.json
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: LEGO2 original-SHA 24 short5 E2E measurements shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: lego2-frozen-native-train-eval-sources, path: .}
+      - name: Short5 blinded-to-eval model and original SAT witness checks
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_lego2_positive_real.py shard --shard ${{ matrix.shard }} | tee mre_lego2/shard-${{ matrix.shard }}.log
+          grep -q '^LEGO2_SHARD_PASS ${{ matrix.shard }} 24$' mre_lego2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lego2-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_lego2/shard-${{ matrix.shard }}.json
+            mre_lego2/shard-${{ matrix.shard }}.log
+  audit:
+    name: LEGO2 96 short5 final proof/synthetic/real PAR2 and CPU audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: lego2-frozen-native-train-eval-sources, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lego2-shard-*
+          merge-multiple: true
+          path: mre_lego2
+      - name: Require positive controls, reject negative false positives, report separate real E2E
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_lego2_positive_real.py audit | tee mre_lego2/audit.log
+          grep '^LEGO2_FINAL ' mre_lego2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-LEGO2-96-POSITIVE-NEGATIVE-REAL-SHORT5-FINAL
+          retention-days: 30
+          path: |
+            mre_lego2/report.json
+            mre_lego2/manifest.json
+            mre_lego2/model.json
+            mre_lego2/train_report.json
+            mre_lego2/audit.log
+            mre_lego2/shard-*.json
