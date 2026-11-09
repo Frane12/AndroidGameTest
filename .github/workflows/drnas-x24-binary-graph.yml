@@ -1,0 +1,115 @@
+name: DRNAS X24 - signed binary implication graph SCC monitored 336 E2E
+on:
+  push:
+    branches: [experiment/drnas-x24-binary-graph-scc-20261109]
+    paths:
+      - research/drnas_x24_graph_scout.cpp
+      - research/drnas_x24_binary_graph.py
+      - research/DRNAS_X24_BINARY_GRAPH_PROTOCOL.md
+      - .github/workflows/drnas-x24-binary-graph.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x24-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Build C++ graph scout, validate SCC dynamics, freeze 24 original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore certified X22 reducer, source SHA and pinned Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical g++
+          mkdir -p mre_x24/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x24_graph_scout.cpp -o mre_x24/bin/graph_scout
+          chmod +x mre_x24/bin/graph_scout mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py research/drnas_x24_binary_graph.py
+          python3 -u research/drnas_x22_parallel_reducer.py selftest
+          python3 -u research/drnas_x24_binary_graph.py selftest
+          python3 -u research/drnas_x24_binary_graph.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x24-frozen-source-graph-and-certified-reducer
+          retention-days: 21
+          path: |
+            mre_x24/manifest.json
+            mre_x24/bin/graph_scout
+            mre_x22/manifest.json
+            mre_x22/cases/
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+  paired:
+    name: X24 42 original SHA E2E graph arms shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x24-frozen-source-graph-and-certified-reducer, path: .}
+      - name: Compare graph shadow, any and strict SCC with original references
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/graph_scout mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x24_binary_graph.py shard --shard ${{ matrix.shard }} | tee mre_x24/shard-${{ matrix.shard }}.log
+          grep -q '^X24_SHARD_PASS ${{ matrix.shard }} 42$' mre_x24/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x24-result-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x24/shard-${{ matrix.shard }}.json
+            mre_x24/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 336 original SHA E2E SAT models UNSAT agreement PAR2 graph trajectory
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x24-frozen-source-graph-and-certified-reducer, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x24-result-*
+          path: mre_x24
+          merge-multiple: true
+      - name: Fail closed on contradictions or missing paired trials
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/graph_scout mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x24_binary_graph.py audit | tee mre_x24/audit.log
+          grep '^X24_FINAL ' mre_x24/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X24-GRAPH-SCC-336-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x24/manifest.json
+            mre_x24/report.json
+            mre_x24/audit.log
+            mre_x24/shard-*.json
