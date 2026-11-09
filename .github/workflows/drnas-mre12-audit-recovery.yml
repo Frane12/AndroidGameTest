@@ -1,0 +1,52 @@
+name: DRNAS MRE12 — audit-only recovery of frozen 96 trials
+on:
+  push:
+    branches: [experiment/drnas-mre12-exact-scc-quotient-20261109]
+    paths:
+      - '.github/workflows/drnas-mre12-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre12-recover-audit-only
+  cancel-in-progress: false
+jobs:
+  audit-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Replay the frozen implementation correctness suite
+        run: |
+          set -euo pipefail
+          python3 -u research/mre12_exact_quotient.py selftest
+      - name: Retrieve exact completed source and shard artifacts without solver reruns
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42544834313 -R Frane12/AndroidGameTest -n mre12-pinned-frozen-sources -D .
+          for i in 0 1 2 3; do
+            gh run download 42544834313 -R Frane12/AndroidGameTest -n mre12-shard-$i -D .
+          done
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          python3 -u research/mre12_exact_quotient.py verify
+          for i in 0 1 2 3; do
+            test -s "mre12_out/shard-$i.json"
+          done
+      - name: Source-paired, original-SAT-witness and proof-replay fail-closed audit
+        run: |
+          set -euo pipefail
+          python3 -u research/mre12_exact_quotient.py audit | tee mre12-recovered-audit.log
+          grep '^MRE12_FINAL ' mre12-recovered-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MRE12-96-TRIAL-AUDIT-ONLY-RECOVERED
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre12_out/report.json
+            mre12-recovered-audit.log
