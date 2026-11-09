@@ -161,7 +161,7 @@ def audit():
       source_SHA_original_verified=True,
       statuses_SAT_original_witness_checked=True,UNSAT_only_frozen_reference_agreement=True,
       no_adaptive_routing=True,no_auto_promotion=True,
-      cohorts={k:aggregate([r for r in rows if r["cohort"]==k])
+      cohorts={k:aggregate(rows if k=="all" else [r for r in rows if r["cohort"]==k])
              for k in ("all","development_c14","development_c8h","prospective_official") if k=="all" or any(r["cohort"]==k for r in rows)},
       per_case=[dict(gbd=x["gbd"],cohort=x["cohort"],
          arms={a:dict(PAR2_s=round(sum(r["PAR2_s"] for r in rows if r["source_sha256"]==x["sha256"] and r["arm"]==a),6),
