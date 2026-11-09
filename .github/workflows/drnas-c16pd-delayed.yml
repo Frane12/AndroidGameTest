@@ -1,0 +1,234 @@
+name: DRNAS C16PD — delayed native C portfolio 192 paired E2E wall CPU PAR2
+# Frozen V15.3.1 untouched; historical C15D originals, not claimed blind.
+on:
+  push:
+    branches: [experiment/drnas-c16pd-delayed-portfolio-20261109]
+    paths: ['.github/workflows/drnas-c16pd-delayed.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c16pd-delayed-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Compile native C11 portfolio, verify original SHA and pinned solvers, adversarial safety smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact C15D original-SHA and pinned reference binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c16pd_bin c16pd_out
+          gh run download 42541912605 -R Frane12/AndroidGameTest -n c15d-frozen-originals-and-pinned-backends -D .
+          sha256sum -c c15d_out/binary.sha256
+          chmod +x built/bin/kissat_4_0_4 c8c/bin/plain c8c/bin/instrumented
+          python3 -m py_compile research/c16pd_delayed_benchmark.py
+          python3 research/c16pd_delayed_benchmark.py verify
+      - name: Strict C compiler flags and actual SAT UNSAT 1p 2p 3p smoke tests
+        run: |
+          set -euo pipefail
+           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic research/c16pd_delayed_native.c -o c16pd_bin/drnas_c16pd
+          chmod +x c16pd_bin/drnas_c16pd
+          python3 -u research/c16pd_delayed_benchmark.py smoke
+          python3 - <<'PY'
+          import pathlib,tempfile,subprocess,json
+          with tempfile.TemporaryDirectory(prefix="c16pd-timing-") as td:
+              root=pathlib.Path(td)
+              cnf=root/"sat.cnf"
+              cnf.write_text("p cnf 2 2\\n1 0\\n2 0\\n")
+              slow=root/"slow.sh"
+              slow.write_text("#!/bin/sh\\nsleep 12\\nprintf 's SATISFIABLE\\\\nv 1 2 0\\\\n'\\nexit 10\\n")
+              slow.chmod(0o755)
+              quick=root/"quick.sh"
+              quick.write_text("#!/bin/sh\\nprintf 's SATISFIABLE\\\\nv 1 2 0\\\\n'\\nexit 10\\n")
+              quick.chmod(0o755)
+              def check(mode,kiss,cadi,min_wall,max_wall,want):
+                  p=subprocess.run(["c16pd_bin/drnas_c16pd",mode,str(cnf),
+                                    str(kiss),str(cadi),"15","SAT"],
+                                    text=True,capture_output=True,timeout=19)
+                  assert p.returncode==10,(mode,p.stderr,p.stdout[-300:])
+                  r=json.loads(p.stdout.split("C16PD_RESULT ")[1])
+                  assert r["status"]=="SAT" and r["sat_original_verified"],r
+                  assert min_wall<=r["wall_s"]<=max_wall,(mode,r)
+                  assert r["launched_processes"]==want,(mode,r)
+                  return r
+              check("d1",slow,quick,1.0,2.8,2)
+              check("d4",slow,quick,4.0,5.8,2)
+              r=check("d3way",slow,quick,2.0,3.8,2)
+              assert r["workers"][1]["started"] is False,r
+              print("C16PD_DELAYED_SECOND_AND_UNLAUNCHED_THIRD_PASS")
+          PY
+          python3 - <<'PY'
+          import pathlib,tempfile,subprocess,json
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)
+              f=p/"formula.cnf";f.write_text("p cnf 2 2\n1 0\n2 0\n")
+              good=p/"good.sh";good.write_text("#!/bin/sh\nprintf 's SATISFIABLE\\nv 1 2 0\\n'; exit 10\n");good.chmod(0o755)
+              bad=p/"bad.sh";bad.write_text("#!/bin/sh\nprintf 's SATISFIABLE\\nv -1 2 0\\n'; exit 10\n");bad.chmod(0o755)
+              args=["c16pd_bin/drnas_c16pd","p2",str(f),str(good),str(good),"2","SAT"]
+              ok=subprocess.run(args,text=True,capture_output=True,timeout=6)
+              assert ok.returncode==10 and json.loads(ok.stdout.split("C16PD_RESULT ")[1])["sat_original_verified"],ok
+              args[3]=str(bad);args[4]=str(bad)
+              wrong=subprocess.run(args,text=True,capture_output=True,timeout=6)
+              assert wrong.returncode==3 and json.loads(wrong.stdout.split("C16PD_RESULT ")[1])["invalid_result_detected"],wrong
+              print("C16PD_FALSE_SAT_REJECT_AND_PARALLEL_SAT_VERIFY_PASS")
+          PY
+          sha256sum research/c16pd_delayed_native.c c16pd_bin/drnas_c16pd built/bin/kissat_4_0_4 c8c/bin/instrumented > c16pd_bin/source-and-executables.sha256
+          sha256sum -c c16pd_bin/source-and-executables.sha256
+          nproc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c16pd-pinned-sources-binaries-and-selftest
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c16pd_bin/drnas_c16pd
+            c16pd_bin/source-and-executables.sha256
+            c16pd_out/smoke*.cnf
+            c15d_sources/*.cnf
+            c15d_sources/manifest.json
+            c15d_out/binary.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/instrumented
+  paired:
+    needs: prepare
+    name: C16PD immediate vs delayed 1s 4s 2s/8s 30s shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c16pd-pinned-sources-binaries-and-selftest
+          path: .
+      - name: Verify all original SHA and native binaries before every shard
+        run: |
+          set -euo pipefail
+          chmod +x c16pd_bin/drnas_c16pd built/bin/kissat_4_0_4 c8c/bin/instrumented
+          sha256sum -c c16pd_bin/source-and-executables.sha256
+          python3 research/c16pd_delayed_benchmark.py verify
+      - name: Run paid native parallel solver race and log wall CPU memory and PAR2
+        run: |
+          set -euo pipefail
+          mkdir -p c16pd_out
+          python3 -u research/c16pd_delayed_benchmark.py shard --shard ${{ matrix.shard }} | tee c16pd_out/shard-${{ matrix.shard }}.log
+          grep -q '^C16PD_SHARD_PASS ${{ matrix.shard }} 32 c16pd_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c16pd-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c16pd_out/shard-${{ matrix.shard }}.log
+            c16pd_out/shard-${{ matrix.shard }}.json
+  audit:
+    needs: paired
+    name: Fail-closed 192 paired real E2E with original SAT models and wall-vs-CPU summary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c16pd-pinned-sources-binaries-and-selftest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c16pd-shard-*
+          merge-multiple: true
+          path: c16pd_out
+      - name: SHA-locked paired audit with cohort split and extra resource cost
+        run: |
+          set -euo pipefail
+          chmod +x c16pd_bin/drnas_c16pd built/bin/kissat_4_0_4 c8c/bin/instrumented
+          sha256sum -c c16pd_bin/source-and-executables.sha256
+          python3 research/c16pd_delayed_benchmark.py verify
+          python3 -u research/c16pd_delayed_benchmark.py audit | tee c16pd_out/audit.log
+          grep -q '^C16PD_FINAL' c16pd_out/audit.log
+          grep '^C16PD_FINAL' c16pd_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C16PD-NATIVE-C-192-PAIRED-DELAYED-WALL-CPU-PAR2-AUDIT
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c16pd_out/report.json
+            c16pd_out/audit.log
+            c16pd_out/shard-*.json
+            c16pd_out/shard-*.log
+            c16pd_bin/source-and-executables.sha256
+            c15d_sources/manifest.json
+ c16pd_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c16pd-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c16pd_out/shard-${{ matrix.shard }}.log
+            c16pd_out/shard-${{ matrix.shard }}.json
+  audit:
+    needs: paired
+    name: Fail-closed 120 paired real E2E with original SAT models and wall-vs-CPU summary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c16pd-pinned-sources-binaries-and-selftest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c16pd-shard-*
+          merge-multiple: true
+          path: c16pd_out
+      - name: SHA-locked paired audit with cohort split and extra resource cost
+        run: |
+          set -euo pipefail
+          chmod +x c16pd_bin/drnas_c16pd built/bin/kissat_4_0_4 c8c/bin/instrumented
+          sha256sum -c c16pd_bin/source-and-executables.sha256
+          python3 research/c16pd_delayed_benchmark.py verify
+          python3 -u research/c16pd_delayed_benchmark.py audit | tee c16pd_out/audit.log
+          grep -q '^C16PD_FINAL' c16pd_out/audit.log
+          grep '^C16PD_FINAL' c16pd_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C16PD-NATIVE-C-120-PAIRED-PARALLEL-WALL-CPU-PAR2-AUDIT
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c16pd_out/report.json
+            c16pd_out/audit.log
+            c16pd_out/shard-*.json
+            c16pd_out/shard-*.log
+            c16pd_bin/source-and-executables.sha256
+            c15d_sources/manifest.json
