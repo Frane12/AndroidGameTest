@@ -1,0 +1,58 @@
+name: DRNAS DECOMP1 - exact original CNF articulation structural screening
+on:
+  push:
+    branches: [experiment/drnas-decomp1-exact-incidence-screen-20261109]
+    paths:
+      - .github/workflows/drnas-decomp1-incidence-screen.yml
+      - research/decomp1_incidence.cpp
+      - research/decomp1_screen.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-decomp1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  screen:
+    name: Compile native articulation scanner, selftest, SHA-frozen 24 source screen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile exact CNF incidence scanner and check disconnected / articulation counterexamples
+        run: |
+          set -euo pipefail
+          mkdir -p mre_decomp1/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/decomp1_incidence.cpp -o mre_decomp1/bin/decomp1_incidence
+          mre_decomp1/bin/decomp1_incidence selftest | tee mre_decomp1/selftest.log
+          grep -q '^DECOMP1_SELFTEST_PASS ' mre_decomp1/selftest.log
+          python3 -m py_compile research/decomp1_screen.py
+          sha256sum mre_decomp1/bin/decomp1_incidence | tee mre_decomp1/binary-sha.txt
+      - name: Restore original 24 EQUIV2 CNF sources without mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          test -s mre_x20/manifest.json
+          test "$(find mre_x20 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 24
+      - name: Source-SHA screening only (no CDCL and no PAR2 claims)
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp1_screen.py | tee mre_decomp1/screen.log
+          grep -q '^DECOMP1_FINAL ' mre_decomp1/screen.log
+          grep '^DECOMP1_FINAL ' mre_decomp1/screen.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DECOMP1-24-ORIGINAL-SHA-INCIDENCE-SCREEN
+          retention-days: 21
+          path: |
+            mre_decomp1/audit.json
+            mre_decomp1/screen.json
+            mre_decomp1/screen.log
+            mre_decomp1/selftest.log
+            mre_decomp1/binary-sha.txt
