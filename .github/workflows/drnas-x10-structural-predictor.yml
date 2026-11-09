@@ -1,0 +1,138 @@
+name: DRNAS X10 — cheap CNF structural graph signals 24 official SHA paired CMS Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-x10-cheap-structural-predictor-20261109]
+    paths: ['.github/workflows/drnas-x10-structural-predictor.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x10-c13-c14nv-24sha-2seed-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin CMS 5.11 CaDiCaL 1.7.3 Kissat 4.0.4 and preregister CNF signals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover frozen original source cohorts and identical versioned solvers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p x10_bin x10_prior_c13 x10_out x10_sources
+          gh run download 42558264803 -R Frane12/AndroidGameTest -n mre-x8-frozen-sha-patched-cms-and-inputs -D x10_bin
+          gh run download 42552186899 -R Frane12/AndroidGameTest -n c14nv-frozen-originals-and-pinned-backends -D .
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D x10_prior_c13
+          (cd x10_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c14nv_out/binary.sha256
+          chmod +x x10_bin/mre_x8/bin/native c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/x10_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          ldd x10_bin/mre_x8/bin/native | grep 'libcryptominisat5.so.5.11'
+          test "$(c8c/bin/plain --version)" = "1.7.3"
+          python3 -m py_compile research/drnas_x10_structural_profile.py research/drnas_x10_structural_benchmark.py
+          python3 -u research/drnas_x10_structural_benchmark.py selftest
+      - name: Freeze all original SHA plus immutable feature fingerprints BEFORE solver timing
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x10_structural_benchmark.py freeze | tee x10_out/freeze.log
+          grep -q '^X10_FROZEN ' x10_out/freeze.log
+          (cd x10_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x10_structural_benchmark.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x10-sha24-c13-c14nv-frozen-features-and-pinned-backends
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            x10_sources/*.cnf
+            x10_sources/manifest.json
+            x10_sources/source.sha256
+            x10_out/freeze.log
+            x10_bin/mre_x8/bin/native
+            x10_bin/mre_x8/lib/libcryptominisat5.so.5.11
+            x10_bin/mre_x8/pinned-binary.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c14nv_out/binary.sha256
+  trials:
+    needs: prepare
+    name: X10 source-only features matched SAT CMS Kissat CaDiCaL shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x10-sha24-c13-c14nv-frozen-features-and-pinned-backends
+          path: .
+      - name: Exact-SHA five-arm E2E 25s original witness and precommitted prediction
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/x10_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          (cd x10_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c14nv_out/binary.sha256
+          (cd x10_sources && sha256sum -c source.sha256)
+          chmod +x x10_bin/mre_x8/bin/native c8c/bin/plain built/bin/kissat_4_0_4
+          python3 -u research/drnas_x10_structural_benchmark.py verify
+          python3 -u research/drnas_x10_structural_benchmark.py shard --shard ${{ matrix.shard }} | tee x10_out/shard-${{ matrix.shard }}.log
+          grep -q '^X10_SHARD_PASS ${{ matrix.shard }} 30$' x10_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x10-paused-shard-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: error
+          path: |
+            x10_out/shard-${{ matrix.shard }}.json
+            x10_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: trials
+    name: X10 final precision recall source-SHA cross-cohort PAR2 and graph ablation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x10-sha24-c13-c14nv-frozen-features-and-pinned-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x10-paused-shard-*
+          merge-multiple: true
+          path: x10_out
+      - name: Audit 240 paired E2E outcomes and classifier graph feature contribution
+        run: |
+          set -euo pipefail
+          (cd x10_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x10_structural_benchmark.py audit | tee x10_out/audit.log
+          grep '^X10_FINAL' x10_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X10-240-PAIRED-STRUCTURAL-PREDICTION-PAR2-REPORT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            x10_out/report.json
+            x10_out/audit.log
+            x10_out/shard-*.json
+            x10_sources/manifest.json
