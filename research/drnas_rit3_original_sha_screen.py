@@ -334,8 +334,8 @@ def selftest():
         with tempfile.TemporaryDirectory() as d4:
             p4=pathlib.Path(d4)/"xor4-scc.cnf"
             cs=xor4+[(-2,5),(-5,3),(-3,6),(-6,2)]
-            p4.write_text(f"p cnf 6 {len(cs)}\\n"+
-                         "".join(" ".join(map(str,x))+" 0\\n" for x in cs))
+            p4.write_text(f"p cnf 6 {len(cs)}\n"+
+                         "".join(" ".join(map(str,x))+" 0\n" for x in cs))
             result=inspect(p4,sha(p4),"synthetic_xor4_scc",2026)
             assert result["stage"]=="OK",result
             assert result["gf2_rows_4"]>=1,result
