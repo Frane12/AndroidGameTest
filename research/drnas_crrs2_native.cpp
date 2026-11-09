@@ -141,10 +141,10 @@ static Structural extract(const CNF &cnf,const Timer &tim){
    ++compid;
  }
  ParityDSU dsu(n);
- vector<int> representative(compid,-1);
+ vector<int> representative(compid,0);
  for(int litidx=0;litidx<2*n;++litidx){
    int id=component[litidx],lit= (litidx&1)?-(litidx/2+1):(litidx/2+1);
-   if(representative[id]==-1){representative[id]=lit;continue;}
+   if(representative[id]==0){representative[id]=lit;continue;}
    int a=abs(representative[id]),b=abs(lit);
    if(a==b){if(representative[id]!=lit)dsu.inconsistent=true;continue;}
    int parity=(representative[id]<0)^(lit<0);
