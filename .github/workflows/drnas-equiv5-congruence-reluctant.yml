@@ -1,0 +1,142 @@
+name: DRNAS EQUIV5 - congruence x reluctant factorial 432 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-equiv5-congruence-reluctant-factorial-20261109]
+    paths:
+      - .github/workflows/drnas-equiv5-congruence-reluctant.yml
+      - research/drnas_equiv5_congruence_reluctant.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 24 original SHA and pin both solvers for congruence x reluctant factorial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Reuse immutable EQUIV3 source SHA, 3.0.1 build, old+new options and reference solvers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42610329043 -R Frane12/AndroidGameTest -n equiv3-frozen-source-and-tested-SCC -D .
+          test -s mre_equiv3/bin/cadical_3_0_1
+          test -s mre_equiv3/options-3.0.1.hpp
+          test -s mre_equiv3/options-1.7.3.hpp
+          test -s mre_equiv3/bin/alias_dose
+          test -s mre_x20/manifest.json
+          test -s prior_x20/shard-0.json
+          test "$(find mre_x20 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 24
+          mkdir -p mre_equiv5/bin
+          cp mre_equiv3/bin/cadical_3_0_1 mre_equiv5/bin/cadical_3_0_1
+          cp mre_equiv3/bin/alias_dose mre_equiv5/bin/alias_dose
+          cp mre_equiv3/options-1.7.3.hpp mre_equiv5/options-1.7.3.hpp
+          cp mre_equiv3/options-3.0.1.hpp mre_equiv5/options-3.0.1.hpp
+      - name: Verify source defaults and toy SAT models for all reduction schedules
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv5/bin/cadical_3_0_1 mre_equiv5/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_equiv5_congruence_reluctant.py
+          python3 -u research/drnas_equiv5_congruence_reluctant.py freeze | tee mre_equiv5/freeze.log
+          python3 -u research/drnas_equiv5_congruence_reluctant.py selftest | tee mre_equiv5/selftest.log
+          python3 -u research/drnas_equiv5_congruence_reluctant.py verify
+          grep -q '^EQUIV5_SELFTEST_PASS ' mre_equiv5/selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv5-frozen-originals-binaries-and-source-options
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x20/manifest.json
+            mre_x20/*.cnf
+            mre_x4/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            prior_x20/shard-*.json
+            mre_equiv5/bin/cadical_3_0_1
+            mre_equiv5/bin/alias_dose
+            mre_equiv5/manifest.json
+            mre_equiv5/options-1.7.3.hpp
+            mre_equiv5/options-3.0.1.hpp
+            mre_equiv5/option-diff.json
+            mre_equiv5/freeze.log
+            mre_equiv5/selftest.log
+  paired:
+    name: EQUIV5 54 source-matched E2E attempts shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv5-frozen-originals-binaries-and-source-options, path: .}
+      - name: "2x2 congruence x reluctant ablation and reduceint interactions versus frozen reference"
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv5/bin/cadical_3_0_1 mre_equiv5/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv5_congruence_reluctant.py verify
+          python3 -u research/drnas_equiv5_congruence_reluctant.py shard --shard ${{ matrix.shard }} | tee mre_equiv5/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV5_SHARD_PASS ${{ matrix.shard }} 54$' mre_equiv5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv5-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_equiv5/shard-${{ matrix.shard }}.json
+            mre_equiv5/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit congruence x reluctant interactions, 432 original SHA E2E, SAT and UNSAT consensus
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv5-frozen-originals-binaries-and-source-options, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv5-shard-*
+          path: mre_equiv5
+          merge-multiple: true
+      - name: Validate all 432 source SHA pairs and calculate accepted PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv5/bin/cadical_3_0_1 mre_equiv5/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv5_congruence_reluctant.py verify
+          python3 -u research/drnas_equiv5_congruence_reluctant.py audit | tee mre_equiv5/audit.log
+          grep '^EQUIV5_FINAL ' mre_equiv5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV5-FACTORIAL-432-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_equiv5/manifest.json
+            mre_equiv5/option-diff.json
+            mre_equiv5/report.json
+            mre_equiv5/audit.log
+            mre_equiv5/shard-*.json
