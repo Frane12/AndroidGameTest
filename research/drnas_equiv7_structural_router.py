@@ -149,18 +149,25 @@ def freeze():
         need(len(ids)==400 and set(easy)<=set(ids),"official index mismatch "+year)
         indexes[year]=dict(main_sha256=mainsha,easy_sha256=easysha,
                            eligible=len(easy))
-        candidates.extend((year,gbd) for gbd in easy if gbd not in excluded_ids)
+        easy_set=set(easy)
+        candidates.extend((year,gbd,0) for gbd in easy if gbd not in excluded_ids)
+        # Include the full original official competition index after easy metadata.
+        # No reference solver timing, SAT outcome or router result influences inclusion.
+        candidates.extend((year,gbd,1) for gbd in ids
+                          if gbd not in easy_set and gbd not in excluded_ids)
     candidates=sorted(set(candidates),
-       key=lambda p:hashlib.sha256((SALT+"|"+p[0]+"|"+p[1]).encode()).hexdigest())
+       key=lambda p:(p[2],hashlib.sha256(
+           (SALT+"|"+p[0]+"|"+p[1]).encode()).hexdigest()))
     years=collections.Counter();binary_classes=collections.Counter()
     cases=[];seen=set();trace=[]
-    for year,gbd in candidates:
+    for year,gbd,pool_tier in candidates:
         if len(cases)>=TARGET:break
         if gbd in seen or gbd in excluded_ids:continue
         seen.add(gbd)
         need(len(seen)<=MAX_SCAN,"source-only scan exhausted")
         path=SOURCE/(gbd+".cnf")
-        record=dict(year=year,gbd=gbd)
+        record=dict(year=year,gbd=gbd,
+                    source_index_tier="minisat1m_yes" if pool_tier==0 else "full_main")
         try:
             raw=fetch.get("https://benchmark-database.de/file/"+gbd,
                           12*1024*1024,seconds=20)
@@ -206,7 +213,7 @@ def freeze():
         selection_salt=SALT,source_indexes=indexes,
         selection_trace=trace,year_counts=dict(years),
         binary_counts=dict(binary_classes),
-        sample_policy="SHA-salted official 2021/2022/2023 easy-index first admissible 48, no year or density quotas",
+        sample_policy="SHA-salted official 2021/2022/2023 main indexes, minisat1m=yes first then full-main source-only fallback; fixed 48, no solver-outcome screening",
         prior_exclusions=prior,source_only_selection=True,
         globally_blind=False,excluded_X20_and_X21=True,excluded_prior_equiv6=True,
         no_outcome_screening=True,no_auto_promotion=True,
