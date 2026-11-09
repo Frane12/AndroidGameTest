@@ -1,0 +1,67 @@
+name: DRNAS SQL X19-X21 append 992 audited original-SHA E2E attempts
+on:
+  push:
+    branches: [experiment/drnas-analytics-x19-x21-attempts-20261109]
+    paths:
+      - '.github/workflows/drnas-analytics-x19-x21-attempts.yml'
+      - 'research/sat-analytics-data/ingest_x19_x21_attempts_20261109.py'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-analytics-x19-x21-attempts-20261109
+  cancel-in-progress: false
+jobs:
+  import:
+    name: Preserve historic SQLite and append audited X19 X19B X20 X21 individual E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: true, fetch-depth: 1}
+      - name: Fail closed if prior audited SQLite changed
+        run: |
+          set -euo pipefail
+          echo 'e0d0df933c17dde44237647cb40cf843b41afe7b27943fa3d4b60782f2420173  research/sat-analytics-data/current/sat_analytics.sqlite' | sha256sum -c -
+          python3 -m py_compile research/sat-analytics-data/ingest_x19_x21_attempts_20261109.py
+      - name: Download EXACT finished audit artifacts, never rerun solvers or copy unaudited shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-audits/x19 source-audits/x19b source-audits/x20 source-audits/x21
+          gh run download 42581795977 -R Frane12/AndroidGameTest -n DRNAS-X19-12-NEW-SOURCEONLY-144-E2E-STRUCTURE-CPU-PAR2-FINAL -D source-audits/x19
+          gh run download 42582976460 -R Frane12/AndroidGameTest -n DRNAS-X19B-128-PAIRED-E2E-FRESH-SOURCEONLY-CPU-PAR2-FINAL -D source-audits/x19b
+          gh run download 42587550843 -R Frane12/AndroidGameTest -n DRNAS-X20-24-NEW-SOURCEONLY-288-E2E-SELECT2-CPU-PAR2-FINAL -D source-audits/x20
+          gh run download 42586193407 -R Frane12/AndroidGameTest -n DRNAS-X21-432-UNSEEN-E2E-FINAL -D source-audits/x21
+      - name: Atomic append with pair SHA witness CPU PAR2 and old-table conservation checks
+        run: |
+          set -euo pipefail
+          python3 -u research/sat-analytics-data/ingest_x19_x21_attempts_20261109.py | tee /tmp/drnas-x19-x21-sql.log
+          grep -q '^DRNAS_X19_X21_SQL_FINAL ' /tmp/drnas-x19-x21-sql.log
+          DB=research/sat-analytics-data/current/sat_analytics.sqlite
+          sha256sum "$DB" | cut -d ' ' -f1 > "$DB.sha256"
+          gzip -n -c "$DB" > "$DB.gz"
+      - name: Commit isolated database artifact only after full SQL audit
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          git add research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+          git add research/sat-analytics-data/current/refresh_x19_x21_20261109_audit.json
+          git commit -m "data(analytics): preserve history and ingest 992 original SHA X19-X21 E2E attempts"
+          git push origin HEAD:experiment/drnas-analytics-x19-x21-attempts-20261109
+          echo DRNAS_X19_X21_SQL_PERSISTED
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SAT-SQL-X19-X21-992-AUDITED-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            research/sat-analytics-data/current/refresh_x19_x21_20261109_audit.json
+            research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+            /tmp/drnas-x19-x21-sql.log
