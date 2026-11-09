@@ -1,0 +1,135 @@
+name: DRNAS EQUIV1 - CaDiCaL ELS SCC causal 432 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-equiv1-cadical-scc-causal-20261109]
+    paths:
+      - '.github/workflows/drnas-equiv1-cadical-scc-causal.yml'
+      - 'research/drnas_equiv1_cadical_scc_ablation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore frozen X20 SHA, compile SCC and proof-replay selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Download immutable X20 original CNFs and historical reference results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42587550843 -R Frane12/AndroidGameTest -n x20-frozen-twentyfour-original-sha-and-unchanged-x18-solver -D .
+          mkdir -p prior_x20
+          gh run download 42587550843 -R Frane12/AndroidGameTest -n DRNAS-X20-24-NEW-SOURCEONLY-288-E2E-SELECT2-CPU-PAR2-FINAL -D prior_x20
+          test -s mre_x20/manifest.json
+          test -s prior_x20/mre_x20/shard-0.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          test "$(find mre_x20 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 24
+      - name: Compile X25 C++ signed SCC; verify CaDiCaL options and lifted original CNF SAT
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical g++
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_equiv1/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x25_alias_dose.cpp -o mre_equiv1/bin/alias_dose
+          chmod +x mre_equiv1/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_equiv1_cadical_scc_ablation.py
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py freeze | tee mre_equiv1/freeze.log
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py selftest | tee mre_equiv1/selftest.log
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py verify
+          grep -q '^EQUIV1_SELFTEST_PASS ' mre_equiv1/selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv1-frozen-source-and-tested-SCC
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x20/manifest.json
+            mre_x20/*.cnf
+            mre_x4/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+            prior_x20/mre_x20/shard-*.json
+            mre_equiv1/bin/alias_dose
+            mre_equiv1/manifest.json
+            mre_equiv1/freeze.log
+            mre_equiv1/selftest.log
+  paired:
+    name: EQUIV1 54 E2E trials SCC ablation shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv1-frozen-source-and-tested-SCC, path: .}
+      - name: CaDiCaL SCC rounds and gate ablation versus DRNAS native and SCC
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv1/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py verify
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py shard --shard ${{ matrix.shard }} | tee mre_equiv1/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV1_SHARD_PASS ${{ matrix.shard }} 54$' mre_equiv1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv1-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_equiv1/shard-${{ matrix.shard }}.json
+            mre_equiv1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final 432 matched original-SHA PAR2 and CPU audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv1-frozen-source-and-tested-SCC, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv1-shard-*
+          path: .
+          merge-multiple: true
+      - name: No unverified SAT, only original-backend-agreement UNSAT; no auto promotion
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv1/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py verify
+          python3 -u research/drnas_equiv1_cadical_scc_ablation.py audit | tee mre_equiv1/audit.log
+          grep '^EQUIV1_FINAL ' mre_equiv1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV1-CAUSAL-432-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_equiv1/manifest.json
+            mre_equiv1/report.json
+            mre_equiv1/audit.log
+            mre_equiv1/shard-*.json
