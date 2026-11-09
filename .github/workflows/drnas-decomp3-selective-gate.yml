@@ -1,0 +1,131 @@
+name: DRNAS DECOMP3-GATE - selective oneCPU E2E 48 SHA-paired
+run-name: DECOMP3-GATE 8 original CNF x 3 arms x 2 rep - strict PAR2
+on:
+  push:
+    branches: [experiment/drnas-decomp3-selective-gate-20261110]
+    paths:
+      - research/decomp3_selective_gate.py
+      - .github/workflows/drnas-decomp3-selective-gate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: decomp3-gate-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Verify immutable DECOMP2 frozen 8 and exact source-only gate selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore original EQUIV2 cases, pinned Kissat and immutable DECOMP2 source freeze
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42718727450 -R Frane12/AndroidGameTest -n decomp2-source-frozen-exact-candidate-and-binaries -D .
+          test -s mre_x20/manifest.json
+          test -s mre_decomp2/freeze.json
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Selftest source-only exact component gate and freeze E2E manifest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/decomp3_selective_gate.py research/decomp2_exact_bench.py
+          python3 -u research/decomp3_selective_gate.py selftest | tee mre_decomp3_gate-selftest.log
+          grep -q '^DECOMP3_GATE_SELFTEST_PASS ' mre_decomp3_gate-selftest.log
+          python3 -u research/decomp3_selective_gate.py freeze | tee mre_decomp3_gate/freeze.log
+          grep -q '^DECOMP3_GATE_FREEZE_PASS ' mre_decomp3_gate/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp3-gate-frozen8
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp3_gate/freeze.json
+            mre_decomp3_gate/freeze.log
+            mre_decomp3_gate-selftest.log
+  paired:
+    name: DECOMP3-GATE exact selective vs raw Kissat E2E 12 trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: {shard: [0,1,2,3]}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp3-gate-frozen8
+          path: .
+      - name: Restore source SHA, reference solver, original frozen DECOMP2 manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42718727450 -R Frane12/AndroidGameTest -n decomp2-source-frozen-exact-candidate-and-binaries -D .
+          chmod +x built/bin/kissat_4_0_4
+          test -s mre_decomp3_gate/freeze.json
+      - name: Same single CPU, exact SAT witness, no LRAT claim, timed full E2E
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp3_selective_gate.py bench --shard ${{ matrix.shard }} | tee mre_decomp3_gate/shard-${{ matrix.shard }}.log
+          grep -q '^DECOMP3_GATE_SHARD_PASS ${{ matrix.shard }} 12$' mre_decomp3_gate/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: decomp3-gate-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            mre_decomp3_gate/shard-${{ matrix.shard }}.log
+            mre_decomp3_gate/shard-${{ matrix.shard }}.json
+  audit:
+    name: Strict 48 SHA-paired E2E PAR2 plus routing and regression audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp3-gate-frozen8
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: decomp3-gate-shard-*
+          path: mre_decomp3_gate
+          merge-multiple: true
+      - name: Restore immutable frozen CNF and reference solver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42718727450 -R Frane12/AndroidGameTest -n decomp2-source-frozen-exact-candidate-and-binaries -D .
+          chmod +x built/bin/kissat_4_0_4
+      - name: Fail closed on missing SHA pairs, invalid SAT, contradictions and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp3_selective_gate.py audit | tee mre_decomp3_gate/audit.log
+          grep -q '^DECOMP3_GATE_FINAL ' mre_decomp3_gate/audit.log
+          grep '^DECOMP3_GATE_FINAL ' mre_decomp3_gate/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DECOMP3-GATE-48-ONECPU-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_decomp3_gate/audit.json
+            mre_decomp3_gate/audit.log
+            mre_decomp3_gate/freeze.json
+            mre_decomp3_gate/shard-*.json
