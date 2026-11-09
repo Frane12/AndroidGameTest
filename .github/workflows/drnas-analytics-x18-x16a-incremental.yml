@@ -1,0 +1,80 @@
+name: DRNAS SAT SQL refresh X18 X16A — append 848 audited E2E without rewriting history
+on:
+  push:
+    branches: [experiment/drnas-analytics-x18-x16a-incremental-20261109]
+    paths:
+      - 'research/sat-analytics-data/ingest_x18_x16a_incremental_20261109.py'
+      - '.github/workflows/drnas-analytics-x18-x16a-incremental.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-analytics-x18-x16a-incremental-20261109
+  cancel-in-progress: false
+jobs:
+  append_verified:
+    name: Download frozen final reports and append exact SHA SQL aggregates X18 X16A
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+      - name: Verify the previously successful 16-cohort base SQLite
+        run: |
+          set -euo pipefail
+          DB=research/sat-analytics-data/current/sat_analytics.sqlite
+          test -s "$DB"
+          echo 'c20c8c555a14d226e0bd98f3eb0fd8ab0ef0c4a1e840057471952e86e42d01bb  research/sat-analytics-data/current/sat_analytics.sqlite' | sha256sum -c -
+          python3 -m py_compile research/sat-analytics-data/ingest_x18_x16a_incremental_20261109.py
+      - name: Recover exact FINAL artifacts from successful GitHub Actions without rerunning solver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-audits/x18/mre_x18 source-audits/x16a/mre_x16a /tmp/drnas-x18 /tmp/drnas-x16a
+          gh run download 42579485596 -R Frane12/AndroidGameTest -n DRNAS-X18-SELECTIVE-SHARING-336-E2E-CPU-PAR2-PROBE-AUDIT -D /tmp/drnas-x18
+          gh run download 42579406905 -R Frane12/AndroidGameTest -n DRNAS-X16A-512-TRIAL-FOUR-ASYMMETRIC-ONEVCPU-PAR2-CPU-AUDIT -D /tmp/drnas-x16a
+          python3 - <<'PY'
+          import pathlib,shutil
+          for origin,dest in [
+              ('/tmp/drnas-x18','source-audits/x18/mre_x18/report.json'),
+              ('/tmp/drnas-x16a','source-audits/x16a/mre_x16a/report.json')
+          ]:
+              matches=list(pathlib.Path(origin).rglob('report.json'))
+              assert len(matches)==1,(origin,matches)
+              shutil.copy2(matches[0],dest)
+              print("DRNAS_SQL_SOURCE_RESTORED",dest,pathlib.Path(dest).stat().st_size)
+          PY
+      - name: Append only X18 and X16A aggregate scores with integrity assertions
+        run: |
+          set -euo pipefail
+          python3 -u research/sat-analytics-data/ingest_x18_x16a_incremental_20261109.py | tee /tmp/drnas-x18-x16a-sql.log
+          grep -q '^DRNAS_X18_X16A_SQL_FINAL ' /tmp/drnas-x18-x16a-sql.log
+          DB=research/sat-analytics-data/current/sat_analytics.sqlite
+          sha256sum "$DB" | cut -d ' ' -f1 > "$DB.sha256"
+          gzip -n -c "$DB" > "$DB.gz"
+      - name: Persist only SQLite artifacts and new audit to isolated experimental branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          git add research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+          git add research/sat-analytics-data/current/refresh_x18_x16a_20261109_audit.json
+          git commit -m "data(analytics): append X18 and X16A 848 audited E2E aggregate results"
+          git push origin HEAD:experiment/drnas-analytics-x18-x16a-incremental-20261109
+          echo DRNAS_X18_X16A_DB_PERSISTED
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SAT-SQL-X18-X16A-INCREMENTAL-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            research/sat-analytics-data/current/refresh_x18_x16a_20261109_audit.json
+            research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+            /tmp/drnas-x18-x16a-sql.log
