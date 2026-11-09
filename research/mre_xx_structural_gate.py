@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DRNAS XX: source-only duplicate gate, matched original SHA E2E experiment.
 
-12 frozen XX-only fresh official 2021-23 miniSAT-1m-labelled sources are selected
+12 frozen XX-only fresh official 2024-25 Main Track sources are selected
 by metadata/size and SHA salt ONLY, with no XX solver runtime prescreening.
 Six X11 duplicate-positive and six duplicate-zero sources are separate
 predeclared DEVELOPMENT replay controls; never count them as fresh.
@@ -19,18 +19,18 @@ import mre6b_blind_freeze as prior
 ROOT=pathlib.Path('mre_xx')
 PROTO='DRNAS-XX-SOURCE-GATE-12FRESH-12REPLAY-7ARM-2SEED-10S-E2E-20261109-v1'
 SALT='DRNAS-XX-20261109-SOURCE-ONLY-SALT-FROZEN-v1'
-YEARS=('2021','2022','2023')
+YEARS=('2024','2025')
 MODES=('original','scan_placebo','rewrite_identity','front100',
        'gated_dup','kissat','cadical')
 CAP=10.0
 REPS=2
-FRESH_PER_YEAR=4
+FRESH_PER_YEAR=6
 FRESH=12
 REPLAY_POS=6
 REPLAY_ZERO=6
 TARGET=24
 SHARDS=8
-MAX_FETCH_PER_YEAR=32
+MAX_FETCH_PER_YEAR=100
 MAX_RAW=6*1024*1024
 MAX_PLAIN=9*1024*1024
 MAX_VARS=30000
@@ -51,11 +51,16 @@ def get(url,limit,seconds=35):
     return data
 
 def get_index(year):
-    q='track=main_'+year+' and minisat1m=yes'
-    url='https://benchmark-database.de/getinstances?context=cnf&query='+urllib.parse.quote(q,safe='')
-    raw=get(url,500000,55)
-    ids=[s.rsplit('/',1)[-1].strip() for s in raw.decode().splitlines() if s.strip()]
-    need(len(ids)>=20 and all(re.fullmatch('[a-f0-9]{32}',g) for g in ids),
+    if year=='2024':
+        url='https://raw.githubusercontent.com/satcompetition/2024/main/downloads/meta.csv'
+        raw=get(url,150000,35)
+        ids=[line.split()[0] for line in raw.decode().splitlines()[1:] if line.split()]
+    else:
+        need(year=='2025','unsupported frozen competition year')
+        url='https://raw.githubusercontent.com/satcompetition/2025/main/downloads/SC2025.uri'
+        raw=get(url,150000,35)
+        ids=[line.rsplit('/',1)[-1].strip() for line in raw.decode().splitlines() if line.strip()]
+    need(len(ids)>=350 and all(re.fullmatch('[a-f0-9]{32}',g) for g in ids),
          'official original GBD source index unexpected '+year)
     need(len(ids)==len(set(ids)),'GBD duplicate in official index '+year)
     return ids,dict(index_url=url,index_sha256=sha(raw),source_count=len(ids))
@@ -101,7 +106,10 @@ def freeze():
     repo_ids,old_repo_sha=prior.inspect_repo_ids(allids)
     history=set(s.strip() for s in prior.PRIOR.read_text().splitlines()
                 if re.fullmatch('[a-f0-9]{32}',s.strip()))
-    exclude=seen_gbd|history|repo_ids
+    # Precommit exclusion of all 2025 R82 top-220 candidates, including failed fetches.
+    r82=set(sorted(ranked['2025'],key=lambda g:sha(
+        ('DRNAS-R82-PRECOMMIT-WIDE-RANDOM-ORIGINALS-2025-2026-20261104-v1/2025/'+g).encode()))[:220])
+    exclude=seen_gbd|history|repo_ids|r82
     # Exclude prior R82 precommit block (regardless of whether downloaded).
     for year in YEARS:
         ranked[year]=sorted((g for g in ranked[year] if g not in exclude),
@@ -160,7 +168,7 @@ def freeze():
          modes=MODES,reps=REPS,cap_s=CAP,
          expected_trials=TARGET*REPS*len(MODES),expected_sources=TARGET,
          x11_original_run=42563452186,development_replay_sources=12,
-         new_official_2021_2023_originals=12,source_index=indexes,
+         new_official_2024_2025_originals=12,source_index=indexes,
          declared_exclusion_count=len(exclude),
          source_selection='salted official GBD + independent minisat1m metadata; resource-size bounds only; never XX runtimes or gate features',
          no_runtime_prescreen=True,not_globally_blind=True,
