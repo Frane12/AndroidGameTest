@@ -49,12 +49,15 @@ def freeze():
         allids,h1=pool.getids('track=main_'+year)
         easy,h2=pool.getids('track=main_'+year+' and minisat1m=yes')
         need(len(allids)==400 and set(easy)<=set(allids),'index drift')
-        candidates.extend((year,g) for g in easy)
+        candidates.extend((year,g) for g in allids)
         indexes[year]=dict(all_sha256=h1,easy_sha256=h2,count=len(easy))
     more,ds=prior.inspect_repo_ids({g for _,g in candidates})
     ids.update(more);digests.update(ds)
     candidates=sorted(set(candidates),key=lambda z:sha((SALT+'|'+z[0]+'|'+z[1]).encode()))
     selected=[];trace=[];counts=collections.Counter()
+    availability={y:sum(yr==y and g not in ids for yr,g in candidates) for y in YEARS}
+    print('X6F_POOL',json.dumps(availability,sort_keys=True),flush=True)
+    save(ROOT/'selection-progress.json',dict(eligible_by_year=availability,excluded_ids=len(ids),indexes=indexes))
     fetch.prior.r32p.CNF_LIMIT=12*1024*1024
     tried=set()
     # Two per year then two extra, all source-only.
@@ -86,8 +89,9 @@ def freeze():
             p.unlink(missing_ok=True)
             row.update(selection='EXCLUDED_SIZE_FETCH_OR_PRIOR',reason=str(e)[:180])
         trace.append(row);print('X6F_SOURCE',json.dumps(row),flush=True)
+        save(ROOT/'selection-progress.json',dict(eligible_by_year=availability,selected=selected,trace=trace))
     need(len(selected)==TARGET and min(counts[y] for y in YEARS)>=2,'not eight new sources')
-    save(ROOT/'manifest.json',dict(protocol=PROTO,cases=selected,modes=MODES,cap_s=CAP,reps=REPS,expected_trials=144,indexes=indexes,prior_registries=registries,source_selection='published minisat1m=yes, salted GBD rank, fixed geometry and year quotas; no local solver screening',source_disjoint_declared_registries=True,globally_exhaustive_history_not_guaranteed=True,no_auto_promotion=True,trace=trace))
+    save(ROOT/'manifest.json',dict(protocol=PROTO,cases=selected,modes=MODES,cap_s=CAP,reps=REPS,expected_trials=144,indexes=indexes,prior_registries=registries,source_selection='all official main 2021-2023 sources, salted GBD rank, fixed geometry and year quotas; no solver screening',source_disjoint_declared_registries=True,globally_exhaustive_history_not_guaranteed=True,no_auto_promotion=True,trace=trace))
     print('X6F_FROZEN',len(selected),flush=True)
 def verify():
     m=json.loads((ROOT/'manifest.json').read_text())
