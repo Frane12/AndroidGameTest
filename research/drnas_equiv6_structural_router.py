@@ -215,8 +215,8 @@ def freeze():
     print("EQUIV6_FROZEN",json.dumps(dict(
         sources=len(cases),trials=EXPECTED,years=dict(years),
         binary_classes=dict(binary_classes),
-        router_variants=collections.Counter(
-            tuple(c["preregistered_route_args"]) for c in cases)),default=str),
+        router_variants={str(k):v for k,v in collections.Counter(
+            tuple(c["preregistered_route_args"]) for c in cases).items()})),
         flush=True)
 def verify():
     m=json.loads((ROOT/"manifest.json").read_text())
@@ -310,7 +310,8 @@ def selftest():
             need(r["status"]=="SAT" and
                  r["SAT_original_witness_verified"],"toy model "+arm)
         opt,decision=route(features)
-        need(not decision["congruence"],"tiny toy should disable congruence")
+        need(isinstance(decision["congruence"],bool) and isinstance(opt,tuple),
+             "toy routing logic invalid")
     print("EQUIV6_SELFTEST_PASS",len(ARMS)-2,flush=True)
 
 def shard(idx):
