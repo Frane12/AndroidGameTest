@@ -43,10 +43,6 @@ static Formula read_cnf(const string& p){
   throw runtime_error("clause count mismatch");
  return z;
 }
-static string label(const Clause& c){
- int pos=0;for(int l:c)if(l>0)++pos;
- return "length"+to_string(c.size())+"_pos"+to_string(pos);
-}
 class Watch final : public CaDiCaL::ExternalPropagator {
  public:
  vector<Clause> candidates;
