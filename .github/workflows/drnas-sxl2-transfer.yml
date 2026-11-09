@@ -1,0 +1,146 @@
+name: DRNAS SXL2 - source-proved ANF dose transfer one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-sxl2-selective-anf-transfer-20261109]
+    paths:
+      - .github/workflows/drnas-sxl2-transfer.yml
+      - research/sxl2_transfer.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sxl2-transfer-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Native ANF proof replay and reference-only original CNF freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore unchanged EQUIV2 CNF and SXL1 baseline freeze
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          mkdir -p sxl1_baseline
+          gh run download 42711075098 -R Frane12/AndroidGameTest -n sxl-pinned-build-source-freeze -D sxl1_baseline
+          python3 - <<'PY'
+          import pathlib,shutil,json
+          matched=list(pathlib.Path("sxl1_baseline").rglob("freeze.json"))
+          assert len(matched)==1, "ambiguous SXL1 frozen baseline"
+          data=json.loads(matched[0].read_text())
+          assert data["protocol"]=="DRNAS-SXL-ANF-BINARY-TREE-ONECPU-E2E-v1"
+          assert len(data["cases"])==8
+          shutil.copyfile(matched[0],"sxl1_freeze.json")
+          print("SXL2_PREVIOUS_FREEZE_EXCLUSION_PASS",len(data["cases"]))
+          PY
+          test -s mre_x20/manifest.json
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv2/bin/cadical_3_0_1
+          chmod +x built/bin/kissat_4_0_4 mre_equiv2/bin/cadical_3_0_1
+      - name: Compile source-provable native ANF expander and selftest
+        run: |
+          set -euo pipefail
+          mkdir -p mre_sxl2/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_sxl2/bin/dmd3x_native
+          python3 -m py_compile research/sxl2_transfer.py research/dmd1_bench.py
+          python3 -u research/sxl2_transfer.py selftest | tee mre_sxl2/selftest.log
+          grep -q '^SXL2_SELFTEST_PASS ' mre_sxl2/selftest.log
+          sha256sum mre_sxl2/bin/dmd3x_native | tee mre_sxl2/bin-sha256.txt
+      - name: Reference-only 10s screening SHA freeze before variant results
+        run: |
+          set -euo pipefail
+          python3 -u research/sxl2_transfer.py screen | tee mre_sxl2/screen.log
+          grep -q '^SXL2_FREEZE_PASS ' mre_sxl2/screen.log
+          grep '^SXL2_FREEZE_PASS ' mre_sxl2/screen.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sxl2-frozen-binaries-reference-selected-source
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_sxl2/bin
+            mre_sxl2/bin-sha256.txt
+            mre_sxl2/freeze.json
+            mre_sxl2/screen.log
+            mre_sxl2/selftest.log
+            sxl1_freeze.json
+  paired:
+    name: SXL2 source SHA paired 12s one-CPU E2E shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 23
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: {shard: [0,1,2,3]}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sxl2-frozen-binaries-reference-selected-source
+          path: .
+      - name: Restore pinned original CNF SHA and solver binaries
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          test -s sxl1_freeze.json
+          test -s mre_sxl2/freeze.json
+          test -s mre_sxl2/bin/dmd3x_native
+          chmod +x mre_sxl2/bin/dmd3x_native built/bin/kissat_4_0_4 mre_equiv2/bin/cadical_3_0_1
+          sha256sum mre_sxl2/bin/dmd3x_native
+      - name: Six-arm E2E including proof replay and source-only dose
+        run: |
+          set -euo pipefail
+          python3 -u research/sxl2_transfer.py bench --shard ${{ matrix.shard }} | tee mre_sxl2/shard-${{ matrix.shard }}.log
+          grep -q '^SXL2_SHARD_PASS ${{ matrix.shard }} ' mre_sxl2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sxl2-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_sxl2/shard-${{ matrix.shard }}.json
+            mre_sxl2/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict matched SHA SAT models PAR2 and CPU audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sxl2-frozen-binaries-reference-selected-source
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sxl2-shard-*
+          path: mre_sxl2
+          merge-multiple: true
+      - name: Recheck source SHA and non-overlap with SXL1
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          chmod +x built/bin/kissat_4_0_4
+          python3 -u research/sxl2_transfer.py audit | tee mre_sxl2/audit.log
+          grep -q '^SXL2_FINAL ' mre_sxl2/audit.log
+          grep '^SXL2_FINAL ' mre_sxl2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SXL2-TRANSFER-ONECPU-E2E-PAR2-FINAL
+          retention-days: 21
+          path: |
+            mre_sxl2/audit.json
+            mre_sxl2/audit.log
+            mre_sxl2/freeze.json
+            mre_sxl2/shard-*.json
+            mre_sxl2/screen.log
