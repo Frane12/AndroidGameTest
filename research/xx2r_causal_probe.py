@@ -37,7 +37,6 @@ CAP = 30.0
 REPS = 2
 SHARDS = 3
 HARD = set(TARGETS[:4])
-xx.CAP = CAP
 
 def need(ok, msg):
     if not ok:
@@ -105,7 +104,14 @@ def shard(idx):
             modes = list(MODES)
             random.Random(xx.seed(c, rep)).shuffle(modes)
             for mode in modes:
-                row = xx.trial(c, rep, mode)
+                # Keep the frozen 8s XX2R manifest contract unchanged.
+                # Extend the limit only during the experimental solve, and restore it.
+                original_cap = xx.CAP
+                try:
+                    xx.CAP = CAP
+                    row = xx.trial(c, rep, mode)
+                finally:
+                    xx.CAP = original_cap
                 row["diagnostic_cohort"] = "post_outcome_explanatory_not_blind"
                 row["causal_protocol"] = PROTO
                 trials.append(row)
