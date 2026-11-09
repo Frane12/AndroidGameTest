@@ -182,7 +182,7 @@ def transform(case, arm):
     ops = {
         "C_only": ["C"], "D32_only": ["D32"],
         "CD32": ["C", "D32"],
-        "GATE_CD32": (["C", "D32"] if info["gate_c_hit"] else ["D32"]),
+        "GATE_CD32": (["C", "D32"] if info.get("gate_c_hit", False) else ["D32"]),
     }[arm]
     for operation in ops:
         prev = clauses
