@@ -6,6 +6,7 @@
 #undef main
 #include <unordered_set>
 #include <iomanip>
+#include <limits>
 struct Rated {
  int idx=0,novel=0,degree=0,weight=0;
  Clause c;
@@ -14,10 +15,6 @@ static string to_json_array(const vector<int>& a){
  ostringstream s;s<<"[";
  for(size_t i=0;i<a.size();++i){if(i)s<<",";s<<a[i];}
  s<<"]";return s.str();
-}
-static bool same_clause(const Clause& a,const Clause& b){
- Clause x=a,y=b;sort(x.begin(),x.end());sort(y.begin(),y.end());
- return x==y;
 }
 static void test_dmd3xc() {
  ::selftest();
@@ -106,7 +103,7 @@ int main(int argc,char** argv){
    for(int l:extra.back())already.insert(abs(l));
   }
   if(!extra.empty())write_output(orig,extra,sel);
-  else ifstream z(sel); // no write when no lemma (caller must use a fresh path)
+  // A fresh target path remains absent when no lemma passes the gate.
   auto elapsed=tim.elapsed();
   ostringstream out;
   out<<fixed<<setprecision(6)
