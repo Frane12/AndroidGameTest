@@ -117,6 +117,7 @@ def freeze():
     trace = []
     indices = {}
     counts = collections.Counter()
+    fetch.prior.r32p.CNF_LIMIT = MAX_PLAIN
     for year, quota in QUOTAS.items():
         allids, index_hash = indexes.getids("track=main_" + year)
         mini, mini_hash = indexes.getids("track=main_" + year + " and minisat1m=yes")
