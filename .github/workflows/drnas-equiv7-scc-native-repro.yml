@@ -1,0 +1,169 @@
+name: DRNAS EQUIV7 - native SCC cycles plus reproducible SAT 36 original E2E
+on:
+  push:
+    branches: [experiment/drnas-equiv7-scc-cycles-native-repro-20261109]
+    paths:
+      - .github/workflows/drnas-equiv7-scc-native-repro.yml
+      - research/drnas_equiv7_scc_native_repro.py
+      - research/drnas_equiv7_signed_scc.cpp
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv7-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore 16 original SHA, compile C++ signed SCC and validate binary cycle proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Download prior EQUIV6 original input, pinned native Kissat and CaDiCaL 3.0.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42614249793 -R Frane12/AndroidGameTest -n equiv6-sourceonly-16SHA-pinned-binaries -D .
+          test -s mre_equiv6/manifest.json
+          test -s mre_equiv6/bin/cadical_3_0_1
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          test "$(find mre_equiv6/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+      - name: Native signed SCC implementation, original SHA freeze and three structural selftests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical g++
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_equiv7/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_equiv7_signed_scc.cpp -o mre_equiv7/bin/scc
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_equiv7_scc_native_repro.py
+          python3 -u research/drnas_equiv7_scc_native_repro.py selftest | tee mre_equiv7/selftest.log
+          python3 -u research/drnas_equiv7_scc_native_repro.py freeze | tee mre_equiv7/freeze.log
+          python3 -u research/drnas_equiv7_scc_native_repro.py verify
+          grep -q '^EQUIV7_SELFTEST_PASS$' mre_equiv7/selftest.log
+          grep -q '^EQUIV7_FROZEN ' mre_equiv7/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv7-frozen-16SHA-native-SCC-and-solvers
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_equiv6/manifest.json
+            mre_equiv6/cases/*.cnf
+            mre_equiv6/bin/cadical_3_0_1
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_equiv7/bin/scc
+            mre_equiv7/manifest.json
+            mre_equiv7/freeze.log
+            mre_equiv7/selftest.log
+  screen:
+    name: Full 16-original SHA source-only SCC; long cycles and early-abstention audit
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv7-frozen-16SHA-native-SCC-and-solvers, path: .}
+      - name: Original source-only signed SCC, median cost, previous reciprocal miss, skip false negatives
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv7_scc_native_repro.py verify
+          python3 -u research/drnas_equiv7_scc_native_repro.py screen | tee mre_equiv7/screen.log
+          test "$(grep -c '^EQUIV7_SCC ' mre_equiv7/screen.log)" -eq 16
+          grep '^EQUIV7_SCREEN_FINAL ' mre_equiv7/screen.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv7-SCC-16SHA-diagnostic
+          retention-days: 30
+          path: |
+            mre_equiv7/screen.json
+            mre_equiv7/screen-summary.json
+            mre_equiv7/screen.log
+  repro:
+    name: EQUIV7 5ea9 original SAT 30s cap six backends replicate ${{ matrix.rep }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        rep: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv7-frozen-16SHA-native-SCC-and-solvers, path: .}
+      - name: Native vs Kissat vs CaDiCaL 1.7.3 and 3.0.1; original model and pinned CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv7_scc_native_repro.py verify
+          python3 -u research/drnas_equiv7_scc_native_repro.py repro --rep ${{ matrix.rep }} | tee mre_equiv7/repro-${{ matrix.rep }}.log
+          grep -q '^EQUIV7_REPRO_PASS ${{ matrix.rep }} 6$' mre_equiv7/repro-${{ matrix.rep }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv7-repro-${{ matrix.rep }}
+          retention-days: 21
+          path: |
+            mre_equiv7/repro-${{ matrix.rep }}.json
+            mre_equiv7/repro-${{ matrix.rep }}.log
+  audit:
+    name: EQUIV7 audited 16 SCC sources and 36 repeated 30s original-CNF E2E runs
+    needs: [screen, repro]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv7-frozen-16SHA-native-SCC-and-solvers, path: .}
+      - uses: actions/download-artifact@v4
+        with: {name: equiv7-SCC-16SHA-diagnostic, path: mre_equiv7}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv7-repro-*
+          path: mre_equiv7
+          merge-multiple: true
+      - name: Fail-closed SAT original witness, reference UNSAT and 30s PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv7_scc_native_repro.py verify
+          python3 -u research/drnas_equiv7_scc_native_repro.py audit | tee mre_equiv7/audit.log
+          grep '^EQUIV7_FINAL ' mre_equiv7/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV7-SCC16-NATIVE36-30S-E2E-AUDITED
+          retention-days: 30
+          path: |
+            mre_equiv7/manifest.json
+            mre_equiv7/screen-summary.json
+            mre_equiv7/screen.json
+            mre_equiv7/report.json
+            mre_equiv7/repro-*.json
+            mre_equiv7/audit.log
