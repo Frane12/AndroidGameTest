@@ -1,0 +1,157 @@
+name: DRNAS X17 - asymmetric CaDiCaL clause sharing 224 paired E2E wall CPU PAR2
+on:
+  push:
+    branches: [experiment/drnas-x17-asymmetric-share-20261109]
+    paths:
+      - '.github/workflows/drnas-x17-asymmetric-sharing.yml'
+      - 'research/drnas_x17_asymmetric.cpp'
+      - 'research/drnas_x17_asymmetric.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x17-asymmetric-share-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze X15 original SHA and compile real asymmetric CaDiCaL learner receiver
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore the same X15 16 original source SHA and frozen comparator binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42573523992 -R Frane12/AndroidGameTest -n x15-frozen-8development-8fresh-16originals-native-backends -D .
+          test -s mre_x15/manifest.json
+          test "$(find mre_x15 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Build pinned CaDiCaL learner and independently smoke-check SAT UNSAT
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcadical-dev cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          sha256sum -c mre_x11/binary.sha256
+          mkdir -p mre_x17/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -pthread research/drnas_x17_asymmetric.cpp -lcadical -o mre_x17/bin/asymmetric
+          sha256sum mre_x17/bin/asymmetric
+          python3 -m py_compile research/drnas_x17_asymmetric.py
+          python3 -u research/drnas_x17_asymmetric.py selftest
+          python3 -u research/drnas_x17_asymmetric.py freeze | tee mre_x17/freeze.log
+          python3 -u research/drnas_x17_asymmetric.py verify
+          grep -q '^X17_FROZEN ' mre_x17/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x17-frozen-source-sha-and-learner-binary
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x17/*.cnf
+            mre_x17/manifest.json
+            mre_x17/freeze.log
+            mre_x17/bin/asymmetric
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: X17 28 exact-SHA paired original SAT trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x17-frozen-source-sha-and-learner-binary
+          path: .
+      - name: Run solo vs two-worker placebo vs asymmetric one-way import on actual original CNF
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x17/bin/asymmetric mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x17_asymmetric.py verify
+          python3 -u research/drnas_x17_asymmetric.py shard --shard ${{ matrix.shard }} | tee mre_x17/shard-${{ matrix.shard }}.log
+          grep -q '^X17_SHARD_PASS ${{ matrix.shard }} 28$' mre_x17/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x17-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x17/shard-${{ matrix.shard }}.json
+            mre_x17/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 224 original-SHA E2E PAR2 and CPU-bound transfer-control audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x17-frozen-source-sha-and-learner-binary
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x17-shard-*
+          path: .x17-results
+          merge-multiple: false
+      - name: Reject missing or duplicated results and compare true sharing against placebo
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x17/bin/asymmetric mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for i in 0 1 2 3 4 5 6 7; do
+            matches=$(find ".x17-results/x17-shard-$i" -type f -name "shard-$i.json" | wc -l)
+            test "$matches" -eq 1
+            src=$(find ".x17-results/x17-shard-$i" -type f -name "shard-$i.json" -print -quit)
+            cp "$src" "mre_x17/shard-$i.json"
+            python3 - "$i" <<'PY'
+          import json,sys
+          i=int(sys.argv[1]);rows=json.load(open(f"mre_x17/shard-{i}.json"))
+          assert len(rows)==28 and len(set((r['original_sha256'],r['rep'],r['arm']) for r in rows))==28
+          print('X17_RECOVERED_SHARD',i,len(rows),flush=True)
+          PY
+          done
+          python3 -u research/drnas_x17_asymmetric.py verify
+          python3 -u research/drnas_x17_asymmetric.py audit | tee mre_x17/audit.log
+          grep -q '^X17_FINAL ' mre_x17/audit.log
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d=json.load(open('mre_x17/report.json'))
+          print('## X17 real one-way clause transfer: 224 exact original-SHA trials')
+          print('| arm | solved | wall PAR2 s | CPU-budget PAR2 s | child CPU s | imported |')
+          print('|---|---:|---:|---:|---:|---:|')
+          for name,v in d['overall'].items():
+              print(f"| {name} | {v['solved']}/{v['n']} | {v['wall_PAR2_s']} | {v['cpu_budget_PAR2_s']} | {v['child_cpu_s']} | {v['imported']} |")
+          print('Original X15 cohort REUSED: not blind. Two logical CPUs != guaranteed physical cores. Scout verdict never credited in asym arms. UNSAT no independent LRAT.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X17-ASYMMETRIC-ONEWAY-224-STRICT-CPU-WALL-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_x17/manifest.json
+            mre_x17/report.json
+            mre_x17/audit.log
+            mre_x17/shard-*.json
