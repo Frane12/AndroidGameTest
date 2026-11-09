@@ -1,0 +1,61 @@
+name: DRNAS C16P2A — recovery audit of 288 completed E2E trials
+on:
+  push:
+    branches: [experiment/drnas-c16p2-affinity-causal-20261109]
+    paths: ['.github/workflows/drnas-c16p2a-recovery-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit-recovered:
+    name: Recover all 8 completed shard artifacts, verify SHA and paired PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download frozen sources and all eight completed 36-trial shard artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c16p2a_out
+          gh run download 42552150244 -R Frane12/AndroidGameTest -n c16p2a-pinned-sources-binaries-and-selftest -D .
+          for shard in 0 1 2 3 4 5 6 7; do
+            gh run download 42552150244 -R Frane12/AndroidGameTest -n c16p2a-shard-$shard -D c16p2a_out
+            test -s c16p2a_out/shard-$shard.json
+            test -s c16p2a_out/shard-$shard.log
+          done
+          sha256sum -c c16p2a_bin/source-and-executables.sha256
+          python3 research/c16p2_affinity_benchmark.py verify
+      - name: Independent fail-closed reconstruction from complete artifacts (no solver reruns)
+        run: |
+          set -euo pipefail
+          python3 -u research/c16p2_affinity_benchmark.py audit | tee c16p2a_out/recovered-audit.log
+          grep -q '^C16P2A_FINAL ' c16p2a_out/recovered-audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          q=json.loads(pathlib.Path('c16p2a_out/report.json').read_text())
+          assert q['real_E2E_trials']==288 and q['source_count']==24
+          print("C16P2A_RECOVERY_AUDIT_PASSED")
+          print('## C16P2A — 288 completed E2E trials, recovered from original 8 shard artifacts')
+          print('| Arm | PAR2 s | Solved | Child CPU s | PAR2 vs p2 |')
+          print('|---|---:|---:|---:|---:|')
+          for k,v in sorted(q['cohorts']['all'].items(),key=lambda kv:kv[1]['PAR2_s']):
+              print(f"| {k} | {v['PAR2_s']:.4f} | {v['solved']}/{v['attempts']} | {v['child_cpu_sum_s']:.3f} | {v['speedup_vs_p2_wall_PAR2_x']:.4f}x |")
+          print('UNCERTIFIED UNSAT: reference agreement only; source SHA verified, no new solver runs.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-C16P2A-RECOVERED-288-TRIAL-PAR2-AUDIT
+          retention-days: 30
+          compression-level: 6
+          if-no-files-found: warn
+          path: |
+            c16p2a_out/report.json
+            c16p2a_out/recovered-audit.log
+            c16p2a_out/shard-*.json
+            c16p2a_sources/manifest.json
