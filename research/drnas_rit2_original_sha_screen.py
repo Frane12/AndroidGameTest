@@ -270,8 +270,10 @@ def selftest():
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         src=pathlib.Path(d)/"test.cnf"
-        clauses=xor((1,2,3),0)+[(2,-3),(-2,3)]
-        src.write_text(f"p cnf 3 {len(clauses)}\n"+
+        # Directed implication cycle: 2=>4=>3=>5=>2 creates SCC(2,3)
+        # without the two-clause pair that GF2 extraction would already recognize.
+        clauses=xor((1,2,3),0)+[(-2,4),(-4,3),(-3,5),(-5,2)]
+        src.write_text(f"p cnf 5 {len(clauses)}\n"+
                        "".join(" ".join(map(str,c))+" 0\n" for c in clauses))
         row=inspect(src,sha(src),"selftest",2026)
         assert row["stage"]=="OK",row
