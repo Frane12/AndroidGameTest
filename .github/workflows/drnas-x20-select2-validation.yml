@@ -1,0 +1,208 @@
+name: DRNAS X20 - Select2 versus placebo on 24 source-only SHA 288 E2E CPU PAR2
+on:
+  push:
+    branches: [experiment/drnas-x20-select2-validation-20261109]
+    paths:
+      - '.github/workflows/drnas-x20-select2-validation.yml'
+      - 'research/drnas_x20_select2_validation.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x20-fresh-transfer-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 24 structural-stratified source-only SHA excluding X15 X6 X18 X19
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact X18 executable, frozen backend binaries and prior exclusion manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42579485596 -R Frane12/AndroidGameTest -n x18-frozen-24-originals-and-pinned-solvers -D .
+          gh run download 42557116984 -R Frane12/AndroidGameTest -n x6fresh-eight-new-source-sha-frozen-CMS-Kissat -D .prior-x6
+          gh run download 42581795977 -R Frane12/AndroidGameTest -n x19-frozen-twelve-original-sha-and-unchanged-x18-solver -D .prior-x19
+          test -s .prior-x19/mre_x19/manifest.json
+          test -s mre_x18/manifest.json
+          test -s mre_x18/bin/selective
+          test -s .prior-x6/mre_x6fresh/manifest.json
+          mkdir -p mre_x6fresh mre_x19 mre_x20/bin
+          cp .prior-x19/mre_x19/manifest.json mre_x19/manifest.json
+          cp .prior-x19/mre_x19/*.cnf mre_x19/
+          test "$(find mre_x19 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 12
+          cp .prior-x6/mre_x6fresh/manifest.json mre_x6fresh/manifest.json
+          cp mre_x18/bin/selective mre_x20/bin/selective
+          chmod +x mre_x20/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Verify baseline and learner binary, selftest and freeze original CNFs without solver selection
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          sha256sum -c mre_x11/binary.sha256
+          python3 -m py_compile research/drnas_x20_select2_validation.py research/drnas_x20_suspect_verification.py
+          python3 -u research/drnas_x20_select2_validation.py selftest
+          python3 -u research/drnas_x20_select2_validation.py freeze | tee mre_x20/freeze.log
+          python3 -u research/drnas_x20_select2_validation.py verify
+          grep -q '^X20_FROZEN ' mre_x20/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x20-frozen-twentyfour-original-sha-and-unchanged-x18-solver
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x20/*.cnf
+            mre_x20/manifest.json
+            mre_x19/manifest.json
+            mre_x19/*.cnf
+            mre_x20/freeze.log
+            mre_x20/selection-progress.json
+            mre_x20/bin/selective
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  suspect:
+    name: Independently recheck X19 unresolved UNSAT on exact old original SHA at 75s
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x20-frozen-twentyfour-original-sha-and-unchanged-x18-solver
+          path: .
+      - name: Longer pinned reference-solver checks, never claim certified LRAT
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x built/bin/kissat_4_0_4 mre_x4/bin/native mre_x20/bin/selective
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x20_suspect_verification.py | tee mre_x20/suspect-verification.log
+          grep -q '^X20_SUSPECT_FINAL ' mre_x20/suspect-verification.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x20-x19-unsat-independent-75s-check
+          retention-days: 30
+          path: |
+            mre_x20/suspect-independent-longcap.json
+            mre_x20/suspect-verification.log
+  paired:
+    name: X20 36 original SHA paired 12s E2E and three separate bounded diagnostics shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x20-frozen-twentyfour-original-sha-and-unchanged-x18-solver
+          path: .
+      - name: Verify frozen binaries and run six matched arms at identical source and seed
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x20/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x20_select2_validation.py verify
+          python3 -u research/drnas_x20_select2_validation.py shard --shard ${{ matrix.shard }} | tee mre_x20/shard-${{ matrix.shard }}.log
+          grep -q '^X20_SHARD_PASS ${{ matrix.shard }} 36$' mre_x20/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x20-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x20/shard-${{ matrix.shard }}.json
+            mre_x20/probe-shard-${{ matrix.shard }}.json
+            mre_x20/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 288 new-original SHA E2E wall CPU PAR2 and structural category transfer audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x20-frozen-twentyfour-original-sha-and-unchanged-x18-solver
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x20-shard-*
+          path: .x20-results
+          merge-multiple: false
+      - name: Fail closed on incomplete evidence and calculate source-stratified verified PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x20/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for i in 0 1 2 3 4 5 6 7; do
+            for prefix in shard probe-shard; do
+              file="$prefix-$i.json"
+              test "$(find ".x20-results/x20-shard-$i" -type f -name "$file" | wc -l)" -eq 1
+              cp "$(find ".x20-results/x20-shard-$i" -type f -name "$file" -print -quit)" "mre_x20/$file"
+            done
+            python3 - "$i" <<'PY'
+          import json,sys
+          i=int(sys.argv[1]);r=json.load(open(f'mre_x20/shard-{i}.json'))
+          p=json.load(open(f'mre_x20/probe-shard-{i}.json'))
+          assert len(r)==36 and len(p)==3
+          assert len(set((x['original_sha256'],x['rep'],x['arm']) for x in r))==24
+          print('X20_RECOVERED_SHARD',i,36,3,flush=True)
+          PY
+          done
+          python3 -u research/drnas_x20_select2_validation.py verify
+          python3 -u research/drnas_x20_select2_validation.py audit | tee mre_x20/audit.log
+          grep -q '^X20_FINAL ' mre_x20/audit.log
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r=json.load(open('mre_x20/report.json'))
+          print('## DRNAS X20: strict 288 original-CNF E2E paired tests, 24 new registered SHA, 12 dense and 12 sparse')
+          print('|arm|solved|wall PAR2 s|CPU-budget PAR2 s|actual child CPU s|imported|')
+          print('|---|---:|---:|---:|---:|---:|')
+          for name,o in r['overall'].items():
+            print(f"|{name}|{o['solved']}/{o['n']}|{o['wall_PAR2_s']}|{o['cpu_budget_PAR2_s']}|{o['actual_child_cpu_s']}|{o['imported']}|")
+          print('Asym2 vs placebo2 is the CPU-matched causal comparison; native, Kissat and CaDiCaL use one logical CPU.')
+          print('Historical X15/X6/X18/X19 excluded, NOT globally blind. SAT verified on original SHA; UNSAT requires independent backend agreement, NO LRAT.')
+          print('Bounded native 5000-conflict probes are separate diagnostics; never counted toward E2E PAR2.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X20-24-NEW-SOURCEONLY-288-E2E-SELECT2-CPU-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_x20/manifest.json
+            mre_x20/report.json
+            mre_x20/audit.log
+            mre_x20/probe-shard-*.json
+            mre_x20/shard-*.json
