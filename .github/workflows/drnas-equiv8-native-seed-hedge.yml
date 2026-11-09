@@ -1,0 +1,131 @@
+name: DRNAS EQUIV8 - 96 original SAT paired single-core native seed-cold-restart 30s
+on:
+  push:
+    branches: [experiment/drnas-equiv8-native-seed-hedge-20261110]
+    paths:
+      - .github/workflows/drnas-equiv8-native-seed-hedge.yml
+      - research/drnas_equiv8_native_seed_hedge.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv8-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Lock previously observed 5ea9 source SHA, new seeds and native SAT selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore pinned EQUIV7 original-CNF artifacts and native binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42617767799 -R Frane12/AndroidGameTest -n equiv7-frozen-16SHA-native-SCC-and-solvers -D .
+          test -s mre_equiv7/manifest.json
+          test -s mre_equiv6/bin/cadical_3_0_1
+          test -s mre_equiv6/cases/5ea9d54e4eb8eeab1ff058471b9c83ca.cnf
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+      - name: Python syntax, pinned SHA, distinct new seeds and original SAT proof toy
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          mkdir -p mre_equiv8
+          python3 -m py_compile research/drnas_equiv8_native_seed_hedge.py
+          python3 -u research/drnas_equiv8_native_seed_hedge.py selftest | tee mre_equiv8/selftest.log
+          python3 -u research/drnas_equiv8_native_seed_hedge.py freeze | tee mre_equiv8/freeze.log
+          python3 -u research/drnas_equiv8_native_seed_hedge.py verify
+          grep -q '^EQUIV8_SELFTEST_PASS 16$' mre_equiv8/selftest.log
+          grep -q '^EQUIV8_FROZEN ' mre_equiv8/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv8-frozen-native-originals-and-new-seeds
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_equiv7/manifest.json
+            mre_equiv6/cases/5ea9d54e4eb8eeab1ff058471b9c83ca.cnf
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv6/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_equiv8/manifest.json
+            mre_equiv8/selftest.log
+            mre_equiv8/freeze.log
+  paired:
+    name: Native cold-restarts one pinned CPU 16 E2E attempts shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv8-frozen-native-originals-and-new-seeds
+          path: .
+      - name: Native one run vs 4/8/12/16s reseeds vs alternate seed, Kissat and CaDiCaL
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv8_native_seed_hedge.py verify
+          python3 -u research/drnas_equiv8_native_seed_hedge.py shard --shard ${{ matrix.shard }} | tee mre_equiv8/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV8_SHARD_PASS ${{ matrix.shard }} 16$' mre_equiv8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv8-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_equiv8/shard-${{ matrix.shard }}.json
+            mre_equiv8/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final 96 original SAT witness checked E2E wall and CPU PAR2, seed interaction
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv8-frozen-native-originals-and-new-seeds
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv8-shard-*
+          path: mre_equiv8
+          merge-multiple: true
+      - name: Fail-closed original-SHA SAT verified source model, single CPU, 96 trial audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv8_native_seed_hedge.py verify
+          python3 -u research/drnas_equiv8_native_seed_hedge.py audit | tee mre_equiv8/audit.log
+          grep -q '^EQUIV8_FINAL ' mre_equiv8/audit.log
+          grep '^EQUIV8_FINAL ' mre_equiv8/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV8-SINGLECPU-SEED-HEDGE-96-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_equiv8/manifest.json
+            mre_equiv8/report.json
+            mre_equiv8/audit.log
+            mre_equiv8/shard-*.json
