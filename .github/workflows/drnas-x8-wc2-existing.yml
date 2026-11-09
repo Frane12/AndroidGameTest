@@ -1,0 +1,134 @@
+name: DRNAS X8 WC2 — existing 12 official2026 C13 mixed historical 5-arm World Cup
+on:
+  push:
+    branches: [experiment/drnas-x8-wc2-existing-c13-20261109]
+    paths: ['.github/workflows/drnas-x8-wc2-existing.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x8-wc2-existing-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze 2026 medium originals and pin 3 reference solver binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover exact X8 CryptoMiniSat 5.11 binary, Kissat 4.0.4 and CaDiCaL 1.7.3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p wc2_bin wc2_sources wc2_out
+          gh run download 42558264803 -R Frane12/AndroidGameTest -n mre-x8-frozen-sha-patched-cms-and-inputs -D wc2_bin
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          (cd wc2_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x wc2_bin/mre_x8/bin/native built/bin/kissat_4_0_4 c8c/bin/plain
+          test "$(c8c/bin/plain --version)" = 1.7.3
+          ldd wc2_bin/mre_x8/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/drnas_x8_wc2_existing.py
+          python3 -u research/drnas_x8_wc2_existing.py selftest
+      - name: Preregister existing C13 official originals and freeze original SHA BEFORE local solver timing
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x8_wc2_existing.py freeze | tee wc2_out/freeze.log
+          grep -q '^X8_WC2_FROZEN' wc2_out/freeze.log
+          (cd wc2_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x8_wc2_existing.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x8-wc2-source-only-locked-official26-medium-and-pinned-solver-binaries
+          retention-days: 25
+          compression-level: 6
+          path: |
+            wc2_sources/*.cnf
+            wc2_sources/manifest.json
+            wc2_sources/source.sha256
+            wc2_out/freeze.log
+            wc2_bin/mre_x8/bin/native
+            wc2_bin/mre_x8/lib/libcryptominisat5.so.5.11
+            wc2_bin/mre_x8/pinned-binary.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c13_bin/binary.sha256
+  trials:
+    needs: prepare
+    name: WC2 5 arms two repeats matched SHA 25s E2E shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x8-wc2-source-only-locked-official26-medium-and-pinned-solver-binaries
+          path: .
+      - name: Run frozen X8 and global references on exactly the same original formulas
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/wc2_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          (cd wc2_sources && sha256sum -c source.sha256)
+          (cd wc2_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x wc2_bin/mre_x8/bin/native built/bin/kissat_4_0_4 c8c/bin/plain
+          python3 -u research/drnas_x8_wc2_existing.py verify
+          python3 -u research/drnas_x8_wc2_existing.py shard --shard ${{ matrix.shard }} \
+            | tee wc2_out/shard-${{ matrix.shard }}.log
+          grep -q '^X8_WC2_SHARD_PASS ${{ matrix.shard }}' wc2_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x8-wc2-shard-${{ matrix.shard }}
+          retention-days: 25
+          compression-level: 6
+          path: |
+            wc2_out/shard-${{ matrix.shard }}.json
+            wc2_out/shard-${{ matrix.shard }}.log
+  final:
+    needs: trials
+    name: Final exact-SHA 12 C13 historical 5 arm PAR2 solved wins losses and regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x8-wc2-source-only-locked-official26-medium-and-pinned-solver-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x8-wc2-shard-*
+          merge-multiple: true
+          path: wc2_out
+      - name: Verify complete pairing and all original SAT witnesses then calculate PAR2
+        run: |
+          set -euo pipefail
+          (cd wc2_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x8_wc2_existing.py audit | tee wc2_out/audit.log
+          grep -q '^X8_WC2_FINAL' wc2_out/audit.log
+          grep '^X8_WC2_FINAL' wc2_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X8-WC2-UNOFFICIAL-MID16-KISSAT-CADICAL-CMS-PAR2
+          retention-days: 30
+          path: |
+            wc2_out/report.json
+            wc2_out/audit.log
+            wc2_out/shard-*.json
+            wc2_sources/manifest.json
+# WC2B: preregistered availability-only quota revision before any timing; no X8 trial in failed WC2 freeze.
