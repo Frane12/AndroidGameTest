@@ -1,0 +1,123 @@
+name: DRNAS C14NV H2 — 12 new official SHA 120 paired no-vivify controls
+on:
+  push:
+    branches: [experiment/drnas-c14-novivify-h2-prospective-20261109]
+    paths: ['.github/workflows/drnas-c14nv-h2.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c14nv-h2-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pinned backends and audited historical exclusion manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          gh run download 42533156950 -R Frane12/AndroidGameTest -n c8h-pristine-instrumented-173-and-frozen-three-SHA -D prior_c8h
+          gh run download 42541912605 -R Frane12/AndroidGameTest -n c15d-frozen-originals-and-pinned-backends -D prior_c15d
+          test -f prior_c15d/c15d_sources/manifest.json
+          sha256sum -c prior_c15d/c15d_out/binary.sha256
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          mkdir -p c14nv_out
+          python3 -m py_compile research/c14nv_h2_benchmark.py
+      - name: Freeze 12 distinct prospective official SAT2026 sources before timing
+        run: |
+          set -euo pipefail
+          python3 -u research/c14nv_h2_benchmark.py prepare | tee c14nv_out/freeze.log
+          grep -q '^C14NV_FROZEN ' c14nv_out/freeze.log
+          python3 -u research/c14nv_h2_benchmark.py smoke
+          sha256sum c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4 > c14nv_out/binary.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c14nv-frozen-originals-and-pinned-backends
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            c14nv_sources/*.cnf
+            c14nv_sources/manifest.json
+            c14nv_out/freeze.log
+            c14nv_out/binary.sha256
+            c8c/bin/plain
+            c8c/bin/instrumented
+            built/bin/kissat_4_0_4
+  trials:
+    needs: prepare
+    name: C14NV source-disjoint paired shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c14nv-frozen-originals-and-pinned-backends
+          path: .
+      - name: Execute same-source paired end-to-end trials
+        run: |
+          set -euo pipefail
+          sha256sum -c c14nv_out/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          python3 -u research/c14nv_h2_benchmark.py shard --shard ${{ matrix.shard }} | tee c14nv_out/shard-${{ matrix.shard }}.log
+          grep -q '^C14NV_SHARD_PASS ${{ matrix.shard }} 20$' c14nv_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c14nv-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            c14nv_out/shard-${{ matrix.shard }}.json
+            c14nv_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c14nv-frozen-originals-and-pinned-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c14nv-shard-*
+          merge-multiple: true
+          path: c14nv_out
+      - name: Audit witnesses source pairing and cohort-separated PAR2
+        run: |
+          set -euo pipefail
+          sha256sum -c c14nv_out/binary.sha256
+          python3 -u research/c14nv_h2_benchmark.py audit | tee c14nv_out/audit.log
+          grep '^C14NV_FINAL ' c14nv_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: C14NV-NEW12-120-PAIRED-30S-RESULTS
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            c14nv_out/*.json
+            c14nv_out/*.log
+            c14nv_out/binary.sha256
+            c14nv_sources/manifest.json
