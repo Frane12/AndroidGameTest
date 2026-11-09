@@ -169,7 +169,7 @@ def selftest():
     decision,_=inspect(test,g)
     need(not decision["eligible"] and decision["reason"]=="connected","connected gate")
     # Positive disconnected, balanced graph exactly testable by enumeration.
-    sample=[(1,),(2,),(-1,3),(-2,4)]
+    sample=[(1,),(2,),(-1,3),(-2,4)]*8
     choice,parts=inspect(sample,{"clause_components":2})
     need(choice["eligible"] and len(parts)==2,"balanced gate")
     for bits in itertools.product((False,True),repeat=4):
