@@ -186,8 +186,9 @@ def freeze():
        source_years=dict(collections.Counter(c["year"] for c in selected)),
        predicted_seeds=dict(collections.Counter(c["precommitted_selection"]
                                                for c in selected)),
-       source_index_tiers=dict(collections.Counter(rec["source_index_tier"]
-                                                 for rec in selected)),
+       source_index_tiers=dict(collections.Counter(
+                              "minisat1m_yes" if c["index_tier"]==0 else "full_main"
+                              for c in selected)),
        max_vars=MAX_VARIABLES,max_clauses=MAX_CLAUSES,max_bytes=MAX_BYTES),
        sort_keys=True),flush=True)
 
