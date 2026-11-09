@@ -1,0 +1,123 @@
+name: DRNAS X6 FRESH SHORT — 8 new sources 144 E2E 8s eight concurrent shards
+on:
+  push:
+    branches: [experiment/drnas-mre-x6-fresh-short-20261109]
+    paths: ['.github/workflows/drnas-mre-x6-fresh-short.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x6-fresh-short-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze eight registry-disjoint originals and restore unchanged X6 CMS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pinned binaries and previous source registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42525965205 -R Frane12/AndroidGameTest -n mre-x4-four-original-sha-five-orders-checkpoint-cms -D .
+          gh run download 42505042425 -R Frane12/AndroidGameTest -n mre7e-pilot16-frozen-originals-and-native-binaries -D prior7
+          gh run download 42511069503 -R Frane12/AndroidGameTest -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D prior11
+          mkdir -p mre7_easy mre11b_blind built/bin mre_x6fresh
+          cp prior7/mre7_easy/manifest.json mre7_easy/manifest.json
+          cp prior11/mre11b_blind/manifest.json mre11b_blind/manifest.json
+          cp prior7/built/bin/kissat_4_0_4 built/bin/kissat_4_0_4
+          sha256sum -c mre_x4/bin.sha256
+          sha256sum built/bin/kissat_4_0_4 mre_x4/bin/native mre5/lib/libcryptominisat5.so.5.11 > mre_x6fresh/binary.sha256
+          chmod +x built/bin/kissat_4_0_4 mre_x4/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x4/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre_x6_fresh_short.py
+          python3 -u research/mre_x6_fresh_short.py selftest
+          python3 -u research/mre_x6_fresh_short.py freeze | tee mre_x6fresh/freeze.log
+          python3 -u research/mre_x6_fresh_short.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x6fresh-eight-new-source-sha-frozen-CMS-Kissat
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            mre_x6fresh/*.cnf
+            mre_x6fresh/manifest.json
+            mre_x6fresh/freeze.log
+            mre_x6fresh/binary.sha256
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: X6 fresh 18 matched E2E 8s shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x6fresh-eight-new-source-sha-frozen-CMS-Kissat
+          path: .
+      - name: Run same-source paired seeds including full preprocessing overhead
+        run: |
+          set -euo pipefail
+          sha256sum -c mre_x6fresh/binary.sha256
+          chmod +x built/bin/kissat_4_0_4 mre_x4/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x6_fresh_short.py verify
+          python3 -u research/mre_x6_fresh_short.py shard --shard ${{ matrix.shard }} | tee mre_x6fresh/shard-${{ matrix.shard }}.log
+          grep -q '^X6F_SHARD_PASS ${{ matrix.shard }} 18' mre_x6fresh/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x6fresh-result-${{ matrix.shard }}
+          retention-days: 14
+          path: |
+            mre_x6fresh/shard-${{ matrix.shard }}.json
+            mre_x6fresh/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 144 E2E PAR2 original SAT witnesses and cross-solver UNSAT
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x6fresh-eight-new-source-sha-frozen-CMS-Kissat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x6fresh-result-*
+          merge-multiple: true
+          path: mre_x6fresh
+      - name: Audit every source seed policy and report total and per-shard PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_x6_fresh_short.py audit | tee mre_x6fresh/audit.log
+          grep '^X6F_FINAL' mre_x6fresh/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X6-FRESH8-144-E2E-8S-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_x6fresh/manifest.json
+            mre_x6fresh/report.json
+            mre_x6fresh/audit.log
+            mre_x6fresh/shard-*.json
