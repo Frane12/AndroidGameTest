@@ -1,0 +1,181 @@
+name: DRNAS SCC C1 — native C safe quotient vs Kissat CaDiCaL 256 paired E2E
+# Isolated SCC C control; no changes to stable DRNAS V15.3.1.
+on:
+  push:
+    branches: [experiment/drnas-scc-c1-native-control-20261109]
+    paths: ['.github/workflows/drnas-scc-c1-control.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-scc-c1-native-control-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin both reference solvers; compile native C SCC; freeze 20 historical official and 12 synthetic SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve original pinned SHA and binary artifacts from C12 and C13
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p c12ref scc_c1_bin scc_c1_out
+          gh run download 42535300094 -R Frane12/AndroidGameTest -n c12-pinned-backends-and-frozen-official-SHA -D c12ref
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          test -s c12ref/c12_sources/manifest.json
+          test -s c13_sources/manifest.json
+          test -s c8c/bin/plain
+          test -s built/bin/kissat_4_0_4
+          chmod +x c8c/bin/plain built/bin/kissat_4_0_4
+          sha256sum -c c13_bin/binary.sha256
+          (cd c12ref/c12_sources && sha256sum -c source.sha256)
+          (cd c13_sources && sha256sum -c source.sha256)
+      - name: GCC C11 compile, strict warnings and randomized exhaustive tiny-CNF selftest
+        run: |
+          set -euo pipefail
+          gcc -std=c11 -O2 -Wall -Wextra -Werror research/scc_c1_native.c -o scc_c1_bin/drnas_scc
+          python3 -m py_compile research/scc_c1_benchmark.py
+          python3 - <<'PY'
+          import itertools,subprocess,pathlib,random,tempfile,json
+          rng=random.Random(20261109)
+          def sat(n,clauses):
+              for bits in itertools.product((False,True),repeat=n):
+                  if all(any(bits[abs(v)-1]==(v>0) for v in row) for row in clauses):return bits
+              return None
+          for i in range(220):
+              n=rng.randint(1,8)
+              clauses=[[rng.choice((-1,1))*rng.randint(1,n) for _ in range(rng.randrange(5))]
+                       for j in range(rng.randrange(20))]
+              original=sat(n,clauses)
+              with tempfile.TemporaryDirectory() as td:
+                  p=pathlib.Path(td);a=p/'in.cnf';b=p/'out.cnf';c=p/'map.txt'
+                  a.write_text('p cnf %d %d\n'%(n,len(clauses))+''.join(' '.join(map(str,x))+' 0\n' for x in clauses))
+                  r=subprocess.run(['scc_c1_bin/drnas_scc',str(a),str(b),str(c)],capture_output=True,text=True)
+                  assert r.returncode==0,(i,r.stderr)
+                  report=json.loads(r.stdout.split('SCC_C1_FINAL ')[1])
+                  if report['status']=='UNSAT':assert original is None,i
+                  elif report['status']=='REDUCED':
+                      lines=b.read_text().splitlines();nn=int(lines[0].split()[2])
+                      transformed=[[int(z) for z in ln.split()][:-1] for ln in lines[1:]]
+                      reduced=sat(nn,transformed)
+                      assert (original is None)==(reduced is None),i
+                      if reduced is not None:
+                          mp=[int(z) for z in c.read_text().splitlines()[1:]]
+                          lifted=[reduced[abs(z)-1] if z>0 else not reduced[abs(z)-1] for z in mp]
+                          assert all(any(lifted[abs(z)-1]==(z>0) for z in cl) for cl in clauses),i
+          print('SCC_C1_220_BRUTE_FORCE_EQUIVALENCE_AND_MODEL_LIFT_PASS')
+          PY
+      - name: Freeze all original and synthetic source SHA before timings
+        run: |
+          set -euo pipefail
+          python3 -u research/scc_c1_benchmark.py prepare | tee scc_c1_out/prepare.log
+          grep -q '^SCC_C1_FROZEN' scc_c1_out/prepare.log
+          python3 research/scc_c1_benchmark.py verify
+          sha256sum research/scc_c1_native.c scc_c1_bin/drnas_scc c8c/bin/plain built/bin/kissat_4_0_4 > scc_c1_bin/source-and-binary.sha256
+          sha256sum -c scc_c1_bin/source-and-binary.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scc-c1-frozen-originals-and-pinned-C-binaries
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            c12ref/c12_sources/*.cnf
+            c13_sources/*.cnf
+            scc_c1_inputs/*.cnf
+            c12ref/c12_sources/manifest.json
+            c13_sources/manifest.json
+            scc_c1_inputs/manifest.json
+            scc_c1_bin/drnas_scc
+            scc_c1_bin/source-and-binary.sha256
+            c8c/bin/plain
+            built/bin/kissat_4_0_4
+            scc_c1_out/prepare.log
+  paired:
+    needs: prepare
+    name: SCC native C vs Kissat CaDiCaL 12s E2E shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: scc-c1-frozen-originals-and-pinned-C-binaries
+          path: .
+      - name: Verify all source and solver binary hashes
+        run: |
+          set -euo pipefail
+          chmod +x scc_c1_bin/drnas_scc c8c/bin/plain built/bin/kissat_4_0_4
+          sha256sum -c scc_c1_bin/source-and-binary.sha256
+          python3 research/scc_c1_benchmark.py verify
+      - name: Full solver E2E, including C SCC time and SAT model reconstruction
+        run: |
+          set -euo pipefail
+          mkdir -p scc_c1_out
+          python3 -u research/scc_c1_benchmark.py shard --shard ${{ matrix.shard }} | tee scc_c1_out/shard-${{ matrix.shard }}.log
+          grep -q '^SCC_C1_SHARD_PASS ${{ matrix.shard }} 64$' scc_c1_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scc-c1-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            scc_c1_out/shard-${{ matrix.shard }}.log
+            scc_c1_out/shard-${{ matrix.shard }}.json
+  audit:
+    needs: paired
+    name: Fail-closed 256 source-paired SAT witness and real PAR2 audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: scc-c1-frozen-originals-and-pinned-C-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scc-c1-shard-*
+          merge-multiple: true
+          path: scc_c1_out
+      - name: Verify all 256 attempts and compute source-class stratified PAR2
+        run: |
+          set -euo pipefail
+          chmod +x scc_c1_bin/drnas_scc c8c/bin/plain built/bin/kissat_4_0_4
+          sha256sum -c scc_c1_bin/source-and-binary.sha256
+          python3 research/scc_c1_benchmark.py verify
+          python3 -u research/scc_c1_benchmark.py audit | tee scc_c1_out/audit.log
+          grep -q '^SCC_C1_FINAL' scc_c1_out/audit.log
+          grep '^SCC_C1_FINAL' scc_c1_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SCC-C1-32SHA-256-PAIRED-12S-E2E-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            scc_c1_inputs/manifest.json
+            scc_c1_out/report.json
+            scc_c1_out/audit.log
+            scc_c1_out/shard-*.json
+            scc_c1_out/shard-*.log
+            scc_c1_bin/source-and-binary.sha256
