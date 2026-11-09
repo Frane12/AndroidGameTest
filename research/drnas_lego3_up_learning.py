@@ -180,6 +180,8 @@ def make_sources():
     return train,evaluation
 
 def bcp(clauses,assumptions,deadline,max_rounds=8):
+    if not isinstance(clauses,(list,tuple)):
+        clauses=list(clauses)  # allow multiple BCP passes over augmented CNF
     assigned={}
     for lit in assumptions:
         var=abs(lit);v=lit>0
@@ -317,20 +319,20 @@ def analyze(src,table,mode):
         return [],dict(**source,selected=[],diagnostics={},
                        elapsed_s=round(time.perf_counter()-start,6))
     if time.perf_counter()>=deadline:
-        return [],dict(**source,state="budget_grammar",
+        return [],dict(source,state="budget_grammar",
                        selected=[],diagnostics={},
                        elapsed_s=round(time.perf_counter()-start,6))
     ranked,diag=scored_candidates(clauses,candidates,table,mode,deadline)
     if time.perf_counter()>=deadline:
-        return [],dict(**source,state="budget_probes",
+        return [],dict(source,state="budget_probes",
                        selected=[],diagnostics=diag,
                        elapsed_s=round(time.perf_counter()-start,6))
     added,selected=select(clauses,leaves,ranked,deadline)
     if time.perf_counter()>=deadline:
-        return [],dict(**source,state="budget_select",
+        return [],dict(source,state="budget_select",
                        selected=[],diagnostics=diag,
                        elapsed_s=round(time.perf_counter()-start,6))
-    return added,dict(**source,state="verified_added" if added else
+    return added,dict(source,state="verified_added" if added else
                       "verified_no_gain",selected=selected,
                       diagnostics=diag,
                       elapsed_s=round(time.perf_counter()-start,6))
