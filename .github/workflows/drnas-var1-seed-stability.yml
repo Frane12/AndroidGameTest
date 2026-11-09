@@ -1,0 +1,124 @@
+name: DRNAS VAR1 - Native fixed seed and runner variance 72 original E2E
+on:
+  push:
+    branches: [experiment/drnas-var1-seed-stability-20261109]
+    paths:
+      - .github/workflows/drnas-var1-seed-stability.yml
+      - research/drnas_var1_seed_stability.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-var1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore pinned original CNF and immutable native Kissat binary; selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore EQUIV7 previously seen original source and reference binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42617767799 -R Frane12/AndroidGameTest -n equiv7-frozen-16SHA-native-SCC-and-solvers -D .
+          test -s mre_equiv7/manifest.json
+          test -s mre_equiv6/manifest.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+      - name: Strict source SHA, fixed seed command, native witness selftest
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_var1_seed_stability.py
+          python3 -u research/drnas_var1_seed_stability.py selftest | tee var1-selftest.log
+          grep -q '^VAR1_SELFTEST_PASS ' var1-selftest.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: var1-pinned-oldsource-solvers
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_equiv7/manifest.json
+            mre_equiv7/bin/scc
+            mre_equiv6/manifest.json
+            mre_equiv6/cases/*.cnf
+            mre_equiv6/bin/cadical_3_0_1
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            var1-selftest.log
+  paired:
+    name: Same seed ${{ matrix.slot }} independent runner block ${{ matrix.block }} (6 E2E)
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        slot: [0,1,2,3,4,5]
+        block: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: var1-pinned-oldsource-solvers, path: .}
+      - name: Same native and Kissat seed repeated 3x, pinned logical CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_var1_seed_stability.py run --seed-slot ${{ matrix.slot }} --block ${{ matrix.block }} | tee var1.log
+          grep -q '^VAR1_SHARD_PASS ${{ matrix.slot }} ${{ matrix.block }} 6$' var1.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: var1-seed-${{ matrix.slot }}-block-${{ matrix.block }}
+          retention-days: 21
+          path: |
+            mre_var1/seed-*.json
+            var1.log
+  audit:
+    name: Original-SHA witnessed SAT, fixed-seed vs between-runner stability PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: var1-pinned-oldsource-solvers, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: var1-seed-*-block-*
+          path: .
+          merge-multiple: true
+      - name: Fail-closed verify 72 trials and per-seed PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv7/bin/scc mre_equiv6/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_var1_seed_stability.py audit | tee mre_var1/audit.log
+          grep '^VAR1_FINAL ' mre_var1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-VAR1-72-FIXED-SEED-ORIGINAL-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_var1/report.json
+            mre_var1/seed-*.json
+            mre_var1/audit.log
