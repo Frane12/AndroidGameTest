@@ -1,0 +1,118 @@
+name: DRNAS X25 - native SCC aliases cap64 cap128 cap256 cap512 336 E2E
+on:
+  push:
+    branches: [experiment/drnas-x25-native-alias-dose-20261109]
+    paths:
+      - research/drnas_x25_alias_dose.cpp
+      - research/drnas_x25_alias_dose.py
+      - research/DRNAS_X25_NATIVE_ALIAS_DOSE_PROTOCOL.md
+      - .github/workflows/drnas-x25-native-alias-dose.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x25-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile four-dose C++ native SCC, certify 599 alias test, freeze original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore immutable X22 source SHA, binary references and UNSAT agreement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n DRNAS-X22-CPP-ASYNC-288-E2E-FINAL -D prior_x22
+          test -s prior_x22/report.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical g++
+          mkdir -p mre_x25/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x25_alias_dose.cpp -o mre_x25/bin/alias_dose
+          chmod +x mre_x25/bin/alias_dose mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py research/drnas_x25_alias_dose.py
+          python3 -u research/drnas_x25_alias_dose.py selftest
+          python3 -u research/drnas_x25_alias_dose.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x25-native-dose-frozen-originals-and-certificates
+          retention-days: 21
+          path: |
+            mre_x25/manifest.json
+            mre_x25/bin/alias_dose
+            mre_x22/manifest.json
+            mre_x22/cases/
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: X25 42 original SHA matched cap dose E2E 15s shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x25-native-dose-frozen-originals-and-certificates, path: .}
+      - name: Compare cap64 128 256 512 against original Kissat and CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x25/bin/alias_dose mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x25_alias_dose.py shard --shard ${{ matrix.shard }} | tee mre_x25/shard-${{ matrix.shard }}.log
+          grep -q '^X25_SHARD_PASS ${{ matrix.shard }} 42$' mre_x25/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x25-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x25/shard-${{ matrix.shard }}.json
+            mre_x25/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit all 336 SHA matched E2E PAR2 original witnesses and alias dose yields
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x25-native-dose-frozen-originals-and-certificates, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x25-results-*
+          path: mre_x25
+          merge-multiple: true
+      - name: Fail closed on missing trials, unverified SAT or contradictory solver results
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x25/bin/alias_dose mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x25_alias_dose.py audit | tee mre_x25/audit.log
+          grep '^X25_FINAL ' mre_x25/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X25-NATIVE-ALIAS-DOSE-336-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x25/manifest.json
+            mre_x25/report.json
+            mre_x25/audit.log
+            mre_x25/shard-*.json
