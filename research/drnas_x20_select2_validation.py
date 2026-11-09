@@ -118,16 +118,24 @@ def freeze():
     import mre7_extended_easy_freeze as pool
     import mre7_reference_easy_freeze as fetch
     indexes={}
-    candidate=[]
+    easy_candidate=[]
+    other_candidate=[]
     for year in YEARS:
         ids,mainsha=pool.getids('track=main_'+year)
         easy,sha=pool.getids('track=main_'+year+' and minisat1m=yes')
         need(len(ids)==400 and set(easy)<=set(ids),'official index changed')
         indexes[year]=dict(main_index_sha256=mainsha,
-                           easy_index_sha256=sha,eligible_total=len(easy))
-        candidate.extend((year,gbd) for gbd in easy if gbd not in excluded_gbd)
-    candidate=sorted(set(candidate),
-      key=lambda z:hashlib.sha256((SALT+'|'+z[0]+'|'+z[1]).encode()).hexdigest())
+                           easy_index_sha256=sha,eligible_total=len(easy),
+                           main_total=len(ids))
+        easy_set=set(easy)
+        easy_candidate.extend((year,gbd) for gbd in easy if gbd not in excluded_gbd)
+        other_candidate.extend((year,gbd) for gbd in ids
+                               if gbd not in excluded_gbd and gbd not in easy_set)
+    # Fixed two-phase source-only ordering: first minisat1m-indexed candidates,
+    # then the rest of the official main tracks. No solver timing or labels
+    # influence the rank, category quota or geometry cutoff.
+    key=lambda z:hashlib.sha256((SALT+'|'+z[0]+'|'+z[1]).encode()).hexdigest()
+    candidate=sorted(set(easy_candidate),key=key)+sorted(set(other_candidate),key=key)
     cases=[];trace=[];tried=set()
     binary_quota=collections.Counter()
     year_quota=collections.Counter()
@@ -135,7 +143,7 @@ def freeze():
         if len(cases)==TARGET:break
         if gbd in tried or gbd in excluded_gbd:continue
         tried.add(gbd)
-        need(len(tried)<=260,'frozen source scan limit reached before 24 sources')
+        need(len(tried)<=850,'frozen source scan limit reached before 24 sources')
         path=ROOT/(gbd+'.cnf')
         row=dict(gbd=gbd,year=year)
         try:
