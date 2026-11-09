@@ -1,0 +1,137 @@
+name: DRNAS DECOMP2 - exact separator SAT 64 paired one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-decomp2-exact-separator-sat-20261110]
+    paths:
+      - research/decomp2_exact_bench.py
+      - .github/workflows/drnas-decomp2-exact-sat.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: decomp2-separator-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Prove exact partition semantic selftest and source-only SHA freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Recover unchanged original SHA CNFs and reference Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          test -s mre_x20/manifest.json
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile and check independent 120 exhaustive CNF decomposition identities
+        run: |
+          set -euo pipefail
+          mkdir -p mre_decomp1/bin mre_decomp2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/decomp1_incidence.cpp -o mre_decomp1/bin/decomp1_incidence
+          python3 -m py_compile research/decomp2_exact_bench.py research/decomp1_screen.py
+          mre_decomp1/bin/decomp1_incidence selftest | tee mre_decomp2/native-selftest.log
+          python3 -u research/decomp2_exact_bench.py selftest | tee mre_decomp2/selftest.log
+          grep -q '^DECOMP2_SELFTEST_PASS ' mre_decomp2/selftest.log
+          sha256sum mre_decomp1/bin/decomp1_incidence > mre_decomp2/scanner-pin.txt
+      - name: Re-run source-only DECOMP1 and strictly verify Tarjan separator by Python graph BFS
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp1_screen.py | tee mre_decomp2/structural-screen.log
+          python3 -u research/decomp2_exact_bench.py prepare | tee mre_decomp2/prepare.log
+          grep -q '^DECOMP2_FREEZE_PASS ' mre_decomp2/prepare.log
+          grep '^DECOMP2_FREEZE_PASS ' mre_decomp2/prepare.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp2-source-frozen-exact-candidate-and-binaries
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp1/bin/decomp1_incidence
+            mre_decomp2/freeze.json
+            mre_decomp2/scanner-pin.txt
+            mre_decomp2/selftest.log
+            mre_decomp2/prepare.log
+            mre_decomp2/structural-screen.log
+  paired:
+    name: Exact component or cut SAT 12s E2E one-CPU shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: {shard: [0,1,2,3]}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp2-source-frozen-exact-candidate-and-binaries
+          path: .
+      - name: Restore untouched original 24-CNF registry and check candidate pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          chmod +x mre_decomp1/bin/decomp1_incidence built/bin/kissat_4_0_4
+          sha256sum mre_decomp1/bin/decomp1_incidence
+          test -s mre_decomp2/freeze.json
+          test -s mre_x20/manifest.json
+      - name: Original SAT witness checked, full E2E + CPU PAR2, no independent UNSAT LRAT
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp2_exact_bench.py bench --shard ${{ matrix.shard }} | tee mre_decomp2/shard-${{ matrix.shard }}.log
+          grep -q '^DECOMP2_SHARD_PASS ${{ matrix.shard }} ' mre_decomp2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: decomp2-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            mre_decomp2/shard-${{ matrix.shard }}.json
+            mre_decomp2/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict original SHA pairs SAT models 64 E2E PAR2 and per-shard regression
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp2-source-frozen-exact-candidate-and-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: decomp2-shard-*
+          path: mre_decomp2
+          merge-multiple: true
+      - name: Audit paired original SHA and verified witnesses
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          chmod +x built/bin/kissat_4_0_4
+          python3 -u research/decomp2_exact_bench.py audit | tee mre_decomp2/audit.log
+          grep -q '^DECOMP2_FINAL ' mre_decomp2/audit.log
+          grep '^DECOMP2_FINAL ' mre_decomp2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DECOMP2-64-ONECPU-EXACT-SEP-E2E-PAR2-FINAL
+          retention-days: 21
+          path: |
+            mre_decomp2/audit.json
+            mre_decomp2/audit.log
+            mre_decomp2/freeze.json
+            mre_decomp2/shard-*.json
