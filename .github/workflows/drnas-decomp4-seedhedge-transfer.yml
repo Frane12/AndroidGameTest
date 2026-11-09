@@ -1,0 +1,145 @@
+name: DRNAS DECOMP4 - EQUIV8 cold 4s reseed 240 E2E original SHA
+run-name: DECOMP4 - 24 frozen CNF 5 arms 2 reps 20s E2E PAR2 one CPU
+on:
+  push:
+    branches: [experiment/drnas-decomp4-seedhedge-transfer-20261110]
+    paths:
+      - research/decomp4_seedhedge_transfer.py
+      - .github/workflows/drnas-decomp4-seedhedge-transfer.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-decomp4-source24-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze all 24 original SHA, native pinned EQUIV8, source graph and SAT witness selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore previously frozen original sources, native and DECOMP1 source graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42718184439 -R Frane12/AndroidGameTest -n equiv8-frozen-native-originals-and-new-seeds -D .
+          gh run download 42717382191 -R Frane12/AndroidGameTest -n DRNAS-DECOMP1-24-SHA-STRUCTURAL-SCREEN -D .
+          test -s mre_x20/manifest.json
+          test -s mre_decomp1/screen.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+      - name: Compile source graph scanner and run exact source witness selftest
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_decomp1/bin mre_decomp4
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/decomp1_incidence.cpp -o mre_decomp1/bin/decomp1_incidence
+          chmod +x mre_decomp1/bin/decomp1_incidence mre_x4/bin/native built/bin/kissat_4_0_4
+          mre_decomp1/bin/decomp1_incidence selftest | tee mre_decomp4/graph-selftest.log
+          python3 -m py_compile research/decomp4_seedhedge_transfer.py
+          python3 -u research/decomp4_seedhedge_transfer.py selftest | tee mre_decomp4/native-selftest.log
+          grep -q '^DECOMP4_SELFTEST_PASS ' mre_decomp4/native-selftest.log
+          python3 -u research/decomp4_seedhedge_transfer.py freeze | tee mre_decomp4/freeze.log
+          grep -q '^DECOMP4_FREEZE_PASS ' mre_decomp4/freeze.log
+          grep '^DECOMP4_FREEZE_PASS ' mre_decomp4/freeze.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp4-24SHA-native-binaries-sourceonly-gate
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp4/freeze.json
+            mre_decomp4/freeze.log
+            mre_decomp4/native-selftest.log
+            mre_decomp4/graph-selftest.log
+            mre_decomp1/bin/decomp1_incidence
+  shard:
+    name: Cold reseed native vs alt vs 4s vs structural gate vs Kissat 40 paired E2E shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: {shard: [0,1,2,3,4,5]}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp4-24SHA-native-binaries-sourceonly-gate
+          path: .
+      - name: Restore same frozen original SHA and binaries for all arms
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42718184439 -R Frane12/AndroidGameTest -n equiv8-frozen-native-originals-and-new-seeds -D .
+          gh run download 42717382191 -R Frane12/AndroidGameTest -n DRNAS-DECOMP1-24-SHA-STRUCTURAL-SCREEN -D .
+          chmod +x mre_decomp1/bin/decomp1_incidence mre_x4/bin/native built/bin/kissat_4_0_4
+          test -s mre_decomp4/freeze.json
+      - name: 40 single-core E2E 20s trials, strict original SAT witness and SHA
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/decomp4_seedhedge_transfer.py bench --shard ${{ matrix.shard }} | tee mre_decomp4/shard-${{ matrix.shard }}.log
+          grep -q '^DECOMP4_SHARD_PASS ${{ matrix.shard }} 40$' mre_decomp4/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: decomp4-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp4/shard-${{ matrix.shard }}.json
+            mre_decomp4/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final 240 exact paired original SHA SAT, cross-backend UNSAT, PAR2 shard audit
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp4-24SHA-native-binaries-sourceonly-gate
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: decomp4-shard-*
+          path: mre_decomp4
+          merge-multiple: true
+      - name: Restore same immutable manifests / bins to recompute original SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42718184439 -R Frane12/AndroidGameTest -n equiv8-frozen-native-originals-and-new-seeds -D .
+          gh run download 42717382191 -R Frane12/AndroidGameTest -n DRNAS-DECOMP1-24-SHA-STRUCTURAL-SCREEN -D .
+          chmod +x mre_decomp1/bin/decomp1_incidence mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Strict paired 240 E2E, SAT witness verification, cross backend, PAR2 and anomaly summary
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/decomp4_seedhedge_transfer.py audit | tee mre_decomp4/audit.log
+          grep -q '^DECOMP4_FINAL ' mre_decomp4/audit.log
+          grep '^DECOMP4_FINAL ' mre_decomp4/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DECOMP4-24-SHA-SEEDHEDGE-240-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_decomp4/audit.json
+            mre_decomp4/audit.log
+            mre_decomp4/freeze.json
+            mre_decomp4/shard-*.json
