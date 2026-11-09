@@ -1,0 +1,120 @@
+name: DRNAS C15D — frozen no-vivify candidate with regression and prospective controls
+on:
+  push:
+    branches: [experiment/drnas-c15d-no-vivify-20261109]
+    paths: ['.github/workflows/drnas-c15d.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c15d-no-vivify-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pinned backends and indexed development sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          gh run download 42533156950 -R Frane12/AndroidGameTest -n c8h-pristine-instrumented-173-and-frozen-three-SHA -D prior_c8h
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          mkdir -p c15d_out
+          python3 -m py_compile research/c15d_benchmark.py
+      - name: Freeze six development and six prospective official sources before timing
+        run: |
+          set -euo pipefail
+          python3 -u research/c15d_benchmark.py prepare | tee c15d_out/freeze.log
+          grep -q '^C15D_FROZEN ' c15d_out/freeze.log
+          python3 -u research/c15d_benchmark.py smoke
+          sha256sum c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4 > c15d_out/binary.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c15d-frozen-originals-and-pinned-backends
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            c15d_sources/*.cnf
+            c15d_sources/manifest.json
+            c15d_out/freeze.log
+            c15d_out/binary.sha256
+            c8c/bin/plain
+            c8c/bin/instrumented
+            built/bin/kissat_4_0_4
+  trials:
+    needs: prepare
+    name: C15D paired development plus prospective shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c15d-frozen-originals-and-pinned-backends
+          path: .
+      - name: Execute same-source paired end-to-end trials
+        run: |
+          set -euo pipefail
+          sha256sum -c c15d_out/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          python3 -u research/c15d_benchmark.py shard --shard ${{ matrix.shard }} | tee c15d_out/shard-${{ matrix.shard }}.log
+          grep -q '^C15D_SHARD_PASS ${{ matrix.shard }} 24$' c15d_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c15d-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            c15d_out/shard-${{ matrix.shard }}.json
+            c15d_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c15d-frozen-originals-and-pinned-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c15d-shard-*
+          merge-multiple: true
+          path: c15d_out
+      - name: Audit witnesses source pairing and cohort-separated PAR2
+        run: |
+          set -euo pipefail
+          sha256sum -c c15d_out/binary.sha256
+          python3 -u research/c15d_benchmark.py audit | tee c15d_out/audit.log
+          grep '^C15D_FINAL ' c15d_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: C15D-DEV6-NEW6-144-PAIRED-30S-RESULTS
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            c15d_out/*.json
+            c15d_out/*.log
+            c15d_out/binary.sha256
+            c15d_sources/manifest.json
