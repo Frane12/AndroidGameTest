@@ -81,15 +81,20 @@ def bounded_preprocess(source, output, seconds=PREP_CAP_S):
                         candidates.append(k)
                         seen.add(k)
             stats["candidate_count"] = len(candidates)
-            # Never make unproved GF2 additions. Shortlist only, bounded by wall time.
+            # RIT3's original-CNF RUP-first clause priority, not pivot/variable order.
+            # For fixed-width clauses tuple sorting prioritizes negative literals,
+            # which exposed genuine RUP shortcuts in frozen RIT4.
+            candidates.sort(key=lambda clause: (len(clause),clause))
+            stats["candidate_priority"] = "RIT3_literal_lexicographic"
             for clause in candidates[:64]:
                 if core.rup(original_clauses+accepted, clause):
                     accepted.append(clause)
                     stats["rup_passed"] += 1
                 stats["rup_checked"] += 1
     except Budget:
-        stats.update(abstained=True, reason="bounded_preprocess_timeout")
-        accepted = []   # no partial proof gets silently admitted
+        # Keep only lemmas whose individual RUP check completed successfully.
+        # The independent serial replay below must verify the whole prefix.
+        stats.update(abstained=True, reason="bounded_preprocess_timeout_with_proved_prefix")
     except (AssertionError, ValueError, OSError) as exc:
         stats.update(abstained=True, reason="extractor_exception:"+str(exc)[:90])
         accepted = []
