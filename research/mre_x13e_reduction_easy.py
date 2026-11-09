@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DRNAS X13E: causal certified-reduction test on two X13C positives + six
-reference-selected, source-disjoint SAT21-23 examples. Historical hard replay
+reference-confirmed X11 historical controls. Historical hard replay
 and reference-screened easy samples are NOT a blind or prospective holdout.
 A solved SAT witness is checked on the original CNF; UNSAT is agreement-only,
 never a claim of independent LRAT. No changes to stable solver or main.
@@ -24,7 +24,7 @@ import mre6b_blind_freeze as prior
 
 ROOT = pathlib.Path("mre_x13e")
 EASY = ROOT / "easy"
-PROTO = "DRNAS-X13E-2HARD45-6REFEASY15-4ARM-2SEED-E2E-20261109-v2"
+PROTO = "DRNAS-X13E-2HARD45-6X11REFEASY15-4ARM-2SEED-E2E-20261109-v3"
 SALT = PROTO + "-SOURCE-ONLY-RANK"
 ARMS = ("original", "reduce", "kissat", "cadical")
 REPS, SHARDS, EASY_TARGET, YEAR_QUOTA = 2, 8, 6, 2
@@ -144,107 +144,101 @@ def screen_reference(c):
 
 
 def freeze():
+    """Historical reference-conditioned control, not a fresh blind holdout.
+
+    Select six X11 originals using ONLY two-repetition Kissat/CaDiCaL
+    decisions from frozen X13D before any X13E measurement. Avoid the
+    unsatisfiable 2021 minisat1m two-per-year quota. Source SHAs remain
+    immutable and the original X13C two-source arm remains unchanged.
+    """
     configure()
     b.selftest()
     hard = make_hard()
-    ids, shas, registry = historical_exclusions()
-    pool_by_year = {}
-    snapshots = {}
-    candidate_ids = set()
-    for year in YEARS:
-        all_gbds, all_sha = pool.getids("track=main_" + year)
-        easy_gbds, easy_sha = pool.getids("track=main_" + year + " and minisat1m=yes")
-        need(len(all_gbds) == 400 and set(easy_gbds) <= set(all_gbds),
-             "official SAT index has changed")
-        pool_by_year[year] = (easy_gbds, all_gbds)
-        candidate_ids.update(easy_gbds)
-        snapshots[year] = dict(all_index_sha256=all_sha,
-                               minisat1m_index_sha256=easy_sha,
-                               minisat1m_count=len(easy_gbds))
-    repo_ids, repo_shas = prior.inspect_repo_ids(candidate_ids)
-    ids.update(repo_ids)
-    shas.update(repo_shas)
-    ids.update(c["gbd"] for c in hard)
-    shas.update(c["sha256"] for c in hard)
-    EASY.mkdir(parents=True, exist_ok=True)
-    fetch.prior.r32p.CNF_LIMIT = 8 * 1024 * 1024
-    selected, trace, counts = [], [], collections.Counter()
-    for year in YEARS:
-        mini, complete = pool_by_year[year]
-        mini_set = set(mini)
-        key = lambda g: digest((SALT + "|" + year + "|" + g).encode())
-        priority = sorted((g for g in mini if g not in ids), key=key)
-        fallback = sorted((g for g in complete
-                           if g not in ids and g not in mini_set), key=key)
-        eligible = priority + fallback
-        print("X13E_POOL", json.dumps({"year": year, "minisat_eligible": len(priority),
-              "other_eligible": len(fallback), "total": len(eligible)}), flush=True)
-        for g in eligible[:48]:
-            if counts[year] >= YEAR_QUOTA:
-                break
-            p = EASY / (g + ".cnf")
-            note = {"year": year, "gbd": g, "minisat1m_yes": g in mini_set}
-            try:
-                raw = fetch.get("https://benchmark-database.de/file/" + g,
-                                6 * 1024 * 1024, seconds=20)
-                plain, compression = fetch.prior.r32p.decode(raw)
-                need(len(plain) <= 8 * 1024 * 1024, "source-size limit")
-                n, m = fetch.prior.r32p.parse_dimacs_metadata(plain)
-                need(n <= 12000 and m <= 50000, "fixed source-geometry limits")
-                sha = digest(plain)
-                need(sha not in shas, "source SHA appears in earlier registry")
-                p.write_bytes(plain)
-                nv, clauses = x11.x9.x2.parse(p)
-                need(nv == n and len(clauses) == m, "source DIMACS mismatch")
-                case = dict(gbd=g, year=year, sha256=sha, filename=p.name,
-                            bytes=len(plain), vars=n, clauses=m,
-                            source_dir=str(EASY), cap_s=EASY_CAP,
-                            cohort="reference_selected_minisat1m_not_blind",
-                            tier="easy", compression=compression)
-                verdict = screen_reference(case)
-                note.update(source_sha256=sha, reference_screen=verdict)
-                if verdict["status"] in ("SAT", "UNSAT"):
-                    case["reference_eligibility"] = verdict
-                    selected.append(case)
-                    shas.add(sha)
-                    ids.add(g)
-                    counts[year] += 1
-                    note["action"] = "FROZEN_BEFORE_PAIRED_BENCHMARK"
-                else:
-                    p.unlink(missing_ok=True)
-                    note["action"] = "REJECTED_REFERENCE_NOT_EASY"
-            except Exception as exc:
-                p.unlink(missing_ok=True)
-                note["action"] = "REJECTED_FETCH_OR_INTEGRITY"
-                note["reason"] = (type(exc).__name__ + ": " + str(exc))[:220]
-            trace.append(note)
-            b.save(ROOT / "selection-trace.json", trace)
-            print("X13E_SCREEN", json.dumps(note, sort_keys=True), flush=True)
-        need(counts[year] == YEAR_QUOTA, "insufficient reference-easy sources for " + year)
-    need(len(selected) == EASY_TARGET, "must freeze exactly 6 easy inputs")
+    historical = ROOT / "reference-history.json"
+    need(historical.is_file(), "missing frozen X13D original reference report")
+    report = json.loads(historical.read_text())
+    need(report["experiment"] == "X13D" and report["sources"] == 32
+         and report["trials"] == 576 and len(report["rows"]) == 576,
+         "incorrect historical X13D reference report")
+    old = x11.verify()
+    need(len(old["cases"]) == 32, "wrong frozen X11 source roster")
+    cases_by_sha = {c["sha256"]: c for c in old["cases"]}
+    by_sha = collections.defaultdict(list)
+    for r in report["rows"]:
+        need(r["original_sha256"] in cases_by_sha, "reference report has unknown SHA")
+        by_sha[r["original_sha256"]].append(r)
+    need(set(by_sha) == set(cases_by_sha), "historical reference roster drift")
+    current_hashes = hashes()
+    ready, trace = [], []
+    for sha, c in cases_by_sha.items():
+        entries = by_sha[sha]
+        k = [r for r in entries if r["arm"] == "kissat"]
+        d = [r for r in entries if r["arm"] == "cadical"]
+        need(len(k) == len(d) == REPS, "reference repeats missing")
+        need(all(r["binary_sha256"] == current_hashes[arm]
+                 for arm, rr in (("kissat", k), ("cadical", d)) for r in rr),
+             "historical reference backend binary mismatch")
+        need(all(r["gbd"] == c["gbd"] for r in k + d),
+             "historical reference original mismatch")
+        statuses = {r["status"] for r in k + d}
+        yes = (statuses == {"SAT"} and
+               all(r["SAT_original_witness_verified"] for r in k + d))
+        no = statuses == {"UNSAT"}  # independent solver agreement, not LRAT
+        within = all(r["elapsed_s"] < SCREEN_CAP for r in k + d)
+        matched = (yes or no) and within
+        row = dict(gbd=c["gbd"], sha256=sha, status=next(iter(statuses))
+                   if len(statuses) == 1 else "MIXED",
+                   max_reference_s=max(r["elapsed_s"] for r in k + d),
+                   qualified=matched,
+                   historical_x13d_not_blind=True)
+        trace.append(row)
+        if matched:
+            ready.append(c)
+    need(len(ready) >= EASY_TARGET,
+         "less than six independently reference-confirmed historical inputs")
+    ready.sort(key=lambda c: digest((SALT + "|" + c["sha256"]).encode()))
+    selected = []
+    for c in ready[:EASY_TARGET]:
+        selected.append(dict(c, tier="easy",
+            cohort="X11_X13D_reference_confirmed_historical_NOT_BLIND",
+            year=str(c.get("year", "historical_X11")),
+            cap_s=EASY_CAP, source_dir="mre_x11",
+            reference_eligibility=dict(
+                status=next(r["status"] for r in by_sha[c["sha256"]]
+                            if r["arm"] == "kissat"),
+                prior_run=42567410128,
+                confirmed_by="Kissat_and_CaDiCaL_two_repetitions",
+                SCREEN_CAP_s=SCREEN_CAP,
+                UNSAT_independent_LRAT=False)))
+    need(len(selected) == EASY_TARGET, "historical easy cardinality")
     cases = hard + selected
     need(len({c["sha256"] for c in cases}) == SHARDS and
-         len({c["gbd"] for c in cases}) == SHARDS, "duplicate original cases")
-    manifest = dict(protocol=PROTO, cases=cases, arms=ARMS, reps=REPS,
-                    cap_hard_s=HARD_CAP, cap_easy_s=EASY_CAP,
-                    cap_reference_screen_s=SCREEN_CAP,
-                    source_indices=snapshots, exclusion_registries=registry,
-                    observed_registry_excluded_count=len(repo_ids),
-                    historical_registry_not_globally_exhaustive=True,
-                    reference_screened_easy_cohort_not_blind=True,
-                    hard_source_replay_not_blind=True,
-                    no_auto_promotion=True,
-                    SAT_original_witness_required=True,
-                    UNSAT_independent_LRAT=False,
-                    UNSAT_cross_solver_agreement_required=True,
-                    source_selection="minisat1m=yes prioritized, fallback to other official main sources; "
-                                     "salted source-only ordering and fixed geometry; "
-                                     "eligibility from only reference solvers, never DRNAS timing",
-                    e2e_timing="includes CNF preprocessing, writing, launching and solving",
-                    binary_sha256=hashes(), expected_trials=SHARDS*REPS*len(ARMS))
-    b.save(ROOT / "manifest.json", manifest)
+         len({c["gbd"] for c in cases}) == SHARDS,
+         "repeated original case")
+    ROOT.mkdir(exist_ok=True)
+    b.save(ROOT / "selection-trace.json", trace)
+    m = dict(protocol=PROTO, cases=cases, arms=ARMS, reps=REPS,
+             cap_hard_s=HARD_CAP, cap_easy_s=EASY_CAP,
+             cap_reference_screen_s=SCREEN_CAP,
+             reference_prior_run=42567410128,
+             reference_history_sha256=b.sha(historical),
+             x11_source_manifest_sha256=b.sha("mre_x11/manifest.json"),
+             reference_source_pool="X11 frozen SHA originals, X13D historical reference-only",
+             reference_screened_easy_cohort_not_blind=True,
+             historical_hard_not_blind=True, historical_easy_not_blind=True,
+             retrospective_control_not_prospective=True,
+             no_auto_promotion=True, SAT_original_witness_required=True,
+             UNSAT_independent_LRAT=False,
+             UNSAT_cross_solver_agreement_required=True,
+             source_selection="6 X11 historical original SHA ranked by fixed salt only "
+                 "AFTER independent Kissat/CaDiCaL agree SAT or UNSAT "
+                 "and both seeds solve under 10s; no DRNAS timing used in eligibility",
+             e2e_timing="includes CNF preprocessing, writing, launching and solving",
+             binary_sha256=current_hashes,
+             expected_trials=SHARDS * REPS * len(ARMS))
+    b.save(ROOT / "manifest.json", m)
     verify()
-    print("X13E_FROZEN", len(cases), manifest["expected_trials"], flush=True)
+    print("X13E_FROZEN", len(cases), m["expected_trials"], flush=True)
 
 
 def verify():
@@ -254,6 +248,10 @@ def verify():
     need(m["protocol"] == PROTO and m["expected_trials"] == 64 and
          tuple(m["arms"]) == ARMS and m["reps"] == REPS, "protocol mismatch")
     need(m["binary_sha256"] == hashes(), "pinned solver SHA changed")
+    need(m["reference_history_sha256"] == b.sha(ROOT / "reference-history.json"),
+         "historical reference report changed")
+    need(m["x11_source_manifest_sha256"] == b.sha("mre_x11/manifest.json"),
+         "historical X11 roster changed")
     need(len(m["cases"]) == SHARDS and
          len({c["sha256"] for c in m["cases"]}) == SHARDS, "source cardinality")
     for idx, c in enumerate(m["cases"]):
