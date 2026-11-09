@@ -1,0 +1,123 @@
+name: DRNAS XX2R causal probe — 6 official SHA 48 E2E 30s plus bounded CDCL
+on:
+  push:
+    branches: [experiment/drnas-xx2r-causal-probe-20261109]
+    paths:
+      - 'research/xx2r_causal_probe.py'
+      - '.github/workflows/drnas-xx2r-causal-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xx2r-causal-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  frozen:
+    name: Verify frozen XX2R ten SHA and pinned solver binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact original XX2R artifacts; do not rescreen or alter solver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42568720337 -R Frane12/AndroidGameTest -n xx2r-10SHA-solver-binaries-and-originals -D .
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -m py_compile research/xx2r_causal_probe.py
+          export PYTHONPATH="$PWD/research"
+          python3 research/xx2r_causal_probe.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xx2r-causal-frozen-originals-and-binaries
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            mre_xx2r/*.cnf
+            mre_xx2r/manifest.json
+            mre_xx2r/structures.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: 4 arms 2 seeds 30s E2E and CMS 100-5000 conflict probe shard ${{ matrix.shard }}
+    needs: frozen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xx2r-causal-frozen-originals-and-binaries
+          path: .
+      - name: Frozen binary verification and independent CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 research/xx2r_causal_probe.py verify
+      - name: Run 30s original SHA E2E rematch and separate diagnostic checkpoints
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/xx2r_causal_probe.py shard --shard ${{ matrix.shard }} | tee "xx2r-causal-${{ matrix.shard }}.log"
+          grep -q '^XX2R_CAUSAL_SHARD_PASS ${{ matrix.shard }} 16 ' "xx2r-causal-${{ matrix.shard }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xx2r-causal-result-${{ matrix.shard }}
+          retention-days: 14
+          path: |
+            xx2r_causal_probe/shard-${{ matrix.shard }}.json
+            xx2r-causal-${{ matrix.shard }}.log
+  audit:
+    name: Final 48 E2E PAR2 and 24 bounded-only diagnostic audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xx2r-causal-frozen-originals-and-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xx2r-causal-result-*
+          merge-multiple: true
+          path: xx2r_causal_probe
+      - name: Verify matched cases, exact SHA, SAT witness and PAR2
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/research"
+          python3 -u research/xx2r_causal_probe.py audit | tee xx2r_causal_probe/audit.log
+          grep -q '^XX2R_CAUSAL_FINAL ' xx2r_causal_probe/audit.log
+          grep '^XX2R_CAUSAL_FINAL ' xx2r_causal_probe/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-XX2R-CAUSAL-6SHA-48E2E-30S-24BOUNDED-FINAL
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            xx2r_causal_probe/report.json
+            xx2r_causal_probe/audit.log
+            xx2r_causal_probe/shard-*.json
