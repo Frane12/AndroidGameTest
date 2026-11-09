@@ -1,0 +1,71 @@
+name: DRNAS X14 - recover 384-trial final audit without rerunning trials
+on:
+  push:
+    branches: [experiment/drnas-x14-adaptive-portfolio-20261109]
+    paths:
+      - '.github/workflows/drnas-x14-audit-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x14-384-final-audit-recovery
+  cancel-in-progress: false
+jobs:
+  recover:
+    name: Restore eight SHA-paired shard artifacts and produce audited final
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original frozen sources and eight completed trial JSONs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x14
+          gh run download 42570873430 -R Frane12/AndroidGameTest -n x14-32sha-originals-binaries-gate-frozen -D .
+          test -s mre_x11/manifest.json
+          test -s mre_x14/manifest.json
+          for i in 0 1 2 3 4 5 6 7; do
+            mkdir -p "x14_recovered/$i"
+            gh run download 42570873430 -R Frane12/AndroidGameTest -n "x14-result-$i" -D "x14_recovered/$i"
+            nfound=$(find "x14_recovered/$i" -type f -name "shard-$i.json" | wc -l)
+            test "$nfound" -eq 1
+            src=$(find "x14_recovered/$i" -type f -name "shard-$i.json" -print -quit)
+            cp "$src" "mre_x14/shard-$i.json"
+            python3 - "$i" <<'PY'
+          import json,sys
+          n=int(sys.argv[1])
+          rows=json.load(open('mre_x14/shard-%d.json'%n))
+          assert len(rows)==48 and len(set((r['original_sha256'],r['rep'],r['arm']) for r in rows))==48
+          print('X14_RECOVERED_SHARD',n,len(rows),flush=True)
+          PY
+          done
+          test "$(find mre_x14 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 8
+      - name: Install pinned CaDiCaL and check binaries before strict audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_x14_adaptive_portfolio.py
+          python3 -u research/drnas_x14_adaptive_portfolio.py verify
+          python3 -u research/drnas_x14_adaptive_portfolio.py audit | tee mre_x14/audit.log
+          grep -q '^X14_FINAL' mre_x14/audit.log
+          grep '^X14_FINAL' mre_x14/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X14-RECOVERED-STRICT-384-PAR2-CPU-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x14/manifest.json
+            mre_x14/report.json
+            mre_x14/audit.log
+            mre_x14/shard-*.json
