@@ -1,0 +1,120 @@
+name: DRNAS LEGO1 - short 5s proof relation grammar 64 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-lego1-proof-relation-grammar-20261109]
+    paths:
+      - 'research/drnas_lego1_proof_grammar.py'
+      - 'research/DRNAS_LEGO1_PROOF_GRAMMAR_PROTOCOL.md'
+      - '.github/workflows/drnas-lego1-short-proof-grammar.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-lego1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile native GF2 and freeze independent trained relation grammar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore SHA-pinned X22 references, run exhaustive recursive proof selftest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n DRNAS-X22-CPP-ASYNC-288-E2E-FINAL -D prior_x22
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical g++
+          mkdir -p mre_x24/bin mre_lego1
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x24_gf2_proof_first.cpp -o mre_x24/bin/gf2_proof
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_lego1_proof_grammar.py
+          python3 -u research/drnas_lego1_proof_grammar.py selftest
+          python3 -u research/drnas_lego1_proof_grammar.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lego1-frozen-train-eval-native
+          retention-days: 21
+          path: |
+            mre_x24/bin/gf2_proof
+            mre_lego1/manifest.json
+            mre_lego1/learned.json
+            mre_lego1/train_report.json
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: LEGO1 short 5s E2E 16 measurements shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: lego1-frozen-train-eval-native, path: .}
+      - name: Four paired arms, exact original SAT witness and 5s wall cap
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_lego1_proof_grammar.py shard --shard ${{ matrix.shard }} | tee mre_lego1/shard-${{ matrix.shard }}.log
+          grep -q '^LEGO1_SHARD_PASS ${{ matrix.shard }} 16$' mre_lego1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lego1-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_lego1/shard-${{ matrix.shard }}.json
+            mre_lego1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final LEGO1 source-SHA 64 trial PAR2 proof safety and CPU audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: lego1-frozen-train-eval-native, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lego1-results-*
+          path: mre_lego1
+          merge-multiple: true
+      - name: Audit all 64 trials, trusted SAT models and original UNSAT cross-agreement
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_lego1_proof_grammar.py audit | tee mre_lego1/audit.log
+          grep '^LEGO1_FINAL ' mre_lego1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-LEGO1-64-SHORT5-PROOF-GRAMMAR-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_lego1/manifest.json
+            mre_lego1/learned.json
+            mre_lego1/train_report.json
+            mre_lego1/report.json
+            mre_lego1/audit.log
+            mre_lego1/shard-*.json
