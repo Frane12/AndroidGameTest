@@ -63,8 +63,15 @@ def source_copy(raw, gbd, status, cohort, origin, existing_shas):
         return False
     need(status in ("SAT", "UNSAT"), "source reference status invalid")
     n, m = c15d.h.r32p.parse_dimacs_metadata(raw)
-    need(0 < n <= MAX_SOURCE_VARIABLES and 0 < m <= MAX_SOURCE_CLAUSES
-         and len(raw) <= MAX_SOURCE_BYTES, "source resource limit exceeded")
+    # Historical source inclusion must not be confused with candidate eligibility.
+    # Preserve larger frozen originals unchanged; per-arm metadata guard safely
+    # abstains before costly transformation. New official sources have tighter caps.
+    if origin == "official2026-database":
+        need(0 < n <= MAX_SOURCE_VARIABLES and 0 < m <= MAX_SOURCE_CLAUSES
+             and len(raw) <= MAX_SOURCE_BYTES, "fresh official resource cap")
+    else:
+        need(0 < n <= 200000 and 0 < m <= 500000 and len(raw) <= 50 * 1024 * 1024,
+             "previously frozen original exceeds maximum transport cap")
     filename = sha[:24] + ".cnf"
     target = ROOT / filename
     target.write_bytes(raw)
