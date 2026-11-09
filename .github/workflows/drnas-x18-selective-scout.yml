@@ -1,0 +1,171 @@
+name: DRNAS X18 - selective asymmetric learner and native phase forensics 336 paired PAR2
+on:
+  push:
+    branches: [experiment/drnas-x18-selective-scout-mechanism-20261109]
+    paths:
+      - '.github/workflows/drnas-x18-selective-scout.yml'
+      - 'research/drnas_x18_selective.cpp'
+      - 'research/drnas_x18_selective.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x18-asymmetric-selective-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile selective learner and freeze 16 X15 plus 8 X6 reused original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore pinned X15 and X6 historical original CNFs without timing selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42573523992 -R Frane12/AndroidGameTest -n x15-frozen-8development-8fresh-16originals-native-backends -D .
+          gh run download 42557116984 -R Frane12/AndroidGameTest -n x6fresh-eight-new-source-sha-frozen-CMS-Kissat -D .x6-recovery
+          test -s mre_x15/manifest.json
+          test -s .x6-recovery/mre_x6fresh/manifest.json
+          mkdir -p mre_x6fresh mre_x18/bin
+          cp .x6-recovery/mre_x6fresh/manifest.json mre_x6fresh/manifest.json
+          find .x6-recovery/mre_x6fresh -maxdepth 1 -type f -name '*.cnf' -exec cp {} mre_x6fresh/ \;
+          test "$(find mre_x6fresh -maxdepth 1 -name '*.cnf' | wc -l)" -eq 8
+          test "$(find mre_x15 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Compile, run SAT UNSAT selftests and freeze source/binary SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcadical-dev cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          sha256sum -c mre_x11/binary.sha256
+          g++ -O2 -std=c++17 -Wall -Wextra -pthread research/drnas_x18_selective.cpp -lcadical -o mre_x18/bin/selective
+          python3 -m py_compile research/drnas_x18_selective.py
+          python3 -u research/drnas_x18_selective.py selftest
+          python3 -u research/drnas_x18_selective.py freeze | tee mre_x18/freeze.log
+          python3 -u research/drnas_x18_selective.py verify
+          grep -q '^X18_FROZEN ' mre_x18/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x18-frozen-24-originals-and-pinned-solvers
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x18/*.cnf
+            mre_x18/manifest.json
+            mre_x18/freeze.log
+            mre_x18/bin/selective
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: X18 paired 42 E2E SAT trials plus separate 5000-conflict probes shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x18-frozen-24-originals-and-pinned-solvers
+          path: .
+      - name: Verify SHA and run real unmodified-CNF E2E benchmark
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x18/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x18_selective.py verify
+          python3 -u research/drnas_x18_selective.py shard --shard ${{ matrix.shard }} | tee mre_x18/shard-${{ matrix.shard }}.log
+          grep -q '^X18_SHARD_PASS ${{ matrix.shard }} 42$' mre_x18/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x18-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x18/shard-${{ matrix.shard }}.json
+            mre_x18/probe-shard-${{ matrix.shard }}.json
+            mre_x18/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 336 original SHA wall CPU PAR2 and separated bounded diagnostics
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x18-frozen-24-originals-and-pinned-solvers
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x18-shard-*
+          path: .x18-results
+          merge-multiple: false
+      - name: Audit all 336 exact-SHA trials and 24 unscored bounded probes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x18/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for i in 0 1 2 3 4 5 6 7; do
+            for prefix in shard probe-shard; do
+              file="$prefix-$i.json"
+              test "$(find ".x18-results/x18-shard-$i" -name "$file" -type f | wc -l)" -eq 1
+              cp "$(find ".x18-results/x18-shard-$i" -name "$file" -type f -print -quit)" "mre_x18/$file"
+            done
+            python3 - "$i" <<'PY'
+          import json,sys
+          i=int(sys.argv[1])
+          rows=json.load(open(f'mre_x18/shard-{i}.json'))
+          probes=json.load(open(f'mre_x18/probe-shard-{i}.json'))
+          assert len(rows)==42 and len(probes)==3
+          assert len(set((r['original_sha256'],r['rep'],r['arm']) for r in rows))==42
+          print('X18_RECOVERED_SHARD',i,42,3,flush=True)
+          PY
+          done
+          python3 -u research/drnas_x18_selective.py verify
+          python3 -u research/drnas_x18_selective.py audit | tee mre_x18/audit.log
+          grep -q '^X18_FINAL ' mre_x18/audit.log
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r=json.load(open('mre_x18/report.json'))
+          print('## X18 source-only prioritized learned-clause sharing: 336 original-CNF paired E2E')
+          print('|arm|solved|wall PAR2 s|CPU-budget PAR2 s|real CPU s|imported|')
+          print('|---|---:|---:|---:|---:|---:|')
+          for arm,o in r['overall'].items():
+            print(f"|{arm}|{o['solved']}/{o['n']}|{o['wall_PAR2_s']}|{o['cpu_budget_PAR2_s']}|{o['child_cpu_s']}|{o['imported']}|")
+          print('All 24 formulas were previously used (X15/X6); NOT blind; no independent LRAT; bounded diagnostics never credited as SAT/UNSAT E2E.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X18-SELECTIVE-SHARING-336-E2E-CPU-PAR2-PROBE-AUDIT
+          retention-days: 30
+          path: |
+            mre_x18/manifest.json
+            mre_x18/report.json
+            mre_x18/audit.log
+            mre_x18/probe-shard-*.json
+            mre_x18/shard-*.json
