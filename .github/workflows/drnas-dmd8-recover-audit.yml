@@ -1,0 +1,71 @@
+name: DRNAS DMD8 - recover frozen 126 original-SHA audit only
+on:
+  push:
+    branches: [experiment/drnas-dmd8-bounded-propagation-probe-20261109]
+    paths:
+      - research/dmd8_audit_recovery.py
+      - .github/workflows/drnas-dmd8-recover-audit.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  frozen_artifact_audit:
+    name: Audit previous frozen DMD8 126 paired runs without solver rerun
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore the four COMPLETED DMD8 shard artifacts from original run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd8
+          gh run download 42715717640 -R Frane12/AndroidGameTest -n dmd8-pinned-proof-screen-source-probe-binaries -D mre_dmd8
+          for shard in 0 1 2 3; do
+            gh run download 42715717640 -R Frane12/AndroidGameTest -n dmd8-shard-$shard -D mre_dmd8
+            test -s mre_dmd8/shard-$shard.json
+          done
+          test -s mre_dmd8/dmd8_manifest.json
+          test -s mre_dmd8/manifest.json
+          chmod +x mre_dmd8/bin/*
+      - name: Restore original SHA sources and pinned Kissat for independent proof replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+      - name: Strict proof replay, manifest SHA, PAR2 and source-locked matched audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/dmd8_audit_recovery.py
+          python3 -u research/dmd8_audit_recovery.py | tee mre_dmd8/recovery_audit.log
+          grep -q '^DMD8_RECOVERED_FINAL ' mre_dmd8/recovery_audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("mre_dmd8/recovered_report.json")
+          r=json.loads(p.read_text())
+          assert r["matched_trials"]==126
+          assert len(r["original_local_proof_sources"])==9
+          assert not r["deterministic_probe_feature_mismatches"]
+          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("## DMD8 frozen original SHA audit recovery\n")
+              f.write(f"Original GitHub run: {r['source_run']} · E2E trials: {r['matched_trials']} · independent local proof sources: 9\n\n")
+              f.write("| Solver | Solved | PAR2 s | x vs clean |\n|---|---:|---:|---:|\n")
+              for name,v in sorted(r["scores"].items(),key=lambda e:e[1]["PAR2_s"]):
+                  f.write(f"| {name} | {v['solved']}/18 | {v['PAR2_s']:.4f} | {v['speedup_x_vs_clean']:.4f}x |\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD8-FROZEN-126-PROOF-REPLAY-RECOVERED-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_dmd8/recovered_report.json
+            mre_dmd8/recovery_audit.log
+            mre_dmd8/dmd8_manifest.json
