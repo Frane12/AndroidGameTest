@@ -80,7 +80,7 @@ def historical_consensus():
 def source_option_diff():
     paths={"old":ROOT/"options-1.7.3.hpp","new":ROOT/"options-3.0.1.hpp"}
     found={}
-    regex=re.compile(r"\\bOPTION\\s*\\(\\s*([a-z][a-z0-9_]*)\\s*,\\s*([^,\\s]+)",re.I)
+    regex=re.compile(r"\bOPTION\s*\(\s*([a-z][a-z0-9_]*)\s*,\s*([^,\s]+)",re.I)
     # Parse actual macro declarations, not prose (requires ~100 entries per version).
     for ver,p in paths.items():
         need(p.is_file(),"missing original source options "+str(p))
