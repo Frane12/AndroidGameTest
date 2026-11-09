@@ -1,0 +1,154 @@
+name: DRNAS X16A - four asymmetric 95/5 90/10 80/20 70/30 one-vCPU dual CDCL 512 E2E
+on:
+  push:
+    branches: [experiment/drnas-x16a-asymmetrical-timeshare-20261109]
+    paths:
+      - '.github/workflows/drnas-x16a-asymmetric-timeshare.yml'
+      - 'research/drnas_x16a_asymmetric_timeshare.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x16a-four-asymmetric-variants-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze sixteen X16 exact-SHA original CNFs and four predeclared ratios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover already frozen original SHA and native Kissat CaDiCaL binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x16a
+          gh run download 42574891889 -R Frane12/AndroidGameTest -n x16-frozen-16-original-CNF-pinned-solvers -D .
+          test -s mre_x16/manifest.json
+          test "$(find mre_x16 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: One-vCPU proof, exact original hashes, Python selftest and immutable 512-trial protocol
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          sha256sum -c mre_x11/binary.sha256
+          python3 -m py_compile research/drnas_x16a_asymmetric_timeshare.py
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py selftest
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py freeze | tee mre_x16a/freeze.log
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py verify
+          grep -q '^X16A_FROZEN' mre_x16a/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x16a-frozen-16SHA-originals-four-ratios
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x16a/manifest.json
+            mre_x16a/freeze.log
+            mre_x16/manifest.json
+            mre_x16/*.cnf
+            mre_x11/binary.sha256
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  four_concurrent_variants:
+    name: 'X16A ratio ${{ matrix.ratio }}:${{ 100 - matrix.ratio }} - 128 SHA-paired E2E trials'
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 46
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        ratio: [95, 90, 80, 70]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x16a-frozen-16SHA-originals-four-ratios
+          path: .
+      - name: Native, Kissat, balanced 50:50 and asymmetric native:Kissat on one vCPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py verify
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py ratio --ratio ${{ matrix.ratio }} | tee mre_x16a/ratio-${{ matrix.ratio }}.log
+          grep -q '^X16A_VARIANT_PASS ${{ matrix.ratio }} 128$' mre_x16a/ratio-${{ matrix.ratio }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x16a-ratio-${{ matrix.ratio }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x16a/ratio-${{ matrix.ratio }}.json
+            mre_x16a/ratio-${{ matrix.ratio }}.log
+  audit:
+    name: Audit all 512 source SHA paired wall PAR2 child CPU/context switches and four ratios
+    needs: four_concurrent_variants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x16a-frozen-16SHA-originals-four-ratios
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x16a-ratio-*
+          path: .x16a-results
+          merge-multiple: false
+      - name: Recover each 128-trial ratio and fail closed on duplicates or missing models
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for ratio in 95 90 80 70; do
+            n=$(find ".x16a-results/x16a-ratio-$ratio" -type f -name "ratio-$ratio.json" | wc -l)
+            test "$n" -eq 1
+            src=$(find ".x16a-results/x16a-ratio-$ratio" -type f -name "ratio-$ratio.json" -print -quit)
+            cp "$src" "mre_x16a/ratio-$ratio.json"
+            python3 - "$ratio" <<'PY'
+          import json,sys
+          ratio=int(sys.argv[1])
+          rows=json.load(open('mre_x16a/ratio-%d.json'%ratio))
+          assert len(rows)==128
+          assert len(set((r['original_sha256'],r['rep'],r['arm']) for r in rows))==128
+          assert all(r['ratio_native_pct']==ratio for r in rows)
+          print('X16A_RECOVERED',ratio,128,flush=True)
+          PY
+          done
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py verify
+          python3 -u research/drnas_x16a_asymmetric_timeshare.py audit | tee mre_x16a/audit.log
+          grep -q '^X16A_FINAL' mre_x16a/audit.log
+          grep '^X16A_FINAL' mre_x16a/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X16A-512-TRIAL-FOUR-ASYMMETRIC-ONEVCPU-PAR2-CPU-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x16a/manifest.json
+            mre_x16a/report.json
+            mre_x16a/audit.log
+            mre_x16a/ratio-*.json
