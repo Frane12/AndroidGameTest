@@ -1,0 +1,151 @@
+name: DRNAS X16 - one-vCPU dual CDCL 5 20 100 ms timeslicing 256 paired E2E CPU PAR2
+on:
+  push:
+    branches: [experiment/drnas-x16-singlecore-dual-cdcl-20261109]
+    paths:
+      - '.github/workflows/drnas-x16-singlecore-dual.yml'
+      - 'research/drnas_x16_singlecore_dual.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x16-onevcpu-timeslicing-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore X15 16 SHA-locked original CNFs and check physical vs virtual CPU semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen X15 source cohort and exact unchanged binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x16
+          gh run download 42573523992 -R Frane12/AndroidGameTest -n x15-frozen-8development-8fresh-16originals-native-backends -D .
+          test -s mre_x15/manifest.json
+          test "$(find mre_x15 -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          test -s mre_x11/binary.sha256
+      - name: Confirm one-vCPU process affinity, exact original hashes and freeze trial protocol
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          sha256sum -c mre_x11/binary.sha256
+          ldd mre_x4/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/drnas_x16_singlecore_dual.py
+          python3 -u research/drnas_x16_singlecore_dual.py selftest
+          python3 -u research/drnas_x16_singlecore_dual.py freeze | tee mre_x16/freeze.log
+          python3 -u research/drnas_x16_singlecore_dual.py verify
+          grep -q '^X16_FROZEN' mre_x16/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x16-frozen-16-original-CNF-pinned-solvers
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x16/*.cnf
+            mre_x16/manifest.json
+            mre_x16/freeze.log
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: X16 32 source SHA paired 12s E2E 8arms one-vCPU timeslices shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x16-frozen-16-original-CNF-pinned-solvers
+          path: .
+      - name: Run one-vCPU native Kissat OS-share and SIGSTOP slice5/20/100 vs 2-vCPU race
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x16_singlecore_dual.py verify
+          python3 -u research/drnas_x16_singlecore_dual.py shard --shard ${{ matrix.shard }} | tee mre_x16/shard-${{ matrix.shard }}.log
+          grep -q '^X16_SHARD_PASS ${{ matrix.shard }} 32$' mre_x16/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x16-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x16/shard-${{ matrix.shard }}.json
+            mre_x16/shard-${{ matrix.shard }}.log
+  audit:
+    name: X16 strict 256 original SHA E2E wall PAR2 and child CPU/context switch final audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x16-frozen-16-original-CNF-pinned-solvers
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x16-shard-*
+          path: .x16-results
+          merge-multiple: false
+      - name: Recover exact 8 shard paths and prevent silent partial result
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for i in 0 1 2 3 4 5 6 7; do
+            matches=$(find ".x16-results/x16-shard-$i" -type f -name "shard-$i.json" | wc -l)
+            test "$matches" -eq 1
+            src=$(find ".x16-results/x16-shard-$i" -type f -name "shard-$i.json" -print -quit)
+            cp "$src" "mre_x16/shard-$i.json"
+            python3 - "$i" <<'PY'
+          import json,sys
+          i=int(sys.argv[1])
+          rows=json.load(open("mre_x16/shard-%d.json"%i))
+          assert len(rows)==32 and len(set((r["original_sha256"],r["rep"],r["arm"]) for r in rows))==32
+          print("X16_RECOVERED_SHARD",i,32,flush=True)
+          PY
+          done
+          python3 -u research/drnas_x16_singlecore_dual.py verify
+          python3 -u research/drnas_x16_singlecore_dual.py audit | tee mre_x16/audit.log
+          grep -q '^X16_FINAL' mre_x16/audit.log
+          grep '^X16_FINAL' mre_x16/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X16-256-E2E-ONE-VCPU-DUAL-CDCL-CPU-PAR2-STRICT-FINAL
+          retention-days: 30
+          path: |
+            mre_x16/manifest.json
+            mre_x16/report.json
+            mre_x16/audit.log
+            mre_x16/shard-*.json
