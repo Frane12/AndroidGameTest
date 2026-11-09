@@ -18,9 +18,13 @@ def inspect(path):
     gs=set(gf);ss=set(sc)
     joint=core.eliminate([(set(vs),rhs) for vs,rhs in sorted(gs|ss)])
     joint_only=core.eliminate([(set(vs),rhs) for vs,rhs in sorted(gs)])
+    gf_only=core.candidate_clauses(joint_only)
+    sc_only=core.candidate_clauses(core.eliminate([(set(vs),rhs) for vs,rhs in sorted(ss)]))
+    solo=set(gf_only)|set(sc_only)
     proposed=core.candidate_clauses(joint)
     candidates=proposed[:256]
     proved=[c for c in candidates if core.rup(clauses,c)]
+    joint_new=[c for c in proved if c not in solo]
     units=sum(len(c)==1 for c in proved)
     binaries=sum(len(c)==2 for c in proved)
     vars_g=set().union(*(set(vs) for vs,_ in gs)) if gs else set()
@@ -29,13 +33,16 @@ def inspect(path):
     same=len(gs&ss)
     opposite=sum((vs,1-rhs) in ss for vs,rhs in gs)
     # This is a *diagnostic* ranking, not a trained prediction of speedup.
-    score=10*units+4*binaries+2*overlap_vars+same+5*opposite
+    score=30*len(joint_new)+10*units+4*binaries+2*overlap_vars+same+5*opposite
     return dict(file=str(path),variables=n,clauses=len(clauses),
                 gf2_rows=len(gs),scc_rows=len(ss),exact_relation_overlap=same,
                 opposite_relation_overlap=opposite,shared_variables=overlap_vars,
                 combined_basis=len(joint),gf2_basis=len(joint_only),
                 candidate_lemmas=len(candidates),rup_lemmas=len(proved),
-                rup_units=units,rup_binary=binaries,diagnostic_score=score,
+                rup_units=units,rup_binary=binaries,combined_only_rup=len(joint_new),
+                combined_only_units=sum(len(c)==1 for c in joint_new),
+                combined_only_binary=sum(len(c)==2 for c in joint_new),
+                diagnostic_score=score,
                 proof='original CNF RUP',outcome='NOT_MEASURED')
 
 def main():
