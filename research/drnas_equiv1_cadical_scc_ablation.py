@@ -60,7 +60,7 @@ def historical_consensus():
     """Two distinct unmodified solvers previously reported UNSAT on same SHA."""
     rows=[]
     for i in range(8):
-        path=pathlib.Path("prior_x20/mre_x20")/("shard-%d.json"%i)
+        path=pathlib.Path("prior_x20")/("shard-%d.json"%i)
         need(path.is_file(),"missing original X20 shard "+str(i))
         rows+=json.loads(path.read_text())
     need(len(rows)==288,"prior X20 audit trial count")
