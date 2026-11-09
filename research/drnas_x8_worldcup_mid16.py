@@ -20,7 +20,7 @@ import mre_x_benchmark as base
 import mre11b_prospective_benchmark as ref
 import r195_native_cms_benchmark as cms
 
-PROTO="DRNAS-X8-WC1-OFFICIAL26-MID16-PUBLISHED-CA3-3TO40-5ARM-2REP-25S-v1"
+PROTO="DRNAS-X8-WC1B-OFFICIAL26-MID16-2SAT14UNSAT-PUBLISHED-CA3-3TO40-5ARM-2REP-25S-v1"
 SALT="DRNAS-X8-WC1-20261109-FROZEN-OFFICIAL26-MEDIUM-NO-X8-RESULT-LOOKUP"
 OUT=pathlib.Path("wc1_out")
 SRC=pathlib.Path("wc1_sources")
@@ -110,7 +110,7 @@ def freeze():
     selected=[]
     attempts=[]
     attempted=set()
-    quota={"SAT":TARGET//2,"UNSAT":TARGET//2}
+    quota={"SAT":2,"UNSAT":14}
     for st in ("SAT","UNSAT"):
         for candidate in queues[st]:
             if len([x for x in selected if x["reference"]==st])>=quota[st]:
@@ -145,7 +145,8 @@ def freeze():
             print("X8_WC1_FREEZE_SCAN",json.dumps(record,sort_keys=True),flush=True)
     need(MIN_READY<=len(selected)<=TARGET,"insufficient medium official cases")
     need(len({x["sha256"] for x in selected})==len(selected),"duplicate source sha")
-    need(min(collections.Counter(x["reference"] for x in selected).values())>=5,"SAT/UNSAT unbalanced")
+    counts=collections.Counter(x["reference"] for x in selected)
+    need(counts["SAT"]==2 and counts["UNSAT"]>=10,"SAT/UNSAT V2 quota missing")
     manifest={
        "protocol":PROTO,"source_count":len(selected),"target":TARGET,"cap_s":CAP,
        "seed_repeats":REPS,"arms":list(ARMS),"salt":SALT,"cases":selected,
@@ -158,6 +159,7 @@ def freeze():
        "known_historical_ids_excluded":len(historical_ids),
        "source_frozen_before_local_solver":True,
        "no_X8_timing_based_source_selection":True,
+       "pretrial_revision_reason":"v1 availability scan yielded two size-eligible SAT; changed only SAT/UNSAT quotas before any timed solver",
        "published_reference_runtime_based_selection_not_globally_blind":True,
        "UNSAT_independent_LRAT":False,"not_official_ranking":True,
        "no_auto_promotion":True}
