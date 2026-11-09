@@ -1,0 +1,107 @@
+name: DRNAS C14 — matched binary BVE vivify causal test
+on:
+  push:
+    branches: [experiment/drnas-c14-bve-vivify-causal-20261109]
+    paths: ['.github/workflows/drnas-c14-causal.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c14-development-factorial-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Verify pinned C13 sources and matched CaDiCaL binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact original CNFs and solver executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          python3 -m py_compile research/c14_factorial.py
+          python3 -u research/c14_factorial.py smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c14-pinned-development-sources-and-binaries
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            c13_sources/manifest.json
+            c13_sources/3ed56242f55e3653dbceeb4a70221787.cnf
+            c13_sources/5de866bc7ff4dfde3cd682b5aca75894.cnf
+            c13_sources/bf8c8761003704e761ce36db6665f741.cnf
+            c8c/bin/plain
+            c8c/bin/instrumented
+  trials:
+    needs: prepare
+    name: C14 development source ${{ matrix.source }} — 18 paired trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c14-pinned-development-sources-and-binaries
+          path: .
+      - name: Execute six matched controls with all three repeats
+        run: |
+          set -euo pipefail
+          chmod +x c8c/bin/plain c8c/bin/instrumented
+          mkdir -p c14_out
+          python3 -u research/c14_factorial.py shard --shard ${{ matrix.source }} | tee c14_out/shard-${{ matrix.source }}.log
+          grep -q '^C14_SHARD_PASS ${{ matrix.source }} 18$' c14_out/shard-${{ matrix.source }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c14-causal-shard-${{ matrix.source }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            c14_out/shard-${{ matrix.source }}.json
+            c14_out/shard-${{ matrix.source }}.log
+  audit:
+    needs: trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: c14-pinned-development-sources-and-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c14-causal-shard-*
+          merge-multiple: true
+          path: c14_out
+      - name: Audit source SHA pairing binary identity witnesses and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/c14_factorial.py audit | tee c14_out/audit.log
+          grep '^C14_FINAL ' c14_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: C14-DEV3-54-PAIRED-BVE-VIVIFY-CAUSAL-RESULTS
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            c14_out/*.json
+            c14_out/*.log
