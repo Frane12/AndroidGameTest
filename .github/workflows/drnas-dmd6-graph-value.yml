@@ -1,0 +1,164 @@
+name: DRNAS DMD6 - graph SCC and UP novelty 384 one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd6-implication-graph-value-20261109]
+    paths:
+      - research/dmd6_implication_graph_value.cpp
+      - research/dmd6_graph_benchmark.py
+      - .github/workflows/drnas-dmd6-graph-value.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd6-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build native DMD6 graph selector and pinned CaDiCaL proof-first tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore pinned original EQUIV7 cases and Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Build native DMD1 proof, DMD2 gate, DMD6 SCC graph and CaDiCaL clause-only runner
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd6/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd6/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd2_propagation_gate.cpp -o mre_dmd6/bin/dmd2_gate
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd6_implication_graph_value.cpp -o mre_dmd6/bin/dmd6_graph
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/dmd6-cadical
+          cd /tmp/dmd6-cadical
+          git checkout -q rel-2.1.0
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I./src \
+            "$GITHUB_WORKSPACE/research/dmd5_lemma_ablation_native.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_dmd6/bin/dmd5_live"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/mre_dmd6/cadical-source-commit.txt"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          b=pathlib.Path("mre_dmd6/bin")
+          info={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in b.iterdir()}
+          info["cadical_source_commit"]=pathlib.Path("mre_dmd6/cadical-source-commit.txt").read_text().strip()
+          pathlib.Path("mre_dmd6/binary-pins.json").write_text(json.dumps(info,sort_keys=True,indent=2))
+          print("DMD6_NATIVE_PINS",json.dumps(info,sort_keys=True))
+          PY
+      - name: Soundness selftests and original SHA source-only ranking freeze
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/dmd6_graph_benchmark.py
+          mre_dmd6/bin/dmd6_graph selftest | tee mre_dmd6/native-graph-selftest.log
+          grep -q '^DMD6_SELFTEST_PASS ' mre_dmd6/native-graph-selftest.log
+          mre_dmd6/bin/dmd2_gate selftest | tee mre_dmd6/dmd2-gate-selftest.log
+          grep -q '^DMD2_GATE_SELFTEST_PASS ' mre_dmd6/dmd2-gate-selftest.log
+          mre_dmd6/bin/dmd5_live selftest | tee mre_dmd6/native-cadical-selftest.log
+          grep -q '^DMD5_TRAIL_SELFTEST_PASS ' mre_dmd6/native-cadical-selftest.log
+          python3 -u research/dmd6_graph_benchmark.py selftest | tee mre_dmd6/graph-proof-selftest.log
+          grep -q '^DMD6_GRAPH_TEST_PASS ' mre_dmd6/graph-proof-selftest.log
+          python3 -u research/dmd6_graph_benchmark.py freeze | tee mre_dmd6/freeze.log
+          grep -q '^DMD6_FREEZE_PASS ' mre_dmd6/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd6-immutable-binaries-manifest-and-proof-selftests
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_dmd6/bin/*
+            mre_dmd6/manifest.json
+            mre_dmd6/binary-pins.json
+            mre_dmd6/cadical-source-commit.txt
+            mre_dmd6/*selftest.log
+            mre_dmd6/freeze.log
+  paired:
+    name: DMD6 96 SHA-paired graph value E2E 6s 1CPU shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd6-immutable-binaries-manifest-and-proof-selftests
+          path: mre_dmd6
+      - name: Restore original frozen source SHA and enforce immutable binary hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4 mre_dmd6/bin/*
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          p=pathlib.Path("mre_dmd6")
+          pins=json.loads((p/"binary-pins.json").read_text())
+          for s in ("dmd1_anf","dmd2_gate","dmd5_live","dmd6_graph"):
+              assert hashlib.sha256((p/"bin"/s).read_bytes()).hexdigest()==pins[s], "DMD6 binary drift"
+          print("DMD6_BINARY_SHA_PASS")
+          PY
+      - name: Eight one-core arms including DMD6 SCC top1 top3 novel-UP and references
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd6_graph_benchmark.py shard --shard ${{ matrix.shard }} | tee mre_dmd6/shard-${{ matrix.shard }}.log
+          grep -q '^DMD6_SHARD_PASS ${{ matrix.shard }} 96$' mre_dmd6/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd6-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_dmd6/shard-${{ matrix.shard }}.json
+            mre_dmd6/shard-${{ matrix.shard }}.log
+  audit:
+    name: DMD6 strict 384 original SHA independent proof PAR2 CDCL audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd6-immutable-binaries-manifest-and-proof-selftests
+          path: mre_dmd6
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd6-shard-*
+          path: mre_dmd6
+          merge-multiple: true
+      - name: Verify 384 original SHA E2E and no training leakage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          python3 -u research/dmd6_graph_benchmark.py audit | tee mre_dmd6/audit.log
+          grep '^DMD6_FINAL ' mre_dmd6/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD6-384-ONECPU-GRAPH-SCC-PROOF-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_dmd6/manifest.json
+            mre_dmd6/report.json
+            mre_dmd6/audit.log
+            mre_dmd6/shard-*.json
