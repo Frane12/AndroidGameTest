@@ -1,0 +1,159 @@
+name: DRNAS DMD8 - bounded source-UP probe vs real 126 matched E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd8-bounded-propagation-probe-20261109]
+    paths:
+      - research/dmd8_sync_up_probe.cpp
+      - research/dmd8_bounded_bench.py
+      - .github/workflows/drnas-dmd8-bounded-up.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd8-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Native two-round BCP probe selftest and nine-source frozen original SHA proof manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore 48 untouched EQUIV7 original SHA and pinned Kissat binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          chmod +x built/bin/kissat_4_0_4
+      - name: Build strict original proof C++ expander and bounded UP probe and CaDiCaL 2.1.0
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd8/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd7_resolution_expander.cpp -o mre_dmd8/bin/dmd7_expand
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd8_sync_up_probe.cpp -o mre_dmd8/bin/dmd8_probe
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd8/bin/dmd1_anf
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/dmd8-cadical
+          cd /tmp/dmd8-cadical
+          git checkout -q rel-2.1.0
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I./src \
+            "$GITHUB_WORKSPACE/research/dmd5_lemma_ablation_native.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_dmd8/bin/dmd5_live"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/mre_dmd8/cadical-source-commit.txt"
+          cd "$GITHUB_WORKSPACE"
+      - name: Validate native probe plus separate source-original parent resolution proof
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/dmd8_bounded_bench.py
+          mre_dmd8/bin/dmd7_expand selftest | tee mre_dmd8/native-resolvent.log
+          grep -q '^DMD7_SELFTEST_PASS ' mre_dmd8/native-resolvent.log
+          mre_dmd8/bin/dmd8_probe selftest | tee mre_dmd8/native-probe.log
+          grep -q '^DMD8_SELFTEST_PASS ' mre_dmd8/native-probe.log
+          mre_dmd8/bin/dmd5_live selftest | tee mre_dmd8/native-cadical.log
+          grep -q '^DMD5_TRAIL_SELFTEST_PASS ' mre_dmd8/native-cadical.log
+          python3 -u research/dmd8_bounded_bench.py selftest | tee mre_dmd8/proof-probe-selftest.log
+          grep -q '^DMD8_SELFTEST_PASS ' mre_dmd8/proof-probe-selftest.log
+      - name: Freeze nine original SHA source-only selections from 24 proof-screened CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd8_bounded_bench.py freeze | tee mre_dmd8/freeze.log
+          grep -q '^DMD8_FREEZE_PASS ' mre_dmd8/freeze.log
+          grep -q '^DMD7_SCREEN_PASS ' mre_dmd8/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd8-pinned-proof-screen-source-probe-binaries
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_dmd8/bin/*
+            mre_dmd8/manifest.json
+            mre_dmd8/dmd8_manifest.json
+            mre_dmd8/cadical-source-commit.txt
+            mre_dmd8/*.log
+  paired:
+    name: DMD8 126 matched 8s E2E one-core proof-probe shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd8-pinned-proof-screen-source-probe-binaries
+          path: mre_dmd8
+      - name: Restore exact original SHA and immutable native artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4 mre_dmd8/bin/*
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("mre_dmd8")
+          x=json.loads((p/"dmd8_manifest.json").read_text())
+          for name,h in x["binary_sha"].items():
+              assert hashlib.sha256((p/"bin"/name).read_bytes()).hexdigest()==h
+          print("DMD8_NATIVE_SHA_PASS")
+          PY
+      - name: Original source proof, same assumptions UP probe, CDCL real 8s E2E
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd8_bounded_bench.py shard --shard ${{ matrix.shard }} | tee mre_dmd8/shard-${{ matrix.shard }}.log
+          grep -q '^DMD8_SHARD_PASS ${{ matrix.shard }} ' mre_dmd8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd8-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_dmd8/shard-${{ matrix.shard }}.json
+            mre_dmd8/shard-${{ matrix.shard }}.log
+  audit:
+    name: DMD8 strict final 126 original verified SAT PAR2 and paired placebo real CDCL audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd8-pinned-proof-screen-source-probe-binaries
+          path: mre_dmd8
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd8-shard-*
+          path: mre_dmd8
+          merge-multiple: true
+      - name: Restore frozen original SHA and audit independently proven 126 paired trials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          python3 -u research/dmd8_bounded_bench.py audit | tee mre_dmd8/audit.log
+          grep '^DMD8_FINAL ' mre_dmd8/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD8-126-ONECPU-PROPAGATION-PROBE-FINAL
+          retention-days: 30
+          path: |
+            mre_dmd8/manifest.json
+            mre_dmd8/dmd8_manifest.json
+            mre_dmd8/report.json
+            mre_dmd8/audit.log
+            mre_dmd8/shard-*.json
