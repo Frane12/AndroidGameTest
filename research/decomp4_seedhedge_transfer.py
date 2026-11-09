@@ -277,7 +277,7 @@ def audit():
     need(len(rows)==len(expected)==len(got)==240 and got==expected,
          "original-SHA paired matrix incomplete")
     for r in rows:
-        need(r["protocol"]==PROTO and r["original_SHA_verified"] and
+        need(all(r["protocol"]==PROTO and r["original_SHA_verified"] and
           r["one_cpu"] and len(r["cpu_affinity"])==1 and
           r["cap_s"]==CAP and r["UNSAT_independent_LRAT"]==False and
           (r["status"]!="SAT" or r["SAT_original_witness_verified"]) and
