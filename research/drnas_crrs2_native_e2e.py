@@ -219,10 +219,10 @@ def audit(a):
     f=pathlib.Path(a.folder)
     (f/"report.json").write_text(json.dumps(result,indent=2)+"\n")
     print("CRRS2_FINAL "+json.dumps(result,sort_keys=True),flush=True)
-def selftest():
+def selftest(a):
     with tempfile.TemporaryDirectory() as td:
         # Native smoke includes watched propagation and exact XOR/SCC extraction.
-        out=subprocess.run([str(args.native),"selftest"],
+        out=subprocess.run([str(a.native),"selftest"],
                            capture_output=True,text=True,timeout=5)
         check(out.returncode==0 and "CRRS2_SELFTEST_PASS" in out.stdout,
               "C++ smoke selftest failed: "+out.stderr[-200:])
