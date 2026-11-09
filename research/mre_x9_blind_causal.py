@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""DRNAS X9 prospective clause-order causal validation.
-30 source-only frozen 2021-23 originals; never select on solver timing.
+"""DRNAS X9 frozen prepared-source clause-order replay validation.
+30 previously prepared SAT originals, no new downloading; not a blind holdout.
 Native CMS uses fixed binary and original clause multiset; 5 arms and 2 reps.
 CaDiCaL has no per-rep solver seed; report that explicitly.
 No bounded-only measurements enter PAR2; UNSAT without LRAT needs cross-solver agreement.
@@ -14,8 +14,8 @@ import mre7_reference_easy_freeze as fetch
 import mre6b_blind_freeze as prior
 
 ROOT=pathlib.Path('mre_x9')
-PROTO='DRNAS-X9-BLIND30-5ARMS-2REPS-15S-E2E-20261109-v1'
-SALT=PROTO+'-SOURCE-ONLY'
+PROTO='DRNAS-X9-REPLAY30-5ARMS-2REPS-15S-E2E-20261109-v2'
+SALT=PROTO+'-PREPARED-SHA-ONLY'
 MODES=('original','front100','spread_shifted','kissat','cadical')
 CAP=15.0
 REPS=2
@@ -33,96 +33,64 @@ def save(p,v):
 def seed(c,r):return int(sha((PROTO+'|'+c['sha256']+'|'+str(r)).encode())[:8],16) & 0x7fffffff
 def freeze():
     ROOT.mkdir(exist_ok=True)
-    ids=set();digests=set();registries=[]
-    def visit(obj):
-        if isinstance(obj,dict):
-            for v in obj.values():visit(v)
-        elif isinstance(obj,list):
-            for v in obj:visit(v)
-        elif isinstance(obj,str):
-            if re.fullmatch('[0-9a-f]{32}',obj):ids.add(obj)
-            if re.fullmatch('[0-9a-f]{64}',obj):digests.add(obj)
-    registry_paths=(
-        pathlib.Path('mre7_easy/manifest.json'),
-        pathlib.Path('mre11b_blind/manifest.json'),
-        pathlib.Path('mre_x/manifest.json'),
-        pathlib.Path('mre_x6fresh/manifest.json'),
-        pathlib.Path('mre_x6easy/manifest.json'),
+    # Existing original SAT formula bytes, never re-fetch or screen on solve time.
+    cohorts=(
+        ('mre7e',pathlib.Path('mre7_easy'),'selected_cases',16),
+        ('mre11b',pathlib.Path('mre11b_blind'),'source_cases',8),
+        ('x6fresh',pathlib.Path('mre_x6fresh'),'cases',8),
     )
-    for p in registry_paths:
-        need(p.is_file(),'missing prior registry '+str(p))
-        visit(json.loads(p.read_text()))
-        registries.append(dict(path=str(p),sha256=sha(p.read_bytes())))
-    need(prior.PRIOR.is_file(),'missing historical registry')
-    ids.update(x.strip() for x in prior.PRIOR.read_text().splitlines()
-               if re.fullmatch('[0-9a-f]{32}',x.strip()))
-    strata={};indexes={};candidate_ids=set()
-    for year in YEARS:
-        allids,h_all=pool.getids('track=main_'+year)
-        mini,h_mini=pool.getids('track=main_'+year+' and minisat1m=yes')
-        need(len(allids)==400 and set(mini)<=set(allids),'published index drift')
-        for stratum, subset in (('minisat1m_yes',set(mini)),
-                                ('minisat1m_other',set(allids)-set(mini))):
-            strata[(year,stratum)]=sorted(subset,key=lambda g:sha(
-                (SALT+'|'+year+'|'+stratum+'|'+g).encode()))
-        candidate_ids.update(allids)
-        indexes[year]=dict(all_sha256=h_all,mini_sha256=h_mini,
-                           mini_count=len(mini),all_count=len(allids))
-    more,ds=prior.inspect_repo_ids(candidate_ids)
-    ids.update(more);digests.update(ds)
-    selected=[];trace=[];counts=collections.Counter();tried=set()
-    fetch.prior.r32p.CNF_LIMIT=12*1024*1024
-    # Fixed geometry bounds are a size proxy, NEVER a measured hardness filter.
-    for year in YEARS:
-        for stratum in STRATA:
-            for g in strata[(year,stratum)]:
-                if counts[(year,stratum)]==PER_STRATUM:break
-                if g in ids or g in tried:continue
-                tried.add(g)
-                need(len(tried)<=650,'predeclared source scan budget exhausted')
-                p=ROOT/(g+'.cnf')
-                item=dict(gbd=g,year=year,stratum=stratum)
-                try:
-                    raw=fetch.get('https://benchmark-database.de/file/'+g,
-                                  12*1024*1024,seconds=20)
-                    plain,_=fetch.prior.r32p.decode(raw)
-                    need(len(plain)<=12*1024*1024,'source uncompressed size cap')
-                    n,m=fetch.prior.r32p.parse_dimacs_metadata(plain)
-                    need(150<=n<=20000 and 500<=m<=150000,
-                         'geometry cap')
-                    d=sha(plain)
-                    need(d not in digests,'previous source SHA')
-                    p.write_bytes(plain)
-                    nn,cc=x2.parse(p)
-                    need(nn==n and len(cc)==m,'DIMACS mismatch')
-                    selected.append(dict(gbd=g,year=year,stratum=stratum,
-                        sha256=d,filename=p.name,bytes=len(plain),
-                        vars=n,clauses=m))
-                    ids.add(g);digests.add(d);counts[(year,stratum)]+=1
-                    item.update(selection='FROZEN_BEFORE_SOLVING',
-                                sha256=d,vars=n,clauses=m)
-                except Exception as e:
-                    p.unlink(missing_ok=True)
-                    item.update(selection='EXCLUDED_GEOMETRY_FETCH_OR_REGISTRY',
-                                reason=str(e)[:170])
-                trace.append(item)
-                print('X9_SOURCE',json.dumps(item,sort_keys=True),flush=True)
-                save(ROOT/'selection-progress.json',dict(
-                    selected=selected,trace=trace,indexes=indexes,
-                    counts={y+'_'+z:counts[(y,z)] for y in YEARS for z in STRATA}))
-            need(counts[(year,stratum)]==PER_STRATUM,
-                 'insufficient new sources in '+year+' '+stratum)
-    need(len(selected)==TARGET and len({c['sha256'] for c in selected})==TARGET,
-         'not 30 unique frozen originals')
-    save(ROOT/'manifest.json',dict(protocol=PROTO,cases=selected,
-        modes=MODES,cap_s=CAP,reps=REPS,expected_trials=TARGET*REPS*len(MODES),
-        indexes=indexes,prior_registries=registries,
-        source_selection='salted per-year per-MiniSat1m-metadata stratum original official SAT 2021-2023; fixed geometry only, no DRNAS or reference timing screening',
-        metadata_is_not_proof_of_medium_difficulty=True,
-        source_disjoint_declared_registries=True,
-        globally_exhaustive_history_not_guaranteed=True,
-        mixed_public_metadata_strata=True,no_auto_promotion=True,trace=trace))
-    print('X9_FROZEN',len(selected),flush=True)
+    chosen=[];seen_sha=set();seen_gbd=set();registries=[];trace=[]
+    for tag,directory,key,expected in cohorts:
+        manifest=directory/'manifest.json'
+        need(manifest.is_file(),'missing prepared manifest '+str(manifest))
+        raw=manifest.read_bytes();m=json.loads(raw)
+        rows=m[key]
+        need(len(rows)==expected,'prepared cohort cardinality '+tag)
+        registries.append(dict(source=tag,manifest_sha256=sha(raw),n=len(rows)))
+        valid=[]
+        for c in rows:
+            src=directory/c['filename']
+            need(src.is_file(),'prepared original CNF missing '+str(src))
+            data=src.read_bytes()
+            need(sha(data)==c['sha256'],'prepared original SHA mismatch '+tag)
+            need(c['gbd'] and re.fullmatch('[0-9a-f]{32}',c['gbd']),
+                 'GBD original ID missing')
+            valid.append((c,data))
+        # All 16 MRE7e, 8 MRE11b, and 6 of 8 X6 Fresh,
+        # with selection hash ordered independently of candidate runtimes.
+        quota={'mre7e':16,'mre11b':8,'x6fresh':6}[tag]
+        valid.sort(key=lambda item:sha(
+            (SALT+'|'+tag+'|'+item[0]['sha256']).encode()))
+        for c,data in valid:
+            if len([x for x in chosen if x['cohort']==tag])>=quota:break
+            if c['sha256'] in seen_sha or c['gbd'] in seen_gbd:
+                trace.append(dict(cohort=tag,gbd=c['gbd'],
+                                  reason='SHA_OR_GBD_DUPLICATE'))
+                continue
+            seen_sha.add(c['sha256']);seen_gbd.add(c['gbd'])
+            src=directory/c['filename']
+            n,clauses=x2.parse(src)
+            dst=ROOT/(c['gbd']+'.cnf')
+            dst.write_bytes(data)
+            record=dict(cohort=tag,gbd=c['gbd'],sha256=c['sha256'],
+                filename=dst.name,bytes=len(data),vars=n,clauses=len(clauses),
+                year=str(c.get('year','unknown')),
+                stratum='PREPARED_'+tag)
+            chosen.append(record)
+            trace.append(dict(cohort=tag,gbd=c['gbd'],selection='PREPARED_SHA_VERIFIED'))
+            print('X9_SOURCE',json.dumps(record,sort_keys=True),flush=True)
+        need(len([x for x in chosen if x['cohort']==tag])==quota,
+             'insufficient unique prepared '+tag)
+    need(len(chosen)==TARGET and len(seen_sha)==TARGET,'not 30 prepared distinct sources')
+    save(ROOT/'manifest.json',dict(protocol=PROTO,cases=chosen,
+        modes=MODES,cap_s=CAP,reps=REPS,
+        expected_trials=TARGET*REPS*len(MODES),
+        prior_registries=registries,
+        selection='16 prepared MRE7e + 8 prepared MRE11b + 6 of 8 prepared X6Fresh, last six ranked by deterministic source SHA only',
+        known_development_replay=True,not_blind=True,
+        historical_source_selection_may_have_used_prior_solver_performance=True,
+        no_auto_promotion=True,trace=trace))
+    print('X9_FROZEN',len(chosen),flush=True)
 
 def verify():
     m=json.loads((ROOT/'manifest.json').read_text())
@@ -291,9 +259,10 @@ def audit():
         UNSAT_requires_cross_solver_for_scoring=True,
         cadical_is_unseeded_fixed_baseline=True,
         native_binary_frozen=True,
-        source_selection_before_solver_timings=True,
-        development_not_seen_in_declared_registry=True,
+        source_selection_before_solver_timings=False,
+        development_not_seen_in_declared_registry=False,
         globally_exhaustive_history_not_guaranteed=True,
+        known_development_replay=True,not_blind=True,
         no_auto_promotion=True,rows=rows)
     save(ROOT/'report.json',out)
     print('X9_FINAL',json.dumps({k:v for k,v in out.items()
