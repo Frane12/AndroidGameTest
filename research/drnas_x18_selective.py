@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """DRNAS X18: native CDCL phase forensics + one-way selective learned-clause tests.
 
-Two historical SHA-frozen datasets: X15 (16) and X6fresh (8). They are ALL
-REUSED, not blind, with X6fresh previously tested by X6. Same original CNFs,
+X15 frozen replays (16) and eight new source-only official CNFs with explicit
+X6fresh exclusion. Not globally blind (prior registry incomplete). Same CNFs,
 two formula-paired seeds, capped E2E with model replay, strict PAR2 accounting.
 Native 5000-conflict probes are separate bounded diagnostics, NEVER E2E scores.
 """
@@ -68,38 +68,88 @@ def freeze():
     x17.freeze()
     m=json.loads((ROOT/'manifest.json').read_text())
     need(len(m['cases'])==16 and m['expected_trials']==224,'X17 source freeze changed')
+    # X6fresh is an EXCLUSION registry, not eight new sources:
+    # X15 and X6fresh were observed to overlap in the first X18 attempt.
     m0=json.loads((X6/'manifest.json').read_text())
-    need(len(m0['cases'])==8,'X6fresh source manifest changed')
+    need(len(m0['cases'])==8,'X6fresh registry source manifest changed')
     allcases=[]
     for c in m['cases']:
         entry=dict(c)
         entry['cohort']='x15_previous_'+c['previous_X15_tier']+'_reused'
         allcases.append(entry)
-    original={c['sha256'] for c in allcases}
-    ids={c['gbd'] for c in allcases}
-    for c in m0['cases']:
-        src=X6/c['filename']
-        need(src.is_file() and digest(src)==c['sha256'],'X6 original SHA drift')
-        need(c['sha256'] not in original and c['gbd'] not in ids,'X15/X6 source overlap')
-        name='x6_'+c['filename']
-        dest=ROOT/name
-        dest.write_bytes(src.read_bytes())
-        original.add(c['sha256']);ids.add(c['gbd'])
-        allcases.append(dict(filename=name,sha256=c['sha256'],gbd=c['gbd'],
-             previous_X15_tier='x6_reused_not_blind',cohort='x6fresh_prior_reused',
-             x6_year=c.get('year'),vars=c.get('vars'),clauses=c.get('clauses')))
-    need(len(allcases)==24 and len(original)==24,'freeze expected 24 unique sources')
+    excluded_sha={c['sha256'] for c in allcases}
+    excluded_gbd={c['gbd'] for c in allcases}
+    excluded_sha.update(c['sha256'] for c in m0['cases'])
+    excluded_gbd.update(c['gbd'] for c in m0['cases'])
+    # Deterministic, source-only selection from official Benchmark Database.
+    # No solving, no outcome labels, no runtimes used for selection.
+    import mre7_extended_easy_freeze as pool
+    import mre7_reference_easy_freeze as fetch
+    import mre_x2_clause_order_causal as x2
+    import hashlib
+    years=('2021','2022','2023')
+    salt='DRNAS-X18-SOURCE-ONLY-PRECOMMIT-20261109-v1'
+    candidates=[]
+    indexes={}
+    for year in years:
+        all_ids,sha_all=pool.getids('track=main_'+year)
+        easy_ids,sha_easy=pool.getids('track=main_'+year+' and minisat1m=yes')
+        need(len(all_ids)==400 and set(easy_ids)<=set(all_ids),
+             'official source index invalid')
+        indexes[year]=dict(all_sha256=sha_all,easy_sha256=sha_easy)
+        candidates.extend((year,g) for g in easy_ids if g not in excluded_gbd)
+    candidates=sorted(set(candidates),
+        key=lambda x:hashlib.sha256((salt+'|'+x[0]+'|'+x[1]).encode()).hexdigest())
+    trace=[]
+    fetched=set()
+    for year,gbd in candidates:
+        if len(allcases)==24:break
+        if gbd in excluded_gbd or gbd in fetched:continue
+        fetched.add(gbd)
+        need(len(fetched)<=100,'frozen source fetch budget exhausted')
+        row=dict(gbd=gbd,year=year,selection='reject')
+        dest=ROOT/(gbd+'.cnf')
+        try:
+            raw=fetch.get('https://benchmark-database.de/file/'+gbd,
+                          12*1024*1024,seconds=20)
+            plain,kind=fetch.prior.r32p.decode(raw)
+            need(len(plain)<=12*1024*1024,'original CNF too large')
+            nv,nc=fetch.prior.r32p.parse_dimacs_metadata(plain)
+            need(nv<=12000 and nc<=85000 and nc>0,'source geometry cap')
+            sha=hashlib.sha256(plain).hexdigest()
+            need(sha not in excluded_sha,'prior original SHA excluded')
+            dest.write_bytes(plain)
+            n,clauses=x2.parse(dest)
+            need(n==nv and len(clauses)==nc,'DIMACS parse mismatch')
+            allcases.append(dict(filename=dest.name,sha256=sha,gbd=gbd,
+              previous_X15_tier='new_sourceonly',cohort='x18_sourceonly_official_not_global_blind',
+              x18_year=year,vars=nv,clauses=nc,bytes=len(plain)))
+            excluded_sha.add(sha);excluded_gbd.add(gbd)
+            row.update(selection='frozen_before_solver',sha256=sha,vars=nv,clauses=nc)
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            row.update(selection='exclude_fetch_size_or_prior',reason=str(e)[:150])
+        trace.append(row)
+        print('X18_SOURCE',json.dumps(row,sort_keys=True),flush=True)
+        save(ROOT/'source-selection-progress.json',dict(selected=len(allcases)-16,trace=trace,indexes=indexes))
+    need(len(allcases)==24 and len({c['sha256'] for c in allcases})==24
+         and len({c['gbd'] for c in allcases})==24,
+         'not eight distinct new original sources')
     m.update(protocol=PROTO,arms=list(ARMS),cap_s=CAP,reps=REPS,
         per_shard=PER_SHARD,shards=SHARDS,expected_trials=EXPECTED,
         cases=allcases,solver_cap_s=SOLVER_CAP,
         driver_sha256=digest(DRIVER),
         x6_fresh_manifest_sha256=digest(X6/'manifest.json'),
         x6_fresh_run_id=42557116984,
+        x18_sourceonly_selection_trace=trace,
+        x18_indexes=indexes,
+        x18_sourceonly_salt=salt,
+        x18_prior_registries_nonexhaustive=True,
         source_replay_not_blind=True,
         blind_holdout=False,
         genuine_clause_transfer=True,
         policy='source-only opposite-polarity occurrence ranking; 64 total, 8 per round; select2 binary score>=14; select3 <=3 score>=22',
-        original_x15_reused=16,old_x6fresh_reused=8,
+        original_x15_reused=16,new_sourceonly_official=8,
         native_probe='DRNAS_MAX_CONFLICTS=5000, diagnostic only, never PAR2',
         cpu_par2_failure_policy='2*12s*logical_cpu_budget',
         UNSAT_independent_LRAT=False,
@@ -107,7 +157,7 @@ def freeze():
     save(ROOT/'manifest.json',m)
     verify()
     print('X18_FROZEN',json.dumps(dict(sources=len(allcases),trials=EXPECTED,
-         driver_sha256=m['driver_sha256'],origin_counts=dict(x15=16,x6_reused=8)),sort_keys=True),flush=True)
+         driver_sha256=m['driver_sha256'],origin_counts=dict(x15_reused=16,x18_sourceonly_new=8)),sort_keys=True),flush=True)
 
 def verify():
     configure()
