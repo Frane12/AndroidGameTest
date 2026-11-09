@@ -1,0 +1,130 @@
+name: DRNAS CRRS1 - rank24 XOR SCC RUP gate 24 one-core E2E
+on:
+  push:
+    branches:
+      - experiment/drnas-crrs1-rup-gated-rank24-20261109
+    paths:
+      - research/drnas_crrs1_rank24.py
+      - .github/workflows/drnas-crrs1-rup-gate-20261109.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-crrs1-rank24-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  smoke:
+    name: SHA freeze and mixed-RUP proof selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile Python and test sound RUP-only re-encoding
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_crr1_gf2_scc_rup.py research/drnas_rit3_original_sha_screen.py research/drnas_crrs1_rank24.py
+          python3 -u research/drnas_crrs1_rank24.py selftest | tee selftest.log
+          grep -q '^CRRS1_SELFTEST_PASS ' selftest.log
+      - name: Check source and solver binary hashes from immutable EQUIV2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          test -s mre_x20/manifest.json
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv2/bin/cadical_3_0_1
+          python3 - <<'PY'
+          import sys,os,json,hashlib
+          sys.path.insert(0,'research')
+          import drnas_crrs1_rank24 as c
+          found=c.manifest_cases('mre_x20/manifest.json')
+          for item in found:
+              p='mre_x20/'+item['filename']
+              assert os.path.isfile(p) and c.sha(p)==item['sha256']
+              print('CRRS1_FROZEN_SOURCE_OK',item['sha256'],item['gbd'])
+          PY
+  paired:
+    name: One-CPU RUP-gated E2E shard ${{ matrix.shard }}
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download frozen original CNFs, pinned solvers and historical UNSAT consensus
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p recovered
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42608986438 -R Frane12/AndroidGameTest -n DRNAS-EQUIV2-384-AUDITED-RECOVERED -D recovered
+          test -s recovered/report.json
+          test -s mre_x20/manifest.json
+          chmod +x built/bin/kissat_4_0_4 mre_equiv2/bin/cadical_3_0_1
+      - name: Original SHA, identical source pairing, 8s CAP including full RUP overhead
+        run: |
+          set -euo pipefail
+          mkdir -p crrs1
+          python3 -u research/drnas_crrs1_rank24.py bench \
+            --manifest mre_x20/manifest.json \
+            --root mre_x20 \
+            --kissat "$PWD/built/bin/kissat_4_0_4" \
+            --cadical "$PWD/mre_equiv2/bin/cadical_3_0_1" \
+            --consensus recovered/report.json \
+            --shard ${{ matrix.shard }} --out crrs1/shard-${{ matrix.shard }}.json \
+            | tee crrs1/shard-${{ matrix.shard }}.log
+          grep -q '^CRRS1_SHARD_PASS ${{ matrix.shard }} ' crrs1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crrs1-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            crrs1/shard-${{ matrix.shard }}.json
+            crrs1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 24-paired PAR2 CPU and original-SAT audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: crrs1-shard-*
+          path: crrs1
+          merge-multiple: true
+      - name: Restore SHA source manifest and independently audit paired trials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p frozen
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D frozen
+          python3 -u research/drnas_crrs1_rank24.py audit \
+            --folder crrs1 --manifest frozen/mre_x20/manifest.json | tee crrs1/audit.log
+          grep '^CRRS1_FINAL ' crrs1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CRRS1-RANK24-24E2E-ONECPU-FINAL
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            crrs1/shard-*.json
+            crrs1/report.json
+            crrs1/audit.log
