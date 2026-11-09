@@ -1,0 +1,137 @@
+name: DRNAS X13D — factorial order x reduction X11 576 paired E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre-x13d-factorial-causality-20261109]
+    paths:
+      - '.github/workflows/drnas-mre-x13d-factorial-causality.yml'
+      - 'research/mre_x13cd_expansion.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-d-proofsafe-20261109-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore 32 X11 frozen original CNFs, SHA-verify solvers and freeze manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download immutable original CNFs and pinned native + Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x13d mre_x11 mre_x4/bin built/bin mre5/lib
+          gh run download 42563452186 -R Frane12/AndroidGameTest -n x11-32-frozen-original-sha-native-binaries-structural -D .
+          test -s mre_x11/manifest.json
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Install CaDiCaL, verify fixed binary SHA, certify surgery tests and freeze
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/mre_x13cd_expansion.py
+          python3 -u research/mre_x13cd_expansion.py --mode d selftest
+          python3 -u research/mre_x13cd_expansion.py --mode d freeze
+          python3 -u research/mre_x13cd_expansion.py --mode d verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: d-frozen-original-source-sha-backends
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x11/*.cnf
+            mre_x11/manifest.json
+            mre_x11/binary.sha256
+            mre_x11/structure.json
+            mre_x13d/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: X13D 72 original-SHA 2-seed full E2E 12s trials shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: d-frozen-original-source-sha-backends
+          path: .
+      - name: Restore exact backend hashes and original source bytes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x13cd_expansion.py --mode d verify
+      - name: Execute randomized paired E2E native transformations vs reference baselines
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x13cd_expansion.py --mode d shard --shard ${{ matrix.shard }} | tee mre_x13d/shard-${{ matrix.shard }}.log
+          grep -q '^X13D_SHARD_PASS ${{ matrix.shard }} 72$' mre_x13d/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: d-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x13d/shard-${{ matrix.shard }}.json
+            mre_x13d/shard-${{ matrix.shard }}.log
+  audit:
+    name: X13D strict 576 paired original-SHA PAR2 model/cross-check audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: d-frozen-original-source-sha-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: d-shard-*
+          merge-multiple: true
+          path: mre_x13d
+      - name: Audit model witnesses, SHA, paired seeds and PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x13cd_expansion.py --mode d audit | tee mre_x13d/audit.log
+          grep -q '^X13D_FINAL' mre_x13d/audit.log
+          grep '^X13D_FINAL' mre_x13d/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X13D-576-PAIRED-E2E-PAR2-AUDITED
+          retention-days: 30
+          path: |
+            mre_x13d/manifest.json
+            mre_x13d/report.json
+            mre_x13d/audit.log
+            mre_x13d/shard-*.json
