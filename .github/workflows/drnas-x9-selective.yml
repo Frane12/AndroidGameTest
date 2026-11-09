@@ -1,0 +1,138 @@
+name: DRNAS X9 — selective X8 C13 C14 12 official2026 216 paired PAR2
+on:
+  push:
+    branches: [experiment/drnas-x9-selective-c14nv-20261109]
+    paths: ['.github/workflows/drnas-x9-selective.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x9-frozen-12-9arm-2seed-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze existing C14NV SHA-disjoint originals; pin X8 Kissat CaDiCaL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore source-only official2026 C14NV C13 and pinned native backends
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p x9_out x9_sources x9_bin x9_prior_c13
+          gh run download 42558264803 -R Frane12/AndroidGameTest -n mre-x8-frozen-sha-patched-cms-and-inputs -D x9_bin
+          gh run download 42552186899 -R Frane12/AndroidGameTest -n c14nv-frozen-originals-and-pinned-backends -D .
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D x9_prior_c13
+          (cd x9_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c14nv_out/binary.sha256
+          chmod +x x9_bin/mre_x8/bin/native c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/x9_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          ldd x9_bin/mre_x8/bin/native | grep 'libcryptominisat5.so.5.11'
+          test "$(c8c/bin/plain --version)" = "1.7.3"
+          python3 -m py_compile research/drnas_x9_selective.py research/drnas_x8_worldcup_mid16.py
+          python3 -u research/drnas_x9_selective.py selftest
+      - name: Freeze immutable source SHA and source-only route BEFORE local X9 timing
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x9_selective.py freeze | tee x9_out/freeze.log
+          grep -q '^X9_FROZEN ' x9_out/freeze.log
+          (cd x9_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x9_selective.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x9-frozen-c14nv12-source-and-pinned-x8-cadical-kissat
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            x9_sources/*.cnf
+            x9_sources/manifest.json
+            x9_sources/source.sha256
+            x9_out/freeze.log
+            x9_bin/mre_x8/bin/native
+            x9_bin/mre_x8/lib/libcryptominisat5.so.5.11
+            x9_bin/mre_x8/pinned-binary.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c8c/bin/instrumented
+            c14nv_out/binary.sha256
+  paired:
+    needs: prepare
+    name: 9 routes 2 repeats 25s E2E original SHA shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x9-frozen-c14nv12-source-and-pinned-x8-cadical-kissat
+          path: .
+      - name: Execute fixed frozen route and 8 paired ablations
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/x9_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x x9_bin/mre_x8/bin/native c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          sha256sum -c c14nv_out/binary.sha256
+          (cd x9_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          (cd x9_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x9_selective.py verify
+          python3 -u research/drnas_x9_selective.py shard --shard ${{ matrix.shard }} | tee x9_out/shard-${{ matrix.shard }}.log
+          grep -q '^X9_SHARD_PASS ${{ matrix.shard }} 36$' x9_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x9-paired-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            x9_out/shard-${{ matrix.shard }}.json
+            x9_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: Final X9 216 E2E exact-SHA original SAT witness PAR2 9 route audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x9-frozen-c14nv12-source-and-pinned-x8-cadical-kissat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x9-paired-shard-*
+          merge-multiple: true
+          path: x9_out
+      - name: Audit SHA original SAT witnesses and published UNSAT agreement
+        run: |
+          set -euo pipefail
+          (cd x9_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x9_selective.py audit | tee x9_out/audit.log
+          grep '^X9_FINAL' x9_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X9-12SHA-216-E2E-9ARMS-25S-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            x9_out/report.json
+            x9_out/audit.log
+            x9_out/shard-*.json
+            x9_sources/manifest.json
