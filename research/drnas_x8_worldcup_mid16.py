@@ -142,7 +142,7 @@ def freeze():
                 (SRC/(g+".cnf")).unlink(missing_ok=True)
                 record.update(decision="EXCLUDED_BEFORE_ANY_SOLVER",reason=(type(e).__name__+": "+str(e))[:240])
             attempts.append(record)
-            print("X8_WC1_FREEZE_SCAN",json.dumps(record,sort_keys=True),flush=True)
+            print("X8_WC2_FREEZE_SCAN",json.dumps(record,sort_keys=True),flush=True)
     need(MIN_READY<=len(selected)<=TARGET,"insufficient medium official cases")
     need(len({x["sha256"] for x in selected})==len(selected),"duplicate source sha")
     counts=collections.Counter(x["reference"] for x in selected)
@@ -165,7 +165,7 @@ def freeze():
        "no_auto_promotion":True}
     save(SRC/"manifest.json",manifest)
     (SRC/"source.sha256").write_text("".join(c["sha256"]+"  "+c["filename"]+"\n" for c in selected))
-    print("X8_WC1_FROZEN",json.dumps({"n":len(selected),"SAT":sum(x["reference"]=="SAT" for x in selected),
+    print("X8_WC2_FROZEN",json.dumps({"n":len(selected),"SAT":sum(x["reference"]=="SAT" for x in selected),
         "UNSAT":sum(x["reference"]=="UNSAT" for x in selected),"manifest_sha":digest(SRC/"manifest.json")}),flush=True)
 def cases():
     m=json.loads((SRC/"manifest.json").read_text())
@@ -263,9 +263,9 @@ def shard(i):
                 row=trial(c,rep,arm)
                 rows.append(row)
                 save(OUT/f"shard-{i}.json",rows)
-                print("X8_WC1_TRIAL",json.dumps(row,sort_keys=True),flush=True)
+                print("X8_WC2_TRIAL",json.dumps(row,sort_keys=True),flush=True)
     need(len(rows)==len(selected)*REPS*len(ARMS),"shard incomplete")
-    print("X8_WC1_SHARD_PASS",i,len(rows),flush=True)
+    print("X8_WC2_SHARD_PASS",i,len(rows),flush=True)
 def audit():
     cs=cases()
     bysha={c["sha256"]:c for c in cs}
@@ -337,7 +337,7 @@ def audit():
       "not_unseen_guaranteed":True,
       "no_auto_promotion":True}
     save(OUT/"report.json",final)
-    print("X8_WC1_FINAL",json.dumps({k:v for k,v in final.items() if k!="per_source"},sort_keys=True),flush=True)
+    print("X8_WC2_FINAL",json.dumps({k:v for k,v in final.items() if k!="per_source"},sort_keys=True),flush=True)
 def selftest():
     import tempfile
     original=[(1,-2),(1,-2),(-1,2),(3,4),(3,4),(-3,)]
@@ -348,7 +348,7 @@ def selftest():
             changed=x4.transform(original,mode)
             need(collections.Counter(original)==collections.Counter(changed),"not exact multiset")
             need(base.brute(p)==base.brute(p),"brute source failed")
-    print("X8_WC1_SELFTEST_PASS")
+    print("X8_WC2_SELFTEST_PASS")
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     p.add_argument("action",choices=("selftest","freeze","verify","shard","audit"))
@@ -357,6 +357,6 @@ if __name__=="__main__":
     if args.action=="selftest":selftest()
     elif args.action=="freeze":freeze()
     elif args.action=="verify":
-        print("X8_WC1_VERIFY_PASS",len(cases()))
+        print("X8_WC2_VERIFY_PASS",len(cases()))
     elif args.action=="shard":shard(args.shard)
     else:audit()
