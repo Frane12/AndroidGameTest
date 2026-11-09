@@ -1,0 +1,140 @@
+name: DRNAS X12 — Graph-gated dual/triple CMS Kissat CaDiCaL 32 SHA 448 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-x12-portfolio-graph-20261109]
+    paths: ['.github/workflows/drnas-x12-portfolio.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x12-original32-portfolio-graph
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 32 independent-original X11 SHA and pin verified X10 binaries; smoke portfolios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download immutable prior X10 and source-disjoint prospective-to-X10 X11 corpus
+        env:
+          GH_TOKEN: {{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p x12_out x12_sources x12_prior_x11 x10_sources
+          gh run download 42563492221 -R Frane12/AndroidGameTest -n x10-sha24-c13-c14nv-frozen-features-and-pinned-backends -D .
+          gh run download 42563452186 -R Frane12/AndroidGameTest -n x11-32-frozen-original-sha-native-binaries-structural -D x12_prior_x11
+          test -s x12_prior_x11/mre_x11/manifest.json
+          test -s x10_sources/manifest.json
+          chmod +x x10_bin/mre_x8/bin/native built/bin/kissat_4_0_4 c8c/bin/plain
+          (cd x10_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c14nv_out/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/x10_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          ldd x10_bin/mre_x8/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/drnas_x12_portfolio.py research/drnas_x10_structural_profile.py research/drnas_x10_structural_benchmark.py
+      - name: Commit policy and freeze all SHA and source features before timed benchmark
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/x10_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/drnas_x12_portfolio.py freeze | tee x12_out/freeze.log
+          grep -q '^X12_FROZEN ' x12_out/freeze.log
+          (cd x12_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x12_portfolio.py verify
+          python3 -u research/drnas_x12_portfolio.py smoke | tee x12_out/smoke.log
+          grep -q '^X12_SMOKE_PASS' x12_out/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x12-32-original-SHA-precommitted-and-pinned-backends
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 6
+          path: |
+            x12_sources/*.cnf
+            x12_sources/manifest.json
+            x12_sources/source.sha256
+            x12_out/freeze.log
+            x12_out/smoke.log
+            x10_bin/mre_x8/bin/native
+            x10_bin/mre_x8/lib/libcryptominisat5.so.5.11
+            x10_bin/mre_x8/pinned-binary.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c14nv_out/binary.sha256
+  paired:
+    needs: freeze
+    name: X12 7-arm frozen SHA two-seed 15s with original model replay and child CPU shard {{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x12-32-original-SHA-precommitted-and-pinned-backends
+          path: .
+      - name: Verify complete frozen sources and run seven-arm randomized paired E2E
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/x10_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x x10_bin/mre_x8/bin/native built/bin/kissat_4_0_4 c8c/bin/plain
+          (cd x10_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c14nv_out/binary.sha256
+          (cd x12_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x12_portfolio.py verify
+          mkdir -p x12_out
+          python3 -u research/drnas_x12_portfolio.py shard --shard {{ matrix.shard }} | tee x12_out/shard-{{ matrix.shard }}.log
+          grep -q '^X12_SHARD_PASS {{ matrix.shard }} 56$' x12_out/shard-{{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x12-result-{{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            x12_out/shard-{{ matrix.shard }}.json
+            x12_out/shard-{{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: X12 final 448 paired wall PAR2 versus total child CPU and gate generalization audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x12-32-original-SHA-precommitted-and-pinned-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x12-result-*
+          path: x12_out
+          merge-multiple: true
+      - name: Check every exact original SHA and all 448 paired outcomes
+        run: |
+          set -euo pipefail
+          (cd x12_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x12_portfolio.py audit | tee x12_out/audit.log
+          grep '^X12_FINAL' x12_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X12-448-PAIRED-32SHA-CMS-KISSAT-CADICAL-PORTFOLIO-CPU-PAR2
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            x12_sources/manifest.json
+            x12_out/report.json
+            x12_out/audit.log
+            x12_out/shard-*.json
