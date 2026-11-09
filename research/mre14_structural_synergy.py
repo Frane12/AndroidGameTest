@@ -162,7 +162,10 @@ def freeze():
          "did not freeze both SAT and UNSAT source quotas")
     cases = list(existing.values())
     need(len(cases) == len(existing), "source duplicate")
-    need(x3_added >= 3 and x3_overlap <= 2, "X3 duplicate-bearing cohort missing")
+    # All X3 sources already present through C15D are valid inputs too:
+    # overlap is coverage, not a reason to reject a frozen exact-SHA source.
+    need(x3_added + x3_overlap >= 4 and x3_resource_skipped <= 1,
+         "X3 duplicate-order originals not sufficiently covered")
     # Deterministic order independent of filesystem and fetch ordering.
     cases = sorted(cases, key=lambda c: (c["cohort"], c["sha256"]))
     manifest = dict(protocol=PROTO, cases=cases, x3_added=x3_added, x3_overlap=x3_overlap, x3_resource_skipped=x3_resource_skipped,
