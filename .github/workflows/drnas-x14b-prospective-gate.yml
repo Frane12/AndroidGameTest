@@ -1,0 +1,149 @@
+name: DRNAS X14B - 24 official sources 384 paired E2E structural gates CPU PAR2
+on:
+  push:
+    branches: [experiment/drnas-x14b-prospective-sourcegate-20261109]
+    paths:
+      - '.github/workflows/drnas-x14b-prospective-gate.yml'
+      - 'research/drnas_x14b_prospective_gate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x14b-20261109-official24-8arms
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 24 official original sources without solver outcome selection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 36
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore X11 original SHA manifest and frozen native/reference backends
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x14b/sources mre_x11 mre_x4/bin built/bin mre5/lib
+          gh run download 42563452186 -R Frane12/AndroidGameTest -n x11-32-frozen-original-sha-native-binaries-structural -D .
+          test -s mre_x11/manifest.json
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Install CaDiCaL, verify fixed solvers and preregister source-only policies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_x14b_prospective_gate.py
+          python3 -u research/drnas_x14b_prospective_gate.py selftest | tee mre_x14b/selftest.log
+          python3 -u research/drnas_x14b_prospective_gate.py freeze | tee mre_x14b/freeze.log
+          python3 -u research/drnas_x14b_prospective_gate.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x14b-24-original-GBD-source-SHA-frozen-policies
+          retention-days: 14
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            mre_x14b/sources/*.cnf
+            mre_x14b/manifest.json
+            mre_x14b/source.sha256
+            mre_x14b/selection-trace.json
+            mre_x14b/selftest.log
+            mre_x14b/freeze.log
+            mre_x11/binary.sha256
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    needs: freeze
+    name: X14B 48 SHA-paired E2E 15s trials shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x14b-24-original-GBD-source-SHA-frozen-policies
+          path: .
+      - name: Run original source SHA and binary verified paired trials
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          (cd mre_x14b && sha256sum -c source.sha256)
+          python3 -u research/drnas_x14b_prospective_gate.py verify
+          python3 -u research/drnas_x14b_prospective_gate.py shard --shard ${{ matrix.shard }} | tee mre_x14b/shard-${{ matrix.shard }}.log
+          grep -q '^X14B_SHARD_PASS ${{ matrix.shard }} 48$' mre_x14b/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x14b-results-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            mre_x14b/shard-${{ matrix.shard }}.json
+            mre_x14b/shard-${{ matrix.shard }}.log
+  audit:
+    name: X14B full 384 original SHA E2E wall PAR2 model and child CPU cross-check
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x14b-24-original-GBD-source-SHA-frozen-policies
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x14b-results-*
+          path: x14b_restore
+          merge-multiple: false
+      - name: Restore eight distinct JSON artifacts and audit all 384 original-SHA comparisons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          (cd mre_x14b && sha256sum -c source.sha256)
+          for i in 0 1 2 3 4 5 6 7; do
+            nfound=$(find x14b_restore -type f -name "shard-$i.json" | wc -l)
+            test "$nfound" -eq 1
+            src=$(find x14b_restore -type f -name "shard-$i.json" -print -quit)
+            cp "$src" "mre_x14b/shard-$i.json"
+          done
+          python3 -u research/drnas_x14b_prospective_gate.py verify
+          python3 -u research/drnas_x14b_prospective_gate.py audit | tee mre_x14b/audit.log
+          grep -q '^X14B_FINAL' mre_x14b/audit.log
+          grep '^X14B_FINAL' mre_x14b/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X14B-24-original-SHA-384-E2E-CPU-STRICT-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x14b/report.json
+            mre_x14b/audit.log
+            mre_x14b/manifest.json
+            mre_x14b/selection-trace.json
+            mre_x14b/shard-*.json
