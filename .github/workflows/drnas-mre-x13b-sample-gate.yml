@@ -1,0 +1,138 @@
+name: DRNAS X13B — sample-gated certified CNF surgery 32 SHA 512 paired E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-mre-x13b-sample-gate-20261109]
+    paths:
+      - '.github/workflows/drnas-mre-x13b-certified-surgery.yml'
+      - 'research/mre_x13b_sample_gate.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x13b-proofsafe-20261109-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Pin X11 untouched original CNFs and CMS Kissat CaDiCaL binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact X11 source and binaries (no regenerated CNFs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x11 mre_x13b mre_x4/bin built/bin mre5/lib
+          gh run download 42563452186 -R Frane12/AndroidGameTest -n x11-32-frozen-original-sha-native-binaries-structural -D .
+          test -s mre_x11/manifest.json
+          test -s mre_x11/structure.json
+          test -x mre_x4/bin/native || chmod +x mre_x4/bin/native
+          test -x built/bin/kissat_4_0_4 || chmod +x built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+      - name: Verify fixed binaries and exhaustive truth-table equivalence
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/mre_x13b_sample_gate.py
+          python3 -u research/mre_x13b_sample_gate.py selftest
+          python3 -u research/mre_x13b_sample_gate.py freeze
+          python3 -u research/mre_x13b_sample_gate.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x13b-frozen-32-original-sha-and-binaries
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x11/*.cnf
+            mre_x11/manifest.json
+            mre_x11/structure.json
+            mre_x11/binary.sha256
+            mre_x13b/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+
+  paired:
+    name: X13B 64 paired 15s E2E original SHA runs shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x13b-frozen-32-original-sha-and-binaries
+          path: .
+      - name: Validate identical backends, original SHA and precommitted modes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x13b_sample_gate.py verify
+      - name: Run original vs placebo vs front100 vs dedup vs certified clause deletion vs gated
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x13b_sample_gate.py shard --shard ${{ matrix.shard }} | tee mre_x13b/shard-${{ matrix.shard }}.log
+          grep -q '^X13B_SHARD_PASS ${{ matrix.shard }} 64$' mre_x13b/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x13b-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x13b/shard-${{ matrix.shard }}.json
+            mre_x13b/shard-${{ matrix.shard }}.log
+
+  audit:
+    name: X13B strict 512 E2E PAR2 original-model UNSAT-crosscheck audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x13b-frozen-32-original-sha-and-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x13b-shard-*
+          merge-multiple: true
+          path: mre_x13b
+      - name: Audit SHA seed controls SAT witness UNSAT agreement and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_x13b_sample_gate.py audit | tee mre_x13b/audit.log
+          grep -q '^X13B_FINAL' mre_x13b/audit.log
+          grep '^X13B_FINAL' mre_x13b/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X13B-512-PAIRED-E2E-CERTIFIED-SURGERY-PAR2-REPORT
+          retention-days: 30
+          path: |
+            mre_x13b/manifest.json
+            mre_x13b/report.json
+            mre_x13b/audit.log
+            mre_x13b/shard-*.json
