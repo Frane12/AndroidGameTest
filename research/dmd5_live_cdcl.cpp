@@ -51,6 +51,7 @@ class Watch final : public CaDiCaL::ExternalPropagator {
  vector<size_t> marks;
  vector<int> status;
  vector<bool> touched;
+ vector<long> per_lemma_unit_events,per_lemma_conflicts;
  long observed_assignments=0,backtracks=0,unit_events=0,conflict_events=0;
  long first_unit_at=-1,first_conflict_at=-1;
  int first_unit_depth=-1,first_conflict_depth=-1;
@@ -60,7 +61,8 @@ class Watch final : public CaDiCaL::ExternalPropagator {
  chrono::steady_clock::time_point t0=Clock::now();
  double first_unit_s=-1.,first_conflict_s=-1.;
  Watch(int n,vector<Clause> c):candidates(std::move(c)),assigns(n+1,0),
-     status(candidates.size(),0),touched(candidates.size(),false){}
+     status(candidates.size(),0),touched(candidates.size(),false),
+     per_lemma_unit_events(candidates.size(),0),per_lemma_conflicts(candidates.size(),0){}
  int state(const Clause& c)const{
   bool sat=false;int unknown=0;
   for(int l:c){
@@ -76,6 +78,7 @@ class Watch final : public CaDiCaL::ExternalPropagator {
     if(count && s!=status[i] && s>0){
       if(s==1){
        ++unit_events;
+        ++per_lemma_unit_events[i];
        if(observed_assignments<=100)++first_100;
        if(observed_assignments<=1000)++first_1000;
        touched[i]=true;
@@ -86,6 +89,7 @@ class Watch final : public CaDiCaL::ExternalPropagator {
        }
       }else{
        ++conflict_events;
+        ++per_lemma_conflicts[i];
        if(first_conflict_at<0){
          first_conflict_at=observed_assignments;
          first_conflict_depth=(int)marks.size();
