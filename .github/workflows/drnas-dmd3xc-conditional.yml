@@ -1,0 +1,119 @@
+name: DRNAS DMD3X-C - conditional branch-UP progress 392 one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd3xc-conditional-progress-20261109]
+    paths:
+      - .github/workflows/drnas-dmd3xc-conditional.yml
+      - research/dmd3xc_conditional.cpp
+      - research/dmd3xc_bench.py
+      - research/DMD3XC_PROTOCOL.md
+      - research/dmd2_propagation_gate.cpp
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd3xc-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  proof_test:
+    name: Compile native conditional UP and independently replay semantic proof tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unchanged DMD1 and DMD3X, conditional native gate
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd1/bin mre_dmd3x/bin mre_dmd3xc/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd1/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_dmd3x/bin/dmd3x_native
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3xc_conditional.cpp -o mre_dmd3xc/bin/dmd3xc_gate
+          python3 -m py_compile research/dmd3xc_bench.py research/dmd3x_bench.py
+      - name: Independently test original-CNF semantics and branch-UP controls
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd1_bench.py selftest | tee dmd1-compat.log
+          python3 -u research/dmd3xc_bench.py selftest | tee dmd3xc-selftest.log
+          grep -q '^DMD1_SELFTEST_PASS ' dmd1-compat.log
+          grep -q '^DMD3XC_PYTHON_SELFTEST_PASS ' dmd3xc-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd3xc-proof-selftest
+          retention-days: 21
+          path: |
+            dmd1-compat.log
+            dmd3xc-selftest.log
+  bench:
+    name: DMD3X-C conditional implication and active/shadow E2E shard ${{ matrix.shard }}
+    needs: proof_test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore frozen original source SHA cohort and exact pinned Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile and run pinned single logical core source-matched trials
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd1/bin mre_dmd3x/bin mre_dmd3xc/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd1/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_dmd3x/bin/dmd3x_native
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3xc_conditional.cpp -o mre_dmd3xc/bin/dmd3xc_gate
+          python3 -u research/dmd3xc_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd3xc/shard-${{ matrix.shard }}.log
+          grep -q '^DMD3XC_SHARD_PASS ${{ matrix.shard }} 98$' mre_dmd3xc/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd3xc-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd3xc/shard-${{ matrix.shard }}.json
+            mre_dmd3xc/shard-${{ matrix.shard }}.log
+  audit:
+    name: DMD3X-C strict 392 SHA-matched proof E2E PAR2 with active shadow controls
+    needs: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rehydrate original SHA source cohort for audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd3xc
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd3xc-shard-*
+          path: mre_dmd3xc
+          merge-multiple: true
+      - name: Strict independent witness integrity and active/shadow signature audit
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd3xc_bench.py audit | tee mre_dmd3xc/audit.log
+          grep '^DMD3XC_FINAL ' mre_dmd3xc/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD3XC-392-CONDITIONAL-BRANCH-UP-E2E-FINAL
+          retention-days: 21
+          path: |
+            mre_dmd3xc/audit.json
+            mre_dmd3xc/audit.log
+            mre_dmd3xc/shard-*.json
