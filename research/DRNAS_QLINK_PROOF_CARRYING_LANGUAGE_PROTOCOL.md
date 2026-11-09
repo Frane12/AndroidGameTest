@@ -166,3 +166,53 @@ BCP closure** on positive controls, with zero negative-control false claims.
 Q-LINK active must improve PAR2 on held-out real cohort *including all
 communication and proof costs*, not just derived equation count or CPU total.
 No automatic promotion to stable baseline.
+
+
+---
+
+## Q-LINK-1 implemented short5 pilot (2026-11-09)
+
+Executable prototype: \`research/drnas_qlink1_messages.py\`.
+Workflow: \`.github/workflows/drnas-qlink1-short5.yml\`.
+
+In contrast to the eventual target of native, in-process CaDiCaL/Kissat
+watcher integration, THIS FIRST PILOT uses an **offline BCP simulator**
+before launching the two CDCL solvers. It conditionally materializes a
+globally implied *guarded reason clause* for the second CaDiCaL worker.
+The first Kissat worker always receives the unchanged original CNF.
+\`ACK\` means "new BCP propagation in a deterministic simulated trail";
+it is NOT an ACK from a running CDCL solver and not evidence of faster
+CDCL propagation. Do not describe this as native CDCL message passing.
+
+Typed message contents:
+- \`CTX\`: frozen source SHA + epoch (probe epoch 0);
+- \`JOIN\`: two or three source-entailed XOR and signed-SCC relations,
+  with original clause-index proof references;
+- \`WATCH\`: variables of the proven sparse parity relation;
+- \`SEND\`: full guard on all but one relation variable, implied effect,
+  globally entailed CNF reason clause \`(not guard OR effect)\`;
+- \`ACK\`: new BCP assignments in a bounded offline test on the exact same
+  original clauses and assumptions;
+- \`DROP\`: budget, baseline already implies, duplicate, source-proof
+  failure. SAT run is never changed if proof or time budget fails.
+
+Safety gates: source-proof replay for every joined parity row; exhaustive
+reason-clause truth-table validation on every emitted relation (width <=5);
+read-only original source SHA; 2 logical pinned solver CPUs; 5s E2E cap;
+original SAT witness verified; UNSAT only accepted with original frozen
+X22 cross-solver agreement (no independent LRAT).
+
+Frozen LEGO-3 data reused: 104 training sources and 24 E2E evaluation
+sources selected from its prior 48 evaluation sources: eight synthetic
+positive (one per structural family), eight negative, eight original X22
+SHA instances (recycled, NOT a fresh blind holdout). Source SHA train/eval
+disjoint; no learned solver outcome leakage. Four paired strategies with
+two repetitions -> 192 E2E trials across four shards of 48 each:
+  race_original; lego3_learned; qlink_shadow; qlink_active.
+
+The shadow performs the SAME proof, bounded probes, and bookkeeping but
+does NOT insert messages into CaDiCaL input, separating prep overhead from
+actual clause benefit. Report both total PAR2 and cohort-specific counts,
+CPU, preprocessing, guarded reason count, simulation ACK count, total
+simulated BCP gain, and regressions. Do not promote a regression or a
+synthetic-only advantage.
