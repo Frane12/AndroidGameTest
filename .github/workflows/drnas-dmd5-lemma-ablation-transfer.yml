@@ -1,0 +1,249 @@
+name: DRNAS DMD5 - six ANF lemma 64-mask ablation and DMD4-disjoint transfer
+on:
+  push:
+    branches: [experiment/drnas-dmd5-lemma-ablation-transfer-20261109]
+    paths:
+      - research/dmd5_lemma_ablation_native.cpp
+      - research/dmd5_ablation_transfer.py
+      - .github/workflows/drnas-dmd5-lemma-ablation-transfer.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Pinned CaDiCaL 2.1.0 clause-only DMD5 and local lemma proof freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore frozen 48 SHA EQUIV7 original CNFs and pinned Kissat 4.0.4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Pin native 3-engine build on CaDiCaL rel-2.1.0
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd5/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd5/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd2_propagation_gate.cpp -o mre_dmd5/bin/dmd2_gate
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/dmd5-cadical
+          cd /tmp/dmd5-cadical
+          git checkout -q rel-2.1.0
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I./src \
+            "$GITHUB_WORKSPACE/research/dmd5_lemma_ablation_native.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_dmd5/bin/dmd5_live"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/mre_dmd5/cadical-source-commit.txt"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("mre_dmd5/bin")
+          info={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.iterdir()}
+          info["cadical_source_commit"]=pathlib.Path("mre_dmd5/cadical-source-commit.txt").read_text().strip()
+          pathlib.Path("mre_dmd5/binary-pins.json").write_text(json.dumps(info,sort_keys=True,indent=2))
+          print("DMD5_PIN",json.dumps(info,sort_keys=True))
+          PY
+      - name: Independently replay six local consequences and smoke full-subset SAT models
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/dmd5_ablation_transfer.py
+          mre_dmd5/bin/dmd5_live selftest | tee mre_dmd5/native-selftest.log
+          grep -q '^DMD5_TRAIL_SELFTEST_PASS ' mre_dmd5/native-selftest.log
+          mre_dmd5/bin/dmd2_gate selftest | tee mre_dmd5/gate-selftest.log
+          grep -q '^DMD2_GATE_SELFTEST_PASS ' mre_dmd5/gate-selftest.log
+          python3 -u research/dmd5_ablation_transfer.py selftest | tee mre_dmd5/selftest.log
+          grep -q '^DMD5_SELFTEST_PASS ' mre_dmd5/selftest.log
+          grep -q '^DMD5_FREEZE_PASS ' mre_dmd5/selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd5-pinned-three-native-proofs-and-frozen-six
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_dmd5/bin/*
+            mre_dmd5/binary-pins.json
+            mre_dmd5/cadical-source-commit.txt
+            mre_dmd5/freeze.json
+            mre_dmd5/*selftest.log
+  ablation:
+    name: DMD5 32 proof-replayed ablations masks mod4 = ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-pinned-three-native-proofs-and-frozen-six
+          path: mre_dmd5
+      - name: Restore pinned frozen original inputs and ensure binary SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4 mre_dmd5/bin/*
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          x=json.loads(pathlib.Path("mre_dmd5/binary-pins.json").read_text())
+          for name in ("dmd1_anf","dmd2_gate","dmd5_live"):
+            assert hashlib.sha256((pathlib.Path("mre_dmd5/bin")/name).read_bytes()).hexdigest()==x[name]
+          print("DMD5_BINARY_SHA_PASS")
+          PY
+      - name: Native full E2E per subset, 4 sec cap and source witness/proof replay
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd5_ablation_transfer.py ablate --shard ${{ matrix.shard }} | tee mre_dmd5/ablation-${{ matrix.shard }}.log
+          grep -q '^DMD5_ABLATE_SHARD_PASS ${{ matrix.shard }} 32$' mre_dmd5/ablation-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd5-ablation-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_dmd5/ablation-${{ matrix.shard }}.json
+            mre_dmd5/ablation-${{ matrix.shard }}.log
+  select:
+    name: Freeze clause polarity family from TRAIN only after strict 128-ablation audit
+    needs: ablation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-pinned-three-native-proofs-and-frozen-six
+          path: mre_dmd5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd5-ablation-*
+          path: mre_dmd5
+          merge-multiple: true
+      - name: Restore case SHA registry and freeze selector before transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          python3 -u research/dmd5_ablation_transfer.py select | tee mre_dmd5/selection.log
+          grep -q '^DMD5_SELECTION_PASS ' mre_dmd5/selection.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmd5-training-only-selector-frozen
+          retention-days: 30
+          path: |
+            mre_dmd5/selection.json
+            mre_dmd5/selection.log
+  transfer:
+    name: DMD5 60 original SHA five-arm transfer E2E trials shard ${{ matrix.shard }}
+    needs: select
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-pinned-three-native-proofs-and-frozen-six
+          path: mre_dmd5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-training-only-selector-frozen
+          path: mre_dmd5
+      - name: Restore SHA-disjoint 24 original sources and pinned binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4 mre_dmd5/bin/*
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          x=json.loads(pathlib.Path("mre_dmd5/binary-pins.json").read_text())
+          for name in ("dmd1_anf","dmd2_gate","dmd5_live"):
+            assert hashlib.sha256((pathlib.Path("mre_dmd5/bin")/name).read_bytes()).hexdigest()==x[name]
+          print("DMD5_TRANSFER_BINARY_SHA_PASS")
+          PY
+      - name: Compare clean, Kissat, all proved, source-gated, frozen trained shape
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd5_ablation_transfer.py transfer --shard ${{ matrix.shard }} | tee mre_dmd5/transfer-${{ matrix.shard }}.log
+          grep -q '^DMD5_TRANSFER_SHARD_PASS ${{ matrix.shard }} 60$' mre_dmd5/transfer-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd5-transfer-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_dmd5/transfer-${{ matrix.shard }}.json
+            mre_dmd5/transfer-${{ matrix.shard }}.log
+  audit:
+    name: Audit all 368 original SAT source-proof 1CPU PAR2 E2E, transfer vs refs
+    needs: transfer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-pinned-three-native-proofs-and-frozen-six
+          path: mre_dmd5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-training-only-selector-frozen
+          path: mre_dmd5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd5-ablation-*
+          path: mre_dmd5
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd5-transfer-*
+          path: mre_dmd5
+          merge-multiple: true
+      - name: Restore original CNFs and enforce 368 source-paired trial audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          python3 -u research/dmd5_ablation_transfer.py audit | tee mre_dmd5/audit.log
+          grep '^DMD5_FINAL ' mre_dmd5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD5-368-ONECPU-6LEMMA-ABLAT-TRANSFER-FINAL
+          retention-days: 30
+          path: |
+            mre_dmd5/report.json
+            mre_dmd5/freeze.json
+            mre_dmd5/selection.json
+            mre_dmd5/audit.log
+            mre_dmd5/ablation-*.json
+            mre_dmd5/transfer-*.json
