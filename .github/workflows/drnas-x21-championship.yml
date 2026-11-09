@@ -1,0 +1,120 @@
+name: DRNAS X21 - five candidate families plus references and delayed portfolio 432 unseen E2E
+on:
+  push:
+    branches: [experiment/drnas-x21-championship-unseen-20261109]
+    paths: ['research/drnas_x21_championship.py', '.github/workflows/drnas-x21-championship.yml', 'research/x21_sql_exclusions.json']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x21-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 24 new official sources against SQL and latest manifests; no timing screen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore pinned binaries and latest exclusion manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42579485596 -R Frane12/AndroidGameTest -n x18-frozen-24-originals-and-pinned-solvers -D prior/x18
+          gh run download 42581795977 -R Frane12/AndroidGameTest -n x19-frozen-twelve-original-sha-and-unchanged-x18-solver -D prior/x19
+          gh run download 42582976460 -R Frane12/AndroidGameTest -n x19b-eight-fresh-sourceonly-frozen-and-original-binaries -D prior/x19b
+          gh run download 42557116984 -R Frane12/AndroidGameTest -n x6fresh-eight-new-source-sha-frozen-CMS-Kissat -D prior/x6
+          cp -r prior/x18/mre_x4 prior/x18/mre5 prior/x18/built .
+          mkdir -p mre_x21/bin
+          cp prior/x18/mre_x18/bin/selective mre_x21/bin/
+      - name: Test all nine arms on SAT and UNSAT then freeze sources
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x21/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x21_championship.py research/drnas_x16a_asymmetric_timeshare.py
+          python3 -u research/drnas_x21_championship.py selftest
+          python3 -u research/drnas_x21_championship.py freeze | tee mre_x21/freeze.log
+          grep -q '^X21_FROZEN ' mre_x21/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x21-frozen-sources-binaries
+          retention-days: 21
+          include-hidden-files: true
+          path: |
+            mre_x21/
+            mre_x4/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            built/bin/kissat_4_0_4
+  paired:
+    name: X21 54 paired E2E 30s trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x21-frozen-sources-binaries, path: .}
+      - name: Verify original SHA and run fixed policies with CPU accounting
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x21/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_x21_championship.py shard --shard ${{ matrix.shard }} | tee mre_x21/shard-${{ matrix.shard }}.log
+          grep -q '^X21_SHARD_PASS ${{ matrix.shard }} 54$' mre_x21/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x21-result-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x21/shard-${{ matrix.shard }}.json
+            mre_x21/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 432 E2E results original SHA SAT witnesses UNSAT agreement PAR2 CPU
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x21-frozen-sources-binaries, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x21-result-*
+          path: mre_x21
+          merge-multiple: true
+      - name: Fail closed on contradictions missing rows or invalid evidence
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x21/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_x21_championship.py audit | tee mre_x21/audit.log
+          grep '^X21_FINAL ' mre_x21/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X21-432-UNSEEN-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x21/manifest.json
+            mre_x21/report.json
+            mre_x21/audit.log
+            mre_x21/shard-*.json
