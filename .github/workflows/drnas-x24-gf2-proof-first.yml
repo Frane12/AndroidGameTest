@@ -1,0 +1,118 @@
+name: DRNAS X24 - proof-first native GF2 144 paired 15s E2E
+on:
+  push:
+    branches: [experiment/drnas-x24-gf2-proof-first-20261109]
+    paths:
+      - 'research/drnas_x24_gf2_proof_first.cpp'
+      - 'research/drnas_x24_gf2_proof_first.py'
+      - 'research/DRNAS_X24_GF2_PROOF_FIRST_PROTOCOL.md'
+      - '.github/workflows/drnas-x24-gf2-proof-first.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x24-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Native compile, independent GF2 proof replay selftest and SHA freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Download immutable X22 originals, pinned binaries and UNSAT references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n DRNAS-X22-CPP-ASYNC-288-E2E-FINAL -D prior_x22
+          test -s prior_x22/report.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cadical
+          mkdir -p mre_x24/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x24_gf2_proof_first.cpp -o mre_x24/bin/gf2_proof
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x24_gf2_proof_first.py research/drnas_x22_parallel_reducer.py
+          python3 -u research/drnas_x24_gf2_proof_first.py selftest
+          python3 -u research/drnas_x24_gf2_proof_first.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x24-frozen-originals-native-and-proof
+          retention-days: 21
+          path: |
+            mre_x24/bin/gf2_proof
+            mre_x24/manifest.json
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: X24 original SHA GF2 proof-first paired E2E shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x24-frozen-originals-native-and-proof, path: .}
+      - name: SHA frozen replay, original-witness verification and PAR2 accounting
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x24_gf2_proof_first.py shard --shard ${{ matrix.shard }} | tee mre_x24/shard-${{ matrix.shard }}.log
+          grep -q '^X24_SHARD_PASS ${{ matrix.shard }} 18$' mre_x24/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x24-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x24/shard-${{ matrix.shard }}.json
+            mre_x24/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final source-SHA proof-gated 144 E2E PAR2 and CPU audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x24-frozen-originals-native-and-proof, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x24-results-*
+          path: mre_x24
+          merge-multiple: true
+      - name: Fail closed on missing proofs, SHA drift or SAT/UNSAT disagreement
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x24_gf2_proof_first.py audit | tee mre_x24/audit.log
+          grep '^X24_FINAL ' mre_x24/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X24-GF2-PROOF-FIRST-144-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x24/manifest.json
+            mre_x24/report.json
+            mre_x24/audit.log
+            mre_x24/shard-*.json
