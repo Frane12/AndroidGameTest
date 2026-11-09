@@ -1,0 +1,111 @@
+name: DRNAS X23 - adaptive structural pre-gate versus pure X22 dual race
+on:
+  push:
+    branches: [experiment/drnas-x23-adaptive-cpp-gate-20261109]
+    paths:
+      - research/drnas_x23_adaptive_gate.py
+      - research/DRNAS_X23_ADAPTIVE_GATE_PROTOCOL.md
+      - .github/workflows/drnas-x23-adaptive-gate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x23-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore X22 binaries and SHA sources, validate fast gate and certified reducer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore immutable 24 SHA source CNFs and pinned solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py research/drnas_x23_adaptive_gate.py
+          python3 -u research/drnas_x22_parallel_reducer.py selftest
+          python3 -u research/drnas_x23_adaptive_gate.py selftest
+          python3 -u research/drnas_x23_adaptive_gate.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x23-frozen-replayed-source-and-binaries
+          retention-days: 21
+          path: |
+            mre_x23/manifest.json
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+  paired:
+    name: X23 36 paired E2E 15s measurements shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x23-frozen-replayed-source-and-binaries, path: .}
+      - name: Run two bounded gates versus identical X22 baseline policies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x23_adaptive_gate.py shard --shard ${{ matrix.shard }} | tee mre_x23/shard-${{ matrix.shard }}.log
+          grep -q '^X23_SHARD_PASS ${{ matrix.shard }} 36$' mre_x23/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x23-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x23/shard-${{ matrix.shard }}.json
+            mre_x23/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit all 288 SHA matched E2E PAR2 and independent SAT witness checks
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x23-frozen-replayed-source-and-binaries, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x23-results-*
+          path: mre_x23
+          merge-multiple: true
+      - name: Fail closed on missing paired results and solver contradictions
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x23_adaptive_gate.py audit | tee mre_x23/audit.log
+          grep '^X23_FINAL ' mre_x23/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X23-ADAPTIVE-CPP-288-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x23/manifest.json
+            mre_x23/report.json
+            mre_x23/audit.log
+            mre_x23/shard-*.json
