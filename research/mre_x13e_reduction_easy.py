@@ -24,7 +24,7 @@ import mre6b_blind_freeze as prior
 
 ROOT = pathlib.Path("mre_x13e")
 EASY = ROOT / "easy"
-PROTO = "DRNAS-X13E-2HARD45-6REFEASY15-4ARM-2SEED-E2E-20261109-v1"
+PROTO = "DRNAS-X13E-2HARD45-6REFEASY15-4ARM-2SEED-E2E-20261109-v2"
 SALT = PROTO + "-SOURCE-ONLY-RANK"
 ARMS = ("original", "reduce", "kissat", "cadical")
 REPS, SHARDS, EASY_TARGET, YEAR_QUOTA = 2, 8, 6, 2
@@ -156,7 +156,7 @@ def freeze():
         easy_gbds, easy_sha = pool.getids("track=main_" + year + " and minisat1m=yes")
         need(len(all_gbds) == 400 and set(easy_gbds) <= set(all_gbds),
              "official SAT index has changed")
-        pool_by_year[year] = easy_gbds
+        pool_by_year[year] = (easy_gbds, all_gbds)
         candidate_ids.update(easy_gbds)
         snapshots[year] = dict(all_index_sha256=all_sha,
                                minisat1m_index_sha256=easy_sha,
@@ -170,13 +170,20 @@ def freeze():
     fetch.prior.r32p.CNF_LIMIT = 8 * 1024 * 1024
     selected, trace, counts = [], [], collections.Counter()
     for year in YEARS:
-        eligible = sorted((g for g in pool_by_year[year] if g not in ids),
-                          key=lambda g: digest((SALT + "|" + year + "|" + g).encode()))
-        for g in eligible[:24]:
+        mini, complete = pool_by_year[year]
+        mini_set = set(mini)
+        key = lambda g: digest((SALT + "|" + year + "|" + g).encode())
+        priority = sorted((g for g in mini if g not in ids), key=key)
+        fallback = sorted((g for g in complete
+                           if g not in ids and g not in mini_set), key=key)
+        eligible = priority + fallback
+        print("X13E_POOL", json.dumps({"year": year, "minisat_eligible": len(priority),
+              "other_eligible": len(fallback), "total": len(eligible)}), flush=True)
+        for g in eligible[:48]:
             if counts[year] >= YEAR_QUOTA:
                 break
             p = EASY / (g + ".cnf")
-            note = {"year": year, "gbd": g}
+            note = {"year": year, "gbd": g, "minisat1m_yes": g in mini_set}
             try:
                 raw = fetch.get("https://benchmark-database.de/file/" + g,
                                 6 * 1024 * 1024, seconds=20)
@@ -230,7 +237,8 @@ def freeze():
                     SAT_original_witness_required=True,
                     UNSAT_independent_LRAT=False,
                     UNSAT_cross_solver_agreement_required=True,
-                    source_selection="minisat1m metadata + salted order + fixed geometry; "
+                    source_selection="minisat1m=yes prioritized, fallback to other official main sources; "
+                                     "salted source-only ordering and fixed geometry; "
                                      "eligibility from only reference solvers, never DRNAS timing",
                     e2e_timing="includes CNF preprocessing, writing, launching and solving",
                     binary_sha256=hashes(), expected_trials=SHARDS*REPS*len(ARMS))
