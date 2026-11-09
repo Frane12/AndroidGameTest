@@ -217,3 +217,23 @@ No original SAT witness violations were observed. **No E2E benefit**: exact quot
 The tested selector **did not identify the known C14 NoVivify-winning SAT source** (zero certified SCC aliases), so do not promote the >=2 SCC-alias NoVivify gate. This is an empirical counterexample to the *selector*, not to Boolean algebra or logical equivalence.
 
 **Next shortest falsifiable move:** reduce the cost of eligibility detection to an extremely cheap, bounded prepass; seek provable equalities from XOR/GF(2) only where source structure supports them and measure real *consumed* CDCL effect. Compare baseline, true shadow, quotient and independent no-vivify on new SHA before adoption. Keep all logical proof steps and original-source witness reconstruction. No unsound speed claim, no P/NP claim, no automatic merge.
+
+
+## 2026-11-09 — verified MRE13 ABCD and SCC C1 final source-paired audits
+
+[**MRE13 original run 42546055940**](https://github.com/Frane12/AndroidGameTest/actions/runs/42546055940) final SUCCESS, all four 96-trial jobs and the 384-row final audit successful. [**SCC C1 run 42545609174**](https://github.com/Frane12/AndroidGameTest/actions/runs/42545609174) final SUCCESS, 256/256 matched 12s original-source attempts.
+
+**MRE13**: 12 previously used C15D originals (6 development C14/C8H + 6 earlier prospective official), 2 repeats, 8s cap, one frozen CaDiCaL binary SHA. Original SHA and source SAT witness replay verified. Independent UNSAT LRAT missing, external seed not independently changed. *None of the previously evaluated official cases were solved at this cap by any arm.*
+
+| 96-trial variant | Matched 24-trial baseline, solved and PAR2 s | Best variant (same variant cohort) | Actual transform | Interpretation |
+|---|---|---|---|---|
+| A, cheap pre-scan/SCC | 8/24, 265.261377 | A_scan 9/24, 257.261639 | **0** scans modify CNF, so a single extra solve with no transform is not a mathematical-reduction effect | Baseline fluctuation/cap or runtime variation; A_fast 8/24 265.855587 and A_balanced 8/24 265.818578 both worse, 2 real quotient activations each on reused official source (0 solves) |
+| B, full SCC/packing | 8/24, 267.079251 | B_packed 8/24, 267.758091 | 2 / 24 on previously used official source | **Regression** despite exact proof: +0.254% PAR2 |
+| C, clause dominance proof | 10/24, 248.305986 | C_depth2 10/24, 245.243067 | 4 / 24 (C_depth2), 388 proven clause modifications | **1.23% lower PAR2** only reused development cases; C_direct 245.282709 with 132 proven modifications, C_strict 247.007480 |
+| D, binary implication lemmas | 10/24, 243.922644 | D_96 10/24, 242.251724 | 10 / 24, 960 proven appended binary clauses | **0.69% lower PAR2** development only; D_192 regresses to PAR2 249.735120 |
+
+**A diagnostic (user-provided rep1 source 037d21e0...)**: baseline 1.310185s, scan-only 1.301264s (0.001522s prep), A_balanced 1.438887s (0.127512s prep), A_fast 1.449343s (0.127323s prep), all zero substitutions because parsing 83,733 clauses before discovering MRE12 SCC size limit 70,000. This needless cost is safely avoidable through **manifest-level clause-count guard before DIMACS parsing**. It does not alter logical meaning.
+
+**SCC C1**: native C safe quotient on 32 originals (20 **previously benchmarked** official +12 precommitted synthetic), four arms, two repeats, 12s cap. Plain CaDiCaL 32/64, PAR2 810.084311, with quotient 32/64 PAR2 810.367056 despite 26 reductions. Plain Kissat 31/64 PAR2 818.000411; SCC+Kissat 30/64 PAR2 830.168194 (one less solve). No general improvement. The SCC mathematical equivalence mechanism can remain certified but not deployed by default.
+
+**Decision:** do not promote A (untransformed baseline fluctuations), B (costly), SCC C1, or D_192. C_direct/C_depth2 and D_96 are *candidate hypotheses only*, to be pre-registered on new original SHA/families with independent seeds and longer caps, source-conditional gate, true shadow, independent SAT/UNSAT evidence where feasible. Retain all previously frozen sources, avoid unverified UNSAT LRAT claims, and keep `main` unchanged. Maintain original model reconstruction invariants for XOR/GF(2) and CNF quotient experiments.
