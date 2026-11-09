@@ -338,7 +338,7 @@ int main(int argc,char **argv){
    int checked=0,scored=0,positive=0,rejected=0,score_sum=0;
    bool timeout=false;
    for(const auto &c:x.proposed){
-     if(checked>=MAX_CANDIDATES||int(accepted.size())>=MAX_ADDED)break;
+     if((mode=="gate"?scored:checked)>=MAX_CANDIDATES||int(accepted.size())>=MAX_ADDED)break;
      if(Clock::now()>=tim.limit){timeout=true;break;}
      if(mode=="gate"){
        ++scored;
