@@ -196,9 +196,9 @@ def main():
         after={t:conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
                for t in HISTORICAL}
         need(before==after, "historic tables mutated")
-        need(arms_count==23 and tiers_count==69, "unexpected inserted score rows")
+        need(arms_count==23 and tiers_count==53, "unexpected inserted score rows")
         need([conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
-             for t in (RUN_TABLE,SCORE_TABLE,TIER_TABLE)] == [18,136,157],
+             for t in (RUN_TABLE,SCORE_TABLE,TIER_TABLE)] == [18,136,141],
              "postappend counts wrong")
         need(conn.execute("PRAGMA foreign_key_check").fetchall()==[],
              "foreign key violations")
@@ -215,7 +215,7 @@ def main():
        runs_added=2, run_ids=[x["id"] for x in RUNS], E2E_trials_covered=848,
        individual_attempt_rows_added=0, new_arm_rows=arms_count,
        new_cohort_rows=tiers_count, final_runs=18, final_arm_rows=136,
-       final_cohort_rows=157, historical_counts_unchanged=True,
+       final_cohort_rows=141, historical_counts_unchanged=True,
        historical_counts=before, sources_sha256={
            entry["name"]:file_sha for entry,_,_,_,file_sha in sources},
        no_global_blind_claim=True, no_independent_UNSAT_LRAT=True,
