@@ -111,7 +111,7 @@ def toy_cases(toydir):
 
 def cases():
     m = json.loads((SOURCE / 'manifest.json').read_text())
-    need(len(m['cases']) == 48 and m['source_only_preselection'], 'unexpected EQUIV7 source')
+    need(len(m['cases']) == 48 and m['sample_policy'].startswith('SHA-salted official'), 'unexpected EQUIV7 source')
     selected = sorted(m['cases'], key=lambda x: x['sha256'])[:24]
     out = []
     for c in selected:
