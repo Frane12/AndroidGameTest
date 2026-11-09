@@ -145,7 +145,7 @@ def synthetic_roster():
                  "synthetic reference witness invalid")
             part.append(dict(filename=name,sha256=sha(file),
                year=2026,gbd="LEGO3_"+cohort+"_"+str(i),
-               cohort=cohort,seed=seed,family=family,expected_sat=True,
+               cohort=cohort,seed=seed,expected_sat=True,
                **features))
     return train,evaluation
 
