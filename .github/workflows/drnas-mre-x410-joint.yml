@@ -1,0 +1,134 @@
+name: DRNAS MRE X410 — X4 spread x MRE10 cpp_joint paired E2E
+on:
+  push:
+    branches: [experiment/drnas-mre-x410-joint-20261109]
+    paths:
+      - 'research/mre_x410_native.cpp'
+      - 'research/mre_x410_benchmark.py'
+      - '.github/workflows/drnas-mre-x410-joint.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x410-joint-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze deduplicated X4 and MRE10 source union; prove exact transform parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original X4 and MRE10 frozen sources and pinned CMS library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42525965205 -R Frane12/AndroidGameTest -n mre-x4-four-original-sha-five-orders-checkpoint-cms -D .
+          sha256sum mre5/lib/libcryptominisat5.so.5.11 > /tmp/x410-library.sha256
+          gh run download 42509505558 -R Frane12/AndroidGameTest -n mre10-SHA16-exact-CMS-inprocess-CPP -D .
+          sha256sum -c /tmp/x410-library.sha256
+          (cd mre_x && sha256sum -c source.sha256)
+          (cd mre7_easy && sha256sum -c source.sha256)
+      - name: Compile same CMS backend, exact X4 order, unchanged MRE10 joint and 6f
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libcryptominisat5-dev libgmp10
+          mkdir -p mre_x410/bin
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE research/mre10_native_priority.cpp -o mre_x410/bin/mre10_emit
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror -DMRE9_STANDALONE research/mre_x410_native.cpp -o mre_x410/bin/emit
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror research/mre_x410_native.cpp "$PWD/mre5/lib/libcryptominisat5.so.5.11" -Wl,-rpath,'$ORIGIN/../../mre5/lib' -o mre_x410/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x410/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre_x410_benchmark.py
+          python3 -u research/mre_x410_benchmark.py selftest | tee mre_x410/selftest.log
+          python3 -u research/mre_x410_benchmark.py smoke | tee mre_x410/smoke.log
+          python3 -u research/mre_x410_benchmark.py freeze | tee mre_x410/freeze.log
+          python3 -u research/mre_x410_benchmark.py verify
+          grep -q '^MRE_X410_SELFTEST_PASS 44 7$' mre_x410/selftest.log
+          grep -q '^MRE_X410_FREEZE_PASS ' mre_x410/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x410-frozen-union-sources-and-pinned-backend
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x410/sources/
+            mre_x410/manifest.json
+            mre_x410/bin/
+            mre_x410/selftest.log
+            mre_x410/smoke.log
+            mre_x410/freeze.log
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    needs: prepare
+    name: X410 seven arms four paired seeds 12s E2E shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x410-frozen-union-sources-and-pinned-backend
+          path: .
+      - name: Verify original SHA and run randomized-order paired E2E trials
+        run: |
+          set -euo pipefail
+          chmod +x mre_x410/bin/*
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x410_benchmark.py verify
+          python3 -u research/mre_x410_benchmark.py shard --shard ${{ matrix.shard }} | tee mre_x410/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X410_SHARD_PASS ${{ matrix.shard }} ' mre_x410/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x410-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x410/shard-${{ matrix.shard }}.json
+            mre_x410/shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    name: Complete paired PAR2 wall CPU original-witness and regression audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x410-frozen-union-sources-and-pinned-backend
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x410-shard-*
+          merge-multiple: true
+          path: mre_x410
+      - name: Verify full source and seed pairing; publish total and per-shard PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_x410_benchmark.py audit | tee mre_x410/audit.log
+          grep -q '^MRE_X410_FINAL ' mre_x410/audit.log
+          cat mre_x410/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DRNAS-MRE-X410-X4-CPPJOINT-PAIRED-FINAL
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre_x410/report.json
+            mre_x410/audit.log
+            mre_x410/manifest.json
