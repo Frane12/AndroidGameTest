@@ -1,0 +1,140 @@
+name: DRNAS DECOMP4 - early decision UP conditional cutset 72 SHA screen
+on:
+  push:
+    branches: [experiment/drnas-decomp4-conditional-cutset-20261110]
+    paths:
+      - research/decomp4_dynamic_cutset.py
+      - .github/workflows/drnas-decomp4-conditional-cutset.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-decomp4-conditional-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Original SHA freeze and 180 exhaustive model-set conditional UP tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable EQUIV2/EQUIV7 original CNFs into separate directories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          mkdir -p equiv7pack
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D equiv7pack
+          test -s equiv7pack/mre_equiv7/manifest.json
+          ln -s equiv7pack/mre_equiv7 mre_equiv7
+          test -s mre_x20/manifest.json
+          test -s mre_equiv7/manifest.json
+      - name: Check Python syntax and independently test conditioned truth tables
+        run: |
+          set -euo pipefail
+          mkdir -p mre_decomp4
+          python3 -m py_compile research/decomp2_exact_bench.py research/decomp3_rootup_screen.py research/decomp4_dynamic_cutset.py
+          python3 -u research/decomp4_dynamic_cutset.py selftest | tee mre_decomp4/selftest.log
+          grep -q '^DECOMP4_SELFTEST_PASS ' mre_decomp4/selftest.log
+      - name: Freeze all 72 source SHA before sampling decision prefixes
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp4_dynamic_cutset.py freeze | tee mre_decomp4/freeze.log
+          grep -q '^DECOMP4_FREEZE_PASS ' mre_decomp4/freeze.log
+          grep '^DECOMP4_FREEZE_PASS ' mre_decomp4/freeze.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp4-frozen-original-sha-root-graph-and-proof-tests
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp4/freeze.json
+            mre_decomp4/selftest.log
+            mre_decomp4/freeze.log
+  probes:
+    name: One CPU matched source-impact vs SHA-control decisions shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp4-frozen-original-sha-root-graph-and-proof-tests
+          path: .
+      - name: Fetch original source SHA and verify frozen provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          mkdir -p equiv7pack
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D equiv7pack
+          ln -s equiv7pack/mre_equiv7 mre_equiv7
+          test -s mre_decomp4/freeze.json
+      - name: Conditional UP depth 1/2, graph connected-component measurement with cap
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp4_dynamic_cutset.py bench --shard ${{ matrix.shard }} | tee mre_decomp4/shard-${{ matrix.shard }}.log
+          grep -q '^DECOMP4_SHARD_PASS ${{ matrix.shard }} ' mre_decomp4/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: decomp4-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp4/shard-${{ matrix.shard }}.json
+            mre_decomp4/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 72 SHA paired policy effect and no SAT-claim audit
+    needs: probes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp4-frozen-original-sha-root-graph-and-proof-tests
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: decomp4-shard-*
+          merge-multiple: true
+          path: mre_decomp4
+      - name: Restore unchanged CNF and calculate exact paired conditional cutset scores
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          mkdir -p equiv7pack
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D equiv7pack
+          ln -s equiv7pack/mre_equiv7 mre_equiv7
+          python3 -u research/decomp4_dynamic_cutset.py audit | tee mre_decomp4/audit.log
+          grep -q '^DECOMP4_FINAL ' mre_decomp4/audit.log
+          grep '^DECOMP4_FINAL ' mre_decomp4/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DECOMP4-72SHA-CONDITIONAL-CUTSET-SCREEN-AUDIT
+          retention-days: 21
+          path: |
+            mre_decomp4/audit.json
+            mre_decomp4/audit.log
+            mre_decomp4/freeze.json
+            mre_decomp4/shard-*.json
+            mre_decomp4/selftest.log
