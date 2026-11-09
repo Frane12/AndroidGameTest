@@ -199,7 +199,8 @@ int main(int argc,char **argv){
    if(kill(-w[i].pid,SIGKILL)<0&&errno==ESRCH)(void)kill(w[i].pid,SIGKILL);
  }
  for(int i=0;i<count;i++)if(w[i].started){
-   while(!w[i].done)reap(&w[i],1,start);close(w[i].fd);
+   while(!w[i].done){reap(&w[i],1,start);}
+   close(w[i].fd);
  }
  double wall=now_s()-start,cpu=0;long rss=0;int launched=0;
  for(int i=0;i<count;i++)if(w[i].started){
