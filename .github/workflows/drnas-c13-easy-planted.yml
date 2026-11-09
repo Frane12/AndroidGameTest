@@ -1,0 +1,74 @@
+name: DRNAS C13 easy — planted SAT paired comparison
+on:
+  push:
+    branches: [experiment/drnas-c13-easy-planted-20261109]
+    paths: ['.github/workflows/drnas-c13-easy-planted.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-c13-easy-planted-20261109
+  cancel-in-progress: false
+jobs:
+  trials:
+    name: C13 easy planted SAT shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download exact C13 pinned binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented c13_bin/r28_gf2 built/bin/kissat_4_0_4
+      - name: Run end-to-end synthetic SAT trials
+        run: |
+          set -euo pipefail
+          mkdir -p easy_out
+          python3 -u research/c13_easy_planted.py shard ${{ matrix.shard }} | tee easy_out/shard-${{ matrix.shard }}.log
+          grep -q '^C13_EASY_SHARD_PASS ${{ matrix.shard }} 54$' easy_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-easy-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            easy_out/shard-${{ matrix.shard }}.json
+            easy_out/shard-${{ matrix.shard }}.log
+  audit:
+    needs: trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c13-easy-shard-*
+          merge-multiple: true
+          path: easy_out
+      - name: Audit all paired SAT witnesses and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/c13_easy_planted.py audit | tee easy_out/audit.log
+          grep '^C13_EASY_FINAL ' easy_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c13-easy-planted-216-e2e-results
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            easy_out/*.json
+            easy_out/*.log
