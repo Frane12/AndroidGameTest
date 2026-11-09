@@ -1,0 +1,73 @@
+name: DRNAS SAT analytics — append 16 audited final benchmarks without changing historic attempts
+on:
+  push:
+    branches: [experiment/drnas-analytics-refresh-x11-x17-20261109]
+    paths:
+      - 'research/sat-analytics-data/frozen_final_registry_20261109_x11_x17.json'
+      - 'research/sat-analytics-data/ingest_final_audit_aggregate_20261109.py'
+      - '.github/workflows/drnas-analytics-refresh-x11-x17-20261109.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-analytics-refresh-x11-x17-20261109
+  cancel-in-progress: false
+jobs:
+  append_verified:
+    name: Audit final result registry and append 16 benchmark cohorts to frozen X9 X10 SQLite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+      - name: Verify old cumulative SQLite before migration
+        run: |
+          set -euo pipefail
+          DB=research/sat-analytics-data/current/sat_analytics.sqlite
+          test -s "$DB"
+          echo '3b4b6cfd04cb0acc51430b82dc37ad5dfa0dd871dc1a44708e356b15dd7f1724  ' "$DB" | awk '{print $1"  "$2}' | sha256sum -c -
+          python3 -m py_compile research/sat-analytics-data/ingest_final_audit_aggregate_20261109.py
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("research/sat-analytics-data/frozen_final_registry_20261109_x11_x17.json")
+          d=json.loads(p.read_text())
+          rows=d["runs"]
+          assert len(rows)==16
+          assert len({r["run_id"] for r in rows})==16
+          assert sum(r["final"].get("trials",r["final"].get("n_trials",r["final"].get("E2E_trials",0))) for r in rows)==4856
+          assert all(r["final"]["no_auto_promotion"] and r["final"]["protocol"] for r in rows)
+          print("DRNAS_REFRESH_INPUT_AUDIT_PASS",len(rows),4856)
+          PY
+      - name: Create additive research score tables and verify all historical database rows
+        run: |
+          set -euo pipefail
+          python3 -u research/sat-analytics-data/ingest_final_audit_aggregate_20261109.py | tee /tmp/drnas-refresh-sql.log
+          grep -q '^DRNAS_REFRESH_SQL_FINAL ' /tmp/drnas-refresh-sql.log
+          DB=research/sat-analytics-data/current/sat_analytics.sqlite
+          sha256sum "$DB" | cut -d ' ' -f1 > "$DB.sha256"
+          gzip -n -c "$DB" > "$DB.gz"
+      - name: Commit ONLY updated research SQLite and audit to isolated analytics branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          git add research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+          git add research/sat-analytics-data/current/refresh_x11_x17_20261109_audit.json
+          git commit -m "data(analytics): add 16 audited final SAT cohorts as append-only SQL summaries"
+          git push origin HEAD:experiment/drnas-analytics-refresh-x11-x17-20261109
+          echo DRNAS_REFRESH_DB_PERSISTED_ON_EXPERIMENTAL_BRANCH
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SAT-SQLITE-X11-X17-20261109-APPEND-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            research/sat-analytics-data/current/refresh_x11_x17_20261109_audit.json
+            research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+            /tmp/drnas-refresh-sql.log
