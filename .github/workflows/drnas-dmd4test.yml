@@ -1,0 +1,165 @@
+name: DRNAS DMD4test - proof-checked ANF lemma causal CDCL decisions conflicts 392 one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd4test-causal-cdcl-counters-20261109]
+    paths:
+      - .github/workflows/drnas-dmd4test.yml
+      - research/dmd4test_live_cdcl.cpp
+      - research/dmd4test_bench.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd4test-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build CaDiCaL 2.1.0 live-trail IPASIR observer and soundness selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore exact original SHA cohort and pinned Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Build unchanged DMD1, DMD2 filter and pinned CaDiCaL native CDCL observer
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd4test/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd4test/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd2_propagation_gate.cpp -o mre_dmd4test/bin/dmd2_gate
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/dmd4test-cadical
+          cd /tmp/dmd4test-cadical
+          git checkout -q rel-2.1.0
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I./src \
+            "$GITHUB_WORKSPACE/research/dmd4test_live_cdcl.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_dmd4test/bin/dmd4test_live"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/mre_dmd4test/cadical-source-commit.txt"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          pins={}
+          for s in ("dmd1_anf","dmd2_gate","dmd4test_live"):
+            p=pathlib.Path("mre_dmd4test/bin")/s
+            pins[s]=hashlib.sha256(p.read_bytes()).hexdigest()
+          pins["cadical_source_commit"]=pathlib.Path("mre_dmd4test/cadical-source-commit.txt").read_text().strip()
+          pathlib.Path("mre_dmd4test/binary-pins.json").write_text(json.dumps(pins,sort_keys=True,indent=2))
+          print("DMD4test_NATIVE_PIN",json.dumps(pins,sort_keys=True))
+          PY
+      - name: Assert real-trail callback reversibility and complete original proof replay
+        run: |
+          set -euo pipefail
+          mre_dmd4test/bin/dmd4test_live selftest | tee mre_dmd4test/native-selftest.log
+          grep -q '^DMD4test_TRAIL_SELFTEST_PASS ' mre_dmd4test/native-selftest.log
+          mre_dmd4test/bin/dmd2_gate selftest | tee mre_dmd4test/gate-selftest.log
+          grep -q '^DMD2_GATE_SELFTEST_PASS ' mre_dmd4test/gate-selftest.log
+          mkdir -p mre_dmd1/bin
+          cp mre_dmd4test/bin/dmd1_anf mre_dmd1/bin/dmd1_anf
+          python3 research/dmd1_bench.py selftest | tee mre_dmd4test/proof-selftest.log
+          grep -q '^DMD1_SELFTEST_PASS ' mre_dmd4test/proof-selftest.log
+          python3 -m py_compile research/dmd4test_bench.py
+          python3 -u research/dmd4test_bench.py selftest | tee mre_dmd4test/selftest.log
+          grep -q '^DMD4test_SELFTEST_PASS ' mre_dmd4test/selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd4test-pinned-three-native-binaries
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_dmd4test/bin/*
+            mre_dmd4test/binary-pins.json
+            mre_dmd4test/cadical-source-commit.txt
+            mre_dmd4test/*selftest.log
+  paired:
+    name: DMD4test 98 source-paired CDCL conflict-decision E2E trials shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd4test-pinned-three-native-binaries
+          # Upload's common ancestor is mre_dmd4test; restore to that root.
+          path: mre_dmd4test
+      - name: Restore the original SHA-matched previously seen EQUIV7 input and Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          chmod +x built/bin/kissat_4_0_4 mre_dmd4test/bin/*
+      - name: Pin binary hashes, E2E 7 arms 2 reps, actual live CDCL assignment telemetry
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,json,hashlib
+          pins=json.loads(pathlib.Path("mre_dmd4test/binary-pins.json").read_text())
+          for k in ("dmd1_anf","dmd2_gate","dmd4test_live"):
+            p=pathlib.Path("mre_dmd4test/bin")/k
+            assert hashlib.sha256(p.read_bytes()).hexdigest()==pins[k], "DMD4test BINARY DRIFT "+k
+          print("DMD4test_BINARY_SHA_PASS")
+          PY
+          python3 -u research/dmd4test_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd4test/shard-${{ matrix.shard }}.log
+          grep -q '^DMD4test_SHARD_PASS ${{ matrix.shard }} 98$' mre_dmd4test/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd4test-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd4test/shard-${{ matrix.shard }}.json
+            mre_dmd4test/shard-${{ matrix.shard }}.log
+  audit:
+    name: DMD4test strict 392 E2E candidate-matched CDCL decisions/conflicts, PAR2 and proofs
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore SHA-pinned original sources and all four complete paired shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd4test
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd4test-shard-*
+          path: mre_dmd4test
+          merge-multiple: true
+      - name: Audit original SHA full E2E only, gate proof subsets, CDCL stats and regressions
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd4test_bench.py audit | tee mre_dmd4test/audit.log
+          grep '^DMD4test_FINAL ' mre_dmd4test/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD4test-392-E2E-REAL-CDCL-TRAIL-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_dmd4test/report.json
+            mre_dmd4test/audit.log
+            mre_dmd4test/shard-*.json
