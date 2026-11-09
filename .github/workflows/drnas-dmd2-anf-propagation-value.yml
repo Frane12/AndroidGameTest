@@ -1,0 +1,116 @@
+name: DRNAS DMD2 - ANF propagation novelty gate 280 one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd2-anf-propagation-value-20261109]
+    paths:
+      - .github/workflows/drnas-dmd2-anf-propagation-value.yml
+      - research/dmd2_propagation_gate.cpp
+      - research/dmd2_bench.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  selftest:
+    name: Native watched UP novelty unit checks plus 42 independent legacy proof tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore SHA-pinned original EQUIV7 CNFs and exact Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile DMD1 unchanged, DMD2 UP gate and run soundness/propgation tests
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd2/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd2/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd2_propagation_gate.cpp -o mre_dmd2/bin/dmd2_gate
+          mre_dmd2/bin/dmd2_gate selftest | tee mre_dmd2/native-selftest.log
+          grep -q '^DMD2_GATE_SELFTEST_PASS ' mre_dmd2/native-selftest.log
+          python3 -m py_compile research/dmd2_bench.py
+          python3 -u research/dmd2_bench.py selftest | tee mre_dmd2/selftest.log
+          grep -q '^DMD2_SELFTEST_PASS ' mre_dmd2/selftest.log
+  paired:
+    name: DMD2 70 paired original-SHA one-core full E2E trials shard ${{ matrix.shard }}
+    needs: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore same fixed 24 original CNFs and pinned Kissat as DMD1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Run DMD2 reference, DMD1 all/shadow, gated active/shadow
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd2/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd2/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd2_propagation_gate.cpp -o mre_dmd2/bin/dmd2_gate
+          python3 -u research/dmd2_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd2/shard-${{ matrix.shard }}.log
+          grep -q '^DMD2_SHARD_PASS ${{ matrix.shard }} 70$' mre_dmd2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd2-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd2/shard-${{ matrix.shard }}.json
+            mre_dmd2/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 280 original SHA E2E PAR2 and propagation benefit by lemma family
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore original source cohort
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd2-shard-*
+          path: mre_dmd2
+          merge-multiple: true
+      - name: Fail-closed paired original witness / UNSAT status / PAR2 and gate audit
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd2_bench.py audit | tee mre_dmd2/audit.log
+          grep '^DMD2_FINAL ' mre_dmd2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD2-280-E2E-ONECPU-PAR2-PROP-GATE-FINAL
+          retention-days: 30
+          path: |
+            mre_dmd2/report.json
+            mre_dmd2/audit.log
+            mre_dmd2/shard-*.json
