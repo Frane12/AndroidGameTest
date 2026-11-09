@@ -58,12 +58,16 @@ def get(url,maxbytes,seconds=35):
     need(len(b)<=maxbytes,'source exceeds hard download limit '+url)
     return b
 def official_ids(year):
-    url=URIS[year];raw=get(url,150000,35)
+    # GBD API is the tested source for 2021-23: direct competition web URI
+    # pages have sometimes moved and returned HTTP 404.
+    query='track=main_'+year
+    url='https://benchmark-database.de/getinstances?context=cnf&query='+urllib.parse.quote(query,safe='')
+    raw=get(url,500000,45)
     ids=[line.strip().rsplit('/',1)[-1] for line in raw.decode().splitlines()
          if line.strip() and not line.startswith('#')]
-    need(len(ids)>=300 and len(set(ids))==len(ids) and
+    need(len(ids)==400 and len(set(ids))==len(ids) and
          all(re.fullmatch('[a-f0-9]{32}',g) for g in ids),
-         'official main track GBD index unexpectedly changed '+year)
+         'GBD official 400-main original index unexpectedly changed '+year)
     return ids,dict(url=url,sha256=sha(raw),count=len(ids))
 
 def mini_metadata(year,universe):
