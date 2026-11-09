@@ -1,0 +1,100 @@
+name: DRNAS RIT2 - 24 original SHA GF2 SCC overlap screening no CDCL
+on:
+  push:
+    branches: [experiment/drnas-rit2-original-sha-screen-20261109]
+    paths:
+      - 'research/drnas_rit2_original_sha_screen.py'
+      - 'research/DRNAS_RIT2_SOURCE_SCREEN_PROTOCOL.md'
+      - '.github/workflows/drnas-rit2-original-sha-screen.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-rit2-originals-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  selftest:
+    name: Validate syntax and XOR-SCC mixed-only proof examples
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Isolated original-CNF relation tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_crr1_gf2_scc_rup.py research/drnas_rit2_original_sha_screen.py
+          python3 -u research/drnas_rit2_original_sha_screen.py selftest
+          python3 -u research/drnas_crr1_gf2_scc_rup.py selftest
+  scan:
+    name: RIT2 original SHA structural-only shard ${{ matrix.shard }}
+    needs: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Fetch immutable X22 source original CNF, no solver launch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          test -s mre_x22/manifest.json
+          test -d mre_x22/cases
+      - name: Bounded 12-case SHA-locked diagnostic
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_rit2_original_sha_screen.py shard \
+            --manifest mre_x22/manifest.json --cases mre_x22/cases \
+            --shard ${{ matrix.shard }} --out rit2/shard-${{ matrix.shard }}.json \
+            | tee rit2-shard-${{ matrix.shard }}.log
+          grep -q 'RIT2_SHARD_PASS ${{ matrix.shard }} 12' rit2-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rit2-shard-${{ matrix.shard }}
+          retention-days: 14
+          path: rit2/shard-${{ matrix.shard }}.json
+  audit:
+    name: SHA, overlap, RUP and source-only 24-case final audit
+    needs: scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Fetch frozen provenance only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          test -s mre_x22/manifest.json
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rit2-shard-*
+          merge-multiple: true
+          path: rit2
+      - name: Validate every original SHA and emit small CSV/JSON table
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_rit2_original_sha_screen.py audit \
+            --manifest mre_x22/manifest.json --results rit2 | tee rit2/final.log
+          grep '^RIT2_FINAL ' rit2/final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-RIT2-24-SHA-RELATION-SCREEN-FINAL
+          retention-days: 21
+          path: |
+            rit2/table.csv
+            rit2/table.json
+            rit2/summary.json
+            rit2/final.log
