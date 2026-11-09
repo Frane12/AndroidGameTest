@@ -1,0 +1,127 @@
+name: DRNAS SXL - binary lookahead tree source-proved ANF one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-sxl-binary-lookahead-20261109]
+    paths:
+      - .github/workflows/drnas-sxl.yml
+      - research/sxl_tree_gate.cpp
+      - research/sxl_bench.py
+      - research/SXL_PROTOCOL.md
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sxl-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: SXL native closure proofs and reference-only original source freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore immutable EQUIV7 original CNFs and pinned Kissat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile DMD3X generator and native SXL binary tree selector
+        run: |
+          set -euo pipefail
+          mkdir -p mre_sxl/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_sxl/bin/dmd3x_native
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/sxl_tree_gate.cpp -o mre_sxl/bin/sxl_tree_gate
+          python3 -m py_compile research/sxl_bench.py
+      - name: Independent UP closure, exhaustive source-model proofs and tree selftests
+        run: |
+          set -euo pipefail
+          python3 -u research/sxl_bench.py selftest | tee mre_sxl/selftest.log
+          grep -q '^SXL_SELFTEST_PASS ' mre_sxl/selftest.log
+      - name: Reference-only 4s screening then source-SHA freeze before SXL measurements
+        run: |
+          set -euo pipefail
+          python3 -u research/sxl_bench.py screen | tee mre_sxl/screen.log
+          grep '^SXL_FREEZE_PASS ' mre_sxl/screen.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sxl-pinned-build-source-freeze
+          retention-days: 21
+          path: |
+            mre_sxl/bin
+            mre_sxl/freeze.json
+            mre_sxl/selftest.log
+            mre_sxl/screen.log
+  bench:
+    name: SXL 6-arm 3-seed original CNF E2E shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sxl-pinned-build-source-freeze
+          path: mre_sxl
+      - name: Restore exact original SHA inputs and executable permissions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          chmod +x built/bin/kissat_4_0_4 mre_sxl/bin/*
+      - name: One CPU per trial full E2E including extraction, proof replay and tree
+        run: |
+          set -euo pipefail
+          python3 -u research/sxl_bench.py bench --shard ${{ matrix.shard }} | tee mre_sxl/shard-${{ matrix.shard }}.log
+          grep -q '^SXL_SHARD_PASS ${{ matrix.shard }} ' mre_sxl/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sxl-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_sxl/shard-${{ matrix.shard }}.json
+            mre_sxl/shard-${{ matrix.shard }}.log
+  audit:
+    name: SXL strict original witness proof E2E PAR2 per shard and regressions
+    needs: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sxl-pinned-build-source-freeze
+          path: mre_sxl
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sxl-shard-*
+          merge-multiple: true
+          path: mre_sxl
+      - name: Restore source registry and enforce exact paired schedule and original verdicts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          python3 -u research/sxl_bench.py audit | tee mre_sxl/audit.log
+          grep '^SXL_FINAL ' mre_sxl/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SXL-BINARY-TREE-ONECPU-E2E-PAR2-FINAL
+          retention-days: 21
+          path: |
+            mre_sxl/audit.json
+            mre_sxl/audit.log
+            mre_sxl/freeze.json
+            mre_sxl/selftest.log
+            mre_sxl/shard-*.json
