@@ -157,3 +157,28 @@ SQL status records updated in research/drnas_sat_benchmark_history_20261107_ta.s
 **Most useful next falsification:** isolate whether certified GF2 or early-BVE produces actual additional completed/consumed CDCL reason clauses versus the simpler backend choice. Instrument true GF2 execution, certified/replayed outputs and BCP consumption, source SHA, elapsed preprocess and fallback time. On new pre-registered official mixed SAT/UNSAT originals, pair `c13_hybrid`, `c13_no_r28`, `c13_no_gate`, pure CaDiCaL, pure Kissat and true shadow. Require non-regressed solved/PAR2 vs both backends and native witness/independent UNSAT proof. Avoid the already-completed official/easy cohorts as prospective blind tests.
 
 **Database:** Existing experimental SQL already contained both C13 audited cohorts and all 12 paired mode totals before this review. This update adds only a distinct correction finding for the misleading `R28_activated_sources` name; it does not duplicate or overwrite completed trials or alter main.
+
+
+## 2026-11-09 — C14 54-trial matched vivification factorial
+
+**[C14 final run 42540665293](https://github.com/Frane12/AndroidGameTest/actions/runs/42540665293)**; branch `experiment/drnas-c14-bve-vivify-causal-20261109`; commit `52529ebc2b5095a16686b5a236797dd200604e86`. GitHub status **completed/success**: preparation PASS, all three 18-trial original-shard jobs PASS, FINAL audit PASS; five available artifacts including `C14-DEV3-54-PAIRED-BVE-VIVIFY-CAUSAL-RESULTS`. Original SHA verified in shard records; model witnesses checked on original CNFs. All attempts original-source E2E status with 30s hard cap and timeout PAR2 charge 60s. Three development sources, three repetitions, six arms = **54/54**. The five matched arms share solver binary SHA `622bea3b3524eb84c355fb51eb12efb4680c783f4ced67070782250fa57f6d0c`; upstream_default is a distinct binary `ef3067ff8d84bad054f769517ebc099a93810721c0280003f093305f3fde61d8`. Repetitions shuffle arm order but **do not change solver seed**. No independent UNSAT LRAT, not blind; no promotion.
+
+| Arm | Solved / 9 | PAR2 seconds | Compared with matched default |
+|---|---:|---:|---|
+| no_vivify | **9/9** | **52.409243** | **75.2933% less** PAR2; 4.04748x ratio; +3 solved |
+| skip_bve_no_vivify | 9/9 | 78.039563 | 63.21% less; +3 solved |
+| legacy_noelim | 9/9 | 85.626210 | 59.63% less; +3 solved |
+| skip_bve | 6/9 | 212.005010 | 0.057% less; same solved |
+| matched_default | 6/9 | 212.125544 | reference |
+| upstream_default | 6/9 | 212.128175 | different binary, not matched |
+
+**Per-original source forensic**:
+- SAT `4a3dde8588b06f42b73b96ba1e610a4b23d8cd239d44d17981c0638911c77aee` / GBD `3ed56242f55e3653dbceeb4a70221787`: matched_default, skip_bve and upstream_default all 0/3 with PAR2 180. no_vivify 3/3 SAT with PAR2 22.629743 (~7.543s avg); skip_bve_no_vivify 3/3 PAR2 48.602993; legacy_noelim 3/3 PAR2 54.252543. This **one original** accounts for all three additional solved attempts and almost all observed aggregate gain.
+- SAT `dc3a17e19c6d2c076ed475b7dc342bb1474033bfd4d96f69a217f0e0e282ceac`: all arms 3/3; matched_default PAR2 3.198397 vs no_vivify 1.571514.
+- UNSAT `e90397dabd4bf5e868edb9e8fe070d7d7de350a63ea70f6467e767fdf2f4f607`: all arms 3/3 by published status agreement, independent LRAT absent; matched_default PAR2 28.927147 vs no_vivify 28.207986.
+
+**Causal interpretation:** removing BVE while retaining vivification (skip_bve) does not fix the problematic source, while removing vivification (no_vivify) fixes its 3/3 timeout attempts; skip_bve+no_vivify retains the solves but is slower. So **vivification is the primary ablated factor correlated with the benefit** in this frozen development test. This does not establish that vivification generally harms SAT, nor isolate the precise mechanism via learned-clause traces. On source `4a3dde85...`, one no_vivify rep0 completed with 242,888 conflicts and 350,466 decisions in 7.635786s vs skip_bve_no_vivify 548,432 conflicts and 839,445 decisions in 16.368250s. Timeout arms do not supply directly comparable terminal counters; no proof of a unique internal cause from these values.
+
+**Follow-up**: [C15D 42541912605](https://github.com/Frane12/AndroidGameTest/actions/runs/42541912605) already started on branch `experiment/drnas-c15d-no-vivify-20261109` commit `88f4476cb86b0102956d2c6df4a90a880be7cf4f`. Preparation succeeded and six development+prospective paired benchmark shards are in progress at this report. Do not create competing no-vivify test, or assert its solved/PAR2 before final audit.
+
+**Hypothesis to falsify:** selectively disable vivification by an independently observable, pre-solution signal, without losing solves on new source-disjoint SAT and UNSAT. Reject if no prospectively paired solved/PAR2 advantage versus the frozen default and a no-elim control, or if UNSAT model/proof consistency fails. Never select by source hash or tune against the C14/C15D holdout.
