@@ -1,0 +1,64 @@
+name: DRNAS EQUIV2 - recovery final audit only 384 existing trials
+on:
+  push:
+    branches: [experiment/drnas-equiv2-cadical301-comparison-20261109]
+    paths:
+      - .github/workflows/drnas-equiv2-audit-recovery.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv2-audit-recovery
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: Recover all original SHA-sharded E2E rows and compute audited PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Recover frozen original X20 cohort and all completed EQUIV2 shard data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          mkdir -p mre_equiv2
+          for i in 0 1 2 3 4 5 6 7; do
+            gh run download 42607281345 -R Frane12/AndroidGameTest -n "equiv2-shard-$i" -D mre_equiv2
+            test -s "mre_equiv2/shard-$i.json"
+            python3 - "$i" <<'PY'
+          import sys,json
+          i=int(sys.argv[1])
+          a=json.load(open('mre_equiv2/shard-%d.json'%i))
+          assert len(a)==48 and len(set((r['original_sha256'],r['rep'],r['arm']) for r in a))==48
+          print('EQUIV2_SHARD_RECOVERED',i,len(a),flush=True)
+          PY
+          done
+          test -s mre_equiv2/manifest.json
+          test -s mre_x20/manifest.json
+          test -s prior_x20/shard-0.json
+      - name: Strict frozen SHA, original SAT witness and cross-backend UNSAT PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_equiv2/bin/cadical_3_0_1 mre_equiv2/bin/alias_dose mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_equiv2_cadical301.py verify
+          python3 -u research/drnas_equiv2_cadical301.py audit | tee mre_equiv2/audit-recovery.log
+          grep -q '^EQUIV2_FINAL ' mre_equiv2/audit-recovery.log
+          grep '^EQUIV2_FINAL ' mre_equiv2/audit-recovery.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV2-384-AUDITED-RECOVERED
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre_equiv2/manifest.json
+            mre_equiv2/report.json
+            mre_equiv2/audit-recovery.log
+            mre_equiv2/shard-*.json
