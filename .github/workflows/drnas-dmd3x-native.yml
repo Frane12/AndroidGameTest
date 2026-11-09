@@ -1,0 +1,121 @@
+name: DRNAS DMD3X - native full CNF structural ANF 392 one-core proof paired E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd3x-native-structure-20261109]
+    paths:
+      - .github/workflows/drnas-dmd3x-native.yml
+      - research/dmd3x_native.cpp
+      - research/dmd3x_bench.py
+      - research/DMD3X_PROTOCOL.md
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd3x-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  selftest:
+    name: DMD3X one-process native C++ and 104 exhaustive semantic checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile immutable DMD1 and new DMD3X native engines
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd1/bin mre_dmd2/bin mre_dmd3x/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd1/bin/dmd1_anf
+          cp mre_dmd1/bin/dmd1_anf mre_dmd2/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_dmd3x/bin/dmd3x_native
+          python3 -m py_compile research/dmd3x_bench.py research/dmd2_bench.py
+      - name: Independently replay all local derivations and exhaustive complete toy models
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd1_bench.py selftest | tee dmd1-compat.log
+          python3 -u research/dmd2_bench.py selftest | tee dmd2-compat.log
+          python3 -u research/dmd3x_bench.py selftest | tee dmd3x-selftest.log
+          grep -q '^DMD1_SELFTEST_PASS ' dmd1-compat.log
+          grep -q '^DMD2_SELFTEST_PASS ' dmd2-compat.log
+          grep -q '^DMD3X_SELFTEST_PASS ' dmd3x-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd3x-proof-selftest
+          retention-days: 21
+          path: |
+            dmd1-compat.log
+            dmd2-compat.log
+            dmd3x-selftest.log
+  bench:
+    name: DMD3X 98 original-SHA one-core E2E measurements shard ${{ matrix.shard }}
+    needs: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch exact frozen original EQUIV7 CNF and pinned Kissat binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile native DMD3X, old DMD1 compatibility and run SHA-paired 6s E2E
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd3x/bin mre_dmd2/bin mre_dmd1/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd1/bin/dmd1_anf
+          cp mre_dmd1/bin/dmd1_anf mre_dmd2/bin/dmd1_anf
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_dmd3x/bin/dmd3x_native
+          python3 -u research/dmd3x_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd3x/shard-${{ matrix.shard }}.log
+          grep -q '^DMD3X_SHARD_PASS ${{ matrix.shard }} 98$' mre_dmd3x/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd3x-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd3x/shard-${{ matrix.shard }}.json
+            mre_dmd3x/shard-${{ matrix.shard }}.log
+  audit:
+    name: DMD3X strict 392 paired original witness PAR2 and novelty audit
+    needs: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore original SHA and source manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd3x
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd3x-shard-*
+          path: mre_dmd3x
+          merge-multiple: true
+      - name: Strict source-only match, certificate and E2E PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd3x_bench.py audit | tee mre_dmd3x/audit.log
+          grep '^DMD3X_FINAL ' mre_dmd3x/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD3X-392-E2E-PAR2-PROOF-FIRST-FINAL
+          retention-days: 21
+          path: |
+            mre_dmd3x/audit.json
+            mre_dmd3x/audit.log
+            mre_dmd3x/shard-*.json
