@@ -28,7 +28,7 @@ ARMS=("kissat_original","cadical_original","sxl2_all","sxl2_short1","sxl2_short4
 SHARDS=4
 REPS=2
 CAP=12.0
-SCREEN_CAP=8.0
+SCREEN_CAP=10.0
 
 def check(v,reason):
     if not v:raise RuntimeError("SXL2_FAIL_CLOSED "+str(reason))
@@ -85,7 +85,7 @@ def screen():
     selected=[x for x in records if x["eligible"]][:8]
     check(len(selected)>=4,"not enough reference-completed disjoint cases")
     freeze=dict(protocol=P,origin="EQUIV2 original CNF 24 SHA",reused_in_wider_project=True,
-                globally_unseen=False,selection="reference_only_8s_then_sha_first8",
+                globally_unseen=False,selection="reference_only_10s_then_sha_first8",
                 excluded_SXL1_shas=sorted(excluded),cases=selected,screen=records,
                 kissat_sha256=BASE_SHA,arms=ARMS,reps=REPS,cap_s=CAP,
                 expected=len(selected)*len(ARMS)*REPS)
