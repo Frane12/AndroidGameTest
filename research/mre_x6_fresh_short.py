@@ -26,7 +26,7 @@ def sha(b):return hashlib.sha256(b).hexdigest()
 def save(p,v):
     pathlib.Path(p).parent.mkdir(parents=True,exist_ok=True)
     pathlib.Path(p).write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')
-def seed(c,r):return int(sha((PROTO+'|'+c['sha256']+'|'+str(r)).encode())[:8],16)
+def seed(c,r):return int(sha((PROTO+'|'+c['sha256']+'|'+str(r)).encode())[:8],16) & 0x7fffffff
 def freeze():
     ROOT.mkdir(exist_ok=True)
     ids=set();digests=set();registries=[]
@@ -139,7 +139,7 @@ def trial(c,rep,mode):
         if elapsed>CAP or status not in ('SAT','UNSAT'):status='TIMEOUT'
         verified=False
         if status=='SAT':x6.x4.base.cms.verify_model(src,model);verified=True
-    return dict(protocol=PROTO,gbd=c['gbd'],sha256=c['sha256'],rep=rep,seed=s,mode=mode,status=status,elapsed_s=round(elapsed,6),preprocessing_s=round(prep,6),PAR2_s=round(elapsed if status in ('SAT','UNSAT') else 2*CAP,6),SAT_original_verified=verified,UNSAT_independent_LRAT=False,native_stats=stats,binary_sha256=sha(pathlib.Path('built/bin/kissat_4_0_4' if mode=='kissat' else 'mre_x4/bin/native').read_bytes()))
+    return dict(protocol=PROTO,gbd=c['gbd'],sha256=c['sha256'],rep=rep,seed=s,seed_policy='sha256_low31_repair_v2',mode=mode,status=status,elapsed_s=round(elapsed,6),preprocessing_s=round(prep,6),PAR2_s=round(elapsed if status in ('SAT','UNSAT') else 2*CAP,6),SAT_original_verified=verified,UNSAT_independent_LRAT=False,native_stats=stats,binary_sha256=sha(pathlib.Path('built/bin/kissat_4_0_4' if mode=='kissat' else 'mre_x4/bin/native').read_bytes()))
 def shard(idx):
     m=verify();need(idx in range(SHARDS),'bad shard');c=m['cases'][idx];rows=[]
     for rep in range(REPS):
