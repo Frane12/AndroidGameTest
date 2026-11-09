@@ -1,0 +1,144 @@
+name: DRNAS XX2-R — recovered ten official SHA, 160 paired 8s E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-xx2r-recovered-ten-20261109]
+    paths:
+      - 'research/mre_xx2r_recovered.py'
+      - 'research/xx2r_selected_sources.json'
+      - '.github/workflows/drnas-xx2r-recovered.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xx2r-20261109-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: XX2R recover exactly 10 previously reference-accepted original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore already screened originals from failed prior XX2 preparation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42567362774 -R Frane12/AndroidGameTest -n xx2-frozen-reference-screened-original-12SHA -D .
+          test -x mre_x4/bin/native
+          test -x built/bin/kissat_4_0_4
+          test -s mre_x11/binary.sha256
+          actual="$(find mre_xx2 -maxdepth 1 -type f -name '*.cnf' | wc -l)"
+          test "$actual" -eq 10
+      - name: Verify unchanged solver SHA and XX2R source gate
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/mre_xx2r_recovered.py
+          python3 -u research/mre_xx2r_recovered.py selftest
+      - name: Freeze 10 matched reference-only original SHA without rescreening
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_xx2r
+          python3 -u research/mre_xx2r_recovered.py freeze | tee mre_xx2r/freeze.log
+          grep -q '^XX2R_FREEZE_PASS 10' mre_xx2r/freeze.log
+          python3 -u research/mre_xx2r_recovered.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xx2r-10SHA-solver-binaries-and-originals
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_xx2r/*.cnf
+            mre_xx2r/manifest.json
+            mre_xx2r/structures.json
+            mre_xx2r/freeze.log
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: XX2R 32 paired original SHA E2E 8s shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xx2r-10SHA-solver-binaries-and-originals
+          path: .
+      - name: Confirm frozen source and binary integrity
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_xx2r_recovered.py verify
+      - name: Compare 8 strategies and both seeds with verified original SAT witness
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_xx2r_recovered.py shard --shard ${{ matrix.shard }} | tee mre_xx2r/shard-${{ matrix.shard }}.log
+          grep -q '^XX2R_SHARD_PASS ${{ matrix.shard }} 32$' mre_xx2r/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xx2r-result-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_xx2r/shard-${{ matrix.shard }}.json
+            mre_xx2r/shard-${{ matrix.shard }}.log
+  audit:
+    name: XX2R strict 160 E2E PAR2 paired original SHA audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xx2r-10SHA-solver-binaries-and-originals
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xx2r-result-*
+          merge-multiple: true
+          path: mre_xx2r
+      - name: Audit 160 matched original cases and compare all 8 arms
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_xx2r_recovered.py audit | tee mre_xx2r/audit.log
+          grep -q '^XX2R_FINAL' mre_xx2r/audit.log
+          grep '^XX2R_FINAL' mre_xx2r/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-XX2R-10SHA-160E2E-8S-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_xx2r/manifest.json
+            mre_xx2r/structures.json
+            mre_xx2r/report.json
+            mre_xx2r/audit.log
+            mre_xx2r/shard-*.json
