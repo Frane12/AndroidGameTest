@@ -1,0 +1,158 @@
+name: DRNAS X15 - cheap selective original/front100/two-core fresh-source holdout 192 E2E
+on:
+  push:
+    branches: [experiment/drnas-x15-cheap-selector-holdout-20261109]
+    paths:
+      - '.github/workflows/drnas-x15-selector-holdout.yml'
+      - 'research/drnas_x15_selector_holdout.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x15-selector-sha-fresh-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore pinned X11/X6 originals, source-disjoint freeze eight new originals before X15 timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable source history and pinned unchanged solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x15 mre_x11 mre_x6fresh mre7_easy mre11b_blind
+          gh run download 42563452186 -R Frane12/AndroidGameTest -n x11-32-frozen-original-sha-native-binaries-structural -D .
+          gh run download 42557393295 -R Frane12/AndroidGameTest -n x6fresh-eight-new-source-sha-frozen-CMS-Kissat -D .x15-prior6
+          gh run download 42505042425 -R Frane12/AndroidGameTest -n mre7e-pilot16-frozen-originals-and-native-binaries -D .x15-prior7
+          gh run download 42511069503 -R Frane12/AndroidGameTest -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D .x15-prior11
+          cp .x15-prior6/mre_x6fresh/manifest.json mre_x6fresh/manifest.json
+          cp .x15-prior7/mre7_easy/manifest.json mre7_easy/manifest.json
+          cp .x15-prior11/mre11b_blind/manifest.json mre11b_blind/manifest.json
+          test -s mre_x11/manifest.json
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Install CaDiCaL, check pinned SHA, exhaustively selftest equivalence, freeze new input SHA first
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x4/bin/native | grep libcryptominisat5.so.5.11
+          python3 -m py_compile research/drnas_x15_selector_holdout.py
+          python3 -u research/drnas_x15_selector_holdout.py selftest
+          python3 -u research/drnas_x15_selector_holdout.py freeze | tee mre_x15/freeze.log
+          python3 -u research/drnas_x15_selector_holdout.py verify
+          grep -q '^X15_FROZEN' mre_x15/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x15-frozen-8development-8fresh-16originals-native-backends
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x15/*.cnf
+            mre_x15/manifest.json
+            mre_x15/source-trace.json
+            mre_x15/freeze.log
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: X15 24 paired SHA E2E 20s wall CPU trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x15-frozen-8development-8fresh-16originals-native-backends
+          path: .
+      - name: Verify original source SHA, frozen gate and pinned solver binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x15_selector_holdout.py verify
+          python3 -u research/drnas_x15_selector_holdout.py shard --shard ${{ matrix.shard }} | tee mre_x15/shard-${{ matrix.shard }}.log
+          grep -q '^X15_SHARD_PASS ${{ matrix.shard }} 24$' mre_x15/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x15-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x15/shard-${{ matrix.shard }}.json
+            mre_x15/shard-${{ matrix.shard }}.log
+  audit:
+    name: X15 strict 192 SHA-paired wall PAR2 plus child CPU audit; development vs new holdout
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x15-frozen-8development-8fresh-16originals-native-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x15-shard-*
+          path: .x15-shards
+          merge-multiple: false
+      - name: Normalize artifact extraction paths, verify all shard cardinalities and audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for i in 0 1 2 3 4 5 6 7; do
+            n=$(find ".x15-shards/x15-shard-$i" -type f -name "shard-$i.json" | wc -l)
+            test "$n" -eq 1
+            src=$(find ".x15-shards/x15-shard-$i" -type f -name "shard-$i.json" -print -quit)
+            cp "$src" "mre_x15/shard-$i.json"
+            python3 - "$i" <<'PY'
+          import json,sys
+          i=int(sys.argv[1]); r=json.load(open('mre_x15/shard-%d.json'%i))
+          assert len(r)==24 and len(set((x['original_sha256'],x['rep'],x['arm']) for x in r))==24
+          print('X15_SHARD_AUDIT',i,24,flush=True)
+          PY
+          done
+          python3 -u research/drnas_x15_selector_holdout.py verify
+          python3 -u research/drnas_x15_selector_holdout.py audit | tee mre_x15/audit.log
+          grep -q '^X15_FINAL' mre_x15/audit.log
+          grep '^X15_FINAL' mre_x15/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X15-16SHA-192-E2E-CPU-WALL-NEW-HOLDOUT-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x15/manifest.json
+            mre_x15/source-trace.json
+            mre_x15/report.json
+            mre_x15/audit.log
+            mre_x15/shard-*.json
