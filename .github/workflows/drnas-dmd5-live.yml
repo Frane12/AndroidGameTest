@@ -1,0 +1,166 @@
+name: DRNAS DMD5-LIVE - conditional lemma causal CDCL 448 one-core disjoint SHA
+on:
+  push:
+    branches: [experiment/drnas-dmd5-live-conditional-holdout-20261109]
+    paths:
+      - .github/workflows/drnas-dmd5-live.yml
+      - research/dmd5_live_cdcl.cpp
+      - research/dmd5_live_bench.py
+      - research/DMD5_LIVE_PROTOCOL.md
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd5-live-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compile:
+    name: DMD5 pinned native CaDiCaL and proof-first conditional gate selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore exact frozen EQUIV7 original SHA source dataset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Compile native DMD3X-C and CaDiCaL real trail observation
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd5/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3x_native.cpp -o mre_dmd5/bin/dmd3x_native
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd3xc_conditional.cpp -o mre_dmd5/bin/dmd3xc_gate
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/dmd5-cadical
+          cd /tmp/dmd5-cadical
+          git checkout -q rel-2.1.0
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I./src \
+            "$GITHUB_WORKSPACE/research/dmd5_live_cdcl.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_dmd5/bin/dmd5_live_cdcl"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/mre_dmd5/cadical-source-commit.txt"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          pins={}
+          for name in ("dmd3x_native","dmd3xc_gate","dmd5_live_cdcl"):
+              p=pathlib.Path("mre_dmd5/bin")/name
+              pins[name]=hashlib.sha256(p.read_bytes()).hexdigest()
+          pins["cadical_source_commit"]=pathlib.Path("mre_dmd5/cadical-source-commit.txt").read_text().strip()
+          pathlib.Path("mre_dmd5/binary-pins.json").write_text(json.dumps(pins,sort_keys=True,indent=2))
+          print("DMD5_NATIVE_PIN",json.dumps(pins,sort_keys=True))
+          PY
+      - name: Validate native trail, original source lemma proofs and conditional control
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd3x/bin
+          cp mre_dmd5/bin/dmd3x_native mre_dmd3x/bin/dmd3x_native
+          mre_dmd5/bin/dmd5_live_cdcl selftest | tee mre_dmd5/trail-selftest.log
+          grep -q '^DMD5_TRAIL_SELFTEST_PASS ' mre_dmd5/trail-selftest.log
+          mre_dmd5/bin/dmd3xc_gate selftest | tee mre_dmd5/gate-selftest.log
+          grep -q '^DMD3XC_SELFTEST_PASS ' mre_dmd5/gate-selftest.log
+          python3 -m py_compile research/dmd5_live_bench.py
+          python3 -u research/dmd5_live_bench.py selftest | tee mre_dmd5/bench-selftest.log
+          grep -q '^DMD5_SELFTEST_PASS ' mre_dmd5/bench-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd5-pinned-native-binaries
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_dmd5/bin/*
+            mre_dmd5/binary-pins.json
+            mre_dmd5/cadical-source-commit.txt
+            mre_dmd5/*selftest.log
+  paired:
+    name: DMD5-LIVE 112 SHA-paired real CDCL conditional E2E shard ${{ matrix.shard }}
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 44
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmd5-pinned-native-binaries
+          path: mre_dmd5
+      - name: Restore source SHA manifest and exact Kissat binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4 mre_dmd5/bin/*
+          mkdir -p mre_dmd3x/bin
+          cp mre_dmd5/bin/dmd3x_native mre_dmd3x/bin/dmd3x_native
+      - name: Assert pinned binaries and run 8s one-core E2E with real CDCL trail
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          pins=json.loads(pathlib.Path("mre_dmd5/binary-pins.json").read_text())
+          for name in ("dmd3x_native","dmd3xc_gate","dmd5_live_cdcl"):
+              p=pathlib.Path("mre_dmd5/bin")/name
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==pins[name], "DMD5 BINARY DRIFT "+name
+          print("DMD5_BINARY_SHA_PASS")
+          PY
+          python3 -u research/dmd5_live_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd5/shard-${{ matrix.shard }}.log
+          grep -q '^DMD5_SHARD_PASS ${{ matrix.shard }} 112$' mre_dmd5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd5-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd5/shard-${{ matrix.shard }}.json
+            mre_dmd5/shard-${{ matrix.shard }}.log
+  audit:
+    name: DMD5-LIVE strict 448 original SHA paired PAR2, real CDCL decisions/conflicts and shadow proofs
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore SHA-source manifest (second half only) and all shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd5-shard-*
+          path: mre_dmd5
+          merge-multiple: true
+      - name: Strict audit and paired causal-stats eligibility
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd5_live_bench.py audit | tee mre_dmd5/audit.log
+          grep '^DMD5_FINAL ' mre_dmd5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD5-LIVE-448-DISJOINT-SHA-REAL-CDCL-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_dmd5/audit.json
+            mre_dmd5/audit.log
+            mre_dmd5/shard-*.json
