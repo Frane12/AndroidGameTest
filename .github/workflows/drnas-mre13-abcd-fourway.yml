@@ -1,0 +1,117 @@
+name: DRNAS MRE13 — Four parallel A/B/C/D proof-safe reduction experiments
+on:
+  push:
+    branches: [experiment/drnas-mre13-abcd-4way-20261109]
+    paths:
+      - 'research/mre13_abcd_parallel.py'
+      - '.github/workflows/drnas-mre13-abcd-fourway.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre13-abcd-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify syntax, truth-table equivalence, and negative proof replay
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre12_exact_quotient.py research/mre13_abcd_parallel.py
+          python3 -u research/mre13_abcd_parallel.py selftest | tee mre13-selftest.log
+          grep -q '^MRE13_SELFTEST_PASS ' mre13-selftest.log
+      - name: Reuse immutable 12-source manifest and pinned CaDiCaL artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42544834313 -R Frane12/AndroidGameTest -n mre12-pinned-frozen-sources -D .
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          chmod +x c8c/bin/instrumented
+          python3 -u research/mre13_abcd_parallel.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre13-frozen-source-backend
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 4
+          path: |
+            c15d_sources/
+            c15d_out/binary.sha256
+            c8c/bin/instrumented
+            mre13-selftest.log
+  fourway:
+    needs: prepare
+    name: Proof-safe A/B/C/D parallel variant ${{ matrix.variant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        variant: [A, B, C, D]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre13-frozen-source-backend
+          path: .
+      - name: Frozen SHA, identical source and matched baseline validation
+        run: |
+          set -euo pipefail
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          chmod +x c8c/bin/instrumented
+          python3 -u research/mre13_abcd_parallel.py verify
+      - name: Execute 96 source-paired E2E trials within this variant
+        run: |
+          set -euo pipefail
+          python3 -u research/mre13_abcd_parallel.py shard --variant ${{ matrix.variant }} | tee mre13-${{ matrix.variant }}.log
+          grep -q '^MRE13_VARIANT_PASS ${{ matrix.variant }} 96$' mre13-${{ matrix.variant }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre13-shard-${{ matrix.variant }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            mre13_out/shard-${{ matrix.variant }}.json
+            mre13-${{ matrix.variant }}.log
+  audit:
+    needs: fourway
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre13-frozen-source-backend
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre13-shard-*
+          merge-multiple: true
+          path: .
+      - name: Fail-closed 384-paired SHA, witness, lemma, and PAR2 audit
+        run: |
+          set -euo pipefail
+          grep 'c8c/bin/instrumented$' c15d_out/binary.sha256 | sha256sum -c
+          python3 -u research/mre13_abcd_parallel.py audit | tee mre13-audit.log
+          grep '^MRE13_FINAL ' mre13-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MRE13-ABCD-384-PAIRED-EXACT-AUDIT
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre13_out/report.json
+            mre13-audit.log
