@@ -1,0 +1,157 @@
+name: DRNAS X19B — fresh official SHA selective X18 vs 80/20 single CPU 128 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-x19b-fresh-cpu-selector-20261109]
+    paths:
+      - 'research/drnas_x19b_fresh_cpu_selector.py'
+      - '.github/workflows/drnas-x19b-fresh-cpu-selector.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x19b-fresh-sourceonly-cpu-20261109
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze eight official new source SHA excluded from X18 X6 and XX2R
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original pinned solver SHA and historical exclusion registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42579485596 -R Frane12/AndroidGameTest -n x18-frozen-24-originals-and-pinned-solvers -D .
+          gh run download 42557116984 -R Frane12/AndroidGameTest -n x6fresh-eight-new-source-sha-frozen-CMS-Kissat -D .x6-recovery
+          mkdir -p mre_x19b/bin x19b_x6_exclusion
+          test -s mre_x18/manifest.json
+          test -s .x6-recovery/mre_x6fresh/manifest.json
+          cp .x6-recovery/mre_x6fresh/manifest.json x19b_x6_exclusion/manifest.json
+          cp mre_x18/bin/selective mre_x19b/bin/selective
+          chmod +x mre_x19b/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Install CaDiCaL, audit binary checksums and selftest
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libcadical-dev
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          sha256sum -c mre_x11/binary.sha256
+          python3 -m py_compile research/drnas_x19b_fresh_cpu_selector.py
+          python3 -u research/drnas_x19b_fresh_cpu_selector.py selftest
+      - name: Source-only official GBD metadata selection without SAT timing prefilter
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_x19b_fresh_cpu_selector.py freeze | tee mre_x19b/freeze.log
+          grep -q '^X19B_FROZEN ' mre_x19b/freeze.log
+          python3 -u research/drnas_x19b_fresh_cpu_selector.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x19b-eight-fresh-sourceonly-frozen-and-original-binaries
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x19b/*.cnf
+            mre_x19b/manifest.json
+            mre_x19b/source-selection-progress.json
+            mre_x19b/freeze.log
+            mre_x19b/bin/selective
+            mre_x18/manifest.json
+            x19b_x6_exclusion/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: X19B 16 SHA-paired original-CNF E2E plus separated bounded probe shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x19b-eight-fresh-sourceonly-frozen-and-original-binaries
+          path: .
+      - name: Verify pinning, two-CPU topology and original source SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libcadical-dev
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x19b/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          python3 -u research/drnas_x19b_fresh_cpu_selector.py verify
+      - name: Exact paired 12s E2E and 5000-conflict diagnostics without oracle
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_x19b_fresh_cpu_selector.py shard --shard ${{ matrix.shard }} | tee "mre_x19b/shard-${{ matrix.shard }}.log"
+          grep -q '^X19B_SHARD_PASS ${{ matrix.shard }} 16 1$' "mre_x19b/shard-${{ matrix.shard }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x19b-result-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x19b/shard-${{ matrix.shard }}.json
+            mre_x19b/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 128 E2E source SHA seed CPU budget PAR2 and eight bounded-only checkpoints
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x19b-eight-fresh-sourceonly-frozen-and-original-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x19b-result-*
+          merge-multiple: true
+          path: .x19b-results
+      - name: Recover and audit complete paired 128 E2E original SHA results
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical libcadical-dev
+          export PYTHONPATH="$PWD/research" LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x19b/bin/selective mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          for i in 0 1 2 3 4 5 6 7; do
+            src=$(find .x19b-results -type f -name "shard-$i.json" -print -quit)
+            test -n "$src"
+            cp "$src" "mre_x19b/shard-$i.json"
+          done
+          python3 -u research/drnas_x19b_fresh_cpu_selector.py audit | tee mre_x19b/audit.log
+          grep -q '^X19B_FINAL ' mre_x19b/audit.log
+          grep '^X19B_FINAL ' mre_x19b/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X19B-128-PAIRED-E2E-FRESH-SOURCEONLY-CPU-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_x19b/manifest.json
+            mre_x19b/report.json
+            mre_x19b/audit.log
+            mre_x19b/shard-*.json
