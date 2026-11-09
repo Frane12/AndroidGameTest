@@ -70,8 +70,12 @@ def source_copy(raw, gbd, status, cohort, origin, existing_shas):
         need(0 < n <= MAX_SOURCE_VARIABLES and 0 < m <= MAX_SOURCE_CLAUSES
              and len(raw) <= MAX_SOURCE_BYTES, "fresh official resource cap")
     else:
-        need(0 < n <= 200000 and 0 < m <= 500000 and len(raw) <= 50 * 1024 * 1024,
-             "previously frozen original exceeds maximum transport cap")
+        need(n > 0 and m > 0, "malformed previously frozen original metadata")
+        if n > 200000 or m > 500000 or len(raw) > 50 * 1024 * 1024:
+            print("MRE14_REUSED_RESOURCE_SKIP " + json.dumps(dict(
+                gbd=gbd, original_sha256=sha, nvars=n, nclauses=m,
+                source_bytes=len(raw), origin=origin), sort_keys=True), flush=True)
+            return None  # Do not alter huge originals; exclude explicitly from pilot.
     filename = sha[:24] + ".cnf"
     target = ROOT / filename
     target.write_bytes(raw)
@@ -91,23 +95,28 @@ def freeze():
         original = (c15d.SRC / c["filename"]).read_bytes()
         need(hashbytes(original) == c["sha256"], "C15D original SHA drift")
         group = "historical_" + c["cohort"]
-        need(source_copy(original, c["gbd"], c["status"], group,
-                         "C15D-42541912605", existing), "duplicate C15D source")
+        accepted = source_copy(original, c["gbd"], c["status"], group,
+                               "C15D-42541912605", existing)
+        need(accepted is not False, "duplicate C15D source")
+        # None means an explicitly reported oversized source was excluded.
     x3manifest = json.loads(pathlib.Path("mre_x3/manifest.json").read_text())
     need(len(x3manifest["cases"]) == 5, "X3 original 5 source manifest missing")
     x3paths = list(pathlib.Path("mre_x").glob("*.cnf"))
     x3bys = {digest(p): p for p in x3paths}
-    x3_added, x3_overlap = 0, 0
+    x3_added, x3_overlap, x3_resource_skipped = 0, 0, 0
     for c in x3manifest["cases"]:
         sha = c["sha256"]
         need(sha in x3bys, "X3 original SHA source unavailable")
         raw = x3bys[sha].read_bytes()
         need(hashbytes(raw) == sha, "X3 original source altered")
-        if source_copy(raw, c["gbd"], c["reference_status"],
-                       "historical_x3_duplicate_order", "MRE-X3-42524524856", existing):
+        accepted = source_copy(raw, c["gbd"], c["reference_status"],
+                               "historical_x3_duplicate_order", "MRE-X3-42524524856", existing)
+        if accepted is True:
             x3_added += 1
-        else:
+        elif accepted is False:
             x3_overlap += 1
+        else:
+            x3_resource_skipped += 1
 
     # Freeze genuinely different original SHA from the two reused input manifests.
     # NOT globally unseen to all prior research: no claim of exhaustive history exclusion.
@@ -156,7 +165,7 @@ def freeze():
     need(x3_added >= 3 and x3_overlap <= 2, "X3 duplicate-bearing cohort missing")
     # Deterministic order independent of filesystem and fetch ordering.
     cases = sorted(cases, key=lambda c: (c["cohort"], c["sha256"]))
-    manifest = dict(protocol=PROTO, cases=cases, x3_added=x3_added, x3_overlap=x3_overlap,
+    manifest = dict(protocol=PROTO, cases=cases, x3_added=x3_added, x3_overlap=x3_overlap, x3_resource_skipped=x3_resource_skipped,
                     provenance={"c15d_run": 42541912605, "mre_x3_run": 42524524856},
                     fresh_quota=dict(counts), source_count=len(cases),
                     total_trials=len(cases) * REPS * len(ARMS),
@@ -169,6 +178,7 @@ def freeze():
     print("MRE14_FREEZE_PASS " + json.dumps({
         "source_count": len(cases), "fresh": sum(counts.values()),
         "x3_added": x3_added, "x3_overlap": x3_overlap,
+        "x3_resource_skipped": x3_resource_skipped,
         "expected_trials": manifest["total_trials"],
         "manifest_sha256": digest(ROOT / "manifest.json")}, sort_keys=True), flush=True)
 
