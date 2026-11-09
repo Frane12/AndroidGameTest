@@ -1,0 +1,182 @@
+name: DRNAS MRE X7 — native CryptoMiniSat watch decision LBD trace plus 96 E2E
+on:
+  push:
+    branches: [experiment/drnas-mre-x7-native-watch-learn-trace-20261109]
+    paths: ['.github/workflows/drnas-mre-x7-native-trace.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre-x7-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze X6 sources, build source-pinned instrumented CMS, verify native events
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reuse X6 original source hashes and permutations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42555463975 -R Frane12/AndroidGameTest \
+            -n mre-x6-source-locked-originals-and-frozen-binary -D .
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x6/bin.sha256
+          python3 -m py_compile research/mre_x7_trace_patch.py research/mre_x7_native_trace_benchmark.py
+          python3 -u research/mre_x7_native_trace_benchmark.py selftest
+          python3 -u research/mre_x7_native_trace_benchmark.py freeze
+          python3 -u research/mre_x7_native_trace_benchmark.py verify
+      - name: Clone fixed CryptoMiniSat v5.11.15 and patch diagnostic-only hooks
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git cmake ninja-build g++ libgmp-dev zlib1g-dev libsqlite3-dev libboost-program-options-dev
+          git clone --quiet --depth 1 --branch 5.11.15 https://github.com/msoos/cryptominisat.git cms_x7
+          CMS_SHA=$(git -C cms_x7 rev-parse HEAD)
+          echo "MRE_X7_CMS_SOURCE_TAG_SHA $CMS_SHA"
+          printf '%s\n' "$CMS_SHA" > mre_x7/cms-source-commit.txt
+          python3 -u research/mre_x7_trace_patch.py cms_x7
+          test -f cms_x7/src/drnas_x7_trace.h
+      - name: Compile fully instrumented CMS 5.11.15 shared library
+        run: |
+          set -euo pipefail
+          cmake -S cms_x7 -B cms_x7/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DONLY_SIMPLE=ON -DNOZLIB=ON \
+            -DNOBOSPHORUS=ON -DNOBREAKID=ON \
+            -DBUILD_SHARED_LIBS=ON -DENABLE_TESTING=OFF -DENABLE_ASSERTIONS=OFF
+          cmake --build cms_x7/build --target cryptominisat5 -j 3
+          mkdir -p mre_x7/lib mre_x7/bin mre_x7/include/cryptominisat5
+          CMS_SO=$(find cms_x7/build -type f -name 'libcryptominisat5.so*' | head -n 1)
+          test -n "$CMS_SO"
+          cp "$CMS_SO" mre_x7/lib/libcryptominisat5.so.5.11
+          cp cms_x7/src/cryptominisat.h cms_x7/src/solvertypesmini.h mre_x7/include/cryptominisat5/
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            -I "$PWD/mre_x7/include" research/mre_x4_checkpoint_native.cpp \
+            "$PWD/mre_x7/lib/libcryptominisat5.so.5.11" \
+            -Wl,-rpath,'$ORIGIN/../lib' -o mre_x7/bin/native
+          chmod +x mre_x7/bin/native
+          sha256sum mre_x7/bin/native mre_x7/lib/libcryptominisat5.so.5.11 > mre_x7/pinned-binary.sha256
+          LD_LIBRARY_PATH="$PWD/mre_x7/lib" ldd mre_x7/bin/native | tee mre_x7/native-ldd.txt
+          grep -q "$PWD/mre_x7/lib/libcryptominisat5.so.5.11" mre_x7/native-ldd.txt
+          echo MRE_X7_CMS_NATIVE_BUILT
+      - name: Diagnostic build smoke on frozen source
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_x7/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x7_native_trace_benchmark.py trace \
+            --shard 3 --native mre_x7/bin/native | tee mre_x7/prepare-smoke.log
+          grep -q '^MRE_X7_TRACE_SHARD_PASS 3' mre_x7/prepare-smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre-x7-frozen-sha-patched-cms-and-inputs
+          retention-days: 21
+          compression-level: 6
+          path: |
+            mre_x/*.cnf
+            mre_x/manifest.json
+            mre_x/source.sha256
+            mre_x3/*.cnf
+            mre_x3/manifest.json
+            mre_x4/*.cnf
+            mre_x4/manifest.json
+            mre_x6/*.cnf
+            mre_x6/manifest.json
+            mre_x7/*.cnf
+            mre_x7/manifest.json
+            mre_x7/bin/native
+            mre_x7/lib/libcryptominisat5.so.5.11
+            mre_x7/pinned-binary.sha256
+            mre_x7/native-ldd.txt
+            mre_x7/cms-source-commit.txt
+  paired:
+    name: X7 24 E2E 144 bounded + 6 real native event traces shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x7-frozen-sha-patched-cms-and-inputs
+          path: .
+      - name: Fail-closed frozen sources, shared library and exact permutations
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_x7/lib:${LD_LIBRARY_PATH:-}"
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x7/pinned-binary.sha256
+          chmod +x mre_x7/bin/native
+          python3 -u research/mre_x7_native_trace_benchmark.py verify
+          python3 -u research/mre_x7_native_trace_benchmark.py trace \
+            --shard ${{ matrix.shard }} --native mre_x7/bin/native \
+            | tee mre_x7/trace-${{ matrix.shard }}.log
+          grep -q '^MRE_X7_TRACE_SHARD_PASS ${{ matrix.shard }}' mre_x7/trace-${{ matrix.shard }}.log
+          python3 -u research/mre_x7_native_trace_benchmark.py shard \
+            --shard ${{ matrix.shard }} --native mre_x7/bin/native \
+            | tee mre_x7/shard-${{ matrix.shard }}.log
+          grep -q '^MRE_X4_SHARD_PASS ${{ matrix.shard }} 24 144' mre_x7/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre-x7-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x7/real-${{ matrix.shard }}.json
+            mre_x7/bounded-${{ matrix.shard }}.json
+            mre_x7/repeat-${{ matrix.shard }}.json
+            mre_x7/trace-${{ matrix.shard }}.json
+            mre_x7/trace-${{ matrix.shard }}.log
+            mre_x7/shard-${{ matrix.shard }}.log
+  audit:
+    name: Final native trace origin and 96 E2E PAR2 audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre-x7-frozen-sha-patched-cms-and-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre-x7-shard-*
+          merge-multiple: true
+          path: mre_x7
+      - name: Distinguish native traces, bounded CDCL and full E2E
+        run: |
+          set -euo pipefail
+          (cd mre_x && sha256sum -c source.sha256)
+          sha256sum -c mre_x7/pinned-binary.sha256
+          python3 -u research/mre_x7_native_trace_benchmark.py audit \
+            | tee mre_x7/audit.log
+          grep -q '^MRE_X7_FINAL' mre_x7/audit.log
+          grep '^MRE_X7_FINAL' mre_x7/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MRE-X7-CMS-NATIVE-WATCH-LBD-96-E2E-576-BOUNDED
+          retention-days: 30
+          path: |
+            mre_x7/x7-final.json
+            mre_x7/report.json
+            mre_x7/audit.log
+            mre_x7/manifest.json
+            mre_x7/real-*.json
+            mre_x7/bounded-*.json
+            mre_x7/trace-*.json
