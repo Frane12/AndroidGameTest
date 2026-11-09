@@ -1,0 +1,111 @@
+name: DRNAS X22 - asynchronous C++ reducer versus pure dual SAT race
+on:
+  push:
+    branches: [experiment/drnas-x22-async-cpp-reducer-20261109]
+    paths:
+      - 'research/drnas_x22_parallel_reducer.cpp'
+      - 'research/drnas_x22_parallel_reducer.py'
+      - '.github/workflows/drnas-x22-async-cpp-reducer.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x22-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile C++ helper, exhaustive small CNF test, freeze X21 sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore 24 source SHA and pinned Kissat from X21 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42586193407 -R Frane12/AndroidGameTest -n x21-frozen-sources-binaries -D .
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical g++
+          mkdir -p mre_x22/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x22_parallel_reducer.cpp -o mre_x22/bin/reducer
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py
+          python3 -u research/drnas_x22_parallel_reducer.py selftest
+          python3 -u research/drnas_x22_parallel_reducer.py freeze
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x22-frozen-originals-and-cpp
+          retention-days: 21
+          path: |
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+  paired:
+    name: X22 36 paired E2E 15s measurements shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x22-frozen-originals-and-cpp, path: .}
+      - name: Run six E2E policies on original SHA with CPU accounting
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x22_parallel_reducer.py shard --shard ${{ matrix.shard }} | tee mre_x22/shard-${{ matrix.shard }}.log
+          grep -q '^X22_SHARD_PASS ${{ matrix.shard }} 36$' mre_x22/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x22-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x22/shard-${{ matrix.shard }}.json
+            mre_x22/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 288 paired E2E SHA SAT witnesses UNSAT agreement and PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: x22-frozen-originals-and-cpp, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x22-results-*
+          path: mre_x22
+          merge-multiple: true
+      - name: Fail closed on incomplete results or solver contradictions
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_x22_parallel_reducer.py audit | tee mre_x22/audit.log
+          grep '^X22_FINAL ' mre_x22/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X22-CPP-ASYNC-288-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_x22/manifest.json
+            mre_x22/report.json
+            mre_x22/audit.log
+            mre_x22/shard-*.json
