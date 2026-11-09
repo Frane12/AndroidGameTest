@@ -1,0 +1,137 @@
+name: DRNAS DECOMP3 - root-UP dynamic component separator SHA screen
+on:
+  push:
+    branches: [experiment/drnas-decomp3-rootup-dynamic-screen-20261110]
+    paths:
+      - research/decomp3_rootup_screen.py
+      - .github/workflows/drnas-decomp3-rootup-screen.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: decomp3-rootup-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: 220 exhaustive model-set tests and 24+48 source-SHA freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Recover frozen unchanged EQUIV2 and EQUIV7 original inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_x20/manifest.json
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+      - name: Compile exact native separator scanner and Python graph independent tests
+        run: |
+          set -euo pipefail
+          mkdir -p mre_decomp1/bin mre_decomp3
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/decomp1_incidence.cpp -o mre_decomp1/bin/decomp1_incidence
+          mre_decomp1/bin/decomp1_incidence selftest | tee mre_decomp3/native-selftest.log
+          python3 -m py_compile research/decomp3_rootup_screen.py research/decomp2_exact_bench.py
+          python3 -u research/decomp3_rootup_screen.py selftest | tee mre_decomp3/semantic-selftest.log
+          grep -q '^DECOMP3_SELFTEST_PASS ' mre_decomp3/semantic-selftest.log
+      - name: Source SHA duplicate checks and immutable manifest freeze
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp3_rootup_screen.py freeze | tee mre_decomp3/freeze.log
+          grep -q '^DECOMP3_FREEZE_PASS ' mre_decomp3/freeze.log
+          grep '^DECOMP3_FREEZE_PASS ' mre_decomp3/freeze.log >> "$GITHUB_STEP_SUMMARY"
+          sha256sum mre_decomp1/bin/decomp1_incidence > mre_decomp3/native-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp3-frozen-original-sha-manifest-and-graph-scanner
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp1/bin/decomp1_incidence
+            mre_decomp3/freeze.json
+            mre_decomp3/freeze.log
+            mre_decomp3/semantic-selftest.log
+            mre_decomp3/native-selftest.log
+            mre_decomp3/native-sha256.txt
+  screen:
+    name: DECOMP3 one CPU original vs forced-root incidence shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: {shard: [0,1,2,3]}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp3-frozen-original-sha-manifest-and-graph-scanner
+          path: .
+      - name: Restore immutable source originals and native analyzer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_decomp3/freeze.json
+          chmod +x mre_decomp1/bin/decomp1_incidence
+          sha256sum mre_decomp1/bin/decomp1_incidence
+      - name: Verify source SHA and compare raw versus root-UP incidence exact graph
+        run: |
+          set -euo pipefail
+          python3 -u research/decomp3_rootup_screen.py bench --shard ${{ matrix.shard }} | tee mre_decomp3/shard-${{ matrix.shard }}.log
+          grep -q '^DECOMP3_SHARD_PASS ${{ matrix.shard }} ' mre_decomp3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: decomp3-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_decomp3/shard-${{ matrix.shard }}.json
+            mre_decomp3/shard-${{ matrix.shard }}.log
+  audit:
+    name: Source SHA frozen graph improvement and root assignment audit
+    needs: screen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: decomp3-frozen-original-sha-manifest-and-graph-scanner
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: decomp3-shard-*
+          path: mre_decomp3
+          merge-multiple: true
+      - name: Recover original CNFs and perform strict no-outcome-source matched audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D .
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          python3 -u research/decomp3_rootup_screen.py audit | tee mre_decomp3/audit.log
+          grep -q '^DECOMP3_FINAL ' mre_decomp3/audit.log
+          grep '^DECOMP3_FINAL ' mre_decomp3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DECOMP3-ROOTUP-72-SHA-STRUCTURAL-AUDIT
+          retention-days: 21
+          path: |
+            mre_decomp3/audit.json
+            mre_decomp3/audit.log
+            mre_decomp3/freeze.json
+            mre_decomp3/shard-*.json
