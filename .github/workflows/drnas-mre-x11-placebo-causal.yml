@@ -1,0 +1,150 @@
+name: DRNAS X11 — placebo-controlled 32 SHA 448 paired E2E CMS Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-mre-x11-placebo-causal-20261109]
+    paths:
+      - '.github/workflows/drnas-mre-x11-placebo-causal.yml'
+      - 'research/mre_x11_placebo_causal.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x11-placebo-order-20261109-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore 32 unchanged original CNFs and freeze structural duplicate features
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore X10 pinned original sources and solver backends
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p priorx10 mre_x11 mre_x4/bin built/bin mre5/lib
+          gh run download 42561615100 -R Frane12/AndroidGameTest -n x10-frozen32-cnf-training-policy-binaries -D priorx10
+          test -s priorx10/mre_x10/manifest.json
+          test -s priorx10/mre_x10/train_model.json
+          cp priorx10/mre_x4/bin/native mre_x4/bin/native
+          cp priorx10/built/bin/kissat_4_0_4 built/bin/kissat_4_0_4
+          cp priorx10/mre5/lib/libcryptominisat5.so.5.11 mre5/lib/libcryptominisat5.so.5.11
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          ldd mre_x4/bin/native | grep 'libcryptominisat5.so.5.11'
+      - name: Install fixed CaDiCaL and verify all solver binary SHA
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          sha256sum mre_x4/bin/native built/bin/kissat_4_0_4 /usr/bin/cadical mre5/lib/libcryptominisat5.so.5.11 > mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/mre_x11_placebo_causal.py
+          python3 -u research/mre_x11_placebo_causal.py selftest
+          printf 'p cnf 1 1\n1 0\n' > /tmp/x11-seed-smoke.cnf
+          rc=0
+          built/bin/kissat_4_0_4 --seed=2147483647 /tmp/x11-seed-smoke.cnf > /tmp/x11-kissat-smoke.log || rc=$?
+          test "$rc" -eq 10
+          grep -q '^s SATISFIABLE' /tmp/x11-kissat-smoke.log
+          echo X11_BINARY_AND_SIGNED_SEED_PASS
+      - name: Verify 32 original SHA and sample full duplicate positional structure before solving
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_x11_placebo_causal.py freeze | tee mre_x11/freeze.log
+          grep -q '^X11_FROZEN 32$' mre_x11/freeze.log
+          python3 -u research/mre_x11_placebo_causal.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x11-32-frozen-original-sha-native-binaries-structural
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x11/*.cnf
+            mre_x11/manifest.json
+            mre_x11/structure.json
+            mre_x11/freeze.log
+            mre_x11/binary.sha256
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: X11 56 original SHA matched E2E 15s tests shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x11-32-frozen-original-sha-native-binaries-structural
+          path: .
+      - name: Validate SHA locked CNF and unchanged solver backends
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x11_placebo_causal.py verify
+      - name: Seven-arm original vs identical rewrite vs front50 vs front100 vs shifted vs references
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_x11_placebo_causal.py shard --shard ${{ matrix.shard }} | tee mre_x11/shard-${{ matrix.shard }}.log
+          grep -q '^X11_SHARD_PASS ${{ matrix.shard }} 56$' mre_x11/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x11-result-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x11/shard-${{ matrix.shard }}.json
+            mre_x11/shard-${{ matrix.shard }}.log
+  audit:
+    name: X11 strict 448 E2E PAR2 and placebo-control causal audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x11-32-frozen-original-sha-native-binaries-structural
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x11-result-*
+          merge-multiple: true
+          path: mre_x11
+      - name: Audit all 448 E2E trials source seed status proofs and reference ratios
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_x11_placebo_causal.py audit | tee mre_x11/audit.log
+          grep -q '^X11_FINAL' mre_x11/audit.log
+          grep '^X11_FINAL' mre_x11/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X11-PLACEBO-32SHA-448-E2E-15S-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_x11/manifest.json
+            mre_x11/structure.json
+            mre_x11/report.json
+            mre_x11/audit.log
+            mre_x11/shard-*.json
