@@ -149,10 +149,10 @@ def selftest():
 def freeze():
     a = json.loads(pathlib.Path("mre7_easy/manifest.json").read_text())
     b = json.loads(pathlib.Path("mre_x/manifest.json").read_text())
-    need(len(a["cases"]) == 16 and len(b["cases"]) == 13, "parent source count drift")
+    need(len(a["selected_cases"]) == 16 and len(b["cases"]) == 13, "parent source count drift")
     chosen = {}
     for group, root, arr in (
-            ("MRE10", pathlib.Path("mre7_easy"), a["cases"]),
+            ("MRE10", pathlib.Path("mre7_easy"), a["selected_cases"]),
             ("X4", pathlib.Path("mre_x"), [c for c in b["cases"] if c["sha256"] in X4_SHA])):
         need(group != "X4" or len(arr) == 4, "X4 exact four sources missing")
         for case in arr:
