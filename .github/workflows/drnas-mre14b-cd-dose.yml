@@ -1,0 +1,120 @@
+name: DRNAS MRE14B — Cdepth2 plus D32 D96 dose-controlled 192 paired 30s
+on:
+  push:
+    branches: [experiment/drnas-mre14b-cd-dose-paired-20261109]
+    paths:
+      - 'research/mre14b_cd_dose.py'
+      - '.github/workflows/drnas-mre14b-cd-dose.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre14b-cd-dose-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Truth tables, signed implications and independent C/D proof replay
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre14b_cd_dose.py research/mre13_abcd_parallel.py research/mre12_exact_quotient.py
+          python3 -u research/mre14b_cd_dose.py selftest | tee mre14b-selftest.log
+          grep -q '^MRE14B_SELFTEST_PASS ' mre14b-selftest.log
+      - name: Restore frozen 12 original SHA and two frozen solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42541912605 -R Frane12/AndroidGameTest -n c15d-frozen-originals-and-pinned-backends -D .
+          sha256sum -c c15d_out/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          python3 -u research/mre14b_cd_dose.py verify
+          python3 -u research/mre14b_cd_dose.py smoke | tee mre14b-smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre14b-frozen-12-sha-kissat-cadical
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 4
+          path: |
+            c15d_sources/
+            c15d_out/binary.sha256
+            c8c/bin/instrumented
+            built/bin/kissat_4_0_4
+            mre14b-selftest.log
+            mre14b-smoke.log
+  paired:
+    needs: prepare
+    name: MRE14B 30s matched E2E shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre14b-frozen-12-sha-kissat-cadical
+          path: .
+      - name: Audit immutable source SHA and pinned solver SHA before E2E
+        run: |
+          set -euo pipefail
+          grep -E '(c8c/bin/instrumented|built/bin/kissat_4_0_4)$' c15d_out/binary.sha256 | sha256sum -c
+          chmod +x c8c/bin/instrumented built/bin/kissat_4_0_4
+          python3 -u research/mre14b_cd_dose.py verify
+      - name: Execute 32 randomized-order source-paired SAT/UNSAT 30s trials
+        run: |
+          set -euo pipefail
+          python3 -u research/mre14b_cd_dose.py shard --shard ${{ matrix.shard }} | tee mre14b-shard-${{ matrix.shard }}.log
+          grep -q '^MRE14B_SHARD_PASS ${{ matrix.shard }} 32$' mre14b-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre14b-shard-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            mre14b_out/shard-${{ matrix.shard }}.json
+            mre14b-shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre14b-frozen-12-sha-kissat-cadical
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre14b-shard-*
+          merge-multiple: true
+          path: .
+      - name: Final original-SHA, model, numeric-seed, solver-SHA, proof and PAR2 audit
+        run: |
+          set -euo pipefail
+          grep -E '(c8c/bin/instrumented|built/bin/kissat_4_0_4)$' c15d_out/binary.sha256 | sha256sum -c
+          python3 -u research/mre14b_cd_dose.py audit | tee mre14b-audit.log
+          grep '^MRE14B_FINAL ' mre14b-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MRE14B-CD32-CD96-CONTROLS-192-PAIRED-30S
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre14b_out/report.json
+            mre14b-audit.log
