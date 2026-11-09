@@ -289,7 +289,9 @@ def audit():
 
 def selftest():
     s.selftest()
-    a=s.route(dict(xor4_groups=2,xor4_clause_fraction=0.02,\n                   sample_binary_ratio=0,sample_ternary_ratio=0,\n                   occurrence_degree_cv=0),True)
+    a=s.route(dict(xor4_groups=2,xor4_clause_fraction=0.02,
+                   sample_binary_ratio=0,sample_ternary_ratio=0,
+                   occurrence_degree_cv=0),True)
     need(a[0]=="cms_orig","predictor XOR4 gate failed")
     print("X10_PIPELINE_SELFTEST_PASS",flush=True)
 
