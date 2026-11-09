@@ -318,7 +318,8 @@ int main(int argc,char **argv){
      if(i)cout<<",";
      cout<<"[";
      for(size_t j=0;j<accepted[i].size();++j){
-       if(j)cout<<",";cout<<accepted[i][j];
+       if(j) cout<<",";
+       cout<<accepted[i][j];
      }
      cout<<"]";
    }
