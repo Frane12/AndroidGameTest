@@ -147,7 +147,7 @@ def selftest():
                 vars=rnd.sample(range(1,n+1),k)
                 clauses.append(tuple(v if rnd.randrange(2) else -v for v in vars))
             tests.append(clauses)
-        passes=0;total_candidates=0,;total_selected=0
+        passes=0;total_candidates=0;total_selected=0
         for i,clauses in enumerate(tests):
             n=max(abs(x) for c in clauses for x in c)
             original=temp/"source.cnf"
