@@ -1,0 +1,77 @@
+name: DRNAS SAT analytics — append X9 X10 verified E2E to SQLite
+on:
+  push:
+    branches: [experiment/drnas-analytics-x9x10-20261109]
+    paths:
+      - 'research/sat-analytics-data/ingest_x9_x10_verified.py'
+      - '.github/workflows/drnas-analytics-x9x10-sqlite.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-sat-x9x10-sqlite-append
+  cancel-in-progress: false
+jobs:
+  migrate:
+    name: Fail-closed append 684 audited attempts to historical SQLite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+      - name: Download final audited X9 X10 reports and frozen source manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p x_evidence/x9 x_evidence/x10
+          gh run download 42559879920 -R Frane12/AndroidGameTest -n DRNAS-X9-REPLAY30-300-E2E-15S-PAR2-AUDIT -D x_evidence/x9
+          gh run download 42561615100 -R Frane12/AndroidGameTest -n DRNAS-X10-STRUCTURAL-GATE-32SHA-384E2E-FINAL-PAR2 -D x_evidence/x10
+          for cohort in x9 x10; do
+            test -s "x_evidence/$cohort/manifest.json"
+            test -s "x_evidence/$cohort/report.json"
+          done
+          python3 -m py_compile research/sat-analytics-data/ingest_x9_x10_verified.py
+          echo X9_X10_AUDIT_SOURCE_FILES_READY
+      - name: Apply strictly additive SQLite migration and audit V15 original row counts
+        run: |
+          set -euo pipefail
+          python3 -u research/sat-analytics-data/ingest_x9_x10_verified.py --input x_evidence | tee /tmp/x9x10-analytics.log
+          grep -q '^DRNAS_X9_X10_ANALYTICS_FINAL' /tmp/x9x10-analytics.log
+          DB=research/sat-analytics-data/current/sat_analytics.sqlite
+          python3 - "$DB" <<'PY'
+          import sqlite3,sys
+          c=sqlite3.connect(sys.argv[1])
+          for name,expected in [('mre_x9x10_runs',2),('mre_x9x10_attempts',684),('mre_x9x10_scores',11)]:
+              got=c.execute('SELECT COUNT(*) FROM '+name).fetchone()[0]
+              assert got==expected,(name,got,expected)
+          assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+          print('DRNAS_ANALYTICS_SQLITE_INTEGRITY_OK')
+          PY
+          sha256sum "$DB" | cut -d ' ' -f1 > "$DB.sha256"
+          gzip -n -c "$DB" > "$DB.gz"
+      - name: Commit preserved original database plus append-only evidence to analytics branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite
+          git add -f research/sat-analytics-data/current/sat_analytics.sqlite.gz
+          git add research/sat-analytics-data/current/sat_analytics.sqlite.sha256
+          git add research/sat-analytics-data/current/x9_x10_ingest_audit_20261109.json
+          git status --short
+          git commit -m "data(analytics): append 684 verified X9 X10 E2E trials without touching historical V15 rows"
+          git push origin HEAD:experiment/drnas-analytics-x9x10-20261109
+          echo DRNAS_X9_X10_SQLITE_BRANCH_PUSH_OK
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X9-X10-SQLITE-APPEND-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            research/sat-analytics-data/current/x9_x10_ingest_audit_20261109.json
+            research/sat-analytics-data/current/DRNAS_SAT_UPDATED_FINDINGS_20261109_X9_X10.md
