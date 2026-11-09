@@ -241,6 +241,7 @@ struct ImplicationGraph {
    int novelty=0,fanout=0,bridge=0,shortcut=0,scc_join=0,score=0;
  };
  Feature feature(const Clause& clause,int novelty,const Timer& tim){
+   (void)tim;
    Feature x;x.novelty=novelty;
    if(clause.size()!=2||clause[0]==clause[1]||clause[0]==-clause[1])
       return x;
