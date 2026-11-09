@@ -110,3 +110,32 @@ GitHub Actions latest-attempt job check (not a full artifact-content audit):
 | GF2 reasons reduce CDCL search | T6A Active 16/40 PAR2 1242.089 vs Clean 16/40 1240.934 | Delivered reasons may be redundant or late | Instrument reasons consumed before baseline BCP | Causal advantage vs true runtime Shadow on new SHA |
 
 SQL status records updated in research/drnas_sat_benchmark_history_20261107_ta.sql. This update intentionally contains no invented C11B/C12/C8I PAR2 or UNSAT proof assertions.
+
+
+## 2026-11-09 — Verified follow-up audit: C11B, C12, C8I, C7, MRE X2/X3, T6A
+
+**Evidence provenance:** exact FINAL JSON lines were read from successful GitHub Actions jobs. The first C11B final failed due to `KeyError: c10_structural`, then independent audit-only workflow [42537036902](https://github.com/Frane12/AndroidGameTest/actions/runs/42537036902) checked the original 50 rows without rerunning solvers. SQL check [42537735665](https://github.com/Frane12/AndroidGameTest/actions/runs/42537735665) passed after correcting two invalid evidence_level enum values. SQLite audit reports 48 cohorts, 283 modes, 46 findings, 271 telemetry rows, 38 paired-comparison rows, 18 frontier rows, 38 build-status rows. No frozen originals or main changes.
+
+| Exact source-scoped run | Cohort / cap | Candidate solved | Candidate PAR2_s | Matched reference solved / PAR2_s | Outcome and constraints |
+|---|---|---:|---:|---|---|
+| [C11B original 42535319191](https://github.com/Frane12/AndroidGameTest/actions/runs/42535319191) and [repaired audit 42537036902](https://github.com/Frane12/AndroidGameTest/actions/runs/42537036902) | 5 original SAT SHA x2, 60s | triple 0/10 | 1200.000000 | Kissat 0/10 1200; CaDiCaL noelim 2/10 995.448839 | No transfer; 5/5 source routes to CaDiCaL and missed noelim SAT source. Error was final script KeyError c10_structural, not solver failures. |
+| [C12 42535300094](https://github.com/Frane12/AndroidGameTest/actions/runs/42535300094) | 8 original SHA x2, 30s | C12 hybrid 8/16 | 556.150674 | Kissat 6/16 656.354789, C11 static 6/16 636.240943, CaDiCaL 4/16 740.464353 | Hybrid 15.27% lower PAR2 vs Kissat, 2 additional SAT solves on 1 source. R28-Kissat 6/16 656.272084 nearly identical to Kissat, so benefit cannot be credited to R28 GF2 itself. |
+| [C8I 42534555190](https://github.com/Frane12/AndroidGameTest/actions/runs/42534555190) | 12 official SHA x2, 20s | gate16 2/24 | 880.295279 | plain CaDiCaL 2/24 880.296445 | 0/24 gate decisions; 11/12 original sources timed out for all modes; no gate benefit. |
+| [C7 42523071479](https://github.com/Frane12/AndroidGameTest/actions/runs/42523071479) | 6 development SHA x2, 25s | CMS dedup+nobve 12/12 | 40.227623 | CMS default 11/12 96.434132 | 58.29% lower PAR2, 2.397x score ratio but development-only, external seed repeats not independent. |
+| [MRE X2 42523269582](https://github.com/Frane12/AndroidGameTest/actions/runs/42523269582) | 13 development SHA x4 seeds, 12s | duplicate_spread 52/52 | 85.501258 | original 49/52 160.787333 | Same exact clause multiset and frozen binary. PAR2 down 46.82%; UNSAT independent LRAT absent. |
+| [MRE X3 42524524856](https://github.com/Frane12/AndroidGameTest/actions/runs/42524524856) | 5 development SHA x4 seeds, 12s | spread100 20/20 | 32.361865 | original 17/20 106.722620 | PAR2 down 69.68%; spread25 worsens PAR2 to 120.058033. Separate 84 bounded CDCL diagnostics are not E2E. |
+| [T6A 42485138094](https://github.com/Frane12/AndroidGameTest/actions/runs/42485138094) | 20 frozen original SHA x2, 20/30s | T6A Active 16/40 | 1242.088566 | Clean 16/40 1240.933749; Shadow 16/40 1241.929969 | 44.86% lower cumulative GF2 certification cost than T5 Active (7.512506->4.142488s), but Active 0.158597s worse than matched Shadow; 48 completed reason clauses without proven PAR2 benefit. |
+
+**Accuracy boundaries:** SAT witnesses checked on unchanged original CNFs where each workflow reports them; comparison of UNSAT statuses to prior reference is not an independently checked LRAT proof. C8I/C11B/C12 external solver repeats not independent seeds. C11B official source list was frozen independently of previous C8D/C9c/C10b/C11a indexed developments but this is not global blindness. C7/X2/X3 are development sets. Comparisons across separate rows are not paired.
+
+### Open negative findings, 2026-11-09
+
+| Hypothesis | Counter-evidence | Most likely open mechanism | Next single falsifiable test |
+|---|---|---|---|
+| Frozen three-way backend router generalizes | C11B triple 0/10 vs CaDiCaL noelim 2/10 | Source-only rule failed to choose noelim on one SAT source | Hold rule frozen; validate source-disjoint randomized original SAT/UNSAT without tuning on C11B |
+| Early BVE gate improves new official formulas | C8I 0/24 actual gate decisions, no PAR2 gain | Trigger not reached/observed before stop; source and solver process behavior to inspect | Reconstruct why no gate event in logs on a positive source before scheduling a larger new benchmark |
+| C12 speedup comes from certified GF2 rather than routing | C12 R28+Kissat ~ identical to Kissat; source b2c2008... gains from selecting Kissat over C11 static CaDiCaL timeout | Backend-selection effect dominates observed gain | C13 factorial source-paired ablation with hybrid minus GF2/early BVE and corresponding no-op controls |
+| GF2 propagation helps beyond runtime shadow | T6A Active loses 0.158597s to Shadow despite 48 completed reasons | Late/redundant CDCL clauses and preprocessing overhead | Log first nonredundant BCP consumption of certified reason; prove benefit on new original SHA |
+| All duplicate placement dose improves CDCL | MRE X3 spread25 loses vs original | Nonlinear order-dependent branching/restarts | Repeat fixed-dose interpolation on new SHA-disjoint sources with identical order multiset and multiple seeds |
+
+**Active test at time of this audit:** [C13 follow-up 42537515529](https://github.com/Frane12/AndroidGameTest/actions/runs/42537515529) has successful source preparation, four E2E shards in progress, no final decision. Earlier [C13 42537361190](https://github.com/Frane12/AndroidGameTest/actions/runs/42537361190) failed at preparation because missing `research/c13_r28_bve_prospective.py`; newer branch already contains workflow correction, so do not duplicate. This section records observations without launching a new cohort.
