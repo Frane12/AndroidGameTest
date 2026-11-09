@@ -20,7 +20,7 @@ TARGET=32
 SHARDS=8
 TRAIN=30
 X9_ROOT=pathlib.Path('priorx9/mre_x9')
-X9_REPORT=pathlib.Path('priorx9report/mre_x9/report.json')
+X9_REPORT=pathlib.Path('priorx9report/report.json')
 X6_ROOT=pathlib.Path('priorx6/mre_x6fresh')
 FEATURES=('log_vars','log_clauses','log_bytes','clauses_per_var',
           'sample_duplicate_rate','early_duplicate_fraction','binary_rate',
