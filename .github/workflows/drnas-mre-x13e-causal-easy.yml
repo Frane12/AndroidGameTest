@@ -1,0 +1,141 @@
+name: DRNAS X13E — 2 X13C positives 45s plus six reference-easy 15s 64 E2E
+on:
+  push:
+    branches: [experiment/drnas-mre-x13e-certified-easy-20261109]
+    paths:
+      - '.github/workflows/drnas-mre-x13e-causal-easy.yml'
+      - 'research/mre_x13e_reduction_easy.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x13e-causal-easy-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Restore original X6fresh SHA, reference-select six unseen minisat1m sources and freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 36
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen original CNFs and pinned native/Kissat binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_x6fresh mre_x13e mre_x4/bin built/bin mre5/lib mre7_easy mre11b_blind
+          gh run download 42557116984 -R Frane12/AndroidGameTest -n x6fresh-eight-new-source-sha-frozen-CMS-Kissat -D .
+          gh run download 42505042425 -R Frane12/AndroidGameTest -n mre7e-pilot16-frozen-originals-and-native-binaries -D .x13e-prior7
+          gh run download 42511069503 -R Frane12/AndroidGameTest -n mre11b-SHA8-frozen-2021-23-Mini1m-CMS-Kissat-CaDiCaL -D .x13e-prior11
+          cp .x13e-prior7/mre7_easy/manifest.json mre7_easy/manifest.json
+          cp .x13e-prior11/mre11b_blind/manifest.json mre11b_blind/manifest.json
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x6fresh/binary.sha256
+      - name: Install CaDiCaL, run equivalence selftest, reference-only eligibility and lock manifests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          ldd mre_x4/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/mre_x13e_reduction_easy.py
+          python3 -u research/mre_x13e_reduction_easy.py selftest
+          python3 -u research/mre_x13e_reduction_easy.py freeze | tee mre_x13e/freeze.log
+          python3 -u research/mre_x13e_reduction_easy.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x13e-frozen-original-sha-sources-backends
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_x6fresh/*.cnf
+            mre_x6fresh/manifest.json
+            mre_x6fresh/binary.sha256
+            mre_x13e/manifest.json
+            mre_x13e/selection-trace.json
+            mre_x13e/freeze.log
+            mre_x13e/easy/*.cnf
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: X13E SHA-paired original CNF 2seed 4arm hard45/easy15 shard ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x13e-frozen-original-sha-sources-backends
+          path: .
+      - name: Verify frozen hashes and run randomized paired full E2E solver comparisons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x6fresh/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x13e_reduction_easy.py verify
+          python3 -u research/mre_x13e_reduction_easy.py shard --shard ${{ matrix.shard }} | tee mre_x13e/shard-${{ matrix.shard }}.log
+          grep -q '^X13E_SHARD_PASS ${{ matrix.shard }} 8$' mre_x13e/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x13e-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_x13e/shard-${{ matrix.shard }}.json
+            mre_x13e/shard-${{ matrix.shard }}.log
+  audit:
+    name: X13E 64 trials original SAT witness and cross-solver UNSAT audited PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x13e-frozen-original-sha-sources-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x13e-shard-*
+          merge-multiple: true
+          path: mre_x13e
+      - name: Aggregate hard/easy PAR2 with original SHA, paired seeds and separate baselines
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x6fresh/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib:${LD_LIBRARY_PATH:-}"
+          python3 -u research/mre_x13e_reduction_easy.py audit | tee mre_x13e/audit.log
+          grep -q '^X13E_FINAL' mre_x13e/audit.log
+          grep '^X13E_FINAL' mre_x13e/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X13E-64-E2E-HARD45-EASY15-PAR2-AUDITED
+          retention-days: 30
+          path: |
+            mre_x13e/manifest.json
+            mre_x13e/selection-trace.json
+            mre_x13e/report.json
+            mre_x13e/audit.log
+            mre_x13e/shard-*.json
