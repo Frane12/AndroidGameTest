@@ -153,12 +153,6 @@ struct WatchedRUP{
 };
 
 
-static string family(const Clause &c){
- if(c.empty())return "empty";
- int pos=0;
- for(int lit:c)if(lit>0)++pos;
- return "length"+to_string(c.size())+"_pos"+to_string(pos);
-}
 static void write_output(const CNF &original,const vector<Clause> &extra,const string &path){
  ofstream out(path);if(!out)throw runtime_error("cannot create filtered CNF");
  out<<"p cnf "<<original.n<<" "<<(original.cs.size()+extra.size())<<"\n";
