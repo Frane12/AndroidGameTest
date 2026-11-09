@@ -1,0 +1,125 @@
+name: DRNAS LEGO3 - diverse UP grammar 480 paired short5 proof E2E
+on:
+  push:
+    branches: [experiment/drnas-lego3-up-learning-diverse-short5-20261109]
+    paths:
+      - 'research/drnas_lego3_up_learning.py'
+      - 'research/DRNAS_LEGO3_UP_LEARNING_PROTOCOL.md'
+      - '.github/workflows/drnas-lego3-diverse-up-short5.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-lego3-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile native, proof/BPC selftest, train 104 diverse sources and SHA-freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Recover original frozen X22 sources and audited UNSAT reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D .
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n DRNAS-X22-CPP-ASYNC-288-E2E-FINAL -D prior_x22
+          test -s prior_x22/report.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cadical
+          mkdir -p mre_x24/bin mre_lego1 mre_lego2 mre_lego3
+          g++ -O2 -std=c++17 -Wall -Wextra -pedantic research/drnas_x24_gf2_proof_first.cpp -o mre_x24/bin/gf2_proof
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_x22_parallel_reducer.py research/drnas_x24_gf2_proof_first.py research/drnas_lego1_proof_grammar.py research/drnas_lego2_positive_real.py research/drnas_lego3_up_learning.py
+          python3 -u research/drnas_lego3_up_learning.py selftest
+          python3 -u research/drnas_lego3_up_learning.py freeze | tee mre_lego3/freeze.log
+          grep -q '^LEGO3_FROZEN ' mre_lego3/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lego3-frozen-original-train-eval-and-native
+          retention-days: 21
+          path: |
+            mre_x24/bin/gf2_proof
+            mre_lego3/manifest.json
+            mre_lego3/model.json
+            mre_lego3/train_report.json
+            mre_lego3/train_summary.json
+            mre_lego3/freeze.log
+            mre_x22/cases/
+            mre_x22/manifest.json
+            mre_x22/bin/reducer
+            built/bin/kissat_4_0_4
+            prior_x22/report.json
+  paired:
+    name: LEGO3 60 E2E paired 5s proof and UP measures shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: lego3-frozen-original-train-eval-and-native, path: .}
+      - name: Five arms matched original SHA, 5s strict E2E, 2 logical CPUs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_lego3_up_learning.py shard --shard ${{ matrix.shard }} | tee mre_lego3/shard-${{ matrix.shard }}.log
+          grep -q '^LEGO3_SHARD_PASS ${{ matrix.shard }} 60$' mre_lego3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lego3-results-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_lego3/shard-${{ matrix.shard }}.json
+            mre_lego3/shard-${{ matrix.shard }}.log
+  audit:
+    name: LEGO3 final 480 original SHA proof/UP PAR2 and CPU separated-by-cohort audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: lego3-frozen-original-train-eval-and-native, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lego3-results-*
+          merge-multiple: true
+          path: mre_lego3
+      - name: Verify paired SHA provenance, held-out positive and negative and PAR2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x24/bin/gf2_proof mre_x22/bin/reducer built/bin/kissat_4_0_4
+          python3 -u research/drnas_lego3_up_learning.py audit | tee mre_lego3/audit.log
+          grep '^LEGO3_FINAL ' mre_lego3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-LEGO3-480-DIVERSE-UP-LEARNED-SHORT5-FINAL
+          retention-days: 30
+          path: |
+            mre_lego3/report.json
+            mre_lego3/model.json
+            mre_lego3/train_report.json
+            mre_lego3/train_summary.json
+            mre_lego3/manifest.json
+            mre_lego3/audit.log
+            mre_lego3/shard-*.json
