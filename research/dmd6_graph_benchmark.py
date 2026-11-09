@@ -69,7 +69,7 @@ def check():
     m=json.loads((ROOT/"manifest.json").read_text())
     b=bench_settings()
     for k in ("protocol","cases","arms","cap_s","reps","shards","expected_trials","training_excluded_SHA"):
-        need(m[k]==b[k],"frozen manifest drift "+k)
+        need(m[k]==(list(b[k]) if k=="arms" else b[k]),"frozen manifest drift "+k)
     for s,h in m["native_bins"].items():
         need(hashfile(ROOT/"bin"/s)==h,"native binary SHA changed "+s)
     for s,h in m["source_codes"].items():
