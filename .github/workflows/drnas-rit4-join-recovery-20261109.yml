@@ -1,0 +1,62 @@
+name: DRNAS RIT4 - immutable SHA join recovery
+on:
+  push:
+    branches:
+      - experiment/drnas-rit4-equiv20-structure-join-20261109
+    paths:
+      - .github/workflows/drnas-rit4-join-recovery-20261109.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    name: Recover 24 structural SHA and audit 384 original E2E rows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download immutable source, recovered E2E and completed RIT4 scans
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p frozen recovered rit4
+          gh run download 42607281345 -R Frane12/AndroidGameTest -n equiv2-frozen-source-and-tested-SCC -D frozen
+          gh run download 42608986438 -R Frane12/AndroidGameTest -n DRNAS-EQUIV2-384-AUDITED-RECOVERED -D recovered
+          gh run download 42609607723 -R Frane12/AndroidGameTest -n rit4-scan-0 -D rit4
+          gh run download 42609607723 -R Frane12/AndroidGameTest -n rit4-scan-1 -D rit4
+          test -s frozen/mre_x20/manifest.json
+          test -s frozen/mre_equiv2/manifest.json
+          test -s recovered/mre_equiv2/manifest.json
+          cmp frozen/mre_equiv2/manifest.json recovered/mre_equiv2/manifest.json
+          test -s recovered/mre_equiv2/report.json
+          for i in 0 1; do test -s "rit4/shard-$i.json"; done
+          for i in 0 1 2 3 4 5 6 7; do test -s "recovered/mre_equiv2/shard-$i.json"; done
+          echo "RIT4_RECOVERY_ARTIFACTS_SHA_MANIFEST_OK"
+      - name: Fail-closed original SHA, SAT witness, UNSAT consensus and PAR2 join
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_rit4_equiv20_join.py
+          python3 -u research/drnas_rit4_equiv20_join.py join \
+            --manifest frozen/mre_x20/manifest.json \
+            --results rit4 \
+            --equiv2 recovered/mre_equiv2 | tee rit4/audit.log
+          grep -q '^RIT4_FINAL ' rit4/audit.log
+          grep '^RIT4_FINAL ' rit4/audit.log >> "$GITHUB_STEP_SUMMARY"
+          test -s rit4/summary.json
+          test -s rit4/joined.json
+          test -s rit4/joined.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-RIT4-X20-EQUIV2-SHA-JOIN-RECOVERED
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            rit4/joined.csv
+            rit4/joined.json
+            rit4/summary.json
+            rit4/audit.log
