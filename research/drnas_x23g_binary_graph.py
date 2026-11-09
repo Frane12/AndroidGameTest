@@ -235,6 +235,8 @@ def verify():
     need(m["code_sha256"]==digest(__file__) and
          m["x22_manifest_sha256"]==digest(x22.ROOT/"manifest.json"),
          "code/source manifest drift")
+    need(m["x22_reference_report_sha256"]==digest("prior_x22/report.json"),
+         "prior-X22 original-solver reference report changed")
     need([c["sha256"] for c in m["cases"]]==
          [c["sha256"] for c in earlier["cases"]],"source roster drift")
     return m
@@ -248,6 +250,7 @@ def freeze():
                for c in prior["cases"]],
         parent_x23_run=42593899719,parent_x22_run=42591977333,
         x22_manifest_sha256=digest(x22.ROOT/"manifest.json"),
+        x22_reference_report_sha256=digest("prior_x22/report.json"),
         code_sha256=digest(__file__),
         policy_frozen_before_trails=True,
         windows=4,max_sample_bytes=MAX_WINDOW_BYTES,
@@ -339,36 +342,39 @@ def audit():
         seen.add(k);by_sha[r["original_sha256"]].append(r)
         if r["status"]=="SAT":
             need(r["SAT_original_witness_verified"],"missing original witness")
-    originals={}
+    reference=json.loads(pathlib.Path("prior_x22/report.json").read_text())
+    originals=reference["confirmed_original_UNSAT"]
+    need(set(originals)==set(by_sha),
+         "X22 original-reference coverage incomplete")
     for sha,part in by_sha.items():
         statuses={r["status"] for r in part if r["status"]!="TIMEOUT"}
         need(len(statuses)<=1,"solver SAT/UNSAT disagreement")
-        # Includes X22 original-UNSAT cross-check only if BOTH original
-        # reference arms are present. None are in X23G; do not silently count.
-        originals[sha]=False
+        if "SAT" in statuses:
+            need(not originals[sha],"SAT contradicts X22 original UNSAT")
     scores={}
     for arm in ARMS:
         subset=[r for r in rows if r["arm"]==arm]
-        accepted=[r for r in subset if r["status"]=="SAT"]
+        accepted=[r for r in subset if r["status"]=="SAT" or
+                  (r["status"]=="UNSAT" and originals[r["original_sha256"]])]
         total=sum(r["E2E_s"] if r in accepted else 2*CAP for r in subset)
         scores[arm]=dict(n=len(subset),verified_sat=len(accepted),
-          unsat_with_independent_LRAT=0,
-          unsat_not_independently_certified=sum(r["status"]=="UNSAT" for r in subset),
-          PAR2_verified_sat_only_s=round(total,5),
+          UNSAT_original_Kissat_CaDiCaL_agreement_no_LRAT=sum(r["status"]=="UNSAT" for r in accepted),
+          unconfirmed_UNSAT=sum(r["status"]=="UNSAT" and r not in accepted for r in subset),
+          PAR2_agreement_s=round(total,5),
           CPU_s=round(sum(r["child_cpu_s"] for r in subset),5),
           reducer_runs=sum(r["route"]=="race_quotient" for r in subset),
           early_fallbacks=sum(r["route"]=="race_original" for r in subset),
           graph_detected_aliases=sum(r["graph"].get("signed_aliases",0) for r in subset),
           actual_replayed_aliases=sum(r["aliases_replayed"] for r in subset),
           graph_probe_total_s=round(sum(r["graph_probe_s"] for r in subset),5))
-    reference=scores["race_original"]["PAR2_verified_sat_only_s"]
-    for s in scores.values():
-        s["delta_PAR2_vs_race_pct"]=round(
-            100*(s["PAR2_verified_sat_only_s"]/reference-1),4)
+    baseline=scores["race_original"]["PAR2_agreement_s"]
+    for score in scores.values():
+        score["delta_PAR2_vs_race_pct"]=round(
+            100*(score["PAR2_agreement_s"]/baseline-1),4)
     report=dict(protocol=PROTO,source_count=24,total_trials=EXPECTED,
         scores=scores,source_sha_unchanged=True,not_blind=True,
         independent_UNSAT_LRAT=False,
-        PAR2_accounting="SAT-witness-verified only; UNSAT charged timeout penalty",
+        PAR2_accounting="SAT original-witness verified; UNSAT accepted only with pinned X22 original Kissat+CaDiCaL agreement, not LRAT",
         precursor_X23=42593899719,precursor_X22=42591977333)
     save(ROOT/"report.json",report)
     print("X23G_FINAL",json.dumps(scores,sort_keys=True),flush=True)
