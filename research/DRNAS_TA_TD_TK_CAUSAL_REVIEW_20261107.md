@@ -182,3 +182,38 @@ SQL status records updated in research/drnas_sat_benchmark_history_20261107_ta.s
 **Follow-up**: [C15D 42541912605](https://github.com/Frane12/AndroidGameTest/actions/runs/42541912605) already started on branch `experiment/drnas-c15d-no-vivify-20261109` commit `88f4476cb86b0102956d2c6df4a90a880be7cf4f`. Preparation succeeded and six development+prospective paired benchmark shards are in progress at this report. Do not create competing no-vivify test, or assert its solved/PAR2 before final audit.
 
 **Hypothesis to falsify:** selectively disable vivification by an independently observable, pre-solution signal, without losing solves on new source-disjoint SAT and UNSAT. Reject if no prospectively paired solved/PAR2 advantage versus the frozen default and a no-elim control, or if UNSAT model/proof consistency fails. Never select by source hash or tune against the C14/C15D holdout.
+
+
+## 2026-11-09 — completed C15D and proof-preserving MRE12 (source-scoped audit)
+
+### C15D — selective no-vivify remains an experiment, not a permanent switch
+
+[Final C15D 42541912605](https://github.com/Frane12/AndroidGameTest/actions/runs/42541912605) completed success, 6/6 shards, 144/144 matched 30s attempts. Frozen 12 original sources (6 development, 6 new-to-indexed previous history), 3 repeats without independently varied solver seeds, four arms; SAT original witness checked and UNSAT status reference-matched without independent LRAT.
+
+| C15D cohort | no-vivify solved / PAR2s | matched default solved / PAR2s | Kissat solved / PAR2s |
+|---|---|---|---|
+| C14 development | 9/9 / 44.350261 | 6/9 / 211.261324 | 6/9 / 217.847413 |
+| C8H development | 9/9 / 13.869957 | 9/9 / 10.313095 | 9/9 / 16.334644 |
+| Earlier-new official sources | 0/18 / 1080.0 | 0/18 / 1080.0 | **3/18 / 950.119349** |
+| Total, NOT a blind generalization statistic | 18/36 / 1138.220218 | 15/36 / 1301.574419 | 18/36 / 1184.301406 |
+
+The apparent aggregate C15D 12.55% lower PAR2 than default is driven by already-known development instances. **No prospective advantage** was demonstrated; permanent default disabling is rejected. A runtime selector may be explored, but must be falsified on new family-disjoint original SHA, not trained on these outcomes.
+
+### MRE12 — exact signed equality quotient with original-implication proof
+
+The new branch [experiment/drnas-mre12-exact-scc-quotient-20261109](https://github.com/Frane12/AndroidGameTest/tree/experiment/drnas-mre12-exact-scc-quotient-20261109) implements SCC detection in the binary implication graph and **independent two-way path replay using only original binary clauses**. An alias v := signed representative is applied only if original F entails both directions. Q(F) is solution-equivalent **under explicit reconstruction/projection**, and its SAT witness is checked on unchanged source F. Proof rejection or resource limit means untouched F; source SHA unchanged. This is not arbitrary same-assignment equivalence for removed variables.
+
+[Original 96-trial run 42544834313](https://github.com/Frane12/AndroidGameTest/actions/runs/42544834313): prepare PASS, 4/4 paired 8s shards PASS. Final audit failed only because downloaded shard JSONs nested one extra directory. [Audit-only recovery 42545266420](https://github.com/Frane12/AndroidGameTest/actions/runs/42545266420) completed SUCCESS **using all 96 frozen original rows without rerunning solvers**. Local and GitHub 506 small-CNF 6,232 assignment equivalence checks + intentionally tampered proof rejection PASSED.
+
+| MRE12 arm | Solved | PAR2s | Actual intervention |
+|---|---:|---:|---|
+| baseline unchanged CaDiCaL | **10/24** | **245.816939** | none |
+| exact SCC quotient | 8/24 | 265.190497 | 2/24 trials on ONE official original, 48 independently replayed signed aliases per intervention |
+| selective no-vivify | 8/24 | 265.246671 | 2/24 interventions on the same source; unvalidated gate threshold >=2 aliases |
+| shadow | 8/24 | 265.318308 | full prepass, unchanged original |
+
+No original SAT witness violations were observed. **No E2E benefit**: exact quotient PAR2 7.8813% higher than baseline. Two baseline successes on prior C14 UNSAT source bf8c8761... at PAR2 13.163808 became timeouts for quotient, shadow, and selective no-vivify, even though they had zero aliases on that source. This directly isolates a crucial failure: **preparation overhead rather than an unsound transform or quotient choice** consumed enough of the 8-second budget to lose solves. On prior official source e67d733d... the 48 proof-verified equalities were activated in both quotient repeats, but all arms timed out.
+
+The tested selector **did not identify the known C14 NoVivify-winning SAT source** (zero certified SCC aliases), so do not promote the >=2 SCC-alias NoVivify gate. This is an empirical counterexample to the *selector*, not to Boolean algebra or logical equivalence.
+
+**Next shortest falsifiable move:** reduce the cost of eligibility detection to an extremely cheap, bounded prepass; seek provable equalities from XOR/GF(2) only where source structure supports them and measure real *consumed* CDCL effect. Compare baseline, true shadow, quotient and independent no-vivify on new SHA before adoption. Keep all logical proof steps and original-source witness reconstruction. No unsound speed claim, no P/NP claim, no automatic merge.
