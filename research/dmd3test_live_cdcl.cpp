@@ -154,7 +154,7 @@ static void check_model(CaDiCaL::Solver& s,const Formula& f){
  }
 }
 static void selftest(){
- vector<Clause> clauses={{1,2},{1,2,3}};
+ vector<Clause> clauses={{1,2,3}};
  Watch w(3,clauses);
  w.notify_new_decision_level();
  w.notify_assignment({-1});
