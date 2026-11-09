@@ -1,0 +1,139 @@
+name: DRNAS X8 WC1 — unofficial 2026 middle World Cup Kissat CaDiCaL CMS 16 originals
+on:
+  push:
+    branches: [experiment/drnas-x8-worldcup-mid16-20261109]
+    paths: ['.github/workflows/drnas-x8-worldcup-mid16.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x8-unofficial-worldcup-mid16-20261109
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Freeze 2026 medium originals and pin 3 reference solver binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recover exact X8 CryptoMiniSat 5.11 binary, Kissat 4.0.4 and CaDiCaL 1.7.3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p wc1_bin wc1_history/c13 wc1_history/c14nv wc1_history/x5 wc1_sources wc1_out
+          gh run download 42558264803 -R Frane12/AndroidGameTest -n mre-x8-frozen-sha-patched-cms-and-inputs -D wc1_bin
+          gh run download 42537515529 -R Frane12/AndroidGameTest -n c13-pinned-backends-and-frozen-official-SHA -D .
+          gh run download 42527674101 -R Frane12/AndroidGameTest -n mre-x5-official-2026-source-only-frozen-before-solvers -D wc1_history/x5
+          gh run download 42552186899 -R Frane12/AndroidGameTest -n c14nv-frozen-originals-and-pinned-backends -D wc1_history/c14nv
+          cp -a c13_sources wc1_history/c13/
+          cp -a prior_c9c prior_c10b prior_c12 wc1_history/c13/
+          (cd wc1_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x wc1_bin/mre_x8/bin/native built/bin/kissat_4_0_4 c8c/bin/plain
+          test "$(c8c/bin/plain --version)" = 1.7.3
+          ldd wc1_bin/mre_x8/bin/native | grep 'libcryptominisat5.so.5.11'
+          python3 -m py_compile research/drnas_x8_worldcup_mid16.py
+          python3 -u research/drnas_x8_worldcup_mid16.py selftest
+      - name: Preregister medium score strata and freeze original SHA BEFORE local solver timing
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x8_worldcup_mid16.py freeze | tee wc1_out/freeze.log
+          grep -q '^X8_WC1_FROZEN' wc1_out/freeze.log
+          (cd wc1_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x8_worldcup_mid16.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x8-wc1-source-only-locked-official26-medium-and-pinned-solver-binaries
+          retention-days: 25
+          compression-level: 6
+          path: |
+            wc1_sources/*.cnf
+            wc1_sources/manifest.json
+            wc1_sources/source.sha256
+            wc1_history/**/manifest.json
+            wc1_history/**/report.json
+            wc1_out/freeze.log
+            wc1_bin/mre_x8/bin/native
+            wc1_bin/mre_x8/lib/libcryptominisat5.so.5.11
+            wc1_bin/mre_x8/pinned-binary.sha256
+            built/bin/kissat_4_0_4
+            c8c/bin/plain
+            c13_bin/binary.sha256
+  trials:
+    needs: prepare
+    name: WC1 5 arms two repeats matched SHA 25s E2E shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x8-wc1-source-only-locked-official26-medium-and-pinned-solver-binaries
+          path: .
+      - name: Run frozen X8 and global references on exactly the same original formulas
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/wc1_bin/mre_x8/lib:${LD_LIBRARY_PATH:-}"
+          (cd wc1_sources && sha256sum -c source.sha256)
+          (cd wc1_bin && sha256sum -c mre_x8/pinned-binary.sha256)
+          sha256sum -c c13_bin/binary.sha256
+          chmod +x wc1_bin/mre_x8/bin/native built/bin/kissat_4_0_4 c8c/bin/plain
+          python3 -u research/drnas_x8_worldcup_mid16.py verify
+          python3 -u research/drnas_x8_worldcup_mid16.py shard --shard ${{ matrix.shard }} \
+            | tee wc1_out/shard-${{ matrix.shard }}.log
+          grep -q '^X8_WC1_SHARD_PASS ${{ matrix.shard }}' wc1_out/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x8-wc1-shard-${{ matrix.shard }}
+          retention-days: 25
+          compression-level: 6
+          path: |
+            wc1_out/shard-${{ matrix.shard }}.json
+            wc1_out/shard-${{ matrix.shard }}.log
+  final:
+    needs: trials
+    name: Final exact-SHA 5 arm PAR2 solved wins losses and regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x8-wc1-source-only-locked-official26-medium-and-pinned-solver-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x8-wc1-shard-*
+          merge-multiple: true
+          path: wc1_out
+      - name: Verify complete pairing and all original SAT witnesses then calculate PAR2
+        run: |
+          set -euo pipefail
+          (cd wc1_sources && sha256sum -c source.sha256)
+          python3 -u research/drnas_x8_worldcup_mid16.py audit | tee wc1_out/audit.log
+          grep -q '^X8_WC1_FINAL' wc1_out/audit.log
+          grep '^X8_WC1_FINAL' wc1_out/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-X8-WC1-UNOFFICIAL-MID16-KISSAT-CADICAL-CMS-PAR2
+          retention-days: 30
+          path: |
+            wc1_out/report.json
+            wc1_out/audit.log
+            wc1_out/shard-*.json
+            wc1_sources/manifest.json
