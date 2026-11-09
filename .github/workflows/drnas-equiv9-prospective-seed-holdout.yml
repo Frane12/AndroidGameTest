@@ -1,0 +1,180 @@
+name: DRNAS EQUIV9 - prospective 16 new original SHA cold-restart single-CPU holdout
+run-name: EQUIV9 4 smoke + 12 prospective SHA 6 arms 168 E2E one CPU
+on:
+  push:
+    branches: [experiment/drnas-equiv9-prospective-sha-seed-20261110]
+    paths:
+      - .github/workflows/drnas-equiv9-prospective-seed-holdout.yml
+      - research/drnas_equiv9_prospective_seed_holdout.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv9-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-only official SHA disjoint freeze + pinned solver and SAT selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore historic registries and immutable reference solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42612525200 -R Frane12/AndroidGameTest -n equiv5-frozen-originals-binaries-and-source-options -D .
+          gh run download 42718326798 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p prior_equiv6 prior_x22
+          gh run download 42614287853 -R Frane12/AndroidGameTest -n equiv6-sourceonly-16SHA-pinned-binaries -D prior_equiv6
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D prior_x22
+          test -s mre_x20/manifest.json
+          test -s prior_x22/mre_x22/manifest.json
+          test -s prior_equiv6/mre_equiv6/manifest.json
+          test -s mre_equiv7/manifest.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv7/bin/cadical_3_0_1
+          test -s mre5/lib/libcryptominisat5.so.5.11
+      - name: Syntax and six-arm original SAT witness selftest
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -m py_compile research/drnas_equiv9_prospective_seed_holdout.py
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py selftest | tee mre_equiv9-selftest.log
+          grep -q '^EQUIV9_SELFTEST_PASS 6$' mre_equiv9-selftest.log
+      - name: Freeze 4 smoke + 12 disjoint prospective original CNF before any solver outcome
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_equiv9
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py freeze | tee mre_equiv9/freeze.log
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py verify
+          grep -q '^EQUIV9_FROZEN ' mre_equiv9/freeze.log
+          test "$(find mre_equiv9/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv9-16-sourceonly-SHA-frozen-original-binaries
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_equiv7/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_equiv9/cases/*.cnf
+            mre_equiv9/manifest.json
+            mre_equiv9/selection-progress.json
+            mre_equiv9/freeze.log
+            mre_equiv9-selftest.log
+  smoke:
+    name: Strict 4 smoke SHA x six arms x one seed 12s one-core
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv9-16-sourceonly-SHA-frozen-original-binaries
+          path: .
+      - name: SHA validated original E2E SAT witnesses and smoke comparisons
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py verify
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py shard --kind smoke --shard 0 | tee mre_equiv9/smoke-0.log
+          grep -q '^EQUIV9_SHARD_PASS smoke 0 24$' mre_equiv9/smoke-0.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv9-smoke-0
+          retention-days: 21
+          path: |
+            mre_equiv9/smoke-0.json
+            mre_equiv9/smoke-0.log
+  holdout:
+    name: 12 prospective SHA matched x six arms x 2 seeds 20s shard ${{ matrix.shard }}
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv9-16-sourceonly-SHA-frozen-original-binaries
+          path: .
+      - name: Frozen SHA original witness verified E2E CPU/wall PAR2 trials
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py verify
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py shard --kind holdout --shard ${{ matrix.shard }} | tee mre_equiv9/holdout-${{ matrix.shard }}.log
+          grep -q '^EQUIV9_SHARD_PASS holdout ${{ matrix.shard }} 24$' mre_equiv9/holdout-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv9-holdout-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_equiv9/holdout-${{ matrix.shard }}.json
+            mre_equiv9/holdout-${{ matrix.shard }}.log
+  audit:
+    name: Strict final 168 original SHA paired E2E PAR2 SAT witness and UNSAT agreement
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv9-16-sourceonly-SHA-frozen-original-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv9-smoke-*
+          path: mre_equiv9
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv9-holdout-*
+          path: mre_equiv9
+          merge-multiple: true
+      - name: Fail closed SHA, paired outcomes, SAT witnesses and PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py verify
+          python3 -u research/drnas_equiv9_prospective_seed_holdout.py audit | tee mre_equiv9/audit.log
+          grep '^EQUIV9_FINAL ' mre_equiv9/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV9-PROSPECTIVE-SHA-168-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_equiv9/manifest.json
+            mre_equiv9/report.json
+            mre_equiv9/audit.log
+            mre_equiv9/smoke-0.json
+            mre_equiv9/holdout-*.json
