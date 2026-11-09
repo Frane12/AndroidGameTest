@@ -1,0 +1,113 @@
+name: DRNAS DMD2 - procedural algebra proof chains 320 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-dmd2-procedural-algebra-20261109]
+    paths:
+      - .github/workflows/drnas-dmd2-procedural.yml
+      - research/dmd2_procedural.py
+      - research/dmd2_bench.py
+      - research/DMD2_PROCEDURAL_PROTOCOL.md
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-dmd2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  proof_tests:
+    name: Compile native algebra and test 94 exhaustive semantic cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile old immutable ANF engine
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd2/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd2/bin/dmd1_anf
+      - name: Exhaustive DMD1 and DMD2 chain replay selftests
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd1_bench.py selftest | tee dmd1-dmd2-compat.log
+          python3 -u research/dmd2_bench.py selftest | tee dmd2-selftest.log
+          grep -q '^DMD1_SELFTEST_PASS ' dmd1-dmd2-compat.log
+          grep -q '^DMD2_SELFTEST_PASS ' dmd2-selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd2-proof-tests
+          retention-days: 21
+          path: |
+            dmd1-dmd2-compat.log
+            dmd2-selftest.log
+  bench:
+    name: DMD2 one-core proof-paired 80 E2E attempts shard ${{ matrix.shard }}
+    needs: proof_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore immutable original CNFs and pinned Kissat binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test "$(find mre_equiv7/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 48
+          test -s built/bin/kissat_4_0_4
+          chmod +x built/bin/kissat_4_0_4
+      - name: Build, verify, then benchmark procedural algebra vs controls
+        run: |
+          set -euo pipefail
+          mkdir -p mre_dmd2/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/dmd1_anf.cpp -o mre_dmd2/bin/dmd1_anf
+          python3 -u research/dmd2_bench.py bench --shard ${{ matrix.shard }} | tee mre_dmd2/shard-${{ matrix.shard }}.log
+          grep -q '^DMD2_SHARD_PASS ${{ matrix.shard }} 80$' mre_dmd2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmd2-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_dmd2/shard-${{ matrix.shard }}.json
+            mre_dmd2/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 320 original SHA paired E2E PAR2 proof and witness audit
+    needs: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore 48-source frozen manifest, source hashes and completed pairs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          mkdir -p mre_dmd2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmd2-shard-*
+          path: mre_dmd2
+          merge-multiple: true
+      - name: Independently audit completeness, original SAT, and PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/dmd2_bench.py audit | tee mre_dmd2/audit.log
+          grep '^DMD2_FINAL ' mre_dmd2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-DMD2-PROCEDURAL-320-E2E-FINAL
+          retention-days: 21
+          path: |
+            mre_dmd2/audit.json
+            mre_dmd2/audit.log
+            mre_dmd2/shard-*.json
