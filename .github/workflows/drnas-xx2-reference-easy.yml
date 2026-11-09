@@ -1,0 +1,145 @@
+name: DRNAS XX2 — fresh official reference-easy 12 SHA, 192 paired 12s E2E
+on:
+  push:
+    branches: [experiment/drnas-xx2-reference-easy-20261109]
+    paths:
+      - 'research/mre_xx2_reference_easy.py'
+      - '.github/workflows/drnas-xx2-reference-easy.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xx2-20261109-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: XX2 reference-only screening and freeze 12 new SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore untouched X11 and XX original manifests and binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42563452186 -R Frane12/AndroidGameTest -n x11-32-frozen-original-sha-native-binaries-structural -D .
+          gh run download 42565609169 -R Frane12/AndroidGameTest -n xx-frozen-24-original-sha-and-identical-binaries -D .
+          test -s mre_x11/manifest.json
+          test -s mre_xx/manifest.json
+          test -x mre_x4/bin/native
+          test -x built/bin/kissat_4_0_4
+      - name: Reference install, fixed checksum, selftests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/mre_xx2_reference_easy.py
+          python3 -u research/mre_xx2_reference_easy.py selftest
+          python3 -u research/mre_xx_structural_gate.py selftest
+      - name: 2021 2022 2023 original sources reference Kissat only 0.02 to 4 seconds
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_xx2
+          python3 -u research/mre_xx2_reference_easy.py freeze | tee mre_xx2/freeze.log
+          grep -q '^XX2_FREEZE_PASS 12' mre_xx2/freeze.log
+          python3 -u research/mre_xx2_reference_easy.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xx2-frozen-reference-screened-original-12SHA
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_xx2/*.cnf
+            mre_xx2/manifest.json
+            mre_xx2/structures.json
+            mre_xx2/freeze.log
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x11/binary.sha256
+  paired:
+    name: XX2 32 paired 12s E2E shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xx2-frozen-reference-screened-original-12SHA
+          path: .
+      - name: Verify source SHA binary SHA and reference availability
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+          sha256sum -c mre_x11/binary.sha256
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_xx2_reference_easy.py verify
+      - name: Matched original scan front100 short-order two structural gates Kissat and CaDiCaL
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/mre_xx2_reference_easy.py shard --shard ${{ matrix.shard }} | tee mre_xx2/shard-${{ matrix.shard }}.log
+          grep -q '^XX2_SHARD_PASS ${{ matrix.shard }} 32$' mre_xx2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xx2-result-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_xx2/shard-${{ matrix.shard }}.json
+            mre_xx2/shard-${{ matrix.shard }}.log
+  audit:
+    name: XX2 final 192 E2E original witness PAR2 and source integrity
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xx2-frozen-reference-screened-original-12SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xx2-result-*
+          merge-multiple: true
+          path: mre_xx2
+      - name: Audit exact pair accounting accepted SAT and cross-solver UNSAT
+        run: |
+          set -euo pipefail
+          python3 -u research/mre_xx2_reference_easy.py audit | tee mre_xx2/audit.log
+          grep -q '^XX2_FINAL' mre_xx2/audit.log
+          grep '^XX2_FINAL' mre_xx2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-XX2-12SHA-192E2E-12S-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_xx2/manifest.json
+            mre_xx2/structures.json
+            mre_xx2/report.json
+            mre_xx2/audit.log
+            mre_xx2/shard-*.json
