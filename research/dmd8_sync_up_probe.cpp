@@ -206,14 +206,12 @@ int main(int argc,char** argv){
   need(argc==4,"usage: dmd8_probe ORIGINAL.cnf CANDIDATE_ONLY.cnf BUDGET_MS");
   int budget=stoi(argv[3]);need(budget>=15&&budget<=1000,"invalid budget");
   ClockCap t(budget);
-  int original_count=0;
   int cand_count=0;
   bool abstained=false;
   vector<Score> scored;
   try{
    Formula f=parse(argv[1],t);
    Formula c=parse(argv[2],t);
-   original_count=int(f.clauses.size());
    cand_count=int(c.clauses.size());
    scored=analyze(f,c,t,16);
   }catch(const TimedOut&){abstained=true;scored.clear();}
