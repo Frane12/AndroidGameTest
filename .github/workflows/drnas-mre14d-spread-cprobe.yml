@@ -1,0 +1,120 @@
+name: DRNAS MRE14D — Distributed C probe 168 paired 30s
+on:
+  push:
+    branches: [experiment/drnas-mre14d-spread-cprobe-20261109]
+    paths:
+      - 'research/mre14d_spread_cprobe.py'
+      - '.github/workflows/drnas-mre14d-spread-cprobe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mre14d-spread-cprobe-20261109
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Proof replay, planted remote C tests and distributed-gate selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/mre14d_spread_cprobe.py research/mre13_abcd_parallel.py research/mre12_exact_quotient.py
+          python3 -u research/mre14d_spread_cprobe.py selftest | tee mre14d-selftest.log
+          grep -q '^MRE14D_SELFTEST_PASS ' mre14d-selftest.log
+      - name: Restore frozen 12 original SHA and two frozen solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42541912605 -R Frane12/AndroidGameTest -n c15d-frozen-originals-and-pinned-backends -D .
+          sha256sum -c c15d_out/binary.sha256
+          chmod +x c8c/bin/plain c8c/bin/instrumented built/bin/kissat_4_0_4
+          python3 -u research/mre14d_spread_cprobe.py verify
+          python3 -u research/mre14d_spread_cprobe.py smoke | tee mre14d-smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mre14d-frozen-12-sha-kissat-cadical
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 4
+          path: |
+            c15d_sources/
+            c15d_out/binary.sha256
+            c8c/bin/instrumented
+            built/bin/kissat_4_0_4
+            mre14d-selftest.log
+            mre14d-smoke.log
+  paired:
+    needs: prepare
+    name: MRE14D 30s matched E2E shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre14d-frozen-12-sha-kissat-cadical
+          path: .
+      - name: Audit immutable source SHA and pinned solver SHA before E2E
+        run: |
+          set -euo pipefail
+          grep -E '(c8c/bin/instrumented|built/bin/kissat_4_0_4)$' c15d_out/binary.sha256 | sha256sum -c
+          chmod +x c8c/bin/instrumented built/bin/kissat_4_0_4
+          python3 -u research/mre14d_spread_cprobe.py verify
+      - name: Execute 28 randomized-order SHA/seed-paired SAT/UNSAT 30s trials
+        run: |
+          set -euo pipefail
+          python3 -u research/mre14d_spread_cprobe.py shard --shard ${{ matrix.shard }} | tee mre14d-shard-${{ matrix.shard }}.log
+          grep -q '^MRE14D_SHARD_PASS ${{ matrix.shard }} 28$' mre14d-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mre14d-shard-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            mre14d_out/shard-${{ matrix.shard }}.json
+            mre14d-shard-${{ matrix.shard }}.log
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mre14d-frozen-12-sha-kissat-cadical
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mre14d-shard-*
+          merge-multiple: true
+          path: .
+      - name: Final original SHA, model, matched seeds, missed C certificates, PAR2 audit
+        run: |
+          set -euo pipefail
+          grep -E '(c8c/bin/instrumented|built/bin/kissat_4_0_4)$' c15d_out/binary.sha256 | sha256sum -c
+          python3 -u research/mre14d_spread_cprobe.py audit | tee mre14d-audit.log
+          grep '^MRE14D_FINAL ' mre14d-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MRE14D-SPREAD-C-PROBE-168-PAIRED-30S
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre14d_out/report.json
+            mre14d-audit.log
