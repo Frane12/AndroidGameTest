@@ -24,7 +24,7 @@
 
 - Uspješan run [42559879920](https://github.com/Frane12/AndroidGameTest/actions/runs/42559879920); final audit job **128976119563**; 30 pripremljenih originala × 2 × 5 = **300** E2E mjerenja; vremenski limit 15 s.
 - CMS: **41/60**, PAR2 **697,469738 s**.
-- **front100:** **41/60**, PAR2 **669,999126 s**, **1,041001×**, **4,10 % manje PAR2** od CMS-a; **1,160038×** Kissat; **1,223501×** CaDiCaL.
+- **front100:** **41/60**, PAR2 **669,999126 s**, **1,041001×** (= 4,10 % veća brzina), **3,939 % manje PAR2 vremena** od CMS-a; **1,160038×** Kissat; **1,223501×** CaDiCaL.
 - **spread_shifted:** **41/60**, PAR2 **671,962846 s**, **1,037959×**, **3,66 % manje PAR2** od CMS-a.
 - Kissat: **36/60**, PAR2 **777,224721 s**. CaDiCaL: **34/60**, auditarni PAR2 **819,744277 s** (sudjelovanje UNSAT bez dovoljne međusolverske potvrde penalizirano, pa se može razlikovati od sirovog iznosa prijavljenih vremenskih mjerenja).
 - front100 pobjede/porazi/izjednačenja po formuli: **8/13/9**.
