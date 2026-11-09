@@ -1,0 +1,145 @@
+name: DRNAS SEED1 - 24 disjoint official CNF 336 E2E seed diversification
+on:
+  push:
+    branches: [experiment/drnas-seed1-dual-seed-holdout-20261109]
+    paths:
+      - .github/workflows/drnas-seed1-dual-seed-holdout.yml
+      - research/drnas_seed1_dual_seed_holdout.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-seed1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore four source registries, binary hashes, selftest and 24 new original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore frozen references X20 X21 EQUIV6 EQUIV7, Native, Kissat, CaDiCaL3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42618653489 -R Frane12/AndroidGameTest -n equiv7-sourceonly-48SHA-pinned-binaries -D .
+          test -s mre_equiv7/manifest.json
+          test -s mre_equiv7/bin/cadical_3_0_1
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          gh run download 42612525200 -R Frane12/AndroidGameTest -n equiv5-frozen-originals-binaries-and-source-options -D .
+          test -s mre_x20/manifest.json
+          mkdir -p prior_x22
+          gh run download 42591977333 -R Frane12/AndroidGameTest -n x22-frozen-originals-and-cpp -D prior_x22
+          test -s prior_x22/mre_x22/manifest.json
+          mkdir -p prior_equiv6
+          gh run download 42614287853 -R Frane12/AndroidGameTest -n equiv6-sourceonly-16SHA-pinned-binaries -D prior_equiv6
+          test -s prior_equiv6/mre_equiv6/manifest.json
+          mkdir -p mre_seed1/bin mre_seed1/cases
+          cp mre_equiv7/bin/cadical_3_0_1 mre_seed1/bin/cadical_3_0_1
+      - name: Compile Python, test frozen seeds, pin original solver binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_seed1/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -m py_compile research/drnas_seed1_dual_seed_holdout.py
+          python3 -u research/drnas_seed1_dual_seed_holdout.py selftest | tee mre_seed1/selftest.log
+          grep -q '^SEED1_SELFTEST_PASS ' mre_seed1/selftest.log
+      - name: Independently freeze 24 official original CNF sources without solver outcome filtering
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_seed1_dual_seed_holdout.py freeze | tee mre_seed1/freeze.log
+          python3 -u research/drnas_seed1_dual_seed_holdout.py verify
+          grep -q '^SEED1_FROZEN ' mre_seed1/freeze.log
+          test "$(find mre_seed1/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 24
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seed1-original-24SHA-pinned-binaries
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_seed1/bin/cadical_3_0_1
+            mre_seed1/cases/*.cnf
+            mre_seed1/manifest.json
+            mre_seed1/selftest.log
+            mre_seed1/freeze.log
+            mre_seed1/selection-progress.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: SEED1 42 paired SHA E2E trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: seed1-original-24SHA-pinned-binaries, path: .}
+      - name: Native A/B and 3s switch vs two-seed parallel, placebo, Kissat, CaDiCaL3
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_seed1/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_seed1_dual_seed_holdout.py verify
+          python3 -u research/drnas_seed1_dual_seed_holdout.py shard --shard ${{ matrix.shard }} | tee mre_seed1/shard-${{ matrix.shard }}.log
+          grep -q '^SEED1_SHARD_PASS ${{ matrix.shard }} 42$' mre_seed1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seed1-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_seed1/shard-${{ matrix.shard }}.json
+            mre_seed1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 336 E2E original-SHA, CPU PAR2, source-paired seed test and regressions
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: seed1-original-24SHA-pinned-binaries, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seed1-shard-*
+          path: mre_seed1
+          merge-multiple: true
+      - name: Fail-closed source witness and both wall and CPU budget PAR2 audit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_seed1/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_seed1_dual_seed_holdout.py verify
+          python3 -u research/drnas_seed1_dual_seed_holdout.py audit | tee mre_seed1/audit.log
+          grep '^SEED1_FINAL ' mre_seed1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEED1-24NEW-336-E2E-CPU-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_seed1/manifest.json
+            mre_seed1/report.json
+            mre_seed1/audit.log
+            mre_seed1/shard-*.json
