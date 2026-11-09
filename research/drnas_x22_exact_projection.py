@@ -242,11 +242,11 @@ def selftest():
             random.randint(1,min(4,nv*2)))) for _ in range(random.randint(0,16))]
         cnf=[c for c in cnf if not set(c)&{-v for v in c}]
         reduced,trail,_=project(cnf,nv,18,60,500)
-        old_sat=any(verify_model(cnf,{i:bool(z>>i&1) for i in range(1,nv+1)})
+        old_sat=any(verify_model(cnf,{i:bool(z>>(i-1)&1) for i in range(1,nv+1)})
                      for z in range(1<<nv))
         new_sat=False
         for z in range(1<<nv):
-            m={i:bool(z>>i&1) for i in range(1,nv+1)}
+            m={i:bool(z>>(i-1)&1) for i in range(1,nv+1)}
             if verify_model(reduced,m):
                 new_sat=True
                 m=lift(m,trail)
