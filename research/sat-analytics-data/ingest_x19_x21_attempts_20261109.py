@@ -44,7 +44,7 @@ def find_report(tag):
     need(len(matches)==1, tag+" expected exactly one report.json: "+str(matches))
     path=matches[0]
     raw=path.read_bytes()
-    return json.loads(raw), sha(raw)
+    return json.loads(raw), sha(raw), path
 
 def arm_score(s):
     return dict(n=s["n"],
@@ -59,7 +59,7 @@ def arm_score(s):
 def prepare():
     reports=[]
     for tag,rid,jid,sources,trials,arms,cap in SOURCES:
-        report,raw_sha=find_report(tag)
+        report,raw_sha,report_path=find_report(tag)
         need(report.get("protocol","").startswith("DRNAS-"+tag+"-"),tag+" wrong protocol")
         need(report.get("UNSAT_independent_LRAT") is False,tag+" independent proof drift")
         need(report["trials"]==trials and report["sources"]==sources,tag+" source/trial drift")
@@ -74,6 +74,27 @@ def prepare():
             need(report.get("strict_no_auto_promotion") is True and report.get("blind_holdout") is False,
                  tag+" blindness/promotion drift")
         rows=report.get("rows")
+        if tag=="X19B":
+            # X19B's final audit intentionally stores paired attempts in the
+            # eight adjacent shard JSON files rather than duplicating rows in report.json.
+            rows=[]
+            for shard in range(8):
+                f=report_path.parent/("shard-%d.json"%shard)
+                need(f.is_file(),tag+" audited shard file missing "+str(shard))
+                data=json.loads(f.read_text())
+                need(len(data.get("trials",[]))==16,
+                     tag+" invalid shard size "+str(shard))
+                rows.extend(data["trials"])
+            for orig_sha in {r["original_sha256"] for r in rows}:
+                subset=[r for r in rows if r["original_sha256"]==orig_sha]
+                ref_k=any(r["arm"]=="kissat1" and r["status"]=="UNSAT" for r in subset)
+                ref_c=any(r["arm"]=="cadical1" and r["status"]=="UNSAT" for r in subset)
+                for r in subset:
+                    r["accepted"] = bool(r["status"]=="SAT" or
+                        (r["status"]=="UNSAT" and ref_k and ref_c))
+                    r["audited_PAR2_s"]=(r["PAR2_s"] if r["accepted"] else 2*cap)
+            # Replayed audited acceptance must exactly regenerate report's scores.
+            report["rows"]=rows
         need(isinstance(rows,list) and len(rows)==trials,tag+" full audited rows missing")
         srcs={r["original_sha256"] for r in rows}
         need(len(srcs)==sources and all(re.fullmatch(r"[0-9a-f]{64}",a) for a in srcs),
