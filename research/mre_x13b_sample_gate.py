@@ -25,7 +25,7 @@ import time
 
 import mre_x11_placebo_causal as x11
 
-PROTO = "DRNAS-X13B-CLAUSE-SURGERY-32SHA-9ARM-2REP-15S-20261109-v1"
+PROTO = "DRNAS-X13B-CLAUSE-SURGERY-32SHA-8ARM-2REP-15S-20261109-v1"
 ROOT = pathlib.Path("mre_x13b")
 CAP = 15.0
 REPS = 2
