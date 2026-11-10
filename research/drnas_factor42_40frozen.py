@@ -21,10 +21,37 @@ for family in families:
   take=4 if family=="planning-logistics" else (16 if family=="flat200-479" else 10)
   for item in items[:take]:
    cnf=tf.extractfile(item).read()
-   # Original SATLIB often ends in '%' and has metadata "c edge" lines.
-   lines=cnf.decode("ascii","replace").splitlines()
-   lines=[line for line in lines if not line.lstrip().startswith("%")]
-   data=("\n".join(lines)+"\n").encode()
+   # Strict DIMACS canonicalization: preserve every actual clause and validate header.
+   # SATLIB may append '%' / '0' terminators and comments after the clause stream.
+   text=cnf.decode("ascii","strict")
+   header=None;clauses=[];current=[];ended=False
+   for line in text.splitlines():
+    line=line.strip()
+    if not line or line.startswith("c"):continue
+    if line.startswith("%"):
+     ended=True;continue
+    if ended:
+     if line=="0":continue
+     raise RuntimeError(f"unexpected data after SATLIB terminator: {family} {item.name} {line[:60]}")
+    if line.startswith("p "):
+     if header is not None:raise RuntimeError("multiple DIMACS headers")
+     fields=line.split()
+     if len(fields)!=4 or fields[1]!="cnf":raise RuntimeError("bad DIMACS header")
+     header=(int(fields[2]),int(fields[3]))
+     continue
+    if header is None:raise RuntimeError("clause before DIMACS header")
+    for word in line.split():
+     lit=int(word)
+     if lit==0:
+      clauses.append(current);current=[]
+     else:
+      if abs(lit)>header[0]:raise RuntimeError("literal exceeds variable bound")
+      current.append(lit)
+   if header is None or current:raise RuntimeError("missing header or unterminated clause")
+   if len(clauses)!=header[1]:
+    # Never silently drop clauses or alter declared clause count: quarantine source.
+    raise RuntimeError(f"source header clause mismatch: {family} {item.name} declared={header[1]} actual={len(clauses)}")
+   data=(f"p cnf {header[0]} {header[1]}\\n"+"".join(" ".join(map(str,c))+" 0\\n" for c in clauses)).encode()
    sources.append(dict(id=len(sources),family=family,archive_entry=item.name,
     archive_sha256=entry["archive_sha256"],sha256=hashlib.sha256(data).hexdigest(),
     raw_sha256=hashlib.sha256(cnf).hexdigest(),bytes=len(data),data=data))
@@ -88,7 +115,7 @@ summary={arm:dict(solved=sum(x["status"]!="UNKNOWN" for x in rows if x["arm"]==a
 audit=dict(protocol="FACTOR42-40-FROZEN-SATLIB-SOURCE-LOCKED-40CPU-ONECPU",
  source_count=40,shard=SHARD,cap_cpu_s=40,oneCPU=True,
  SAT_original_verified=True,UNSAT_independent_LRAT=False,
- normalization="removed SATLIB percent terminators, original and normalized SHA both logged",
+ normalization="strict parsed DIMACS canonicalization with identical declared variables and clauses; source and normalized SHA logged",
  sources=[x for x in selection if x["id"]%5==SHARD],rows=rows,summary=summary)
 (OUT/"audit.json").write_text(json.dumps(audit,indent=2,sort_keys=True))
 print("FACTOR42_FINAL "+json.dumps(dict(shard=SHARD,summary=summary),sort_keys=True),flush=True)
