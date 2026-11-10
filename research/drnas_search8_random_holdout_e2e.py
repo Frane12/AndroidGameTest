@@ -17,7 +17,8 @@ SAT verified against original; UNSAT accepted only if original Kissat and
 original unpatched CaDiCaL agree (no independent LRAT proof).
 """
 from __future__ import annotations
-import argparse,collections,hashlib,json,pathlib,random
+import argparse,collections,hashlib,json,pathlib,random,tempfile
+import drnas_search2_direct_cdcl_e2e as s2
 import drnas_search7_fixed_random_e2e as s7
 import drnas_search6_stratified_e2e as s6
 import drnas_search4_router_unseen as s4
@@ -122,6 +123,20 @@ def _freeze_indices():
    (SALT+"|"+v[1]+"|"+v[2]).encode()).hexdigest()))
  need(len(pool)>COUNT,"no source index candidates")
  return pool,idx,oldsha,oldids,oldreg
+def rank_hashes(c):
+ n,cl=x22.read_cnf(SOURCE/c["filename"])
+ need(n==c["original_source_signals"]["vars"],
+      "original dimension changed before ranking")
+ ranks={}
+ with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+  for arm in RANDOM_ARMS+("cadical_guided",):
+   mode="placebo" if arm in RANDOM_ARMS else "guided"
+   fixed_seed=s7.seed(c["sha256"],arm) if arm in RANDOM_ARMS else 0
+   path,_=s2.score_file(SOURCE/c["filename"],mode,fixed_seed,tmp,cl)
+   ranks[arm]=dig(path)
+ need(len(set(ranks.values()))==len(ranks)==4,
+      "three fixed random mappings and guided map must all be distinct")
+ return ranks
 def freeze():
  prereq()
  ROOT.mkdir(parents=True,exist_ok=True);SOURCE.mkdir(parents=True,exist_ok=True)
@@ -177,7 +192,7 @@ def freeze():
  # Freeze and verify rank permutations for ALL new SHA, before any CDCL.
  rank_hashes={}
  for c in cases:
-  maps=s7.rank_hashes(c)
+  maps=rank_hashes(c)
   need(len(set(maps[a] for a in RANDOM_ARMS))==3 and
        maps["cadical_guided"] not in {maps[a] for a in RANDOM_ARMS},
        "precommitted random ranking not unique from mathematical ranking")
