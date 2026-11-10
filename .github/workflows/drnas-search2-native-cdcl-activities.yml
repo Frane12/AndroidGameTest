@@ -1,0 +1,185 @@
+name: DRNAS SEARCH2 - native CaDiCaL CDCL VMTF EVSIDS initial activity guidance
+run-name: SEARCH2 4 SHA 28 small then 12 original SHA x 7 arms x 2 reps 15s 168 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-search2-direct-cdcl-initial-activity-20261110]
+    paths:
+      - .github/workflows/drnas-search2-native-cdcl-activities.yml
+      - research/drnas_search2_patch_cadical.py
+      - research/drnas_search2_cadical_driver.cpp
+      - research/drnas_search2_direct_cdcl_e2e.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-search2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Pin CaDiCaL 3.0.1 C++ source and compile actual internal VMTF EVSIDS modification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Retrieve immutable original official EQUIV13 SHA and original solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42759838384 -R Frane12/AndroidGameTest -n equiv13-12-source-only-original-SHA-frozen-six-solvers -D .
+          test -s mre_equiv13/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv12/manifest.json
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv7/bin/cadical_3_0_1
+          chmod +x built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Fetch exact upstream CaDiCaL 3.0.1 and fail-closed source patch
+        run: |
+          set -euo pipefail
+          mkdir -p mre_search2/bin
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-search2
+          test "$(git -C cadical-search2 rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas_search2_patch_cadical.py cadical-search2 | tee mre_search2/patch.log
+          grep -q '^SEARCH2_PATCH_PASS ' mre_search2/patch.log
+          sha256sum cadical-search2/src/{cadical.hpp,internal.hpp,score.cpp,solver.cpp} > mre_search2/patched_source_sha.txt
+      - name: Compile actual CDCL engine plus experimental original CNF driver
+        run: |
+          set -euo pipefail
+          (cd cadical-search2 && ./configure && make -j2 > /tmp/search2-cadical-build.log 2>&1) || { tail -100 /tmp/search2-cadical-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-search2/src research/drnas_search2_cadical_driver.cpp cadical-search2/build/libcadical.a -o mre_search2/bin/search2_cadical -pthread -ldl -lz
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/drnas_search1_guided_relabel.cpp -o mre_search2/bin/search1_relabel
+          chmod +x mre_search2/bin/search2_cadical mre_search2/bin/search1_relabel
+          sha256sum mre_search2/bin/{search2_cadical,search1_relabel}
+      - name: Exhaustive toy SAT checks, direct CDCL telemetry and original SHA freeze
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_search2_direct_cdcl_e2e.py
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py selftest | tee mre_search2/selftest.log
+          grep -q '^SEARCH2_SELFTEST_PASS ' mre_search2/selftest.log
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py freeze | tee mre_search2/freeze.log
+          grep -q '^SEARCH2_FROZEN ' mre_search2/freeze.log
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search2-CaDiCaL-301-native-CDCL-12SHA-frozen-and-proofs
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search2/manifest.json
+            mre_search2/selftest.log
+            mre_search2/freeze.log
+            mre_search2/patch.log
+            mre_search2/patched_source_sha.txt
+            mre_search2/bin/search2_cadical
+            mre_search2/bin/search1_relabel
+            mre_equiv13/manifest.json
+            mre_equiv12/manifest.json
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_equiv12/bin/cryptominisat5
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv10m5/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+  pilot:
+    name: Four source-frozen SHA 28 matched trials actual CDCL metrics cap6
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: search2-CaDiCaL-301-native-CDCL-12SHA-frozen-and-proofs, path: .}
+      - name: Short original SHA tests; seed VMTF and EVSIDS directly; no-op and random controls
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_search2/bin/search2_cadical mre_search2/bin/search1_relabel built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py verify
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py pilot | tee mre_search2/pilot.log
+          grep -q '^SEARCH2_PILOT_PASS ' mre_search2/pilot.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search2-pilot-four-SHA-28-native-CDCL-E2E
+          retention-days: 21
+          path: |
+            mre_search2/pilot.json
+            mre_search2/pilot.log
+  paired:
+    name: SEARCH2 pinned native original SHA true CDCL 28 trials shard ${{ matrix.shard }}
+    needs: pilot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 21
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: search2-CaDiCaL-301-native-CDCL-12SHA-frozen-and-proofs, path: .}
+      - name: One CPU source SHA, VMTF-EVSIDS active vs reverse random noop and unpatched CaDiCaL
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_search2/bin/search2_cadical mre_search2/bin/search1_relabel built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py verify
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py shard --shard ${{ matrix.shard }} | tee mre_search2/shard-${{ matrix.shard }}.log
+          grep -q '^SEARCH2_SHARD_PASS ' mre_search2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search2-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search2/shard-${{ matrix.shard }}.json
+            mre_search2/shard-${{ matrix.shard }}.log
+  audit:
+    name: SEARCH2 audit 168 native CDCL paired SHA PAR2 actual propagations decisions conflicts
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: search2-CaDiCaL-301-native-CDCL-12SHA-frozen-and-proofs, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: search2-shard-*
+          path: mre_search2
+          merge-multiple: true
+      - name: Strict original SHA and witness plus CDCL telemetry paired PAR2 audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_search2/bin/search2_cadical mre_search2/bin/search1_relabel built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_search2_direct_cdcl_e2e.py audit | tee mre_search2/audit.log
+          grep -q '^SEARCH2_FINAL ' mre_search2/audit.log
+          grep '^SEARCH2_FINAL ' mre_search2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEARCH2-DIRECT-CDCL-168-SHA-PAR2-AUDITED-FINAL
+          retention-days: 30
+          path: |
+            mre_search2/manifest.json
+            mre_search2/report.json
+            mre_search2/audit.log
+            mre_search2/shard-*.json
