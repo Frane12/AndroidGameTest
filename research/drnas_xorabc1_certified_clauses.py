@@ -139,9 +139,9 @@ def selftest():
         n=max(v for vs,_ in rows for v in vs);cls=[]
         for vs,r in rows:cls+=parity_clauses(vs,r)
         return n,cls
-    tests=[("unit",[((1,2),0),((1,2,3),1)],1),
-           ("binary",[((1,2,3),0),((2,3,4),0)],2),
-           ("ternary",[((1,2,3,4),0),((1,2,5),0)],3)]
+    tests=[("unit",[((1,3),0),((1,2,3),1)],1),
+           ("binary",[((1,2,4),0),((2,3,4),0)],2),
+           ("ternary",[((1,2,3,5),0),((3,4,5),0)],3)]
     with tempfile.TemporaryDirectory() as td:
         src=pathlib.Path(td)/"toy.cnf"
         for title,rows,k in tests:
