@@ -1,0 +1,97 @@
+name: DRNAS Native Core R1 - genuinely standalone CDCL and independent correctness audit
+run-name: DRNAS-NATIVE-R1 original C++ CDCL 560 truth-table fuzz + six original CNF 12 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-native-core-r1-20261110]
+    paths:
+      - research/drnas_native_core_r1.cpp
+      - research/drnas_native_core_r1_test.py
+      - .github/workflows/drnas-native-core-r1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-native-core-r1
+  cancel-in-progress: true
+jobs:
+  independent_correctness:
+    name: Compile original C++ solver, hundreds of brute truth tables, zero third-party solver libs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compile with only system C++ standard library
+        run: |
+          set -euo pipefail
+          mkdir -p mre_drnas_native_core_r1/bin
+          g++ --version | head -n 1
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            research/drnas_native_core_r1.cpp \
+            -o mre_drnas_native_core_r1/bin/drnas_native_core_r1
+          ldd mre_drnas_native_core_r1/bin/drnas_native_core_r1 | tee mre_drnas_native_core_r1/ldd.txt
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat|libgmp' mre_drnas_native_core_r1/ldd.txt
+          sha256sum mre_drnas_native_core_r1/bin/drnas_native_core_r1 | tee mre_drnas_native_core_r1/binary-sha.txt
+      - name: Exhaustive native enumeration plus independent Python 560 random CNFs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_native_core_r1_test.py
+          python3 -u research/drnas_native_core_r1_test.py fuzz | tee mre_drnas_native_core_r1/selftest.log
+          grep -q '^DRNAS_NATIVE_R1_SELFTEST_PASS ' mre_drnas_native_core_r1/selftest.log
+          grep -q '^DRNAS_NATIVE_R1_FUZZ_PASS ' mre_drnas_native_core_r1/selftest.log
+          grep '^DRNAS_NATIVE_R1_FUZZ_PASS ' mre_drnas_native_core_r1/selftest.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-native-core-r1-standalone-binary
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_core_r1/bin/drnas_native_core_r1
+            mre_drnas_native_core_r1/selftest.log
+            mre_drnas_native_core_r1/ldd.txt
+            mre_drnas_native_core_r1/binary-sha.txt
+  original_source_benchmark:
+    name: Six original CNF SHA x two repeats 3s R1 standalone E2E only
+    needs: independent_correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-native-core-r1-standalone-binary
+          path: mre_drnas_native_core_r1
+      - name: Restore only original CNF source inputs and frozen roster; no external solver blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/drnas-r1-original-inputs mre_mixab4/cases
+          gh run download 42816574288 -R Frane12/AndroidGameTest \
+            -n mixab4-reference-easy6-CMS17-Kissat4-LRAT \
+            -D /tmp/drnas-r1-original-inputs
+          test -s /tmp/drnas-r1-original-inputs/mre_mixab4/manifest.json
+          cp /tmp/drnas-r1-original-inputs/mre_mixab4/manifest.json mre_mixab4/manifest.json
+          cp /tmp/drnas-r1-original-inputs/mre_mixab4/cases/*.cnf mre_mixab4/cases/
+          test "$(find mre_mixab4/cases -name '*.cnf' -type f | wc -l)" -ge 6
+          # Only immutable DIMACS source input data is read. No external solver is loaded.
+          test -f mre_drnas_native_core_r1/bin/drnas_native_core_r1
+          chmod +x mre_drnas_native_core_r1/bin/drnas_native_core_r1
+      - name: Measure real native solve time on six original SHA with model verification
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_native_core_r1_test.py original | tee mre_drnas_native_core_r1/original.log
+          grep -q '^DRNAS_NATIVE_R1_ORIGINAL_PASS ' mre_drnas_native_core_r1/original.log
+          grep '^DRNAS_NATIVE_R1_ORIGINAL_PASS ' mre_drnas_native_core_r1/original.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NATIVE-R1-12-ORIGINAL-CNF-NO-FOREIGN-SOLVER
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_core_r1/original-trials.json
+            mre_drnas_native_core_r1/original.log
