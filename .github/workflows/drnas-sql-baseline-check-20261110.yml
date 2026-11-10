@@ -1,0 +1,45 @@
+name: DRNAS SQL historical baseline audit - compare full core vs 20261108 sidecar
+on:
+  push:
+    branches: [experiment/drnas-sql-cumulative-refresh-20261110]
+    paths: [.github/workflows/drnas-sql-baseline-check-20261110.yml]
+permissions: {contents: read, actions: read}
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore 20261105 audited cumulative and 20261108 sidecar snapshot without mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p compare/nov05 compare/nov08
+          gh run download 42044317651 -R Frane12/AndroidGameTest -n DRNAS-V1531-SQLite-Analytics -D compare/nov05
+          gh run download 42515525795 -R Frane12/AndroidGameTest -n DRNAS-CUMULATIVE-SQLITE-MRE-1892-20261108 -D compare/nov08
+          python3 - <<'PY'
+          import pathlib,sqlite3,hashlib,json,gzip,shutil,tempfile
+          for label in ("nov05","nov08"):
+              root=pathlib.Path("compare")/label
+              for x in sorted(root.rglob("*")):
+                  if not x.is_file():continue
+                  if x.suffix in (".sqlite",".gz"):
+                      print("SQL_BASELINE_FILE",label,str(x.relative_to(root)),x.stat().st_size,flush=True)
+                      p=x
+                      if x.suffix==".gz":
+                          p=pathlib.Path("/tmp/verify-"+label+".sqlite")
+                          try:
+                              with gzip.open(x,"rb") as f,p.open("wb") as g:shutil.copyfileobj(f,g)
+                          except Exception as e:
+                              print("SQL_BASELINE_DECOMPRESS_FAILED",label,str(e));continue
+                      try:
+                          con=sqlite3.connect("file:"+str(p.resolve())+"?mode=ro",uri=True)
+                          integrity=con.execute("PRAGMA integrity_check").fetchone()[0]
+                          tables={v[0] for v in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                          counts={t:con.execute("SELECT count(*) FROM "+t).fetchone()[0] for t in ("datasets","formulas","attempts","mre_audit_runs","mre_audit_attempts") if t in tables}
+                          print("SQL_BASELINE_COUNTS",label,counts,"integrity",integrity,"SHA",hashlib.sha256(p.read_bytes()).hexdigest(),flush=True)
+                          con.close()
+                      except Exception as e:print("SQL_BASELINE_READ_FAILED",label,str(e))
+          PY
