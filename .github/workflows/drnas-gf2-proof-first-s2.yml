@@ -1,0 +1,151 @@
+name: DRNAS GF2-S2 - prospective original SAT2024-25 proof-first one CPU
+run-name: GF2-S2 8 fresh relative-to-registries SHA x 6 arms x 2 reps 12s 96 E2E
+on:
+  push:
+    branches: [experiment/drnas-gf2-s2-fresh-20261110]
+    paths:
+      - .github/workflows/drnas-gf2-proof-first-s2.yml
+      - research/drnas_gf2_proof_first_s2.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gf2-s2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Preregister official 2024-25 SHA source-only 4 easy 4 mixed; independent GF2 toys
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch immutable original reference registries and pinned Native Kissat binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42759838384 -R Frane12/AndroidGameTest -n equiv13-12-source-only-original-SHA-frozen-six-solvers -D .
+          test -s mre_equiv13/manifest.json
+          test -s mre_equiv12/manifest.json
+          test -s mre_equiv10m5/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv10medium/manifest.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Compile pinned GF2 original-CNF scanner and run independent SAT/UNSAT selftests
+        run: |
+          set -euo pipefail
+          mkdir -p mre_gf2_s2/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/drnas_gf2_proof_first_s1.cpp -o mre_gf2_s2/bin/gf2_exact
+          chmod +x mre_gf2_s2/bin/gf2_exact
+          python3 -m py_compile research/drnas_gf2_proof_first_s2.py
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_proof_first_s2.py selftest | tee mre_gf2_s2/selftest.log
+          grep -q '^GF2_S2_SELFTEST_PASS ' mre_gf2_s2/selftest.log
+      - name: Freeze first eight eligible official CNF SHA WITHOUT any SAT or GF2 outcome selection
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_proof_first_s2.py freeze | tee mre_gf2_s2/freeze.log
+          grep -q '^GF2_S2_FROZEN ' mre_gf2_s2/freeze.log
+          python3 -u research/drnas_gf2_proof_first_s2.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gf2-s2-new-2024-25-SHA-original-sources-pinned-binaries
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_gf2_s2/
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv10medium/manifest.json
+            mre_equiv10m5/manifest.json
+            mre_equiv12/manifest.json
+            mre_equiv13/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_equiv7/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  shards:
+    name: 24 matched oneCPU original placebo GF2-native Kissat E2E shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-s2-new-2024-25-SHA-original-sources-pinned-binaries
+          path: .
+      - name: Strict original SHA, independent GF2 certificate and SAT model, sequential 1CPU
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_gf2_s2/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4
+          mkdir -p mre_binary_scc2
+          python3 -u research/drnas_gf2_proof_first_s2.py verify
+          python3 -u research/drnas_gf2_proof_first_s2.py shard --shard "$SHARD" | tee "mre_gf2_s2/shard-$SHARD.log"
+          grep -q "^GF2_S1_SHARD_PASS $SHARD " "mre_gf2_s2/shard-$SHARD.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gf2-s2-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_gf2_s2/shard-${{ matrix.shard }}.json
+            mre_gf2_s2/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 96 paired original CNF SHA E2E PAR2 certified GF2 and regressions
+    needs: [freeze,shards]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-s2-new-2024-25-SHA-original-sources-pinned-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gf2-s2-shard-*
+          merge-multiple: true
+          path: mre_gf2_s2
+      - name: No reruns - 96 original SHA matched proof-first placebo and baseline audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_gf2_s2/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4
+          python3 -u research/drnas_gf2_proof_first_s2.py verify
+          for i in 0 1 2 3; do test -s "mre_gf2_s2/shard-$i.json"; done
+          python3 -u research/drnas_gf2_proof_first_s2.py audit | tee mre_gf2_s2/audit.log
+          grep -q '^GF2_S2_FINAL ' mre_gf2_s2/audit.log
+          grep '^GF2_S2_FINAL ' mre_gf2_s2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF2-S2-8FRESH-96-E2E-PAR2-STRICT-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_gf2_s2/manifest.json
+            mre_gf2_s2/report.json
+            mre_gf2_s2/audit.log
+            mre_gf2_s2/shard-*.json
