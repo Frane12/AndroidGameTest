@@ -1,0 +1,104 @@
+name: DRNAS Native R3 - original CDCL heap and indexed GF2 no third-party solvers
+run-name: DRNAS NATIVE R3 600 independent small CNFs, 120 XOR proofs, 16 original singleCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-native-core-r3-heap-eventxor-20261110]
+    paths:
+      - research/drnas_native_core_r3.cpp
+      - research/drnas_native_core_r3_test.py
+      - .github/workflows/drnas-native-core-r3.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-native-core-r3
+  cancel-in-progress: true
+jobs:
+  correctness:
+    name: Compile R1 R2B R3 from OWN source and independently prove 600 small GF2 trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compile pure own C++17 without foreign SAT solver libraries
+        run: |
+          set -euo pipefail
+          mkdir -p mre_drnas_native_core_r3/bin
+          for version in r1 r2b r3; do
+            g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+              "research/drnas_native_core_$version.cpp" \
+              -o "mre_drnas_native_core_r3/bin/drnas_native_core_$version"
+            ldd "mre_drnas_native_core_r3/bin/drnas_native_core_$version" \
+              | tee "mre_drnas_native_core_r3/ldd-$version.txt"
+            ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' \
+              "mre_drnas_native_core_r3/ldd-$version.txt"
+            sha256sum "mre_drnas_native_core_r3/bin/drnas_native_core_$version" \
+              | tee "mre_drnas_native_core_r3/sha-$version.txt"
+          done
+      - name: Own CDCL backtrack, 1-UIP and complete-XOR selftests plus independent brute oracles
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_native_core_r3_test.py
+          python3 -u research/drnas_native_core_r3_test.py verify \
+            | tee mre_drnas_native_core_r3/verify.log
+          grep -q '^DRNAS_NATIVE_R3_GF2_SELFTEST_PASS ' mre_drnas_native_core_r3/verify.log
+          grep -q '^DRNAS_NATIVE_R3_SELFTEST_PASS ' mre_drnas_native_core_r3/verify.log
+          grep -q '^DRNAS_NATIVE_R3_CHECKS_PASS ' mre_drnas_native_core_r3/verify.log
+          grep '^DRNAS_NATIVE_R3_CHECKS_PASS ' mre_drnas_native_core_r3/verify.log \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-native-r3-own-CXX17-solvers-audit
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_core_r3/bin/
+            mre_drnas_native_core_r3/verify.log
+            mre_drnas_native_core_r3/ldd-*.txt
+            mre_drnas_native_core_r3/sha-*.txt
+  original:
+    name: Original CNF 2 source-frozen SHA x 4 DRNAS native arms x 2 repeats oneCPU 6s
+    runs-on: ubuntu-24.04
+    needs: correctness
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-native-r3-own-CXX17-solvers-audit
+          path: mre_drnas_native_core_r3
+      - name: Restore ONLY immutable original CNFs and frozen SHA roster
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/drnas-r3-cnfs mre_mixab3/cases
+          gh run download 42811023064 -R Frane12/AndroidGameTest \
+            -n mixab3-fresh12-CMS17-Kissat4-GF2 -D /tmp/drnas-r3-cnfs
+          cp /tmp/drnas-r3-cnfs/mre_mixab3/manifest.json mre_mixab3/manifest.json
+          cp /tmp/drnas-r3-cnfs/mre_mixab3/cases/*.cnf mre_mixab3/cases/
+          for version in r1 r2b r3; do
+            chmod +x "mre_drnas_native_core_r3/bin/drnas_native_core_$version"
+          done
+      - name: Paired original SHA run and strict proof-aware PAR2, with XOR scheduling counts
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_native_core_r3_test.py original \
+            | tee mre_drnas_native_core_r3/original.log
+          grep -q '^DRNAS_NATIVE_R3_FINAL ' mre_drnas_native_core_r3/original.log
+          grep '^DRNAS_NATIVE_R3_FINAL ' mre_drnas_native_core_r3/original.log \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NATIVE-R3-16-ORIGINAL-CNF-HEAP-EVENT-XOR-STRICT-PAR2
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_core_r3/original-trials.json
+            mre_drnas_native_core_r3/audit.json
+            mre_drnas_native_core_r3/original.log
