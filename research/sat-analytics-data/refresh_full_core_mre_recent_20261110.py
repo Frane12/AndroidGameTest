@@ -109,10 +109,14 @@ def normalize(label,r,report):
  expectcap=12.0 if label=="equiv9" and cohort=="smoke" else (
            20.0 if label=="equiv9" else float(SPEC[label]["cap"]))
  need(cap==expectcap,"repetition cap/cohort changed "+label)
- need(bool(r.get("one_logical_cpu",r.get("one_logical_CPU",
-              r.get("one_cpu",r.get("pinned_cpu") is not None or
-              bool(r.get("cpu_affinity")) or label in ("equiv7",)))),
-      "single logical CPU source not confirmed "+label)
+ one_cpu=(r.get("one_logical_cpu") is True or
+          r.get("one_logical_CPU") is True or
+          r.get("one_cpu") is True or
+          isinstance(r.get("pinned_cpu"),int) or
+          (isinstance(r.get("cpu_affinity"),list) and
+           len(r["cpu_affinity"])==1) or
+          label=="equiv7")
+ need(one_cpu,"single logical CPU source not confirmed "+label)
  sat_flag=bool(r.get("original_SAT_verified",r.get("SAT_original_witness_verified",
              r.get("SAT_original_verified",False))))
  need(status!="SAT" or sat_flag,"SAT result without ORIGINAL verified witness")
