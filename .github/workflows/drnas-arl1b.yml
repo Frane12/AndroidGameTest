@@ -1,0 +1,67 @@
+name: DRNAS ARL1B two frozen SATLIB formulas
+run-name: ARL1B uf20 and uf50 trace native Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-arl1b-opportunity-20261111]
+    paths:
+      - research/drnas_arl1b_bench.py
+      - research/drnas_arl1b.cpp
+      - research/drnas_arl1a_smoke.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-arl1b.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_arl1b_bench.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_arl1b/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_arl1b/kissat-src
+          git -C mre_arl1b/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_arl1b/kissat-src && ./configure && make -j2)
+          install -m 755 mre_arl1b/kissat-src/build/kissat mre_arl1b/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_arl1b/bin/cadical
+      - name: Build original DRNAS and 500-event tracer
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 research/drnas_arl1b.cpp -o mre_arl1b/bin/drnas_b
+          g++ -std=c++17 -O2 research/drnas_arl1a.cpp -o mre_arl1b/bin/drnas_a
+          g++ -std=c++17 -O2 research/drnas_native_core_r3c.cpp -o mre_arl1b/bin/selftest
+          mre_arl1b/bin/selftest --selftest
+      - name: Run SHA-locked formula with native trace and references
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_arl1b_bench.py | tee mre_arl1b/benchmark.log
+          grep '^MICRO_FINAL ' mre_arl1b/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ARL1B-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_arl1b/audit.json
+            mre_arl1b/source.json
+            mre_arl1b/*.cnf
+            mre_arl1b/*.log
+            mre_arl1b/route_decision.json
+
