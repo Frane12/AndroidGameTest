@@ -1,0 +1,135 @@
+name: DRNAS EQUIV10M5 - salvage five immutable original SHA for strict PAR2
+run-name: EQUIV10M5 5 frozen original 2024-25 SHA x 5 arms x 2 reps 15s 50 E2E
+on:
+  push:
+    branches: [experiment/drnas-equiv10m5-frozen-rescue-20261110]
+    paths:
+      - research/drnas_equiv10m5_frozen_rescue.py
+      - .github/workflows/drnas-equiv10m5-frozen-rescue.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: equiv10m5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Lock all five READY original CNFs from failed EQUIV10M without reselection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore untouched historical source registry and solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          gh run download 42726969919 -R Frane12/AndroidGameTest -n equiv10m-frozen-new-official-reference-easy-medium-8SHA -D .
+          test -s mre_equiv10medium/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv7/bin/cadical_3_0_1
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Strict original 280-screen SHA and five-case immutable manifest validation
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_equiv10m5_frozen_rescue.py
+          python3 -u research/drnas_equiv10m5_frozen_rescue.py selftest
+          python3 -u research/drnas_equiv10m5_frozen_rescue.py freeze | tee mre_equiv10m5/freeze.log
+          python3 -u research/drnas_equiv10m5_frozen_rescue.py verify
+          grep -q '^EQUIV10M5_FROZEN ' mre_equiv10m5/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv10m5-exact-five-SHA-frozen-and-pinned-onecore-binaries
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            mre_equiv10medium/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv10m5/manifest.json
+            mre_equiv10m5/freeze.log
+            mre_equiv7/bin/cadical_3_0_1
+            built/bin/kissat_4_0_4
+            mre_x4/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_equiv7/manifest.json
+  paired:
+    name: EQUIV10M5 original CNF single-CPU 10 paired E2E shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv10m5-exact-five-SHA-frozen-and-pinned-onecore-binaries
+          path: .
+      - name: All five reference-selected SHA, one CPU, SAT originals verified
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_equiv10m5_frozen_rescue.py verify
+          python3 -u research/drnas_equiv10m5_frozen_rescue.py shard --shard ${{ matrix.shard }} | tee mre_equiv10m5/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV10M5_SHARD_PASS ${{ matrix.shard }} 10$' mre_equiv10m5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv10m5-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            mre_equiv10m5/shard-${{ matrix.shard }}.json
+            mre_equiv10m5/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit all 50 SHA paired E2E wall CPU PAR2 regressions and proof status
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv10m5-exact-five-SHA-frozen-and-pinned-onecore-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv10m5-shard-*
+          path: mre_equiv10m5
+          merge-multiple: true
+      - name: Verify frozen 5 cases, 50 paired metrics and strict SAT/UNSAT status
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_equiv10m5_frozen_rescue.py audit | tee mre_equiv10m5/audit.log
+          grep -q '^EQUIV10M5_FINAL ' mre_equiv10m5/audit.log
+          grep '^EQUIV10M5_FINAL ' mre_equiv10m5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV10M5-FIVE-SHA-50-E2E-PAR2-FINAL
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            mre_equiv10m5/report.json
+            mre_equiv10m5/audit.log
+            mre_equiv10m5/manifest.json
+            mre_equiv10m5/shard-*.json
