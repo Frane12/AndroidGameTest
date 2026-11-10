@@ -105,7 +105,8 @@ def run(path,arm):
  if arm.endswith("_diag") and status!="UNKNOWN":
   assert "watchdiag" in telemetry, f"missing watchdiag telemetry for {path}"
   w=telemetry["watchdiag"]
-  assert int(w["visits_original"])+int(w["visits_learned"])==int(w["binary_visits"])+int(w["long_visits"]), "watch accounting mismatch"\n  assert int(w["cache_hit"])==0 if arm=="A_diag" else int(w["cache_hit"])>=0
+  assert int(w["visits_original"])+int(w["visits_learned"])==int(w["binary_visits"])+int(w["long_visits"]), "watch accounting mismatch"
+  assert int(w["cache_hit"])==0 if arm=="A_diag" else int(w["cache_hit"])>=0, "invalid cache-hit count"
   assert sum(int(w[f"width_bucket_{i}"]) for i in range(7))==int(w["binary_visits"])+int(w["long_visits"]), "watch width accounting mismatch"
  return dict(arm=arm,status=status,E2E_s=round(elapsed,6),
   PAR2_s=round(elapsed if status!="UNKNOWN" else 2*CAP,6),
