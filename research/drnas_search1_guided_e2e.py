@@ -125,12 +125,12 @@ def permutation(path,n):
     lines=pathlib.Path(path).read_text().splitlines()
     need(lines and lines[0].split()==["p","perm",str(n)]
          and len(lines)==n+1,"permutation header")
-    perm={}
+    perm={};used=set()
     for i,line in enumerate(lines[1:],1):
         old,new=map(int,line.split())
-        need(old==i and 1<=new<=n and new not in perm.values(),
+        need(old==i and 1<=new<=n and new not in used,
              "invalid bijection")
-        perm[old]=new
+        perm[old]=new;used.add(new)
     need(len(perm)==n and len(set(perm.values()))==n,"non-bijection")
     return perm
 
@@ -278,6 +278,13 @@ def selftest():
                     sat=any(x22.holds(new,{v:bool(mask&(1<<(v-1)))
                                          for v in range(1,n+1)}) for mask in range(1<<n))
                     need(truth==sat,"toy brute-force SAT equivalence failed")
+                    if sat:
+                        satisfying=next({v:bool(mask&(1<<(v-1))) for v in range(1,n+1)}
+                            for mask in range(1<<n) if x22.holds(new,{
+                                v:bool(mask&(1<<(v-1))) for v in range(1,n+1)}))
+                        output="v "+" ".join(str(v if satisfying[v] else -v)
+                            for v in range(1,n+1))+" 0\n"
+                        read_model(output,new,orig,perm)
                     count+=1
     print("SEARCH1_SELFTEST_PASS "+json.dumps(dict(
        exhaustive_small_formula_renamings=count,
