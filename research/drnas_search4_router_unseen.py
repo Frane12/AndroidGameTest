@@ -214,7 +214,7 @@ def verify():
  m=json.loads(MAN.read_text());cs=frozen_sources()
  need(m["protocol"]==PROTO and m["cap_s"]==CAP and m["reps"]==REPS
       and m["expected_trials"]==EXPECTED and m["shards_each"]==SHARD_COUNT
-      and m["arms"]=={k:list(v) for k,v in ARMS}
+      and m["arms"]=={k:list(v) for k,v in ARMS.items()}
       and m["code_hashes"]==code_hashes()
       and m["source_shas"]==[c["sha256"] for c in cs],
       "code, binaries, cohort or SHA changed")
