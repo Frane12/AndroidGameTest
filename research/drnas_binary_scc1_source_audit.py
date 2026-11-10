@@ -308,7 +308,7 @@ def toy_tests():
                 sat=any(all(any((v>0)==bool(mask&(1<<(abs(v)-1))) for v in c)
                             for c in cl) for mask in range(1<<n))
                 detected=(o["contradictory_vars"]>0 or o["empty_clauses"]>0)
-                need(detected==not sat,"2-SAT brute force inconsistency")
+                need(detected == (not sat),"2-SAT brute force inconsistency")
             total+=1
     print("BINARY_SCC1_SELFTEST_PASS "+json.dumps(dict(
         random_and_adversarial_cases=total,
