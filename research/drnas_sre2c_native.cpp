@@ -50,6 +50,7 @@ static void sre2c_selftest(){
   <<" native_GF2_CDCL_reasons=true original_truth_exhaustive=true\n";
 }
 }
+#ifndef DRNAS_FACTOR2_EMBED
 int main(int argc,char**argv){
  try{
   if(argc==2 && std::string(argv[1])=="--selftest"){
@@ -124,3 +125,5 @@ int main(int argc,char**argv){
   std::cerr<<"SRE2C_FAIL_CLOSED "<<e.what()<<"\n";return 2;
  }
 }
+
+#endif // DRNAS_FACTOR2_EMBED
