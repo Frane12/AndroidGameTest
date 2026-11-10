@@ -1,0 +1,82 @@
+name: DRNAS FACTOR6 bounded adaptive structural gate vs baselines
+run-name: FACTOR6 4 pinned SATLIB CNFs x DRNAS A C D Kissat CMS 10s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-factor5-official40-20261110]
+    paths:
+      - research/drnas_factor6_structural.py
+      - research/drnas_factor6_dimacs.py
+      - research/drnas_factor4_native.cpp
+      - research/drnas-sat-v7-4/frozen_real_medium.json
+      - .github/workflows/drnas-factor6-structural.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official40:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install official archive reader and solver dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages remotezip
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake libgmp-dev zlib1g-dev
+      - name: Validate DIMACS parser and regression tests
+        run: python3 research/drnas_factor6_structural.py --selftest-only
+      - name: Restore pinned reference solver binaries
+        id: solver-cache
+        uses: actions/cache@v4
+        with:
+          path: .reference-solvers/bin
+          key: linux-ubuntu2404-x64-kissat-8af8e56f174b-cms-97c6efeae45d-v1
+      - name: Compile pinned reference solvers on cache miss only
+        if: steps.solver-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .reference-solvers/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git .reference-solvers/kissat-src
+          git -C .reference-solvers/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd .reference-solvers/kissat-src && ./configure && make -j2)
+          cp .reference-solvers/kissat-src/build/kissat .reference-solvers/bin/kissat
+          git clone --quiet https://github.com/msoos/cryptominisat.git .reference-solvers/cms-src
+          git -C .reference-solvers/cms-src checkout --detach 97c6efeae45d93c45d2ebc3e4e83c2014c79513d
+          cmake -S .reference-solvers/cms-src -B .reference-solvers/cms-build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=OFF -DENABLE_PYTHON_INTERFACE=OFF -DNOM4RI=ON
+          cmake --build .reference-solvers/cms-build -j2
+          cp .reference-solvers/cms-build/cryptominisat5 .reference-solvers/bin/cryptominisat5
+      - name: Compile current DRNAS and verify cached reference binaries
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor6/bin
+          g++ -std=c++17 -O2 research/drnas_factor4_native.cpp -o mre_factor6/bin/drnas_factor4
+          for solver in kissat cryptominisat5; do
+            test -s ".reference-solvers/bin/$solver"
+            install -m 755 ".reference-solvers/bin/$solver" "mre_factor6/bin/$solver"
+            ldd "mre_factor6/bin/$solver" | tee "mre_factor6/$solver.ldd"
+            ! grep -q 'not found' "mre_factor6/$solver.ldd"
+          done
+          mre_factor6/bin/kissat --version
+          mre_factor6/bin/cryptominisat5 --version || true
+          echo "Reference binaries cache hit: ${{ steps.solver-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Four pinned SATLIB CNFs 10 CPU seconds per solver
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor6_structural.py | tee mre_factor6/benchmark.log
+          grep -q '^FACTOR6_FINAL ' mre_factor6/benchmark.log
+          grep '^FACTOR6_FINAL ' mre_factor6/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR6-STRUCTURAL-4-SATLIB-10S-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor6/audit.json
+            mre_factor6/sources.json
+            mre_factor6/*.cnf
+            mre_factor6/*.log
