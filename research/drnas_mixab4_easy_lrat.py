@@ -46,6 +46,7 @@ SCREEN_CAP=4.0
 MAX_CANDIDATES=240
 MAX_SOURCE_BYTES=16*1024*1024
 CHECKER=pathlib.Path("mre_mixab4/bin/lrat-check")
+DRAT=pathlib.Path("mre_mixab4/bin/drat-trim")
 CADICAL=pathlib.Path("/usr/bin/cadical")
 PRIOR_PATHS=(
  "mre_search5/manifest.json","mre_search6/manifest.json",
@@ -97,6 +98,7 @@ def signature():
        scanner_binary_sha=sha(gf.BIN),native_bin_sha=sha(e9.NATIVE),
        kissat_bin_sha=sha(e9.KISSAT),cms_bin_sha=sha(CMS),
        cadical_bin_sha=sha(CADICAL),independent_lrat_checker_bin_sha=sha(CHECKER),
+       independent_drat_checker_bin_sha=sha(DRAT),
        previous_registries=checks)
 
 def lrat_check(cnf,proof,seconds=12):
@@ -106,12 +108,28 @@ def lrat_check(cnf,proof,seconds=12):
                      capture_output=True,text=True,timeout=seconds)
     return v.returncode==0 and "c VERIFIED" in v.stdout and "NOT VERIFIED" not in v.stdout
 
-def reference_probe(p,seconds=SCREEN_CAP):
-    import tempfile
+def independent_drat_replay(cnf,drat,seconds=12):
+    # DRAT-trim is the PRIMARY independently checked proof verifier.
+    # Only after DRAT acceptance is the derived LRAT independently replayed.
+    need(pathlib.Path(drat).is_file(),"original DRAT absent")
+    if not (0<pathlib.Path(drat).stat().st_size<=16*1024*1024):
+        return None
     with tempfile.TemporaryDirectory(dir=ROOT) as td:
-        proof=pathlib.Path(td)/"result.lrat"
-        cmd=[str(CADICAL),"--lrat","--no-binary",
-             str(p),str(proof)]
+        proof=pathlib.Path(td)/"checked.lrat"
+        result=subprocess.run([str(DRAT.resolve()),str(cnf.resolve()),
+                   str(pathlib.Path(drat).resolve()),"-L",str(proof.resolve())],
+                   capture_output=True,text=True,timeout=seconds)
+        if (result.returncode!=0 or "s VERIFIED" not in result.stdout or
+                "s NOT VERIFIED" in result.stdout or not proof.is_file()):
+            return None
+        if not lrat_check(cnf,proof,seconds=6):
+            return None
+        return proof.read_bytes()
+
+def reference_probe(p,seconds=SCREEN_CAP):
+    with tempfile.TemporaryDirectory(dir=ROOT) as td:
+        drat=pathlib.Path(td)/"result.drat"
+        cmd=[str(CADICAL),"--no-binary",str(p),str(drat)]
         try:
             r=subprocess.run(cmd,capture_output=True,text=True,timeout=seconds)
         except subprocess.TimeoutExpired:
@@ -125,10 +143,12 @@ def reference_probe(p,seconds=SCREEN_CAP):
             need(status=="SAT" and verified,"reference SAT invalid original model")
             return dict(status="SAT",reference_witness_verified=True)
         need("s UNSATISFIABLE" in r.stdout,"reference UNSAT status missing")
-        if not lrat_check(p,proof,seconds=6):
-            return dict(status="SKIP",reason="independent_lrat_verifier_rejected")
-        return dict(status="UNSAT",lrat_bytes=proof.stat().st_size,
-                    proof_raw=proof.read_bytes())
+        lrat_bytes=independent_drat_replay(p,drat,seconds=8)
+        if lrat_bytes is None:
+            return dict(status="SKIP",reason="independent_drat_and_lrat_verifier_rejected")
+        return dict(status="UNSAT",lrat_bytes=len(lrat_bytes),
+                    proof_raw=lrat_bytes,drat_raw=drat.read_bytes())
+
 
 def freeze():
     import mre7_extended_easy_freeze as pool
@@ -136,7 +156,7 @@ def freeze():
     ROOT.mkdir(parents=True,exist_ok=True)
     SOURCE.mkdir(parents=True,exist_ok=True)
     (ROOT/"proofs").mkdir(parents=True,exist_ok=True)
-    need(all(p.is_file() for p in (gf.BIN,e9.NATIVE,e9.KISSAT,CMS,CADICAL,CHECKER)),
+    need(all(p.is_file() for p in (gf.BIN,e9.NATIVE,e9.KISSAT,CMS,CADICAL,CHECKER,DRAT)),
          "missing pinned binaries/checker")
     excluded_sha,excluded_ids,_=registry_snapshot()
     choices=[]
@@ -171,18 +191,24 @@ def freeze():
             probe=reference_probe(p)
             need(probe["status"] in ("SAT","UNSAT"),
                  "reference-only screen rejected: "+probe.get("reason",""))
-            proof_file=None;proof_sha=None
+            proof_file=None;proof_sha=None;drat_file=None;drat_sha=None
             if probe["status"]=="UNSAT":
                 proof_file=str(pathlib.Path("proofs")/(identity+".lrat"))
                 output=ROOT/proof_file
                 output.write_bytes(probe["proof_raw"])
                 proof_sha=sha(output)
-                need(lrat_check(p,output),"independent LRAT replay after freeze")
+                drat_file=str(pathlib.Path("proofs")/(identity+".drat"))
+                drat_out=ROOT/drat_file
+                drat_out.write_bytes(probe["drat_raw"])
+                drat_sha=sha(drat_out)
+                need(independent_drat_replay(p,drat_out) is not None,
+                     "independent DRAT and LRAT replay after freeze")
             selected.append(dict(year=yr,gbd=gbd,sha256=identity,
                 filename=p.name,vars=n,clauses=k,bytes=len(plain),
                 reference_screen_status=probe["status"],
                 reference_screen_cap_s=SCREEN_CAP,
-                independent_lrat_proof_file=proof_file,independent_lrat_sha256=proof_sha))
+                independent_lrat_proof_file=proof_file,independent_lrat_sha256=proof_sha,
+                independent_drat_proof_file=drat_file,independent_drat_sha256=drat_sha))
             excluded_sha.add(identity);excluded_ids.add(gbd)
             rec.update(action="selected_after_reference_only_screen",
                        sha256=identity,status=probe["status"],lrat=bool(proof_file))
@@ -207,6 +233,7 @@ def freeze():
         one_logical_CPU=True,no_parallel_children=True,
         original_SHA_frozen_after_reference_screen_before_candidate_benchmark=True,
         external_original_LRAT_independently_checked=True,
+        external_original_DRAT_independently_checked=True,
         original_sat_model_required=True,no_auto_promotion=True,
         selection_salt=SALT,trace=trace,signatures=signature())
     save(ROOT/"manifest.json",m)
@@ -236,28 +263,33 @@ def verify():
         if c["independent_lrat_proof_file"]:
             proof=ROOT/c["independent_lrat_proof_file"]
             need(sha(proof)==c["independent_lrat_sha256"],"proof SHA changed")
-            need(lrat_check(src,proof),"independent original CNF LRAT replay failed")
+            drat=ROOT/c["independent_drat_proof_file"]
+            need(sha(drat)==c["independent_drat_sha256"],"DRAT original proof drift")
+            need(independent_drat_replay(src,drat) is not None,
+                 "external DRAT+LRAT original CNF verification failed")
+            need(lrat_check(src,proof),"stored LRAT verification failed")
         else:
             need(c["reference_screen_status"]=="SAT","reference screen missing cert")
     return m
 
 def selftest():
     ROOT.mkdir(parents=True,exist_ok=True)
-    need(gf.BIN.is_file() and CHECKER.is_file() and CADICAL.is_file(),
+    need(gf.BIN.is_file() and CHECKER.is_file() and CADICAL.is_file() and DRAT.is_file(),
          "exact native scanner or independent LRAT checker absent")
     with tempfile.TemporaryDirectory() as td:
         q=pathlib.Path(td)/"unsat.cnf"
         q.write_text("p cnf 1 2\n1 0\n-1 0\n")
         test=reference_probe(q,seconds=3)
         need(test["status"]=="UNSAT","LRAT positive toy failed: "+str({k:v for k,v in test.items() if k!="proof_raw"}))
-        # Use a SAT original as the negative certificate control.
-        # For the contradictory-unit toy, a trivial empty proof may be
-        # accepted via initial unit propagation, so it is not a sound negative.
+        # A fabricated proof of UNSAT on an actually SAT original MUST be rejected
+        # by the primary independent DRAT-trim checker.
         satq=pathlib.Path(td)/"satisfiable.cnf"
         satq.write_text("p cnf 1 1\n1 0\n")
-        bad=pathlib.Path(td)/"invalid.lrat"
-        bad.write_text("2 0 1 0\n")
-        need(not lrat_check(satq,bad),"LRAT false UNSAT certificate accepted on SAT input")
+        bad=pathlib.Path(td)/"invalid.drat"
+        bad.write_text("0\n")
+        need(independent_drat_replay(satq,bad) is None,
+             "DRAT-trim false UNSAT certificate accepted on SAT input")
+
     with tempfile.TemporaryDirectory() as d:
         p=pathlib.Path(d)/"toy.cnf"
         for k in (2,3,4):
@@ -274,7 +306,7 @@ def selftest():
                 need(r["proved"]==expected,"independent GF2 toy proof failure")
     print("MIXAB4_SELFTEST_PASS "+json.dumps(dict(
        complete_XOR_UNSAT=3,incomplete_SAT_negative=3,
-       proof_checker="independent_original_CNF_replay_plus_external_LRAT",one_cpu=True)),flush=True)
+       proof_checker="independent_original_CNF_replay_plus_external_DRAT_and_LRAT",one_cpu=True)),flush=True)
 
 def cms_trial(c,rep,cap):
     src=source(c)
@@ -492,7 +524,7 @@ def audit():
       source_only_prior_frozen_SHA_not_new=False,new_to_loaded_registries=True,globally_blind=False,
       strict_original_SAT_witness=True,independent_GF2_math_proof_NOT_LRAT=True,
       no_independent_LRAT_for_backend_UNSAT=False,reference_only_selection_biased=True,
-      independent_LRAT_checked_sources=sorted(lrat),no_auto_promotion=True,
+      independent_LRAT_checked_sources=sorted(lrat),independent_DRAT_checked_sources=sorted(lrat),no_auto_promotion=True,
       one_logical_cpu=True,no_parallel_portfolio=True,
       math_certified_originals=sorted(math),backend_UNSAT_agreement_diagnostic_only=sorted(consensus-math),
       scores=scores,paired=paired,
