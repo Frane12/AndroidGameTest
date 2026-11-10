@@ -487,7 +487,7 @@ def audit():
       source_only_prior_frozen_SHA_not_new=False,new_to_loaded_registries=True,globally_blind=False,
       strict_original_SAT_witness=True,independent_GF2_math_proof_NOT_LRAT=True,
       no_independent_LRAT_for_backend_UNSAT=False,reference_only_selection_biased=True,
-      independent_LRAT_checked_sources=sorted(lrat),,no_auto_promotion=True,
+      independent_LRAT_checked_sources=sorted(lrat),no_auto_promotion=True,
       one_logical_cpu=True,no_parallel_portfolio=True,
       math_certified_originals=sorted(math),backend_UNSAT_agreement_diagnostic_only=sorted(consensus-math),
       scores=scores,paired=paired,
