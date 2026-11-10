@@ -1,0 +1,80 @@
+name: DRNAS EQUIV11 - original SHA independent XLRUP proof audit
+run-name: EQUIV11-PROOF SHA327b - CMS 5.17 XLRUP CakeML certified UNSAT
+on:
+  push:
+    branches: [experiment/drnas-equiv11-cms-xlrup-certificate-20261110]
+    paths:
+      - .github/workflows/drnas-equiv11-cms-xlrup-proof.yml
+      - research/drnas_equiv11_cms_xlrup_proof.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: equiv11-proof-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  proof:
+    name: Original CNF SHA native-UNSAT independent CMS binary XLRUP proof verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable EQUIV9 source CNFs, SHA registry and pinned native binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv9/cases/47a1a6f5687ed19c5c0f77c2c81f3f81.cnf
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          sha256sum mre_equiv9/cases/47a1a6f5687ed19c5c0f77c2c81f3f81.cnf
+      - name: Build independent CMS 5.17.0 binary proof writer with source commit pinned
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake ninja-build git pkg-config libgmp-dev zlib1g-dev
+          git clone -q https://github.com/msoos/cryptominisat /tmp/drnas-e11-cms
+          git -C /tmp/drnas-e11-cms checkout -q 03954f7f7815ea3984774c95a66e7c224cd25952
+          test "$(git -C /tmp/drnas-e11-cms rev-parse HEAD)" = 03954f7f7815ea3984774c95a66e7c224cd25952
+          cmake -G Ninja -S /tmp/drnas-e11-cms -B /tmp/drnas-e11-cms/build -DCMAKE_BUILD_TYPE=Release -DNOCADICAL=ON -DENABLE_TESTING=OFF -DNOZLIB=ON
+          cmake --build /tmp/drnas-e11-cms/build --target cryptominisat5 -j 2
+          test -x /tmp/drnas-e11-cms/build/cryptominisat5
+          /tmp/drnas-e11-cms/build/cryptominisat5 --version
+      - name: Build pinned independent CakeML XLRUP checker
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/meelgroup/frat-xor /tmp/drnas-e11-frat
+          git -C /tmp/drnas-e11-frat checkout -q 18cd6bc17af10a9891c10a846ce966166f9fe0dc
+          test "$(git -C /tmp/drnas-e11-frat rev-parse HEAD)" = 18cd6bc17af10a9891c10a846ce966166f9fe0dc
+          make -C /tmp/drnas-e11-frat/cake_xlrup
+          test -x /tmp/drnas-e11-frat/cake_xlrup/cake_xlrup
+      - name: Selftests - UNSAT proof checked, SAT negative control
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_equiv11_cms_xlrup_proof.py
+          mkdir -p mre_equiv11proof
+          python3 -u research/drnas_equiv11_cms_xlrup_proof.py selftest | tee mre_equiv11proof/selftest.log
+          grep -q '^EQUIV11_SELFTEST_PASS ' mre_equiv11proof/selftest.log
+      - name: Original SHA-locked independent binary XLRUP certification attempt
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_equiv11_cms_xlrup_proof.py certificate | tee mre_equiv11proof/audit.log
+          grep -q '^EQUIV11_FINAL ' mre_equiv11proof/audit.log
+          grep '^EQUIV11_FINAL ' mre_equiv11proof/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV11-INDEPENDENT-XLRUP-ORIGINAL-SHA-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_equiv11proof/selftest.log
+            mre_equiv11proof/audit.log
+            mre_equiv11proof/report.json
