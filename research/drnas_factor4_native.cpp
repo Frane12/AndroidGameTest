@@ -4,6 +4,8 @@
 #include "drnas_sre2c_native.cpp"
 #undef DRNAS_FACTOR2_EMBED
 #include <numeric>
+#include <algorithm>
+#include <chrono>
 namespace factor2 {
 using drnas::CNF;
 struct Plan {
@@ -63,6 +65,55 @@ static Plan choose(const CNF& f){
  }
  return {};
 }
+// FACTOR6: source-structural, CPU-bounded separator probe. Only valid exact
+// partitions are accepted. All other outcomes abstain and use original CDCL.
+static Plan choose_adaptive(const CNF& f,double max_seconds,int& probes,bool& screened) {
+ const auto started=drnas::Clock::now();
+ if(f.vars<2||max_seconds<=0){screened=true;return {};}
+ std::vector<int> occurrence(f.vars+1,0);
+ size_t literals=0;
+ for(const auto& c:f.clauses){
+  literals+=c.size();
+  for(int lit:c)++occurrence[abs(lit)];
+ }
+ // Prior gate uses only source shape. Skip expensive, highly coupled CNFs.
+ if(f.vars>1200 || f.clauses.size()>16000 || literals>45000 ||
+   (f.vars>96 && (f.clauses.size()>size_t(4)*f.vars || literals>size_t(12)*f.vars))){
+  screened=true;return {};
+ }
+ std::vector<int> candidates(f.vars);
+ std::iota(candidates.begin(),candidates.end(),1);
+ std::sort(candidates.begin(),candidates.end(),[&](int a,int b){
+  return occurrence[a]!=occurrence[b]?occurrence[a]>occurrence[b]:a<b;
+ });
+ const int limit=std::min(int(candidates.size()),24);
+ auto expired=[&](){return std::chrono::duration<double>(drnas::Clock::now()-started).count()>=max_seconds;};
+ auto viable=[](const Plan& p){
+  if(!p.ok)return false;
+  for(const auto& vars:p.vars)if(vars.size()>12)return false;
+  return true;
+ };
+ for(int i=0;i<limit;++i){
+  if(expired()){screened=true;return {};}
+  ++probes;
+  Plan p=decompose(f,{candidates[i]});
+  if(viable(p))return p;
+ }
+ // Pair cuts on only small, low-incidence instances, bounded to 64 probes.
+ if(f.vars<=48 && literals<=2500){
+  int pairs=0;
+  for(int i=0;i<std::min(limit,12);++i){
+   for(int j=i+1;j<std::min(limit,12);++j){
+    if(expired()){screened=true;return {};}
+    if(++pairs>64)return {};
+    ++probes;
+    Plan p=decompose(f,{candidates[i],candidates[j]});
+    if(viable(p))return p;
+   }
+  }
+ }
+ return {};
+}
 static bool holds(const std::vector<std::vector<int>>& clauses,const std::vector<int8_t>& values){
  for(const auto& c:clauses){
   bool sat=false;
@@ -74,18 +125,26 @@ static bool holds(const std::vector<std::vector<int>>& clauses,const std::vector
 struct Result {
  int status=0;
  std::vector<int8_t> model;
- int separator_size=0,components=0,checks=0,rejected=0,gate_skip=0;
+ int separator_size=0,components=0,checks=0,rejected=0,gate_skip=0,probes=0;
+ double probe_s=0;
  double density=0;
  bool abstained=false;
 };
-static Result solve(const CNF& f,double budget,bool gated=false){
+static Result solve(const CNF& f,double budget,bool gated=false,bool adaptive=false){
  auto start=drnas::Clock::now();
  Result r;
  // Source-only cheap gate: clause density, measured before any separator search.
  // Prespecified threshold; no SAT labels, timings or solution data.
  r.density=f.vars?double(f.clauses.size())/double(f.vars):0;
  if(gated && r.density>5.0){r.gate_skip=1;r.abstained=true;return r;}
- Plan p=choose(f);
+ Plan p;
+ if(adaptive){
+  bool screened=false;
+  const auto probe_start=drnas::Clock::now();
+  p=choose_adaptive(f,std::min(0.05,std::max(0.001,budget*0.02)),r.probes,screened);
+  r.probe_s=std::chrono::duration<double>(drnas::Clock::now()-probe_start).count();
+  if(screened)r.gate_skip=1;
+ }else p=choose(f);
  if(!p.ok){r.abstained=true;return r;}
  r.separator_size=p.sep.size();r.components=p.vars.size();
  // No exponential blow-up in local components.
@@ -122,10 +181,10 @@ static Result solve(const CNF& f,double budget,bool gated=false){
 int main(int argc,char**argv){
  try{
   if(argc!=6||std::string(argv[2])!="--mode"||std::string(argv[4])!="--time"){
-   std::cerr<<"usage: factor4 FILE --mode A|B|C --time SECONDS\n";return 2;
+   std::cerr<<"usage: factor4 FILE --mode A|B|C|D --time SECONDS\n";return 2;
   }
   std::string mode=argv[3];
-  drnas::require(mode=="A"||mode=="B"||mode=="C","invalid arm");
+  drnas::require(mode=="A"||mode=="B"||mode=="C"||mode=="D","invalid arm");
   double cap=std::stod(argv[5]);
   auto started=drnas::Clock::now();
   auto f=drnas::read_dimacs(argv[1]);
@@ -138,7 +197,7 @@ int main(int argc,char**argv){
    if(result.status==10)result.model=solver.assignments();
   }else{
    double prep=std::chrono::duration<double>(drnas::Clock::now()-started).count();
-   if(prep<cap)result=factor2::solve(f,cap-prep,mode=="C");
+   if(prep<cap)result=factor2::solve(f,cap-prep,mode=="C",mode=="D");
    if(result.abstained){
     // Safe fallback: solve original CNF, never report guessed UNSAT.
     solver.add_cnf(f);
@@ -156,7 +215,8 @@ int main(int argc,char**argv){
    <<" e2e_s="<<e2e<<" sep="<<result.separator_size
    <<" components="<<result.components<<" local_checks="<<result.checks
    <<" rejected="<<result.rejected<<" fallback="<<int(result.abstained)
-   <<" gate_skip="<<result.gate_skip<<" density="<<result.density
+   <<" gate_skip="<<result.gate_skip<<" probes="<<result.probes
+   <<" probe_s="<<result.probe_s<<" density="<<result.density
    <<" decisions="<<st.decisions<<" conflicts="<<st.conflicts
    <<" SAT_original_verified="<<int(result.status==10)
    <<" UNSAT_independent_LRAT=0\n";
