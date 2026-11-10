@@ -1,0 +1,165 @@
+name: DRNAS BINARY-SCC3 - source selective SCC gate with matched probe and clean placebo
+run-name: BINARY-SCC3 6-source smoke then 17SHA x 8 arms x 2 reps 15s 272 one-CPU E2E
+on:
+  push:
+    branches: [experiment/drnas-binary-scc3-selective-proofgate-20261110]
+    paths:
+      - research/drnas_binary_scc3_selective_gate.py
+      - .github/workflows/drnas-binary-scc3-selective-gate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: binary-scc3-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Lock original 17 SHA and source SCC gate, exhaustive quotient/witness controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore unchanged immutable SCC2 frozen SHA, C++ quotient and reference binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42768626410 -R Frane12/AndroidGameTest -n binary-scc2-frozen-17SHA-native-quotient-pinned-original-backends -D .
+          test -s mre_binary_scc2/manifest.json
+          test -s mre_binary_scc2/bin/scc_quotient
+          test -s mre_binary_scc1/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv10m5/manifest.json
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv7/bin/cadical_3_0_1
+          chmod +x mre_binary_scc2/bin/scc_quotient built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Strict source checks, exhaustive mini-SAT and source-only gate freeze
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_binary_scc3
+          python3 -m py_compile research/drnas_binary_scc3_selective_gate.py
+          python3 -u research/drnas_binary_scc3_selective_gate.py selftest | tee mre_binary_scc3/selftest.log
+          grep -q '^SCC3_SELFTEST_PASS ' mre_binary_scc3/selftest.log
+          python3 -u research/drnas_binary_scc3_selective_gate.py freeze | tee mre_binary_scc3/freeze.log
+          grep -q '^SCC3_FROZEN ' mre_binary_scc3/freeze.log
+          python3 -u research/drnas_binary_scc3_selective_gate.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scc3-frozen17SHA-source-only-gate-immutable-reference
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_binary_scc3/manifest.json
+            mre_binary_scc3/freeze.log
+            mre_binary_scc3/selftest.log
+            mre_binary_scc2/manifest.json
+            mre_binary_scc2/bin/scc_quotient
+            mre_binary_scc1/manifest.json
+            mre_binary_scc1/bin/scc_scout
+            mre_equiv10m5/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+  smoke:
+    name: Source-stratified six-SHA 48 matched 6s trials before full benchmark
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: scc3-frozen17SHA-source-only-gate-immutable-reference, path: .}
+      - name: Source-only 3 alias-positive + 3 alias-zero, controlled small E2E
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_binary_scc2/bin/scc_quotient built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_binary_scc3_selective_gate.py verify
+          python3 -u research/drnas_binary_scc3_selective_gate.py smoke | tee mre_binary_scc3/smoke.log
+          grep -q '^SCC3_SMOKE_PASS ' mre_binary_scc3/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scc3-sixSHA-smoke-48-E2E
+          retention-days: 21
+          path: |
+            mre_binary_scc3/smoke.json
+            mre_binary_scc3/smoke.log
+  paired:
+    name: Original SHA matched 8-arm one-core E2E 15s shard ${{ matrix.shard }}
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: scc3-frozen17SHA-source-only-gate-immutable-reference, path: .}
+      - name: Matched original/clean/probe/gate, proof replay and full E2E budget
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_binary_scc2/bin/scc_quotient built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_binary_scc3_selective_gate.py verify
+          python3 -u research/drnas_binary_scc3_selective_gate.py shard --shard ${{ matrix.shard }} | tee mre_binary_scc3/shard-${{ matrix.shard }}.log
+          grep -q '^SCC3_SHARD_PASS ' mre_binary_scc3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scc3-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_binary_scc3/shard-${{ matrix.shard }}.json
+            mre_binary_scc3/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 272 SHA paired strict PAR2, CPU wall, SCC gate versus probe
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: scc3-frozen17SHA-source-only-gate-immutable-reference, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scc3-shard-*
+          path: mre_binary_scc3
+          merge-multiple: true
+      - name: Fail-closed original witness, source proof, placebo and paired audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_binary_scc2/bin/scc_quotient built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_binary_scc3_selective_gate.py audit | tee mre_binary_scc3/audit.log
+          grep -q '^SCC3_FINAL ' mre_binary_scc3/audit.log
+          grep '^SCC3_FINAL ' mre_binary_scc3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SCC3-SOURCE-GATE-17SHA-272-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_binary_scc3/manifest.json
+            mre_binary_scc3/report.json
+            mre_binary_scc3/audit.log
+            mre_binary_scc3/shard-*.json
