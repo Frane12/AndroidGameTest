@@ -1,0 +1,104 @@
+name: DRNAS Native SOLVESET1 — source-locked solvable original CNF development benchmark
+run-name: SOLVESET1 screen 23 original SHA with own R3C, freeze SAT cases, then R1 R2B R3C 1CPU E2E
+on:
+  push:
+    branches: [experiment/drnas-native-solveset1-20261110]
+    paths:
+      - research/drnas_native_solveset1.py
+      - .github/workflows/drnas-native-solveset1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-native-solveset1
+  cancel-in-progress: true
+jobs:
+  solve_set:
+    name: Find SAT-witness-verified DRNAS-solvable originals, freeze and paired benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compile R1, R2B and R3C only from own C++17 SAT source
+        run: |
+          set -euo pipefail
+          mkdir -p mre_drnas_native_solveset1/bin
+          for variant in r1 r2b r3c; do
+            g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+              "research/drnas_native_core_$variant.cpp" \
+              -o "mre_drnas_native_solveset1/bin/drnas_native_core_$variant"
+            ldd "mre_drnas_native_solveset1/bin/drnas_native_core_$variant" \
+              | tee "mre_drnas_native_solveset1/ldd-$variant.txt"
+            ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' \
+               "mre_drnas_native_solveset1/ldd-$variant.txt"
+          done
+          python3 -m py_compile research/drnas_native_solveset1.py
+      - name: Restore six known reference-easy immutable original SHA CNFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solveset1-mix4 mre_mixab4/cases
+          gh run download 42816574288 -R Frane12/AndroidGameTest \
+             -n mixab4-reference-easy6-CMS17-Kissat4-LRAT \
+             -D /tmp/solveset1-mix4
+          test -s /tmp/solveset1-mix4/mre_mixab4/manifest.json
+          cp /tmp/solveset1-mix4/mre_mixab4/manifest.json mre_mixab4/manifest.json
+          cp /tmp/solveset1-mix4/mre_mixab4/cases/*.cnf mre_mixab4/cases/
+      - name: Restore twelve source-only SAT2021-23 immutable original SHA CNFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solveset1-mix3 mre_mixab3/cases
+          gh run download 42811023064 -R Frane12/AndroidGameTest \
+             -n mixab3-fresh12-CMS17-Kissat4-GF2 \
+             -D /tmp/solveset1-mix3
+          test -s /tmp/solveset1-mix3/mre_mixab3/manifest.json
+          cp /tmp/solveset1-mix3/mre_mixab3/manifest.json mre_mixab3/manifest.json
+          cp /tmp/solveset1-mix3/mre_mixab3/cases/*.cnf mre_mixab3/cases/
+      - name: Restore five source-frozen easy-medium SAT2024-25 original SHA CNFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solveset1-equiv mre_equiv10m5 mre_equiv9/cases
+          gh run download 42729709584 -R Frane12/AndroidGameTest \
+             -n equiv10m5-exact-five-SHA-frozen-and-pinned-onecore-binaries \
+             -D /tmp/solveset1-equiv
+          test -s /tmp/solveset1-equiv/mre_equiv10m5/manifest.json
+          cp /tmp/solveset1-equiv/mre_equiv10m5/manifest.json mre_equiv10m5/manifest.json
+          cp /tmp/solveset1-equiv/mre_equiv9/cases/*.cnf mre_equiv9/cases/
+      - name: Screen 23 exact original SHA source CNFs for OUR standalone R3C verified SAT, 4sec
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_native_solveset1.py screen \
+            | tee mre_drnas_native_solveset1/screen.log
+          grep -q '^DRNAS_SOLVESET1_SCREEN_FINAL ' mre_drnas_native_solveset1/screen.log
+          grep '^DRNAS_SOLVESET1_SCREEN_FINAL ' mre_drnas_native_solveset1/screen.log \
+            >> "$GITHUB_STEP_SUMMARY"
+      - name: Benchmark SAME frozen solvable SHA on four own CDCL arms, two repetitions, one CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_native_solveset1.py bench \
+            | tee mre_drnas_native_solveset1/benchmark.log
+          grep -q '^DRNAS_SOLVESET1_FINAL ' mre_drnas_native_solveset1/benchmark.log
+          grep '^DRNAS_SOLVESET1_FINAL ' mre_drnas_native_solveset1/benchmark.log \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NATIVE-SOLVESET1-23SHA-VERIFIED-SAT-FROZEN-PAIRED
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_solveset1/source-23-sha.json
+            mre_drnas_native_solveset1/screen-23-results.json
+            mre_drnas_native_solveset1/frozen-solvable-dev-manifest.json
+            mre_drnas_native_solveset1/paired-original-trials.json
+            mre_drnas_native_solveset1/final-audit.json
+            mre_drnas_native_solveset1/screen.log
+            mre_drnas_native_solveset1/benchmark.log
+            mre_drnas_native_solveset1/ldd-*.txt
