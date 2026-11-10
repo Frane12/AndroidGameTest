@@ -1,0 +1,177 @@
+name: DRNAS SEARCH3 - selective native VMTF EVSIDS factorial source SHA audit
+run-name: SEARCH3 16 SEARCH2-disjoint EQUIV6 SHA x 10 arms x 2 repeats 10s 320 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-search3-selective-vmtf-evsids-20261110]
+    paths:
+      - .github/workflows/drnas-search3-native-selective-e2e.yml
+      - research/drnas_search3_patch_modes.py
+      - research/drnas_search3_cadical_driver.cpp
+      - research/drnas_search3_selective_e2e.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-search3-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile pinned native CaDiCaL separate VMTF and EVSIDS and independent source-SHA freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Retrieve immutable 16 EQUIV6 SHA and exclude all 12 prior SEARCH2 SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42614287853 -R Frane12/AndroidGameTest -n equiv6-sourceonly-16SHA-pinned-binaries -D .
+          mkdir -p prior_search2
+          gh run download 42776138124 -R Frane12/AndroidGameTest -n search2-CaDiCaL-301-native-CDCL-12SHA-frozen-and-proofs -D prior_search2
+          test -s mre_equiv6/manifest.json
+          test -s prior_search2/mre_equiv13/manifest.json
+          test "$(find mre_equiv6/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv6/bin/cadical_3_0_1
+          chmod +x built/bin/kissat_4_0_4 mre_equiv6/bin/cadical_3_0_1
+      - name: Clone pinned CaDiCaL release and fail closed if code anchors differ
+        run: |
+          set -euo pipefail
+          mkdir -p mre_search3/bin mre_search2/bin
+          git clone --depth 1 --branch rel-3.0.1 https://github.com/arminbiere/cadical.git cadical-search3
+          test "$(git -C cadical-search3 rev-parse HEAD)" = c60730422e758ef1cebe7aeddf2dda31c996bf04
+          python3 -u research/drnas_search3_patch_modes.py cadical-search3 | tee mre_search3/patch.log
+          grep -q '^SEARCH3_PATCH_PASS ' mre_search3/patch.log
+          sha256sum cadical-search3/src/{cadical.hpp,internal.hpp,score.cpp,solver.cpp} > mre_search3/patched_sources.sha256
+      - name: Compile native CDCL engines with isolated initial VMTF EVSIDS modes
+        run: |
+          set -euo pipefail
+          (cd cadical-search3 && ./configure && make -j2 > /tmp/cadical-search3-build.log 2>&1) || { tail -110 /tmp/cadical-search3-build.log; exit 1; }
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -I cadical-search3/src research/drnas_search3_cadical_driver.cpp cadical-search3/build/libcadical.a -o mre_search3/bin/search3_cadical -pthread -ldl -lz
+          g++ -O2 -std=c++17 -Wall -Wextra -Werror research/drnas_search1_guided_relabel.cpp -o mre_search2/bin/search1_relabel
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel
+          sha256sum mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel
+      - name: Exhaustive toy truth validation of VMTF-only EVSIDS-only and BOTH plus source SHA freeze
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_search3_selective_e2e.py
+          python3 -u research/drnas_search3_selective_e2e.py selftest | tee mre_search3/selftest.log
+          grep -q '^SEARCH3_SELFTEST_PASS ' mre_search3/selftest.log
+          python3 -u research/drnas_search3_selective_e2e.py freeze | tee mre_search3/freeze.log
+          grep -q '^SEARCH3_FROZEN ' mre_search3/freeze.log
+          python3 -u research/drnas_search3_selective_e2e.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH3-16SHA-SEARCH2-DISJOINT-NATIVE-CAD301-FROZEN
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search3/manifest.json
+            mre_search3/patch.log
+            mre_search3/selftest.log
+            mre_search3/freeze.log
+            mre_search3/patched_sources.sha256
+            mre_search3/bin/search3_cadical
+            mre_search2/bin/search1_relabel
+            mre_equiv6/manifest.json
+            mre_equiv6/cases/*.cnf
+            prior_search2/mre_equiv13/manifest.json
+            mre_equiv6/bin/cadical_3_0_1
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  pilot:
+    name: Four source-stratified SHA 40 E2E trials cap5 source-only gate
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: SEARCH3-16SHA-SEARCH2-DISJOINT-NATIVE-CAD301-FROZEN, path: .}
+      - name: Short original-SHA native factorial 0/1/2/3 controls and no-op
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search3_selective_e2e.py verify
+          python3 -u research/drnas_search3_selective_e2e.py pilot | tee mre_search3/pilot.log
+          grep -q '^SEARCH3_PILOT_PASS ' mre_search3/pilot.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH3-PILOT-4SHA-40-E2E-TRUE-CDCL
+          retention-days: 21
+          path: |
+            mre_search3/pilot.json
+            mre_search3/pilot.log
+  paired:
+    name: SEARCH3 40 original SHA matched VMTF EVSIDS mixed gate E2E shard ${{ matrix.shard }}
+    needs: pilot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: SEARCH3-16SHA-SEARCH2-DISJOINT-NATIVE-CAD301-FROZEN, path: .}
+      - name: Each solver single core no parallel; verified original SAT; true internal CDCL counters
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search3_selective_e2e.py verify
+          python3 -u research/drnas_search3_selective_e2e.py shard --shard ${{ matrix.shard }} | tee mre_search3/shard-${{ matrix.shard }}.log
+          grep -q '^SEARCH3_SHARD_PASS ' mre_search3/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH3-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search3/shard-${{ matrix.shard }}.json
+            mre_search3/shard-${{ matrix.shard }}.log
+  audit:
+    name: SEARCH3 320 paired verified SHA PAR2 VMTF EVSIDS gate placebo audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: SEARCH3-16SHA-SEARCH2-DISJOINT-NATIVE-CAD301-FROZEN, path: .}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SEARCH3-shard-*
+          path: mre_search3
+          merge-multiple: true
+      - name: Check 320 original-SHA pairs and no unverified SAT or UNSAT LRAT claims
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search3_selective_e2e.py audit | tee mre_search3/audit.log
+          grep -q '^SEARCH3_FINAL ' mre_search3/audit.log
+          grep '^SEARCH3_FINAL ' mre_search3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEARCH3-NATIVE-SELECTIVE-16SHA-320-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_search3/manifest.json
+            mre_search3/report.json
+            mre_search3/audit.log
+            mre_search3/shard-*.json
