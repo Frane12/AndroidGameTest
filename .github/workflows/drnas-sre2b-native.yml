@@ -1,0 +1,52 @@
+name: DRNAS SRE2-B native symmetry GF2 substitution graph
+run-name: SRE2-B 640 brute symmetry + SRE1 SRE2A selftests + 50 matched native oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-sre2b-symmetry-gf2-20261110]
+    paths:
+      - research/drnas_sre2b_symmetry.hpp
+      - research/drnas_sre2b_native.cpp
+      - research/drnas_sre2b_benchmark.py
+      - .github/workflows/drnas-sre2b-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sre2b:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile own native CDCL plus SRE1 SRE2A SRE2B
+        run: |
+          set -euo pipefail
+          mkdir -p mre_sre2b/bin
+          python3 -m py_compile research/drnas_sre2b_benchmark.py
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_sre2b_native.cpp -o mre_sre2b/bin/drnas_sre2b
+          ldd mre_sre2b/bin/drnas_sre2b | tee mre_sre2b/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_sre2b/ldd.log
+      - name: Exhaustive random truth validation SRE1 SRE2A SRE2B
+        run: |
+          set -euo pipefail
+          mre_sre2b/bin/drnas_sre2b --selftest | tee mre_sre2b/selftest.log
+          grep -q '^SRE2B_SELFTEST_PASS ' mre_sre2b/selftest.log
+      - name: Matched E2E 50 trials with independent original CNF verification
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_sre2b_benchmark.py | tee mre_sre2b/benchmark.log
+          grep -q '^SRE2B_FINAL ' mre_sre2b/benchmark.log
+          grep '^SRE2B_FINAL ' mre_sre2b/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SRE2B-NATIVE-SYMMETRY-GF2-50-ONECPU-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_sre2b/audit.json
+            mre_sre2b/*.cnf
+            mre_sre2b/*.log
+            mre_sre2b/bin/drnas_sre2b
