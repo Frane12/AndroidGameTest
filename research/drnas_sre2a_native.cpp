@@ -1,8 +1,8 @@
 // DRNAS SRE2-A proof-first graph structural screening and native CDCL.
 // No foreign solver. A graph clique may prove UNSAT; native CDCL handles rest.
-#define main drnas_sre1_hidden_main
+#define DRNAS_SRE2A_EMBED
 #include "drnas_sre1_native.cpp"
-#undef main
+#undef DRNAS_SRE2A_EMBED
 #include "drnas_sre2a_structure.hpp"
 namespace drnas {
 static void sre2a_selftest(){
