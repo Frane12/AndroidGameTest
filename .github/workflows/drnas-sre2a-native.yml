@@ -1,0 +1,50 @@
+name: DRNAS SRE2-A native exact-one graph and certified clique
+run-name: SRE2-A source-certified graph reduction + 630 brute truth + 48 E2E native oneCPU
+on:
+  push:
+    branches: [experiment/drnas-sre2a-structure-20261110]
+    paths:
+      - research/drnas_sre2a_structure.hpp
+      - research/drnas_sre2a_native.cpp
+      - research/drnas_sre2a_benchmark.py
+      - .github/workflows/drnas-sre2a-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sre2a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile own native R3C plus SRE1 plus SRE2-A
+        run: |
+          set -euo pipefail
+          mkdir -p mre_sre2a/bin
+          python3 -m py_compile research/drnas_sre2a_benchmark.py
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_sre2a_native.cpp -o mre_sre2a/bin/drnas_sre2a
+          ldd mre_sre2a/bin/drnas_sre2a | tee mre_sre2a/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_sre2a/ldd.log
+      - name: Exact-one graph and clique independent exhaustive tests
+        run: |
+          set -euo pipefail
+          mre_sre2a/bin/drnas_sre2a --selftest | tee mre_sre2a/selftest.log
+          grep -q '^SRE2A_SELFTEST_PASS ' mre_sre2a/selftest.log
+      - name: Four real-world sources four arms three reps 48 matched oneCPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_sre2a_benchmark.py | tee mre_sre2a/benchmark.log
+          grep -q '^SRE2A_FINAL ' mre_sre2a/benchmark.log
+          grep '^SRE2A_FINAL ' mre_sre2a/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SRE2A-EXACTONE-GRAPH-CLIQUE-48-ONECPU-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_sre2a/audit.json
+            mre_sre2a/*.cnf
+            mre_sre2a/*.log
+            mre_sre2a/bin/drnas_sre2a
