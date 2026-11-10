@@ -184,4 +184,5 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("action",choices=("selftest","certificate"))
     args=parser.parse_args()
-    globals()[args.action]()
+    if args.action=="selftest":toy_tests()
+    else:certificate()
