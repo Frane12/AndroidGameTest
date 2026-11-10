@@ -228,7 +228,7 @@ def one(c,rep,arm):
  s3.CAD=CAD;s3.KISSAT=KISSAT
  s3.ARMS=ARMS;s3.seed=seed
  # Reuse SEARCH3 proven arm modes without adding any new experimental logic.
- r=s3.one(c,rep,arm,CAP)
+ r=s3.one(dict(c,source_signals=c["original_source_signals"]),rep,arm,CAP)
  r["protocol"]=PROTO
  r["cohort"]=c["cohort"]
  r["SCC_nontrivial"]=c["original_source_signals"]["scc_nontrivial_literal_nodes"]
