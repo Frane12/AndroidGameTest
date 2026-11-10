@@ -95,3 +95,5 @@ summary={arm:dict(solved=sum(r["status"]=="SAT" for r in rows if r["arm"]==arm),
 audit=dict(protocol="ARL1D-8-FRESH-SATLIB-SOURCE-SHA-ONECPU-3REPS-FROZEN-GATE",source=src,cap_s=CAP,rows=rows,summary=summary,oneCPU=True)
 (OUT/"audit.json").write_text(json.dumps(audit,indent=2,sort_keys=True))
 print("MICRO_FINAL "+json.dumps(dict(family=FAMILY,rank=RANK,sha256=sha,summary=summary),sort_keys=True),flush=True)
+
+# Frozen gate, independent original SAT model validation and per-arm PAR2.
