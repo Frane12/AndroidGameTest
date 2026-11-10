@@ -206,6 +206,9 @@ int main(int argc,char**argv){
    <<" decisions="<<st.decisions<<" conflicts="<<st.conflicts
    <<" SAT_original_verified="<<int(result.status==10)
    <<" UNSAT_independent_LRAT=0\n";
+#ifdef DRNAS_PROFILE
+  solver.print_profile();
+#endif
   if(result.status==10){
    std::cout<<"s SATISFIABLE\nv ";
    for(int v=1;v<=f.vars;++v)std::cout<<(result.model[v]<0?-v:v)<<" ";
