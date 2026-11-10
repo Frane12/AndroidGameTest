@@ -80,9 +80,9 @@ def run(arm,rep):
      total_delta_watch=sum(int(x["watch_delta"]) for x in parsed),
      width_distribution={str(w):sum(int(x["learned_width"])==w for x in parsed) for w in sorted(set(int(x["learned_width"]) for x in parsed))},
      mean_backjump=sum(int(x["backjump"]) for x in parsed)/len(parsed),
-     cycles=parsed)
+     cycle_rows=parsed)
   (OUT/"progress_analysis.json").write_text(json.dumps(summary,sort_keys=True,indent=2))
-  print("PROGRESS1_ANALYSIS "+json.dumps({k:v for k,v in summary.items() if k not in ("cycles","source")},sort_keys=True),flush=True)
+  print("PROGRESS1_ANALYSIS "+json.dumps({k:v for k,v in summary.items() if k not in ("cycle_rows","source")},sort_keys=True),flush=True)
   for x in parsed[:8]:print("PROGRESS1_CYCLE "+json.dumps(x,sort_keys=True),flush=True)
 
  return dict(arm=arm,repeat=rep,status=status,E2E_s=round(elapsed,6),PAR2_s=round(elapsed if status!="UNKNOWN" else 2*CAP,6),SAT_original_verified=status=="SAT",UNSAT_independent_LRAT=False,trace_events=len(events),telemetry=stats)
