@@ -1,0 +1,136 @@
+name: DRNAS EQUIV10M - prospective reference-easy medium original one CPU
+run-name: EQUIV10M 8 official 2024-25 SHA reference easy-medium 80 paired 15s
+on:
+  push:
+    branches: [experiment/drnas-equiv10-proof-and-medium-20261110]
+    paths:
+      - research/drnas_equiv10_reference_medium.py
+      - .github/workflows/drnas-equiv10m-reference-medium.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv10m-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Reference-only official source SHA selection - 4 easy and 4 medium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore immutable EQUIV9 historical registries and pinned solvers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv7/bin/cadical_3_0_1
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Preregister bands, verify source SHA and independently screen only with Kissat
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_equiv10medium
+          python3 -m py_compile research/drnas_equiv10_reference_medium.py
+          python3 -u research/drnas_equiv10_reference_medium.py selftest
+          python3 -u research/drnas_equiv10_reference_medium.py freeze | tee mre_equiv10medium/freeze.log
+          grep -q '^EQUIV10M_FREEZE_PASS ' mre_equiv10medium/freeze.log
+          grep '^EQUIV10M_FREEZE_PASS ' mre_equiv10medium/freeze.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv10m-frozen-new-official-reference-easy-medium-8SHA
+          if-no-files-found: warn
+          retention-days: 21
+          path: |
+            mre_equiv10medium/manifest.json
+            mre_equiv10medium/selection_progress.json
+            mre_equiv10medium/freeze.log
+            mre_equiv9/cases/*.cnf
+  paired:
+    name: EQUIV10M 5 arms original E2E 20 trials one core shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: {shard: [0,1,2,3]}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv10m-frozen-new-official-reference-easy-medium-8SHA
+          path: .
+      - name: Restore pinned original SHA registries and unchanged solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          test -s mre_equiv10medium/manifest.json
+      - name: Same original SHA seed pairs one CPU per arm, full E2E PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_equiv10_reference_medium.py verify
+          python3 -u research/drnas_equiv10_reference_medium.py shard --shard ${{ matrix.shard }} | tee mre_equiv10medium/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV10M_SHARD_PASS ${{ matrix.shard }} 20$' mre_equiv10medium/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv10m-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 21
+          path: |
+            mre_equiv10medium/shard-${{ matrix.shard }}.json
+            mre_equiv10medium/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 80 original SHA paired native Kissat CaDiCaL E2E PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv10m-frozen-new-official-reference-easy-medium-8SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv10m-shard-*
+          path: mre_equiv10medium
+          merge-multiple: true
+      - name: Restore source provenance and pinned original solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Pair original SAT witnesses, cross-reference UNSAT, PAR2 and regressions
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_equiv10_reference_medium.py audit | tee mre_equiv10medium/audit.log
+          grep -q '^EQUIV10M_FINAL ' mre_equiv10medium/audit.log
+          grep '^EQUIV10M_FINAL ' mre_equiv10medium/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV10M-8SHA-80-ONECPU-E2E-PAR2-FINAL
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mre_equiv10medium/report.json
+            mre_equiv10medium/audit.log
+            mre_equiv10medium/manifest.json
+            mre_equiv10medium/shard-*.json
