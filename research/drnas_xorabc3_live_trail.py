@@ -106,8 +106,10 @@ def trial(case,rep,arm,cap=CAP,pilot=False):
         if left>1.05 or (arm not in MODES and left>.08):
             if arm in MODES:
                 mode=MODES[arm]
+                # Native terminator must have room to return statistics.
+                # The outer E2E cap still includes all process overhead.
                 command=[str(NATIVE.resolve()),mode,str(src.resolve()),
-                    str(tsv.resolve()),str(min(cap,left-.06))]
+                    str(tsv.resolve()),str(max(1.0,min(cap,left-1.0)))]
             else:
                 mode="kissat" if arm=="kissat_plain" else "cms"
                 command=([str(e9.KISSAT.resolve()),str(src.resolve())] if
@@ -117,7 +119,7 @@ def trial(case,rep,arm,cap=CAP,pilot=False):
             env["LD_LIBRARY_PATH"]=str(pathlib.Path("mre_equiv12/lib").resolve())+":"+str(pathlib.Path("mre5/lib").resolve())+":"+env.get("LD_LIBRARY_PATH","")
             try:
                 p=subprocess.run(command,capture_output=True,text=True,
-                     env=env,timeout=max(.05,left-.025),check=False)
+                     env=env,timeout=max(.05,left-.01),check=False)
             except subprocess.TimeoutExpired:p=None
             if p is not None:
                 if arm in MODES:
