@@ -180,9 +180,76 @@ def certificate():
     (ROOT/"report.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
     print("EQUIV11_FINAL "+json.dumps(result,sort_keys=True),flush=True)
 
+
+def ablate():
+    """Prospective controlled CMS 5.17 option ablation on a fixed, already observed SHA.
+    Keeps all arms at one logical CPU, 3 repetitions, capped at 5s per process.
+    UNSAT arm results only independently accepted when CakeML checks a complete proof.
+    This is a mechanism probe, NOT new-source or competition performance.
+    """
+    ROOT.mkdir(exist_ok=True)
+    src, c = source_original()
+    assert digest(src) == TARGET_SHA
+    arms = (
+        ("default_proof", [], True),
+        ("disable_xor", ["--xor", "0"], True),
+        ("disable_gauss", ["--maxnummatrices", "0"], True),
+        ("disable_presimp", ["--presimp", "0"], True),
+        ("disable_xor_and_gauss", ["--xor", "0", "--maxnummatrices", "0"], True),
+        ("default_noproof", [], False),
+    )
+    reps=3
+    cap=5.0
+    rows=[]
+    for rep in range(reps):
+        for arm, flags, need_proof in arms:
+            with tempfile.TemporaryDirectory(prefix="e12-ablate-") as d:
+                tmp=pathlib.Path(d)
+                pf=tmp/"original.xlrupb"
+                cmd=[CMS, "--verb", "0", "--xlrup", "2", "-t", "1"]+flags+[src]
+                if need_proof:cmd.append(pf)
+                sol=run(cmd,cap,tmp,"solve",256*1024*1024)
+                st=cms_status(sol)
+                ck=None
+                if st=="UNSAT" and need_proof and pf.is_file() and pf.stat().st_size:
+                    ck=check_proof(src,pf,tmp,"checker")
+                valid=(checker_verified(ck) if ck else False)
+                row=dict(rep=rep,arm=arm,flags=flags,source_sha256=TARGET_SHA,
+                         solved_status=st,solver_wall_s=sol["wall_s"],
+                         return_code=sol["return_code"],timed_out=sol["timed_out"],
+                         proof_requested=need_proof,proof_bytes=pf.stat().st_size if pf.is_file() else 0,
+                         independent_CakeML_UNSAT_verified=valid,
+                         checker_wall_s=ck["wall_s"] if ck else None,
+                         checker_rc=ck["return_code"] if ck else None,
+                         logical_cpu=sol["logical_cpu"])
+                rows.append(row)
+                print("EQUIV12_TRIAL "+json.dumps(row,sort_keys=True),flush=True)
+    scores={}
+    for arm,flags,need_proof in arms:
+        a=[r for r in rows if r["arm"]==arm]
+        scores[arm]=dict(reps=len(a),
+            UNSAT_reported=sum(x["solved_status"]=="UNSAT" for x in a),
+            UNSAT_independently_verified=sum(x["independent_CakeML_UNSAT_verified"] for x in a),
+            backend_only_UNSAT=sum(x["solved_status"]=="UNSAT" and not x["independent_CakeML_UNSAT_verified"] for x in a),
+            timeouts=sum(x["timed_out"] for x in a),
+            mean_solver_E2E_s=round(sum(x["solver_wall_s"] for x in a)/len(a),6),
+            solver_E2E_s=round(sum(x["solver_wall_s"] for x in a),6),
+            PAR2_s_certified_proof_only=(round(sum(x["solver_wall_s"] if x["independent_CakeML_UNSAT_verified"] else 2*cap for x in a),6)
+                                         if need_proof else None))
+    report=dict(protocol="DRNAS-EQUIV12-CMS17-XOR-GAUSS-ABLATION-ONECPU-v1",
+        source_original_sha256=TARGET_SHA,source_year=c["year"],
+        old_source_not_blind=True,one_logical_CPU=True, cap_s=cap,reps=reps,
+        no_automatic_promotion=True,
+        no_Native_v_CMS_direct_win_claim=True,
+        independent_check_for_proof_arms=True,
+        scores=scores,trials=rows)
+    (ROOT/"equiv12_ablation.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
+    print("EQUIV12_FINAL "+json.dumps(report,sort_keys=True),flush=True)
+
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
-    parser.add_argument("action",choices=("selftest","certificate"))
+    parser.add_argument("action",choices=("selftest","certificate","ablate"))
     args=parser.parse_args()
     if args.action=="selftest":toy_tests()
+    elif args.action=="ablate":ablate()
     else:certificate()
