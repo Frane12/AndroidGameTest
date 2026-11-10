@@ -181,12 +181,14 @@ def pilot():
     need(len(selected)==2,"pilot requires XOR and no-XOR original sources")
     for label,c in sorted(selected.items()):
         for arm in ("cadical_clean","gf2_shadow","gf2_direct"):
-            x=trial(c,0,arm,cap=2.0,pilot=True)
-            need(x["metrics"].get("conflicts") is not None,
-                 "pilot missing true in-solver CaDiCaL metrics")
+            x=trial(c,0,arm,cap=8.0,pilot=True)
             print("XORABC3_PILOT "+json.dumps(dict(type=label,sha=c["sha256"][:12],
                arm=arm,status=x["status"],stats=x["metrics"],
-               prepass_s=x["prepass_s"])),flush=True)
+               prepass_s=x["prepass_s"],wall_E2E_s=x["wall_E2E_s"])),flush=True)
+            need(x["metrics"].get("conflicts") is not None,
+                 "pilot missing true in-solver CaDiCaL metrics: "
+                 +json.dumps(dict(type=label,arm=arm,status=x["status"],
+                                  wall=x["wall_E2E_s"],source=c["sha256"][:12])))
     print("XORABC3_PILOT_PASS two_original_SHA_x_three_live_arms",flush=True)
 def shard(index):
     m=verify();need(0<=index<SHARDS,"bad shard")
