@@ -1,0 +1,44 @@
+name: DRNAS IGE1-T active residual structure gate
+run-name: IGE1-T 16 source 3 arms 3 reps 144 oneCPU train holdout structural feedback
+on:
+  push:
+    branches: [experiment/drnas-ige1t-residual-gate-20261110]
+    paths:
+      - research/drnas_ige1t_benchmark.py
+      - .github/workflows/drnas-ige1t.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ige1t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile standalone native solver and syntax check
+        run: |
+          set -euo pipefail
+          mkdir -p mre_ige1t/bin
+          python3 -m py_compile research/drnas_ige1t_benchmark.py
+          g++ -std=c++17 -O2 research/drnas_sre2c_native.cpp -o mre_ige1t/bin/drnas_sre2c
+          mre_ige1t/bin/drnas_sre2c --selftest | tee mre_ige1t/selftest.log
+      - name: Run paired 144 original CNF native trials on one CPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_ige1t_benchmark.py | tee mre_ige1t/benchmark.log
+          grep -q '^IGE1T_FINAL ' mre_ige1t/benchmark.log
+          grep '^IGE1T_FINAL ' mre_ige1t/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-IGE1T-RESIDUAL-GATE-144-ONECPU-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_ige1t/audit.json
+            mre_ige1t/*.cnf
+            mre_ige1t/*.log
+            mre_ige1t/bin/drnas_sre2c
