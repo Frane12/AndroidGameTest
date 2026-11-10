@@ -1,0 +1,64 @@
+name: DRNAS SQL Nov10 eight completed audit summaries - append only
+on:
+  push:
+    branches: [experiment/drnas-sql-cumulative-refresh-20261110]
+    paths:
+      - research/sat-analytics-data/append_nov10_eight_strict_summary_audits.py
+      - .github/workflows/drnas-sql-eight-audit-append-20261110.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sql-eight-audit-append-20261110
+  cancel-in-progress: true
+jobs:
+  audit_sql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch last independently verified 57100 cumulative SQLite and eight complete final audits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p nov10_sql_inputs/baseline
+          gh run download 42731193505 -R Frane12/AndroidGameTest -n DRNAS-CUMULATIVE-SQLITE-57100-EQUIV11-XLRUP-20261110 -D nov10_sql_inputs/baseline
+          test -s nov10_sql_inputs/baseline/sql_latest_20261110/sat_analytics_refresh_20261110_latest.sqlite || test -s nov10_sql_inputs/baseline/sat_analytics_refresh_20261110_latest.sqlite
+          gh run download 42798608678 -R Frane12/AndroidGameTest -n DRNAS-MIXAB1-392-ONECPU-PAR2-STRICT-FINAL -D nov10_sql_inputs/mixab1
+          gh run download 42798693887 -R Frane12/AndroidGameTest -n DRNAS-SEARCH7-360-E2E-10-FIXED-RANDOM-RANKS-PAR2-REPRODUCIBILITY-FINAL -D nov10_sql_inputs/search7
+          gh run download 42803263051 -R Frane12/AndroidGameTest -n DRNAS-COMBO4-24SHA-240-ONECPU-GF2-PROOF-CARRYING-UNITS-PAR2-FINAL -D nov10_sql_inputs/combo4
+          gh run download 42803240040 -R Frane12/AndroidGameTest -n DRNAS-MIXAB2-560-ONECPU-PAR2-STRICT-FINAL -D nov10_sql_inputs/mixab2
+          gh run download 42804481307 -R Frane12/AndroidGameTest -n DRNAS-SEARCH8-384-NEW-ORIGINAL-SHA-R03R08-PAR2-AUDIT-FINAL -D nov10_sql_inputs/search8
+          gh run download 42805375529 -R Frane12/AndroidGameTest -n DRNAS-XORABC1-400-ONECPU-PAR2-STRICT-FINAL -D nov10_sql_inputs/xorabc1
+          gh run download 42807763735 -R Frane12/AndroidGameTest -n DRNAS-GF2-AB7-RECOVERED-21-ORIGINAL-ONECPU-E2E-PAR2-FINAL -D nov10_sql_inputs/gf2ab7
+          gh run download 42807314358 -R Frane12/AndroidGameTest -n DRNAS-COMBO5-29SHA-348-E2E-ORIGINAL-GF2-SHORT-REL-PAR2-FINAL -D nov10_sql_inputs/combo5
+          for id in 42731193505 42798608678 42798693887 42803263051 42803240040 42804481307 42805375529 42807763735 42807314358; do
+            c="$(gh api "repos/Frane12/AndroidGameTest/actions/runs/$id" --jq .conclusion)"
+            test "$c" = success || { echo "FAIL_CLOSED incomplete audit $id $c"; exit 1; }
+          done
+      - name: Copy baseline and add strictly separate verified aggregate evidence tables
+        run: |
+          set -euo pipefail
+          mkdir -p nov10_sql_output
+          python3 -m py_compile research/sat-analytics-data/append_nov10_eight_strict_summary_audits.py
+          BASE="$(find nov10_sql_inputs/baseline -type f -name sat_analytics_refresh_20261110_latest.sqlite -print -quit)"
+          test -n "$BASE" && test -s "$BASE"
+          python3 -u research/sat-analytics-data/append_nov10_eight_strict_summary_audits.py --baseline "$BASE" --inputs nov10_sql_inputs --out nov10_sql_output | tee nov10_sql_output/audit.log
+          grep -q '^DRNAS_NOV10_SQL_SUMMARY_SUCCESS ' nov10_sql_output/audit.log
+          cat nov10_sql_output/summary_audit_59805.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CUMULATIVE-SQLITE-59805-AUDITED-EIGHT-SUMMARIES-20261110
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            nov10_sql_output/sat_analytics_59805_audited_summaries.sqlite
+            nov10_sql_output/summary_audit_59805.json
+            nov10_sql_output/sqlite_sha256.txt
+            nov10_sql_output/audit.log
