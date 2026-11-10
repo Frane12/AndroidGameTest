@@ -1,0 +1,58 @@
+name: DRNAS FACTOR4 official SAT2025 40s five-solvers
+run-name: FACTOR4 4 official SAT2025 RoundRobin CNFs x DRNAS CDCL FACTOR4 Kissat CMS CaDiCaL 40s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-factor4-adaptive-gate-20261110]
+    paths:
+      - research/drnas_factor4_official.py
+      - .github/workflows/drnas-factor4-official.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install independent reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat cadical git build-essential curl
+          if ! command -v cryptominisat5; then
+            sudo apt-get install -y -qq cryptominisat5
+          fi
+          if ! command -v kissat; then
+            git clone --depth 1 https://github.com/arminbiere/kissat.git /tmp/factor4-kissat
+            (cd /tmp/factor4-kissat && ./configure && make -j2)
+            sudo install -m755 /tmp/factor4-kissat/build/kissat /usr/local/bin/kissat
+          fi
+          command -v kissat
+          command -v cadical
+          command -v cryptominisat5
+      - name: Compile DRNAS native
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor4/bin mre_factor4_official
+          g++ -std=c++17 -O2 research/drnas_factor4_native.cpp -o mre_factor4/bin/drnas_factor4
+          python3 -m py_compile research/drnas_factor4_official.py
+      - name: Run 4 official CNFs five solvers 40s oneCPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor4_official.py | tee mre_factor4_official/benchmark.log
+          grep -q '^FACTOR4_OFFICIAL_FINAL ' mre_factor4_official/benchmark.log
+          grep '^FACTOR4_OFFICIAL_FINAL ' mre_factor4_official/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR4-OFFICIAL-SAT2025-40S-ONECPU
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor4_official/audit.json
+            mre_factor4_official/*.log
+            mre_factor4_official/*.cnf
