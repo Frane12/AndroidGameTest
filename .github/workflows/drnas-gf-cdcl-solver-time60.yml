@@ -1,0 +1,119 @@
+name: DRNAS GF-CDCL — solver time 60-second actual wall/CPU benchmark
+run-name: SOLVER-TIME60 two frozen original SHA x 4 arms x 2 reps, oneCPU real solver/E2E seconds
+on:
+  push:
+    branches: [experiment/drnas-gf-cdcl-solver-time60-20261110]
+    paths:
+      - .github/workflows/drnas-gf-cdcl-solver-time60.yml
+      - research/drnas_gf_cdcl_solver_time60.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gf-cdcl-solver-time60-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  shard:
+    name: "Real solver time, original CNF, one CPU, SHA shard ${{ matrix.shard }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore XORABC3 reference frozen source and pinned binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42814965607 -R Frane12/AndroidGameTest -n xorabc3-frozen40-CaDiCaL210-live-Kissat-CMS -D .
+          test -s mre_xorabc3/manifest.json
+          chmod +x mre_xorabc3/bin/xorabc3_rows mre_xorabc3/bin/xorabc3_trail mre_xorabc2/bin/xorabc2_native
+          chmod +x built/bin/kissat_4_0_4 mre_equiv12/bin/cryptominisat5 mre_x4/bin/native
+      - name: Restore original MIXAB3 12 SHA, frozen chosen pair and byte-identical tested native CDCL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solvertime-mix3 mre_gf_cdcl_novel2d
+          gh run download 42811023064 -R Frane12/AndroidGameTest -n mixab3-fresh12-CMS17-Kissat4-GF2 -D /tmp/solvertime-mix3
+          cp -a /tmp/solvertime-mix3/mre_mixab3 mre_mixab3
+          gh run download 42827184856 -R Frane12/AndroidGameTest -n novel2d-frozen-two-SHA-CaDiCaL210-CMS17-sourceonly -D mre_gf_cdcl_novel2d
+          test -s mre_gf_cdcl_novel2d/manifest.json
+          test -s mre_gf_cdcl_novel2d/screen.json
+          test -s mre_gf_cdcl_novel2d/bin/gf_cdcl_novel2d
+          chmod +x mre_gf_cdcl_novel2d/bin/gf_cdcl_novel2d
+      - name: Compile-check protocol then measure actual solver child wall seconds with 60s cap
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_gf_cdcl_solver_time60.py
+          python3 -u research/drnas_gf_cdcl_solver_time60.py shard --shard "$SHARD" | tee "solver_time60_shard-$SHARD.log"
+          grep -q "^SOLVER_TIME60_SHARD_PASS $SHARD 8$" "solver_time60_shard-$SHARD.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: "solver-time60-shard-${{ matrix.shard }}"
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_gf_cdcl_solver_time60/manifest.json
+            mre_gf_cdcl_solver_time60/shard-${{ matrix.shard }}.json
+            solver_time60_shard-${{ matrix.shard }}.log
+  audit:
+    name: Original SHA paired real solver time report (not PAR2-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: shard
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore original sources and unchanged certified binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42814965607 -R Frane12/AndroidGameTest -n xorabc3-frozen40-CaDiCaL210-live-Kissat-CMS -D .
+          mkdir -p /tmp/solvertime-mix3 mre_gf_cdcl_novel2d
+          gh run download 42811023064 -R Frane12/AndroidGameTest -n mixab3-fresh12-CMS17-Kissat4-GF2 -D /tmp/solvertime-mix3
+          cp -a /tmp/solvertime-mix3/mre_mixab3 mre_mixab3
+          gh run download 42827184856 -R Frane12/AndroidGameTest -n novel2d-frozen-two-SHA-CaDiCaL210-CMS17-sourceonly -D mre_gf_cdcl_novel2d
+          chmod +x mre_xorabc3/bin/xorabc3_rows mre_xorabc3/bin/xorabc3_trail mre_xorabc2/bin/xorabc2_native
+          chmod +x built/bin/kissat_4_0_4 mre_equiv12/bin/cryptominisat5 mre_x4/bin/native mre_gf_cdcl_novel2d/bin/gf_cdcl_novel2d
+      - name: Download two same-run source SHA shard measurement artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solvertime-shard0 /tmp/solvertime-shard1 mre_gf_cdcl_solver_time60
+          gh run download "$GITHUB_RUN_ID" -R Frane12/AndroidGameTest -n solver-time60-shard-0 -D /tmp/solvertime-shard0
+          gh run download "$GITHUB_RUN_ID" -R Frane12/AndroidGameTest -n solver-time60-shard-1 -D /tmp/solvertime-shard1
+          for i in 0 1; do
+            test -s "/tmp/solvertime-shard$i/mre_gf_cdcl_solver_time60/shard-$i.json"
+            cp "/tmp/solvertime-shard$i/mre_gf_cdcl_solver_time60/shard-$i.json" "mre_gf_cdcl_solver_time60/shard-$i.json"
+          done
+      - name: Publish completed solver wall/CPU time, E2E, native internal seconds and strict PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_gf_cdcl_solver_time60.py audit | tee mre_gf_cdcl_solver_time60/audit.log
+          grep -q '^SOLVER_TIME60_FINAL ' mre_gf_cdcl_solver_time60/audit.log
+          grep '^SOLVER_TIME60_FINAL ' mre_gf_cdcl_solver_time60/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF-CDCL-SOLVER-TIME60-16-ORIGINAL-CNF-STRICT-REPORT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_gf_cdcl_solver_time60/report.json
+            mre_gf_cdcl_solver_time60/audit.log
+            mre_gf_cdcl_solver_time60/shard-*.json
+            mre_gf_cdcl_solver_time60/manifest.json
