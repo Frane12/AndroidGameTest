@@ -175,7 +175,14 @@ struct Statistics {
 class NativeCDCL {
     const int n_;
     std::vector<Clause> clauses_;
+#ifdef DRNAS_ONE2_BLOCKER
+    // Every cached blocker must be a literal of its permanent clause.
+    // TRUE cache => clause satisfied, no clause-vector access required.
+    struct WatchEntry { int cid; int blocker; };
+    std::vector<std::vector<WatchEntry>> watches_;
+#else
     std::vector<std::vector<int>> watches_;
+#endif
     std::vector<int8_t> values_, phases_;
     std::vector<int> levels_, reasons_, trail_;
     std::vector<size_t> decision_marks_;
@@ -348,8 +355,13 @@ private:
     void attach(int index) {
         const auto& c = clauses_[index].lits;
         if (c.size() >= 2) {
+#ifdef DRNAS_ONE2_BLOCKER
+            watches_[watch_index(c[0])].push_back({index,c[1]});
+            watches_[watch_index(c[1])].push_back({index,c[0]});
+#else
             watches_[watch_index(c[0])].push_back(index);
             watches_[watch_index(c[1])].push_back(index);
+#endif
         }
     }
     void bump_variable(int v) {
@@ -384,8 +396,20 @@ private:
 #endif
             size_t read = 0, write = 0;
             while (read < list.size()) {
+#ifdef DRNAS_ONE2_BLOCKER
+                WatchEntry entry = list[read++];
+                ++stats_.watch_visits;
+                // Safe on backtracking: cached blocker is still a clause
+                // literal; when it is TRUE this clause cannot propagate.
+                if (lit_value(entry.blocker) == 1) {
+                    list[write++] = entry;
+                    continue;
+                }
+                const int cid = entry.cid;
+#else
                 const int cid = list[read++];
                 ++stats_.watch_visits;
+#endif
                 auto& clause = clauses_[cid].lits;
                 require(clause.size() >= 2, "broken watch on unit clause");
 #ifdef DRNAS_WATCH_DIAG
@@ -404,7 +428,12 @@ private:
 #ifdef DRNAS_WATCH_DIAG
                     ++watch_diag_.blocker_satisfied;
 #endif
+#ifdef DRNAS_ONE2_BLOCKER
+                    entry.blocker=clause[0];
+                    list[write++]=entry;
+#else
                     list[write++] = cid;
+#endif
                     continue;
                 }
 #ifdef DRNAS_WATCH_DIAG
@@ -422,7 +451,11 @@ private:
                     ++watch_diag_.watch_moves;
 #endif
                     std::swap(clause[1], clause[candidate]);
+#ifdef DRNAS_ONE2_BLOCKER
+                    watches_[watch_index(clause[1])].push_back({cid,clause[0]});
+#else
                     watches_[watch_index(clause[1])].push_back(cid);
+#endif
                     continue;
                 }
 #ifdef DRNAS_WATCH_DIAG
@@ -431,7 +464,12 @@ private:
                 if(other_value==-1)++watch_diag_.clause_conflicts;
                 else if(other_value==0)++watch_diag_.unit_implications;
 #endif
+#ifdef DRNAS_ONE2_BLOCKER
+                entry.blocker=clause[0];
+                list[write++]=entry;
+#else
                 list[write++] = cid;
+#endif
                 if (lit_value(clause[0]) == -1 || !enqueue(clause[0], cid)) {
                     // The remaining watcher IDs must stay installed even when
                     // propagation exits early on this conflict.
