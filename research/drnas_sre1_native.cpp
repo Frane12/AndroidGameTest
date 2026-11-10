@@ -140,6 +140,8 @@ static bool sre1_verify_original(const CNF& f,const std::vector<int8_t>& model) 
 }
 } // namespace drnas
 
+#ifndef DRNAS_SRE2A_EMBED
+
 int main(int argc,char** argv) {
     try{
         if(argc==2 && std::string(argv[1])=="--selftest"){
@@ -224,3 +226,5 @@ int main(int argc,char** argv) {
         return 2;
     }
 }
+
+#endif // DRNAS_SRE2A_EMBED
