@@ -100,17 +100,17 @@ int main(int argc,char**argv) {
   }
   const std::string arm=argv[3];drnas::require(arm=="A"||arm=="ARL1A","bad mode");
   const double cap=std::stod(argv[5]);drnas::require(cap>0&&cap<=3600,"bad cap");
-  auto start=Clock::now();
-  const CNF original=drnas::read_dimacs(argv[1]);
-  arl1::Result p;CNF working=original;
+  auto start=drnas::Clock::now();
+  const drnas::CNF original=drnas::read_dimacs(argv[1]);
+  arl1::Result p;drnas::CNF working=original;
   if(arm=="ARL1A")working=arl1::first_look(original,p,cap,start);
   else {p.decision="baseline";p.reason="baseline_no_scan";}
   drnas::NativeCDCL solver(working.vars);
   solver.add_cnf(working);
-  const double elapsed=std::chrono::duration<double>(Clock::now()-start).count();
+  const double elapsed=std::chrono::duration<double>(drnas::Clock::now()-start).count();
   const int status=elapsed<cap?solver.solve(cap-elapsed):0;
   if(status==10)drnas::require(solver.verify_original(original),"SAT witness failed ORIGINAL CNF");
-  const auto e2e=std::chrono::duration<double>(Clock::now()-start).count();
+  const auto e2e=std::chrono::duration<double>(drnas::Clock::now()-start).count();
   const auto& st=solver.statistics();
   std::cout<<std::fixed<<std::setprecision(8)
            <<"ARL1A_TRIAL arm="<<arm<<" status="<<(status==10?"SAT":status==20?"UNSAT":"UNKNOWN")
