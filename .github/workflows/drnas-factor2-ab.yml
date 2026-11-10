@@ -1,0 +1,46 @@
+name: DRNAS FACTOR2 native automatic separator A B
+run-name: FACTOR2 24 original CNF x 2 native arms x 3 reps 144 oneCPU
+on:
+  push:
+    branches: [experiment/drnas-factor2-native-ab-20261110]
+    paths:
+      - research/drnas_factor2_native.cpp
+      - research/drnas_factor2_ab.py
+      - .github/workflows/drnas-factor2-ab.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  factor2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and validate native FACTOR2
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor2/bin
+          python3 -m py_compile research/drnas_factor2_ab.py
+          g++ -std=c++17 -O2 -Wall -Wextra research/drnas_factor2_native.cpp -o mre_factor2/bin/drnas_factor2
+          ldd mre_factor2/bin/drnas_factor2 | tee mre_factor2/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_factor2/ldd.log
+      - name: Run 144 native A B paired trials on one logical CPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor2_ab.py | tee mre_factor2/benchmark.log
+          grep -q '^FACTOR2_FINAL ' mre_factor2/benchmark.log
+          grep '^FACTOR2_FINAL ' mre_factor2/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR2-NATIVE-144-ONECPU-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor2/audit.json
+            mre_factor2/*.cnf
+            mre_factor2/*.log
+            mre_factor2/bin/drnas_factor2
