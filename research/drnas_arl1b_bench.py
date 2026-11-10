@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ARL1B: original SHA paired one CPU native first look, one probe, immediate decision.
+"""ARL1B: original SHA paired one CPU indexed probe versus ARL1A and clean DRNAS.
 Compare frozen original inputs using the identical native solver with and without one bounded probe.
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
