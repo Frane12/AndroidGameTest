@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DIAG2: compare base and cached blocker with phase-time and watch counters, one frozen CNF, 5 reps.
-All reference and native runs use the same source-normalized SHA; blocker is the only C++ variable.
+All five arms use the identical source-normalized SHA. Phase timers and WATCH1 counters are diagnostic builds only.
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_diag2");OUT.mkdir(exist_ok=True)
