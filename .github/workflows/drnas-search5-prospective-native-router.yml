@@ -1,0 +1,141 @@
+name: DRNAS SEARCH5 - prospective native VMTF EVSIDS conservative source-only router
+run-name: SEARCH5 12 fresh official 2024-25 SHA x 10 arms x 2 reps 10s 240 native E2E oneCPU
+on:
+  push:
+    branches: [experiment/drnas-search5-selective-cdcl-prospective-20261110]
+    paths:
+      - .github/workflows/drnas-search5-prospective-native-router.yml
+      - research/drnas_search5_prospective_router.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-search5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 6 official 2024 + 6 official 2025 SHA before ANY SEARCH5 solver tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve identical proven SEARCH3 native CaDiCaL CDCL binary and source history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42779073673 -R Frane12/AndroidGameTest -n SEARCH3-16SHA-SEARCH2-DISJOINT-NATIVE-CAD301-FROZEN -D .
+          test -s mre_search3/bin/search3_cadical
+          test -s mre_search2/bin/search1_relabel
+          test -s mre_equiv6/manifest.json
+          test -s prior_search2/mre_equiv13/manifest.json
+          test -s mre_equiv6/bin/cadical_3_0_1
+          test -s built/bin/kissat_4_0_4
+          mkdir -p prior_hist
+          gh run download 42784853520 -R Frane12/AndroidGameTest -n SEARCH4-S3HOLDOUT-official-SAT24-25-16SHA-sourceonly-frozen -D prior_hist
+          test -s prior_hist/mre_search4_fresh/manifest.json
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          sha256sum mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel
+      - name: Source-only frozen SHA, history exclusion, predefined VMTF EVSIDS gate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_search5_prospective_router.py
+          python3 -u research/drnas_search5_prospective_router.py freeze | tee mre_search5_freeze.log
+          grep -q '^SEARCH5_FROZEN ' mre_search5_freeze.log
+          python3 -u research/drnas_search5_prospective_router.py verify
+          test "$(find mre_search5/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 12
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH5-12-NEW-SAT24-25-SHA-SOURCEONLY-FROZEN-BINARIES
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search5/manifest.json
+            mre_search5/source_progress.json
+            mre_search5/cases/*.cnf
+            mre_search5_freeze.log
+            mre_search3/bin/search3_cadical
+            mre_search2/bin/search1_relabel
+            mre_equiv6/bin/cadical_3_0_1
+            built/bin/kissat_4_0_4
+            mre_equiv6/manifest.json
+            prior_search2/mre_equiv13/manifest.json
+            prior_hist/mre_search4_fresh/manifest.json
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: SEARCH5 original SHA 40 E2E oneCPU trials shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: SEARCH5-12-NEW-SAT24-25-SHA-SOURCEONLY-FROZEN-BINARIES
+          path: .
+      - name: Full E2E original SHA native priority with no pilot contamination
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search5_prospective_router.py verify
+          python3 -u research/drnas_search5_prospective_router.py shard --shard ${{ matrix.shard }} | tee search5_shard-${{ matrix.shard }}.log
+          grep -q '^SEARCH5_SHARD_PASS ' search5_shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH5-shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            mre_search5/shard-${{ matrix.shard }}.json
+            search5_shard-${{ matrix.shard }}.log
+  audit:
+    name: SEARCH5 240 original SHA native CDCL PAR2 paired independent original SAT model audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: SEARCH5-12-NEW-SAT24-25-SHA-SOURCEONLY-FROZEN-BINARIES
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SEARCH5-shard-*
+          merge-multiple: true
+          path: .
+      - name: Strict source SHA witness true native CDCL counters and PAR2 per shard
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          for i in 0 1 2 3 4 5; do test -s "mre_search5/shard-$i.json"; done
+          python3 -u research/drnas_search5_prospective_router.py verify
+          python3 -u research/drnas_search5_prospective_router.py audit | tee search5_audit.log
+          grep -q '^SEARCH5_FINAL ' search5_audit.log
+          grep '^SEARCH5_FINAL ' search5_audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEARCH5-12SHA-240-E2E-NATIVE-CDCL-AUDITED-FINAL
+          retention-days: 30
+          path: |
+            mre_search5/manifest.json
+            mre_search5/report.json
+            mre_search5/shard-*.json
+            search5_audit.log
