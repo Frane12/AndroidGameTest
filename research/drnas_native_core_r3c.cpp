@@ -198,7 +198,7 @@ class NativeCDCL {
 #ifdef DRNAS_MICRO_TRACE
     uint64_t micro_events_=0;
     void micro_log(const std::string& line) {
-        if (micro_events_++ < 500)
+        if (micro_events_++ < 10000)
             std::cerr<<"MICRO_EVENT seq="<<micro_events_<<" "<<line<<"\n";
     }
 #endif
@@ -715,7 +715,11 @@ public:
 #ifdef DRNAS_MICRO_TRACE
                 micro_log("kind=conflict cid="+std::to_string(conflicting)+
                           " level="+std::to_string(level())+
-                          " number="+std::to_string(stats_.conflicts));
+                          " number="+std::to_string(stats_.conflicts)+
+                          " decisions="+std::to_string(stats_.decisions)+
+                          " propagations="+std::to_string(stats_.propagations)+
+                          " visits="+std::to_string(stats_.watch_visits)+
+                          " trail="+std::to_string(trail_.size()));
 #endif
                 if (level() == 0) return 20;
 #ifdef DRNAS_PROFILE
@@ -724,7 +728,8 @@ public:
                 auto [learned, target] = analyze(conflicting);
 #ifdef DRNAS_MICRO_TRACE
                 {std::string lits; for(int lit:learned){if(!lits.empty())lits+=",";lits+=std::to_string(lit);}
-                 micro_log("kind=learn backjump="+std::to_string(target)+
+                 micro_log("kind=learn from="+std::to_string(level())+
+                           " backjump="+std::to_string(target)+
                            " width="+std::to_string(learned.size())+" clause="+lits);}
 #endif
 #ifdef DRNAS_PROFILE
