@@ -1,0 +1,241 @@
+name: DRNAS LIVE5 native IPASIR-UP GF2-CDCL propagation component gate seven arms
+on:
+  push:
+    branches: [experiment/drnas-live5-component-budget-matrix-20261110]
+    paths:
+      - .github/workflows/drnas-live5-component-budget.yml
+      - research/drnas_live5_component_budget.py
+      - research/drnas_live5_component_budget.cpp
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-live5-component-budget-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Compile ONCE pinned CaDiCaL and LIVE5; immutable source and GF2 reasons selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the single common source-locked LIVE5/CaDiCaL native binary
+        run: |
+          set -euo pipefail
+          mkdir -p live5
+          python3 -m py_compile research/drnas_live5_component_budget.py research/r157_source_certified_xor.py
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/live5-cadical
+          cd /tmp/live5-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/live5/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/drnas_live5_component_budget.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/live5/live5-native"
+          cd "$GITHUB_WORKSPACE"
+          ./live5/live5-native selftest | tee live5/native-selftest.log
+          grep -q '^R99_WATCH_SELFTEST_PASS' live5/native-selftest.log
+          grep -q '^R133C_GF2_CLOSURE_SELFTEST_PASS' live5/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS' live5/native-selftest.log
+          grep -q '^LIVE5_COMPONENT_GATE_SELFTEST_PASS' live5/native-selftest.log
+          grep -q '^LIVE5_EARLY_GATE_SELFTEST_PASS' live5/native-selftest.log
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          p=pathlib.Path("live5/live5-native")
+          obj=dict(binary_sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+            commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+            cadical_source_commit=pathlib.Path("live5/cadical-source-commit.txt").read_text().strip(),
+            compiler=subprocess.check_output(["g++","--version"],text=True).splitlines()[0])
+          pathlib.Path("live5/build-pin.json").write_text(json.dumps(obj,sort_keys=True,indent=2))
+          print("LIVE5_SINGLE_BINARY_PIN_PASS",json.dumps(obj,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live5-single-frozen-binary-and-source-commit
+          path: |
+            live5/live5-native
+            live5/build-pin.json
+            live5/cadical-source-commit.txt
+            live5/native-selftest.log
+          retention-days: 90
+  paired:
+    needs: build
+    name: LIVE5 ${{ matrix.mode }} native CDCL original SHA shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        shard: [0,1,2,3]
+        mode:
+          - clean
+          - shadow_boundary
+          - direct_full
+          - direct_boundary_nogate
+          - direct_feedback_512
+          - direct_feedback
+          - direct_feedback_16384
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: live5-single-frozen-binary-and-source-commit
+          path: live5
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: live5
+      - name: Enforce SAME precompiled native SHA and record paired CPU source
+        env:
+          SHARD: ${{ matrix.shard }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          chmod +x live5/live5-native
+          python3 - <<'PY'
+          import pathlib,hashlib,json,os,subprocess
+          pin=json.loads(pathlib.Path("live5/build-pin.json").read_text())
+          check=hashlib.sha256(pathlib.Path("live5/live5-native").read_bytes()).hexdigest()
+          assert check==pin["binary_sha256"],"LIVE5 NATIVE BINARY DRIFT"
+          assert subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()==pin["commit"]
+          pin["cpu"]=next((v for v in pathlib.Path("/proc/cpuinfo").read_text().splitlines() if v.startswith("model name")),"unknown")
+          pin["shard"]=int(os.environ["SHARD"])
+          pin["mode"]=os.environ["MODE"]
+          pathlib.Path("live5/pin-"+os.environ["SHARD"]+"-"+os.environ["MODE"]+".json").write_text(json.dumps(pin,sort_keys=True))
+          print("LIVE5_COMMON_BINARY_SHA_PASS",check,"shard",os.environ["SHARD"],"mode",os.environ["MODE"])
+          PY
+      - name: Independently replay source-certified GF2 and one native CDCL arm
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_live5_component_budget.py shard --shard ${{ matrix.shard }} --mode ${{ matrix.mode }} --binary live5/live5-native | tee live5/shard-${{ matrix.shard }}-${{ matrix.mode }}.log
+          grep -q '^LIVE5_SHARD_PASS ${{ matrix.shard }} ${{ matrix.mode }} 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live5-causal-${{ matrix.mode }}-shard-${{ matrix.shard }}
+          path: |
+            live5/shard-${{ matrix.shard }}-${{ matrix.mode }}.json
+            live5/shard-${{ matrix.shard }}-${{ matrix.mode }}.log
+            live5/pin-${{ matrix.shard }}-${{ matrix.mode }}.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: LIVE5 strict audit 112 one CPU real CDCL original SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: live5-single-frozen-binary-and-source-commit
+          path: live5
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: live5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: live5-causal-*-shard-*
+          merge-multiple: true
+          path: live5
+      - name: Final source-specific causal and regression correctness audit
+        run: |
+          set -euo pipefail
+          test "$(find live5 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 28
+          python3 -u research/drnas_live5_component_budget.py audit | tee live5/audit.log
+          grep -q '^LIVE5_FINAL ' live5/audit.log
+          echo '# DRNAS LIVE5 real GF2/CDCL experiment' > live5/report-summary.md
+          grep '^LIVE5_FINAL ' live5/audit.log >> live5/report-summary.md
+          cat live5/report-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-LIVE5-SEVEN-GF2-GATES-112-ONECPU-STRICT-PAR2-AUDIT
+          path: |
+            live5/report.json
+            live5/audit.log
+            live5/report-summary.md
+          if-no-files-found: warn
+          retention-days: 90
+ live5/shard-${{ matrix.shard }}-${{ matrix.mode }}.log
+          test -s live5/shard-${{ matrix.shard }}-${{ matrix.mode }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live5-causal-shard-${{ matrix.shard }}
+          path: |
+            live5/shard-${{ matrix.shard }}.json
+            live5/shard-${{ matrix.shard }}.log
+            live5/pin-${{ matrix.shard }}.json
+            live5/prep-*.json
+            live5/cert-*.json
+          if-no-files-found: warn
+          retention-days: 90
+  audit:
+    needs: paired
+    name: Audit 80 SHA-paired native conflict decision GF2 source proof and true SAT models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: live5-single-frozen-binary-and-source-commit
+          path: live5
+      - uses: actions/download-artifact@v4
+        with:
+          name: r155-original25-pinned-native-and-independent-smoke
+          run-id: 42112755104
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: live5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: live5-causal-shard-*
+          merge-multiple: true
+          path: live5
+      - name: Final source-specific causal and regression correctness audit
+        run: |
+          set -euo pipefail
+          test "$(find live5 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 4
+          python3 -u research/live5_component_benchmark.py audit | tee live5/audit.log
+          grep -q '^LIVE5_FINAL ' live5/audit.log
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.loads(pathlib.Path("live5/report.json").read_text())
+          with open(pathlib.Path("live5/report-summary.md"),"w") as f:
+           f.write("# DRNAS LIVE5: component-conditioned GF2/CDCL feedback metrics\n\n")
+           f.write("8 development original SHA CNFs, 5 same-binary modes, 2 repetitions, 80 trials.\n\n")
+           f.write("| Mode | Solved | PAR2 s | Conflicts | Decisions | Learned | GF2 proposals | Full reasons |\n")
+           f.write("|---|---:|---:|---:|---:|---:|---:|---:|\n")
+           for key,d in x["summary"]["all"].items():
+            f.write(f'| {key} | {d["solved"]}/{d["trials"]} | {d["PAR2_s"]:.4f} | {d["conflicts"]} | {d["decisions"]} | {d["learned_clauses"]} | {d["proposed_GF2"]} | {d["completed_reason_clauses"]} |\n')
+           f.write("\nRESEARCH ONLY, existing R154 development formulas, no independent UNSAT LRAT.\n")
+          PY
+          cat live5/report-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-LIVE5-CAUSAL-CDCL-8-ORIGINAL-80-PAIRED-AUDIT-FINAL
+          path: |
+            live5/report.json
+            live5/audit.log
+            live5/report-summary.md
+          if-no-files-found: warn
+          retention-days: 90
