@@ -458,7 +458,7 @@ int main(int argc, char** argv) {
         vector<XorRow> rows = (mode != "clean") ? load_rows(cert,n) : vector<XorRow>{};
         bool source_novel=(mode=="novel_active" || mode=="novel_shadow");
         DrnasBridge bridge(std::move(rows), n, mode!="clean", true, source_novel, false);
-        bridge.load_original_clauses(clauses);
+        if (source_novel) bridge.load_original_clauses(clauses);
         bridge.phase_mode=false;
         bridge.shadow_mode=(mode=="linear_shadow" || mode=="novel_shadow");
         if (mode != "clean" && !bridge.rows.empty()) {
