@@ -152,6 +152,7 @@ def backend(c,rep,name,seconds):
     if name=="native":
         return e9.trial(dict(c,cohort="holdout"),rep,"native1",cap=seconds)
     if name=="kissat":
+        s2.ROOT.mkdir(parents=True,exist_ok=True)
         return s2.trial(dict(c,cohort="holdout"),rep,"kissat_orig",cap=seconds)
     need(name=="cms","unsupported backend")
     return cms_trial(c,rep,seconds)
