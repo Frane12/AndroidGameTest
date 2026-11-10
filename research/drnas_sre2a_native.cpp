@@ -39,6 +39,8 @@ static void sre2a_selftest(){
    <<" independent_brute=true\n";
 }
 }
+#ifndef DRNAS_SRE2B_EMBED
+
 int main(int argc,char**argv){
  try{
   if(argc==2 && std::string(argv[1])=="--selftest"){
@@ -105,3 +107,5 @@ int main(int argc,char**argv){
   std::cerr<<"SRE2A_FAIL_CLOSED "<<e.what()<<"\n";return 2;
  }
 }
+
+#endif // DRNAS_SRE2B_EMBED
