@@ -31,7 +31,7 @@ for line in raw.decode("ascii").splitlines():
    assert abs(lit)<=header[0];current.append(lit)
   else:all_clauses.append(current);current=[]
 assert header==(VARS,CLAUSES) and not current and len(all_clauses)==CLAUSES
-data=(f"p cnf {VARS} {CLAUSES}\\n"+"".join(" ".join(map(str,c))+" 0\\n" for c in all_clauses)).encode()
+data=(f"p cnf {VARS} {CLAUSES}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in all_clauses)).encode()
 sha=hashlib.sha256(data).hexdigest()
 src=dict(family=FAMILY,entry=item.name,archive_sha256=archive_sha,raw_sha256=hashlib.sha256(raw).hexdigest(),sha256=sha,variables=VARS,clauses=CLAUSES)
 (OUT/"source.json").write_text(json.dumps(src,indent=2))
@@ -67,7 +67,7 @@ def run(arm,rep):
   m=re.search("^"+marker+r" (.*)$",stdout,re.M)
   if m:stats[marker]=dict(x.split("=",1) for x in m.group(1).split() if "=" in x)
  events=[line for line in stderr.splitlines() if line.startswith("MICRO_EVENT ")]
- if arm=="drnas_trace" and rep==0:(OUT/"trace.log").write_text("\\n".join(events)+"\\n")
+ if arm=="drnas_trace" and rep==0:(OUT/"trace.log").write_text("\n".join(events)+"\n")
  return dict(arm=arm,repeat=rep,status=status,E2E_s=round(elapsed,6),PAR2_s=round(elapsed if status!="UNKNOWN" else 2*CAP,6),SAT_original_verified=status=="SAT",UNSAT_independent_LRAT=False,trace_events=len(events),telemetry=stats)
 rows=[]
 for rep in range(REPEATS):
