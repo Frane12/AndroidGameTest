@@ -67,7 +67,15 @@ def registry_snapshot():
         p=pathlib.Path(path)
         need(p.is_file(),"missing prior registry: "+path)
         checks[path]=sha(p)
-        visit(read(p))
+        obj=read(p)
+        # Exclude only ORIGINALS THAT ENTERED A REAL BENCHMARK.
+        # Prior source-selection traces may contain hundreds of rejected,
+        # never-solved candidate GBD IDs and must not poison the holdout.
+        for key in ("cases","original_cases","original_SHA_sources",
+                    "selected_cases","source_cases","holdout_cases",
+                    "smoke_cases","frozen_original_cases"):
+            if key in obj:
+                visit(obj[key])
     return excluded_sha,excluded_ids,checks
 
 def roster():
