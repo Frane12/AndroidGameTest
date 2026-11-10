@@ -272,8 +272,11 @@ def one_trial(m, c, rep, arm):
                  "native received wrong proof rows")
         if arm == "cadical_novel_shadow" or arm == "cadical_novel_active":
             if tele:
-                need(tele.get("learned_clause_novelty_oracle_available") == 0,
-                     "unavailable learned-clause oracle falsely marked")
+                need(tele.get("learned_clause_novelty_oracle_available", 0) == 0,
+                     "learned-clause oracle falsely advertised")
+                if status in ("SAT", "UNSAT"):
+                    need("learned_clause_novelty_oracle_available" in tele,
+                         "completed native solve lacks source-novelty declaration")
     need(checksum(src) == c["sha256"], "posttrial original SHA altered")
     return {
         "protocol": PROTO, "source_sha": c["sha256"], "shard": m["cases"].index(c),
