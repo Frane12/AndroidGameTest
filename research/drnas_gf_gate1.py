@@ -86,7 +86,7 @@ def cases():
 def fingerprints():
     return {
         "experiment_py_sha": checksum(__file__),
-        "experiment_cpp_sha": checksum("research/drnas_mre_gfgate1.cpp"),
+        "experiment_cpp_sha": checksum("research/drnas_gf_gate1.cpp"),
         "screen6_sha": checksum("research/drnas_gf2_screen6.py"),
         "live5_py_sha": checksum("research/drnas_gf2_cdcl_live5.py"),
         "original_registry_sha": checksum("mre_gf2_s1/manifest.json"),
