@@ -1,0 +1,76 @@
+name: DRNAS GF2-AB7 - recover only failed replicate 2 and audit frozen 21 trials
+run-name: GF2-AB7 preserve successful reps 0-1 recover rep2 third seed only audit 21 original E2E
+on:
+  push:
+    branches: [experiment/drnas-gf2-screen6-cdcl-ab7-20261110]
+    paths:
+      - research/drnas_gf2_ab7_recover_rep2.py
+      - .github/workflows/drnas-gf2-ab7-recover-rep2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover:
+    name: Preserve two successful original SHA replicate records; rerun only missing third and audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-ab7-frozen-source-358c-pair64-gauss24-native
+          run-id: 42805430723
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-ab7-shard-0
+          run-id: 42805430723
+          github-token: ${{ github.token }}
+          path: mre_gf2_ab7
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-ab7-shard-1
+          run-id: 42805430723
+          github-token: ${{ github.token }}
+          path: mre_gf2_ab7
+      - name: Verify original SHA frozen source and 14 untouched prior trials
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_gf2cdcl_live5/bin/gf2cdcl mre_gf2_s1/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -m py_compile research/drnas_gf2_ab7_recover_rep2.py research/drnas_gf2_screen6_cdcl_ab7.py
+          python3 -u research/drnas_gf2_screen6_cdcl_ab7.py verify
+          test -s mre_gf2_ab7/shard-0.json
+          test -s mre_gf2_ab7/shard-1.json
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path("mre_gf2_ab7")
+          for i in (0,1):
+              a=json.loads((root/f"shard-{i}.json").read_text())
+              assert len(a)==7 and all(t["rep"]==i and t["source_sha"]=="358c1a50db28aab6824d572d9fb22ed5681afbf157d58d13db28d042a95e0bd2" for t in a)
+          print("GF2_AB7_TWO_PRIOR_REPS_PRESERVED")
+          PY
+      - name: Rerun only missing original SHA replicate2 with independent third Kissat seed; strict 21 trial audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_ab7_recover_rep2.py | tee mre_gf2_ab7/recovery-audit.log
+          grep -q '^GF2_AB7_SHARD_PASS ' mre_gf2_ab7/recovery-audit.log
+          grep -q '^GF2_AB7_FINAL ' mre_gf2_ab7/recovery-audit.log
+          grep -q '^GF2_AB7_RECOVERY_PASS ' mre_gf2_ab7/recovery-audit.log
+          grep '^GF2_AB7_FINAL ' mre_gf2_ab7/recovery-audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF2-AB7-RECOVERED-21-ORIGINAL-ONECPU-E2E-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_gf2_ab7/report.json
+            mre_gf2_ab7/recovery-audit.log
+            mre_gf2_ab7/seed-recovery.json
+            mre_gf2_ab7/manifest.json
+            mre_gf2_ab7/shard-*.json
