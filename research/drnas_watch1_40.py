@@ -96,8 +96,13 @@ def run(path,arm):
  telemetry={}
  m=re.search(r"^FACTOR2_TRIAL (.*)$",stdout,re.M)
  if m:telemetry=dict(x.split("=",1) for x in m.group(1).split() if "=" in x)
- pm=re.search(r"^DRNAS_PROFILE (.*)$",stdout,re.M)
+ pm=re.search(r"^DRNAS_WATCH1 (.*)$",stdout,re.M)
  if pm:telemetry["watchdiag"]=dict(x.split("=",1) for x in pm.group(1).split() if "=" in x)
+ if arm=="watchdiag" and status!="UNKNOWN":
+  assert "watchdiag" in telemetry, f"missing watchdiag telemetry for {path}"
+  w=telemetry["watchdiag"]
+  assert int(w["visits_original"])+int(w["visits_learned"])==int(w["binary_visits"])+int(w["long_visits"]), "watch accounting mismatch"
+  assert sum(int(w[f"width_bucket_{i}"]) for i in range(7))==int(w["binary_visits"])+int(w["long_visits"]), "watch width accounting mismatch"
  return dict(arm=arm,status=status,E2E_s=round(elapsed,6),
   PAR2_s=round(elapsed if status!="UNKNOWN" else 2*CAP,6),
   SAT_original_verified=status=="SAT",UNSAT_independent_LRAT=False,
