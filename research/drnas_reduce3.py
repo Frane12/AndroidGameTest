@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """REDUCE3: search proof-valid local original-CNF resolvents in the conflict 16-20 neighborhood.
-Compare two original instances without solver-time-based instance selection.
+Compare two original instances without solver-time-based instance selection. REDUCE3 never alters CDCL.
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_reduce3");OUT.mkdir(exist_ok=True)
