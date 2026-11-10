@@ -1,0 +1,156 @@
+name: DRNAS GF2CDCL-LIVE5 - certified short GF2 pairxor vs original and placebo
+run-name: GF2CDCL-LIVE5 10 original SHA x 6 arms x 2 reps 8s 120 oneCPU certified pairxor E2E
+on:
+  push:
+    branches: [experiment/drnas-gf2-cdcl-live5-certified-pairxor-20261110]
+    paths:
+      - research/drnas_gf2_cdcl_live5.cpp
+      - research/drnas_gf2_cdcl_live5.py
+      - .github/workflows/drnas-gf2-cdcl-live5.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gf2cdcl-live5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Compile pinned CaDiCaL; verify original XOR, independently replay pairxor and SAT toy model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore frozen source-original 17 SHA, GF2 proof binaries and immutable registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42776296568 -R Frane12/AndroidGameTest -n gf2-s1-frozen-17SHA-exact-binaries -D .
+          test -s mre_gf2_s1/manifest.json
+          test -s mre_gf2_s1/bin/gf2_exact
+          test -s mre_equiv9/manifest.json
+          test -s mre_binary_scc2/manifest.json
+          test -s built/bin/kissat_4_0_4
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Build actual native CDCL IPASIR-UP from immutable upstream CaDiCaL 2.1.0 commit
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/gf2cdcl-upstream
+          cd /tmp/gf2cdcl-upstream
+          git -c advice.detachedHead=false checkout 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          test "$(git rev-parse HEAD)" = "31f9aae44947c673dc6190c9beb399acb9ffec6a"
+          ./configure
+          make -j2
+          mkdir -p "$GITHUB_WORKSPACE/mre_gf2cdcl_live5/bin"
+          g++ -O2 -std=c++17 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/drnas_gf2_cdcl_live5.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_gf2cdcl_live5/bin/gf2cdcl"
+          chmod +x "$GITHUB_WORKSPACE/mre_gf2cdcl_live5/bin/gf2cdcl"
+          sha256sum "$GITHUB_WORKSPACE/mre_gf2cdcl_live5/bin/gf2cdcl"
+      - name: Independent full original XOR source row proof, all live modes SAT model selftest and freeze
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_gf2_cdcl_live5.py
+          python3 -u research/drnas_gf2_cdcl_live5.py selftest | tee mre_gf2cdcl_live5/selftest.log
+          grep -q '^GF2CDCL_LIVE5_SELFTEST_PASS ' mre_gf2cdcl_live5/selftest.log
+          python3 -u research/drnas_gf2_cdcl_live5.py freeze | tee mre_gf2cdcl_live5/freeze.log
+          grep -q '^GF2CDCL_LIVE5_FROZEN ' mre_gf2cdcl_live5/freeze.log
+          python3 -u research/drnas_gf2_cdcl_live5.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gf2cdcl-live5-frozen-10SHA-CaDiCaL-pairxor-proof
+          if-no-files-found: warn
+          retention-days: 21
+          path: |
+            mre_gf2cdcl_live5/bin/gf2cdcl
+            mre_gf2cdcl_live5/manifest.json
+            mre_gf2cdcl_live5/freeze.log
+            mre_gf2cdcl_live5/selftest.log
+            mre_gf2_s1/manifest.json
+            mre_gf2_s1/bin/gf2_exact
+            mre_binary_scc2/manifest.json
+            mre_binary_scc1/manifest.json
+            mre_equiv10m5/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: GF2CDCL-LIVE5 source original oneCPU clean active linear mixed shadow Kissat shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2cdcl-live5-frozen-10SHA-CaDiCaL-pairxor-proof
+          path: .
+      - name: Paired E2E one-core actual CDCL original SAT witness and source rows independently checked
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_gf2cdcl_live5/bin/gf2cdcl mre_gf2_s1/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_gf2_cdcl_live5.py verify
+          python3 -u research/drnas_gf2_cdcl_live5.py shard --shard ${{ matrix.shard }} | tee mre_gf2cdcl_live5/shard-${{ matrix.shard }}.log
+          grep -q '^GF2CDCL_LIVE5_SHARD_PASS ' mre_gf2cdcl_live5/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gf2cdcl-live5-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_gf2cdcl_live5/shard-${{ matrix.shard }}.json
+            mre_gf2cdcl_live5/shard-${{ matrix.shard }}.log
+  audit:
+    name: GF2CDCL-LIVE5 audit 120 original SHA certified pairxor and native CDCL E2E PAR2
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2cdcl-live5-frozen-10-original-SHA-CaDiCaL-2-1-0-native
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gf2cdcl-live5-shard-*
+          path: mre_gf2cdcl_live5
+          merge-multiple: true
+      - name: Audit independent original SAT proofs, row novelty telemetry, paired regressions PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_gf2cdcl_live5/bin/gf2cdcl mre_gf2_s1/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_gf2_cdcl_live5.py audit | tee mre_gf2cdcl_live5/audit.log
+          grep -q '^GF2CDCL_LIVE5_FINAL ' mre_gf2cdcl_live5/audit.log
+          grep '^GF2CDCL_LIVE5_FINAL ' mre_gf2cdcl_live5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF2CDCL-LIVE5-10SHA-120-PAIRXOR-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_gf2cdcl_live5/report.json
+            mre_gf2cdcl_live5/audit.log
+            mre_gf2cdcl_live5/manifest.json
+            mre_gf2cdcl_live5/shard-*.json
