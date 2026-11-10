@@ -201,7 +201,7 @@ class NativeCDCL {
     struct WatchDiag {
         uint64_t trail_lits=0, watchlist_nonempty=0, watchlist_entries=0, watchlist_peak=0;
         uint64_t visits_original=0, visits_learned=0, binary_visits=0, long_visits=0;
-        uint64_t blocker_satisfied=0, candidate_scans=0, candidate_probes=0;
+        uint64_t blocker_satisfied=0, cache_hit=0, candidate_scans=0, candidate_probes=0;
         uint64_t watch_moves=0, scan_exhausted=0, unit_implications=0, clause_conflicts=0;
         std::array<uint64_t,7> width_visits{};
     } watch_diag_;
@@ -217,7 +217,7 @@ public:
             <<" visits_learned="<<w.visits_learned
             <<" binary_visits="<<w.binary_visits
             <<" long_visits="<<w.long_visits
-            <<" blocker_satisfied="<<w.blocker_satisfied
+            <<" blocker_satisfied="<<w.blocker_satisfied<<" cache_hit="<<w.cache_hit
             <<" candidate_scans="<<w.candidate_scans
             <<" candidate_probes="<<w.candidate_probes
             <<" watch_moves="<<w.watch_moves
@@ -402,6 +402,9 @@ private:
                 // Safe on backtracking: cached blocker is still a clause
                 // literal; when it is TRUE this clause cannot propagate.
                 if (lit_value(entry.blocker) == 1) {
+#ifdef DRNAS_WATCH_DIAG
+                    ++watch_diag_.cache_hit;
+#endif
                     list[write++] = entry;
                     continue;
                 }
