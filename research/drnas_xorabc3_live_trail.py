@@ -133,11 +133,15 @@ def trial(case,rep,arm,cap=CAP,pilot=False):
                              "native CDCL model fails original SHA CNF")
                         checked=True
                     status="TIMEOUT" if raw_status=="UNKNOWN" else raw_status
-                    need(stats["conflicts"] is not None and
-                         stats["decisions"] is not None and
-                         stats["propagations"] is not None,
-                         "native solver lacks genuine conflict/decision/propagation counters")
-                    native=dict(conflicts=stats["conflicts"],decisions=stats["decisions"],
+                    # Presolve-complete SAT/UNSAT formulas may omit zero
+                    # search counters; preserve missing as null, never invent 0.
+                    complete=all(stats[x] is not None for x in
+                                 ("conflicts","decisions","propagations"))
+                    native=dict(stats_complete=complete,
+                       native_statistics_missing=[k for k in
+                           ("conflicts","decisions","propagations")
+                           if stats[k] is None],
+                       conflicts=stats["conflicts"],decisions=stats["decisions"],
                        search_propagations=stats["propagations"],learned=stats["learned"],
                        bridge_assignments=int(tele["assignments"]),
                        bridge_backtracks=int(tele["backtracks"]),
@@ -239,7 +243,8 @@ def audit():
             r["status"]=="UNSAT" and r["sha256"] in agree)
     def par(r):return r["wall_E2E_s"] if valid(r) else 2*CAP
     def score(rr):
-        metrics=[r["metrics"] for r in rr if "conflicts" in r["metrics"]]
+        metrics=[r["metrics"] for r in rr if r["metrics"].get("stats_complete")]
+        all_native=[r["metrics"] for r in rr if "conflicts" in r["metrics"]]
         return dict(attempts=len(rr),solved=sum(valid(r) for r in rr),
            verified_SAT=sum(valid(r) and r["status"]=="SAT" for r in rr),
            reference_consensus_UNSAT_no_LRAT=sum(valid(r) and r["status"]=="UNSAT" for r in rr),
@@ -249,6 +254,8 @@ def audit():
            source_GF2_rows=sum(r["source_rows"] for r in rr),
            source_prepass_s=round(sum(r["prepass_s"] for r in rr),6),
            native_stat_attempts=len(metrics),
+           native_stat_coverage=f"{len(metrics)}/{len(all_native)}",
+           native_stat_partial_count=len(all_native)-len(metrics),
            CDCL_conflicts=sum(x["conflicts"] for x in metrics),
            CDCL_decisions=sum(x["decisions"] for x in metrics),
            CDCL_search_propagations=sum(x["search_propagations"] for x in metrics),
