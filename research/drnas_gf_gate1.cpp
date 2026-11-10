@@ -483,10 +483,10 @@ int main(int argc, char** argv) {
                 XorRow row; row.vars={1,2}; row.rhs=0;
                 DrnasBridge x({row}, 2, true, true, true, false);
                 x.gate_mode=true; x.shadow_mode=shadow;
-                // Assignment x1=true makes the certified XOR imply x2=false.
-                // {1,2} is already satisfied, while {-1,-2} is directly unit.
+                // Assignment x1=true makes the certified XOR imply x2=true (rhs=0).
+                // {1,2} is already satisfied, while {-1,2} is directly unit.
                 x.load_original_clauses(source_unit
-                    ? vector<vector<int>>{{-1,-2}}
+                    ? vector<vector<int>>{{-1,2}}
                     : vector<vector<int>>{{1,2}});
                 x.begin_phase();
                 x.notify_assignment({1});
@@ -501,14 +501,14 @@ int main(int argc, char** argv) {
                     vector<int> got;
                     int lit;
                     while((lit=x.cb_add_external_clause_lit())!=0) got.push_back(lit);
-                    if(got!=vector<int>({-1,-2}) || x.delivery_confirmed!=1)
+                    if(got!=vector<int>({-1,2}) || x.delivery_confirmed!=1)
                         throw runtime_error("wrong implied unit clause");
                 }
             };
             test(false,false); test(true,false); test(false,true);
             cout<<"GF_GATE1_SELFTEST_PASS original_direct_UP_suppressed=1"
                 <<" novel_entailed_clause_delivered=1 same_gate_shadow=1"
-                <<" learned_clause_novelty_oracle=0\\n";
+                <<" learned_clause_novelty_oracle=0\n";
             return 0;
         }
         if (argc != 4 || (string(argv[1]) != "clean" && string(argv[1]) != "active" &&
