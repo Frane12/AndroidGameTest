@@ -438,8 +438,8 @@ static vector<XorRow> load_rows(const string& filename, int n) {
 int main(int argc, char** argv) {
     try {
         if (argc != 4 || (string(argv[1]) != "clean" && string(argv[1]) != "active" &&
-             string(argv[1]) != "linear" && string(argv[1]) != "linear_shadow")) {
-            cerr << "usage: gf2cdcl_bridge clean|active|linear|linear_shadow input.cnf certified_rows.tsv\n";
+             string(argv[1]) != "linear" && string(argv[1]) != "linear_mixed" && string(argv[1]) != "linear_shadow")) {
+            cerr << "usage: gf2cdcl_bridge clean|active|linear|linear_mixed|linear_shadow input.cnf certified_rows.tsv\n";
             return 2;
         }
         string mode = argv[1], source = argv[2], cert = argv[3];
