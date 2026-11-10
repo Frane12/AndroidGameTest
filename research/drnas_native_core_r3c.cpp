@@ -195,6 +195,13 @@ class NativeCDCL {
     double cap_s_ = 10.0;
     bool resource_limit_ = false;
     Statistics stats_;
+#ifdef DRNAS_MICRO_TRACE
+    uint64_t micro_events_=0;
+    void micro_log(const std::string& line) {
+        if (micro_events_++ < 500)
+            std::cerr<<"MICRO_EVENT seq="<<micro_events_<<" "<<line<<"\n";
+    }
+#endif
 #ifdef DRNAS_WATCH_DIAG
     // Diagnostic counters only. The CDCL algorithm and watched-literal data
     // structures are unchanged, so R3C and WATCH1 execute the same search.
@@ -347,6 +354,11 @@ private:
         levels_[v] = level();
         reasons_[v] = from_clause;
         trail_.push_back(lit);
+#ifdef DRNAS_MICRO_TRACE
+        micro_log("kind=assign lit="+std::to_string(lit)+
+                  " level="+std::to_string(level())+
+                  " reason="+std::to_string(from_clause));
+#endif
         heap_remove(v);
         if(gf2_enabled_&&!gf2_budget_exhausted_)
             for(int row:xor_incidence_[v])schedule_xor(row);
@@ -700,11 +712,21 @@ public:
             }
             if (conflicting >= 0) {
                 ++stats_.conflicts;
+#ifdef DRNAS_MICRO_TRACE
+                micro_log("kind=conflict cid="+std::to_string(conflicting)+
+                          " level="+std::to_string(level())+
+                          " number="+std::to_string(stats_.conflicts));
+#endif
                 if (level() == 0) return 20;
 #ifdef DRNAS_PROFILE
                 p0=profile_clock();
 #endif
                 auto [learned, target] = analyze(conflicting);
+#ifdef DRNAS_MICRO_TRACE
+                {std::string lits; for(int lit:learned){if(!lits.empty())lits+=",";lits+=std::to_string(lit);}
+                 micro_log("kind=learn backjump="+std::to_string(target)+
+                           " width="+std::to_string(learned.size())+" clause="+lits);}
+#endif
 #ifdef DRNAS_PROFILE
                 profile_analyze_s_+=profile_now()-p0;
 #endif
@@ -739,6 +761,10 @@ public:
 #endif
                 if (!v) return 10;
                 ++stats_.decisions;
+#ifdef DRNAS_MICRO_TRACE
+                micro_log("kind=decision variable="+std::to_string(v)+
+                          " number="+std::to_string(stats_.decisions));
+#endif
                 decision_marks_.push_back(trail_.size());
                 require(enqueue(phases_[v] >= 0 ? v : -v, -1),
                         "selected decision variable was already assigned");
