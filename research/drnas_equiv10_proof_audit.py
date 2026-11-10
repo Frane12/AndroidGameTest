@@ -104,6 +104,15 @@ def certify():
                 if valid_verified(replay):
                     result["independent_LRAT_verified"]=True
                     result["certification_status"]="CERTIFIED_ORIGINAL_UNSAT"
+    if not result["independent_LRAT_verified"]:
+        # This is only a second backend opinion, NEVER a certified UNSAT proof.
+        plain=run([CAD,source],90,None)
+        result["cadical_plain_no_proof_crosscheck"]=dict(
+            rc=plain["rc"],elapsed_s=plain["elapsed_s"],timeout=plain["timeout"],
+            status="UNSAT" if plain["rc"]==20 else "SAT" if plain["rc"]==10 else "UNKNOWN")
+        result["independent_backend_agreement_no_LRAT"]=(plain["rc"]==20)
+    else:
+        result["independent_backend_agreement_no_LRAT"]=True
     need(sha(source)==TARGET_SHA,"original CNF modified")
     (OUT/"report.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
     print("EQUIV10P_FINAL "+json.dumps(result,sort_keys=True),flush=True)
