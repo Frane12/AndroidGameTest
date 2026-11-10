@@ -1,0 +1,65 @@
+name: DRNAS MICRO1 two frozen SATLIB formulas
+run-name: MICRO1 uf20 and uf50 trace native Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-micro1-two-cnf-20261111]
+    paths:
+      - research/drnas_micro1.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-micro1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_micro1.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_micro1/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_micro1/kissat-src
+          git -C mre_micro1/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_micro1/kissat-src && ./configure && make -j2)
+          install -m 755 mre_micro1/kissat-src/build/kissat mre_micro1/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_micro1/bin/cadical
+      - name: Build original DRNAS and 500-event tracer
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 research/drnas_factor42_native.cpp -o mre_micro1/bin/drnas
+          g++ -std=c++17 -O2 -DDRNAS_MICRO_TRACE -DDRNAS_PROFILE research/drnas_factor42_native.cpp -o mre_micro1/bin/drnas_trace
+          g++ -std=c++17 -O2 research/drnas_native_core_r3c.cpp -o mre_micro1/bin/selftest
+          g++ -std=c++17 -O2 -DDRNAS_MICRO_TRACE research/drnas_native_core_r3c.cpp -o mre_micro1/bin/trace_selftest
+          mre_micro1/bin/selftest --selftest
+          mre_micro1/bin/trace_selftest --selftest
+      - name: Run SHA-locked formula with native trace and references
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_micro1.py | tee mre_micro1/benchmark.log
+          grep '^MICRO_FINAL ' mre_micro1/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MICRO1-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_micro1/audit.json
+            mre_micro1/source.json
+            mre_micro1/*.cnf
+            mre_micro1/*.log
