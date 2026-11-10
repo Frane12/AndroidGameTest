@@ -24,6 +24,7 @@ ARMS={
 }
 SOLVE_CAP=50.
 CHECKER_CAP=40.
+TOTAL_CERT_CAP=90.
 MAX_PROOF=320*1024*1024
 EXPECTED=len(TARGETS)*REPS*len(ARMS)
 
@@ -36,6 +37,7 @@ def save(p,obj):return prev.save(p,obj)
 def config():
     return dict(protocol=PROTO,arms=ARMS,targets=list(TARGETS),
       reps=REPS,expected_trials=EXPECTED,solve_cap_s=SOLVE_CAP,
+      certified_total_wall_cap_s=TOTAL_CERT_CAP,
       checker_cap_s=CHECKER_CAP,max_transient_proof_bytes=MAX_PROOF,
       unmodified_original_CNF=True,single_logical_CPU=True,
       independent_CakeML_XLRUP_certificate_required=True,
@@ -113,7 +115,7 @@ def trial(source,arm,rep):
        proof_bytes=bytes_,proof_SHA256=proof_sha,
        proof_certification_status=reason,
        verified_E2E_wall_s=round(elapsed,6),
-       certified_PAR2_at_solve_50s_cap_s=round(elapsed if verified else 2*SOLVE_CAP,6),
+       certified_PAR2_90s_s=round(elapsed if verified and elapsed<=TOTAL_CERT_CAP else 2*TOTAL_CERT_CAP,6),
        checker_returncode=ck["return_code"] if ck else None,
        checker_verdict=ck["stdout_tail"].strip() if ck else None)
     # Save metadata before removing potentially huge transient proof.
@@ -153,17 +155,17 @@ def audit():
         stats[arm]=dict(trials=len(a),certified=sum(x["CakeML_verified_UNSAT"] for x in a),
           solve_wall_total_s=round(sum(x["solve_wall_s"] for x in a),6),
           certified_E2E_total_s=round(sum(x["verified_E2E_wall_s"] for x in a),6),
-          PAR2_50s_s=round(sum(x["certified_PAR2_at_solve_50s_cap_s"] for x in a),6),
+          PAR2_90s_s=round(sum(x["certified_PAR2_90s_s"] for x in a),6),
           proof_bytes_total=sum(x["proof_bytes"] for x in a),
           by_source={s:[dict(rep=x["rep"],verified=x["CakeML_verified_UNSAT"],
                 solve_s=x["solve_wall_s"],check_s=x["checker_wall_s"],
                 E2E_s=x["verified_E2E_wall_s"],
                 proof_bytes=x["proof_bytes"],reason=x["proof_certification_status"])
                 for x in a if x["sha256"]==s] for s in TARGETS})
-    b=stats["cms_default"]["PAR2_50s_s"]
+    b=stats["cms_default"]["PAR2_90s_s"]
     for arm in stats:
         stats[arm]["PAR2_ratio_vs_default_x"]=round(
-            b/stats[arm]["PAR2_50s_s"],6)
+            b/stats[arm]["PAR2_90s_s"],6)
     report=dict(protocol=PROTO,source_original_SHA=list(TARGETS),total_trials=EXPECTED,
        CakeML_original_proof_checker_required=True,no_LRAT_claim_for_original_COMBO2_runs=True,
        proof_generation_is_separate_re_run_not_original_COMBO2_timing=True,
