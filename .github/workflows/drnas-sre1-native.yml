@@ -1,0 +1,161 @@
+name: DRNAS SRE1 - native structural reductions SCC GF2 units model lift
+run-name: SRE1 6 synthetic real-world + 6 official SHA x 6 own arms x 2 reps 6s 144 E2E oneCPU
+on:
+  push:
+    branches: [experiment/drnas-sre1-cross-representation-20261110]
+    paths:
+      - research/drnas_sre1_reduction.hpp
+      - research/drnas_sre1_native.cpp
+      - research/drnas_sre1_benchmark.py
+      - .github/workflows/drnas-sre1-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sre1-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Original C++ native R3C with SRE1 compile 495 brute originals x 2 plus six real-world cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: C++17 compile and independent literal truth + model lifting
+        run: |
+          set -euo pipefail
+          mkdir -p mre_sre1/bin
+          python3 -m py_compile research/drnas_sre1_benchmark.py
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_sre1_native.cpp -o mre_sre1/bin/drnas_sre1
+          ldd mre_sre1/bin/drnas_sre1 | tee mre_sre1/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_sre1/ldd.log
+          python3 -u research/drnas_sre1_benchmark.py verify | tee mre_sre1/verify.log
+          grep -q '^SRE1_SELFTEST_PASS ' mre_sre1/verify.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sre1-own-native-binary-proof-selftests
+          retention-days: 28
+          if-no-files-found: error
+          path: |
+            mre_sre1/bin/drnas_sre1
+            mre_sre1/verify.log
+            mre_sre1/ldd.log
+  freeze:
+    name: Freeze six original SHA and six independently brute-verified real-world sources
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sre1-own-native-binary-proof-selftests
+          path: mre_sre1
+      - name: Original MIXAB3 source replay and deterministic physical SAT case freeze
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sre1-source mre_mixab3/cases
+          gh run download 42811023064 -R Frane12/AndroidGameTest -n mixab3-fresh12-CMS17-Kissat4-GF2 -D /tmp/sre1-source
+          cp /tmp/sre1-source/mre_mixab3/manifest.json mre_mixab3/manifest.json
+          cp /tmp/sre1-source/mre_mixab3/cases/*.cnf mre_mixab3/cases/
+          chmod +x mre_sre1/bin/drnas_sre1
+          python3 -u research/drnas_sre1_benchmark.py freeze | tee mre_sre1/freeze.log
+          grep -q '^SRE1_FROZEN ' mre_sre1/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sre1-immutable-twelve-sha-six-synthetic-six-official
+          retention-days: 28
+          if-no-files-found: error
+          path: |
+            mre_sre1/manifest.json
+            mre_sre1/cases/*.cnf
+            mre_sre1/bin/drnas_sre1
+            mre_sre1/freeze.log
+  shard:
+    needs: freeze
+    name: "SRE1 ${{ matrix.mode }} original source shard ${{ matrix.shard }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        shard: [0, 1, 2]
+        mode:
+          - plain
+          - gf2
+          - sre_graph
+          - sre_all
+          - sre_all_gf2
+          - sre_placebo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sre1-immutable-twelve-sha-six-synthetic-six-official
+          path: mre_sre1
+      - name: Original SHA two reps, one logical CPU, strict proof-first E2E
+        env:
+          MODE: ${{ matrix.mode }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x mre_sre1/bin/drnas_sre1
+          python3 -u research/drnas_sre1_benchmark.py shard --mode "$MODE" --shard "$SHARD" | tee "mre_sre1/shard-$SHARD-$MODE.log"
+          grep -q "^SRE1_SHARD_PASS $SHARD $MODE 8$" "mre_sre1/shard-$SHARD-$MODE.log"
+          test -s "mre_sre1/shard-$SHARD-$MODE.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sre1-result-${{ matrix.mode }}-s${{ matrix.shard }}
+          retention-days: 28
+          if-no-files-found: warn
+          path: |
+            mre_sre1/shard-${{ matrix.shard }}-${{ matrix.mode }}.json
+            mre_sre1/shard-${{ matrix.shard }}-${{ matrix.mode }}.log
+  audit:
+    name: SRE1 144 exact SHA-paired SAT witness and independent micro UNSAT PAR2 final audit
+    needs: [freeze, shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sre1-immutable-twelve-sha-six-synthetic-six-official
+          path: mre_sre1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sre1-result-*
+          merge-multiple: true
+          path: mre_sre1
+      - name: Complete matrix, same binary SHA, independent SAT and synthetic UNSAT
+        run: |
+          set -euo pipefail
+          chmod +x mre_sre1/bin/drnas_sre1
+          test "$(find mre_sre1 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 18
+          python3 -u research/drnas_sre1_benchmark.py audit | tee mre_sre1/audit.log
+          grep -q '^SRE1_FINAL ' mre_sre1/audit.log
+          grep '^SRE1_FINAL ' mre_sre1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SRE1-144-ONECPU-ORIGINAL-SYNTHETIC-PAR2-PROOF-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_sre1/manifest.json
+            mre_sre1/audit.json
+            mre_sre1/audit.log
+            mre_sre1/shard-*.json
