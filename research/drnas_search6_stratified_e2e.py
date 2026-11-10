@@ -226,7 +226,7 @@ def one(c,rep,arm):
  s3.ROOT.mkdir(exist_ok=True,parents=True)
  s3.SOURCE=SOURCE;s3.DRIVER=DRIVER;s3.PRIORITY=FEATURES
  s3.CAD=CAD;s3.KISSAT=KISSAT
- s3.ARMS=ARMS;s3.seed=seed
+ s3.ARMS=ARMS;s3.seed=seed;s3.CAP=CAP
  # Reuse SEARCH3 proven arm modes without adding any new experimental logic.
  r=s3.one(dict(c,source_signals=c["original_source_signals"]),rep,arm,CAP)
  r["protocol"]=PROTO
