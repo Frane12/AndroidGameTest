@@ -1,0 +1,97 @@
+name: DRNAS Native Core R2B proof-checked XOR-source selection, all-own SAT solvers
+run-name: DRNAS NATIVE R2B 600 independent small CNF + 16 frozen SHA R1 R2 R2B 6s singleCPU
+on:
+  push:
+    branches: [experiment/drnas-native-core-r2b-xor-selection-20261110]
+    paths:
+      - research/drnas_native_core_r2b.cpp
+      - research/drnas_native_core_r2b_test.py
+      - .github/workflows/drnas-native-core-r2b.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-native-core-r2b
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Compile three independent DRNAS C++ engines, exhaustively prove small GF2 tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Rebuild OWN R1, R2, R2B from C++ source no foreign solver libs
+        run: |
+          set -euo pipefail
+          mkdir -p mre_drnas_native_core_r2b/bin
+          for version in r1 r2 r2b; do
+            g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+              "research/drnas_native_core_$version.cpp" \
+              -o "mre_drnas_native_core_r2b/bin/drnas_native_core_$version"
+            ldd "mre_drnas_native_core_r2b/bin/drnas_native_core_$version" | tee "mre_drnas_native_core_r2b/ldd-$version.txt"
+            ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' "mre_drnas_native_core_r2b/ldd-$version.txt"
+          done
+      - name: Exhaustive correctness and actual derived-row trail activation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_native_core_r2b_test.py
+          python3 -u research/drnas_native_core_r2b_test.py verify | tee mre_drnas_native_core_r2b/verify.log
+          grep -q '^DRNAS_NATIVE_R2B_GF2_SELFTEST_PASS ' mre_drnas_native_core_r2b/verify.log
+          grep -q '^DRNAS_NATIVE_R2B_SELFTEST_PASS ' mre_drnas_native_core_r2b/verify.log
+          grep -q '^DRNAS_NATIVE_R2B_CHECKS_PASS ' mre_drnas_native_core_r2b/verify.log
+          grep '^DRNAS_NATIVE_R2B_CHECKS_PASS ' mre_drnas_native_core_r2b/verify.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-native-r2b-all-own-CXX17-solvers
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_core_r2b/bin/
+            mre_drnas_native_core_r2b/verify.log
+            mre_drnas_native_core_r2b/ldd-*.txt
+  frozen_xor_original:
+    name: Two original SHA with 20 and 16 certified reductive XOR rows x 4 own arms x 2 reps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-native-r2b-all-own-CXX17-solvers
+          path: mre_drnas_native_core_r2b
+      - name: Restore original frozen MIXAB3 SHA CNF inputs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/native-r2b-input mre_mixab3/cases
+          gh run download 42811023064 -R Frane12/AndroidGameTest \
+            -n mixab3-fresh12-CMS17-Kissat4-GF2 -D /tmp/native-r2b-input
+          cp /tmp/native-r2b-input/mre_mixab3/manifest.json mre_mixab3/manifest.json
+          cp /tmp/native-r2b-input/mre_mixab3/cases/*.cnf mre_mixab3/cases/
+          for version in r1 r2 r2b; do
+            test -s "mre_drnas_native_core_r2b/bin/drnas_native_core_$version"
+            chmod +x "mre_drnas_native_core_r2b/bin/drnas_native_core_$version"
+          done
+          # No linked or executed external SAT binary in any trial.
+      - name: Immutable original SHA paired native GF2 causal benchmark 6sec one CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_native_core_r2b_test.py original | tee mre_drnas_native_core_r2b/original.log
+          grep -q '^DRNAS_NATIVE_R2B_FINAL ' mre_drnas_native_core_r2b/original.log
+          grep '^DRNAS_NATIVE_R2B_FINAL ' mre_drnas_native_core_r2b/original.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NATIVE-R2B-16-ORIGINAL-MIXAB3-SOURCE-XOR-ONECPU-E2E
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_core_r2b/original-trials.json
+            mre_drnas_native_core_r2b/audit.json
+            mre_drnas_native_core_r2b/original.log
