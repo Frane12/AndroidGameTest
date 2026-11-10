@@ -353,6 +353,31 @@ private:
                     list[write++] = cid;
                     continue;
                 }
+#ifdef DRNAS_BCP1
+                // BCP1: specialized binary watch and direct assignment checks.
+                // No candidate scan is needed for binary clauses. For longer
+                // clauses, test variable values without repeated lit_value calls.
+                const int other = clause[0];
+                const int other_value = values_[std::abs(other)] * (other > 0 ? 1 : -1);
+                if (clause.size() > 2) {
+                    size_t candidate = 2;
+                    const size_t end = clause.size();
+                    for (; candidate < end; ++candidate) {
+                        const int lit = clause[candidate];
+                        const int val = values_[std::abs(lit)];
+                        if (val == 0 || (val > 0) == (lit > 0)) break;
+                    }
+                    if (candidate < end) {
+                        const int replacement = clause[candidate];
+                        clause[candidate] = clause[1];
+                        clause[1] = replacement;
+                        watches_[watch_index(replacement)].push_back(cid);
+                        continue;
+                    }
+                }
+                list[write++] = cid;
+                if (other_value == -1 || (other_value == 0 && !enqueue(other, cid))) {
+#else
                 size_t candidate = clause.size();
                 for (size_t k = 2; k < clause.size(); ++k) {
                     if (lit_value(clause[k]) != -1) { candidate = k; break; }
@@ -364,6 +389,7 @@ private:
                 }
                 list[write++] = cid;
                 if (lit_value(clause[0]) == -1 || !enqueue(clause[0], cid)) {
+#endif
                     // The remaining watcher IDs must stay installed even when
                     // propagation exits early on this conflict.
                     while (read < list.size()) list[write++] = list[read++];
