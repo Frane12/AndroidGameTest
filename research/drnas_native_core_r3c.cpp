@@ -188,6 +188,22 @@ class NativeCDCL {
     double cap_s_ = 10.0;
     bool resource_limit_ = false;
     Statistics stats_;
+#ifdef DRNAS_PROFILE
+    double profile_bcp_s_=0,profile_xor_s_=0,profile_analyze_s_=0,profile_select_s_=0,profile_update_s_=0,profile_clock_s_=0;
+    uint64_t profile_samples_=0;
+    double profile_clock(){auto a=Clock::now();auto b=Clock::now();profile_clock_s_+=std::chrono::duration<double>(b-a).count();++profile_samples_;return std::chrono::duration<double>(a.time_since_epoch()).count();}
+    double profile_now(){return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();}
+public:
+    void print_profile() const {
+      std::cout<<std::fixed<<std::setprecision(8)<<"DRNAS_PROFILE bcp_s="<<profile_bcp_s_
+      <<" xor_s="<<profile_xor_s_<<" analyze_s="<<profile_analyze_s_
+      <<" select_s="<<profile_select_s_<<" update_s="<<profile_update_s_
+      <<" clock_probe_s="<<profile_clock_s_<<" clock_samples="<<profile_samples_
+      <<" measured_s="<<(profile_bcp_s_+profile_xor_s_+profile_analyze_s_+profile_select_s_+profile_update_s_)
+      <<" profile_overhead_lower_bound_s="<<profile_clock_s_<<"\n";
+    }
+private:
+#endif
     std::vector<XorRowR2> xor_rows_;
     // Variable-to-XOR incidence avoids scanning all rows at every BCP fixpoint.
     std::vector<std::vector<int>> xor_incidence_;
@@ -553,17 +569,38 @@ public:
                 resource_limit_ = true;
                 return 0;
             }
+#ifdef DRNAS_PROFILE
+            double p0=profile_clock();
+#endif
             int conflicting = propagate();
+#ifdef DRNAS_PROFILE
+            profile_bcp_s_+=profile_now()-p0;
+#endif
             if (conflicting == -2) return 0;
             if (conflicting == -1) {
+#ifdef DRNAS_PROFILE
+                p0=profile_clock();
+#endif
                 conflicting=propagate_xor();
+#ifdef DRNAS_PROFILE
+                profile_xor_s_+=profile_now()-p0;
+#endif
                 if(conflicting==-2)return 0;
                 if(conflicting==-3)continue; // run our own watched BCP again
             }
             if (conflicting >= 0) {
                 ++stats_.conflicts;
                 if (level() == 0) return 20;
+#ifdef DRNAS_PROFILE
+                p0=profile_clock();
+#endif
                 auto [learned, target] = analyze(conflicting);
+#ifdef DRNAS_PROFILE
+                profile_analyze_s_+=profile_now()-p0;
+#endif
+#ifdef DRNAS_PROFILE
+                p0=profile_clock();
+#endif
                 cancel_to(target);
                 const int cid = static_cast<int>(clauses_.size());
                 const int assertion = learned[0];
@@ -572,6 +609,9 @@ public:
                 ++stats_.learned_clauses;
                 require(enqueue(assertion, cid), "learned 1-UIP clause not asserting");
                 bump_ /= decay_;
+#ifdef DRNAS_PROFILE
+                profile_update_s_+=profile_now()-p0;
+#endif
                 if (stats_.conflicts >= next_restart_ && level() > 0) {
                     cancel_to(0);
                     ++stats_.restarts;
@@ -580,7 +620,13 @@ public:
                     next_restart_ = stats_.conflicts + restart_window_;
                 }
             } else {
+#ifdef DRNAS_PROFILE
+                p0=profile_clock();
+#endif
                 const int v = pick_branch_variable();
+#ifdef DRNAS_PROFILE
+                profile_select_s_+=profile_now()-p0;
+#endif
                 if (!v) return 10;
                 ++stats_.decisions;
                 decision_marks_.push_back(trail_.size());
