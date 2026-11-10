@@ -195,6 +195,44 @@ class NativeCDCL {
     double cap_s_ = 10.0;
     bool resource_limit_ = false;
     Statistics stats_;
+#ifdef DRNAS_PROGRESS1
+    // Passive cycle-level telemetry; does not change assignments or heuristics.
+    uint64_t progress_last_prop_=0,progress_last_watch_=0,progress_last_decisions_=0;
+    uint64_t progress_last_root_=0,progress_last_short_=0;
+    uint64_t progress_reported_=0;
+    uint64_t progress_short_learned_=0;
+    uint64_t progress_zero_root_=0;
+    void progress_emit(int before_level,int backjump,const std::vector<int>& learned) {
+        uint64_t root=0;
+        for(int lit:trail_)if(levels_[var(lit)]==0)++root;
+        const uint64_t prop=stats_.propagations,watch=stats_.watch_visits,dec=stats_.decisions;
+        std::vector<int> distinct_levels;
+        for(int lit:learned) {
+            int lev=levels_[var(lit)];
+            if(std::find(distinct_levels.begin(),distinct_levels.end(),lev)==distinct_levels.end())
+                distinct_levels.push_back(lev);
+        }
+        const size_t width=learned.size();
+        if(width<=2)++progress_short_learned_;
+        if(root==progress_last_root_)++progress_zero_root_;
+        if(++progress_reported_<=2500)
+            std::cerr<<"DRNAS_PROGRESS1 cycle="<<stats_.conflicts
+                 <<" decisions_delta="<<(dec-progress_last_decisions_)
+                 <<" propagations_delta="<<(prop-progress_last_prop_)
+                 <<" watch_delta="<<(watch-progress_last_watch_)
+                 <<" root_assignments="<<root
+                 <<" root_delta="<<int64_t(root)-int64_t(progress_last_root_)
+                 <<" learned_width="<<width
+                 <<" learned_lbd="<<distinct_levels.size()
+                 <<" backjump="<<(before_level-backjump)
+                 <<" learned_total="<<stats_.learned_clauses+1
+                 <<" short_learned_total="<<progress_short_learned_
+                 <<" repeat_root_count="<<progress_zero_root_
+                 <<" note=pre_backjump"<<"\n";
+        progress_last_prop_=prop; progress_last_watch_=watch;
+        progress_last_decisions_=dec;progress_last_root_=root;
+    }
+#endif
 #ifdef DRNAS_MICRO_TRACE
     uint64_t micro_events_=0;
     void micro_log(const std::string& line) {
@@ -762,6 +800,9 @@ public:
                 p0=profile_clock();
 #endif
                 auto [learned, target] = analyze(conflicting);
+#ifdef DRNAS_PROGRESS1
+                progress_emit(level(),target,learned);
+#endif
 #ifdef DRNAS_MICRO_TRACE
                 {std::string lits; for(int lit:learned){if(!lits.empty())lits+=",";lits+=std::to_string(lit);}
                  micro_log("kind=learn from="+std::to_string(level())+
