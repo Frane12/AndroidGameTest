@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PROGRESS1: passive cycle progress meter on two frozen original SATLIB instances.
-Compare two original instances without solver-time-based instance selection.
+Compare two frozen original instances without solver-time-based selection. No changes to CDCL decisions.
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_progress1");OUT.mkdir(exist_ok=True)
