@@ -1,0 +1,150 @@
+name: DRNAS BINARY-SCC2 - 17 original CNF SHA C++ quotient vs clean and original
+run-name: BINARY-SCC2 17 SHA x 6 arms x 2 reps 15s 204 one-core E2E
+on:
+  push:
+    branches: [experiment/drnas-binary-scc2-onecpu-e2e-20261110]
+    paths:
+      - research/drnas_binary_scc2_quotient.cpp
+      - research/drnas_binary_scc2_e2e.py
+      - .github/workflows/drnas-binary-scc2-e2e.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: binary-scc2-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-lock 17 original SHA, build SCC quotient native, check exhaustive small SAT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore unchanged BINARY-SCC1 original inputs, pinned backends and registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42733542231 -R Frane12/AndroidGameTest -n binary-scc1-immutable-17SHA-native-scout-and-registries -D .
+          test -s mre_binary_scc1/manifest.json
+          test -s mre_binary_scc1/bin/scc_scout
+          test -s mre_equiv10m5/manifest.json
+          test -s mre_equiv10medium/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv7/bin/cadical_3_0_1
+          chmod +x mre_binary_scc1/bin/scc_scout mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Compile standalone native C++ original-CNF SCC quotient
+        run: |
+          set -euo pipefail
+          mkdir -p mre_binary_scc2/bin
+          g++ -O2 -std=c++17 -Wall -Wextra -Werror research/drnas_binary_scc2_quotient.cpp -o mre_binary_scc2/bin/scc_quotient
+          chmod +x mre_binary_scc2/bin/scc_quotient
+          sha256sum mre_binary_scc2/bin/scc_quotient
+      - name: Original source and independent Tarjan replay, exhaustive toy SAT/mapping control
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_binary_scc2_e2e.py
+          python3 -u research/drnas_binary_scc2_e2e.py selftest | tee mre_binary_scc2/selftest.log
+          grep -q '^BINARY_SCC2_SELFTEST_PASS ' mre_binary_scc2/selftest.log
+          python3 -u research/drnas_binary_scc2_e2e.py freeze | tee mre_binary_scc2/freeze.log
+          grep -q '^BINARY_SCC2_FROZEN ' mre_binary_scc2/freeze.log
+          python3 -u research/drnas_binary_scc2_e2e.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binary-scc2-frozen-17SHA-native-quotient-pinned-original-backends
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mre_binary_scc2/manifest.json
+            mre_binary_scc2/selftest.log
+            mre_binary_scc2/freeze.log
+            mre_binary_scc2/bin/scc_quotient
+            mre_binary_scc1/manifest.json
+            mre_binary_scc1/bin/scc_scout
+            mre_equiv10m5/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+  bench:
+    name: BINARY-SCC2 original clean quotient six-arm matched E2E one CPU shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-scc2-frozen-17SHA-native-quotient-pinned-original-backends
+          path: .
+      - name: One pinned CPU, 15s matched E2E incl source replay, lift, model and PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_binary_scc2/bin/scc_quotient mre_binary_scc1/bin/scc_scout mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_binary_scc2_e2e.py verify
+          python3 -u research/drnas_binary_scc2_e2e.py shard --shard ${{ matrix.shard }} | tee mre_binary_scc2/shard-${{ matrix.shard }}.log
+          grep -q '^BINARY_SCC2_SHARD_PASS ' mre_binary_scc2/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binary-scc2-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_binary_scc2/shard-${{ matrix.shard }}.json
+            mre_binary_scc2/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 204 one-core E2E original SHA and clean/quotient PAR2 mechanism
+    needs: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-scc2-frozen-17SHA-native-quotient-pinned-original-backends
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-scc2-shard-*
+          path: mre_binary_scc2
+          merge-multiple: true
+      - name: Full strict PAR2, original SAT models and original solver UNSAT agreement
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_binary_scc2/bin/scc_quotient mre_binary_scc1/bin/scc_scout mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_binary_scc2_e2e.py audit | tee mre_binary_scc2/audit.log
+          grep -q '^BINARY_SCC2_FINAL ' mre_binary_scc2/audit.log
+          grep '^BINARY_SCC2_FINAL ' mre_binary_scc2/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-BINARY-SCC2-17SHA-204-E2E-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_binary_scc2/report.json
+            mre_binary_scc2/audit.log
+            mre_binary_scc2/manifest.json
+            mre_binary_scc2/shard-*.json
