@@ -169,7 +169,7 @@ def audit():
     report=dict(protocol=PROTO,source_original_SHA=list(TARGETS),total_trials=EXPECTED,
        CakeML_original_proof_checker_required=True,no_LRAT_claim_for_original_COMBO2_runs=True,
        proof_generation_is_separate_re_run_not_original_COMBO2_timing=True,
-       10s_COMBO2_PAR2_is_not_overwritten=True,no_automatic_promotion=True,
+       original_COMBO2_10s_PAR2_is_not_overwritten=True,no_automatic_promotion=True,
        stats=stats)
     save(ROOT/"report.json",report)
     print("COMBO3_FINAL "+json.dumps(report,sort_keys=True),flush=True)
