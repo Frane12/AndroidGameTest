@@ -1,0 +1,137 @@
+name: DRNAS GF2-S1 - exact proof-first original CNF single CPU
+run-name: GF2-S1 17 frozen SHA x 6 arms x 2 reps x 8s - 204 E2E
+on:
+  push:
+    branches: [experiment/drnas-gf2-proof-first-s1-20261110]
+    paths:
+      - .github/workflows/drnas-gf2-proof-first-s1.yml
+      - research/drnas_gf2_proof_first_s1.cpp
+      - research/drnas_gf2_proof_first_s1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gf2-s1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore frozen 17 SHA, compile exact C++ and independently selftest proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve immutable SCC2 source registry and frozen original solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42768626410 -R Frane12/AndroidGameTest -n binary-scc2-frozen-17SHA-native-quotient-pinned-original-backends -D .
+          test -s mre_binary_scc2/manifest.json
+          test -s mre_binary_scc1/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Build pinned native C++ exact parity detector and fail-closed selftests
+        run: |
+          set -euo pipefail
+          mkdir -p mre_gf2_s1/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror research/drnas_gf2_proof_first_s1.cpp -o mre_gf2_s1/bin/gf2_exact
+          chmod +x mre_gf2_s1/bin/gf2_exact
+          python3 -m py_compile research/drnas_gf2_proof_first_s1.py
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_proof_first_s1.py selftest | tee mre_gf2_s1/selftest.log
+          grep -q '^GF2_S1_SELFTEST_PASS ' mre_gf2_s1/selftest.log
+          python3 -u research/drnas_gf2_proof_first_s1.py freeze | tee mre_gf2_s1/freeze.log
+          grep -q '^GF2_S1_FROZEN ' mre_gf2_s1/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gf2-s1-frozen-17SHA-exact-binaries
+          retention-days: 14
+          path: |
+            mre_gf2_s1/
+            mre_binary_scc2/manifest.json
+            mre_binary_scc1/manifest.json
+            mre_equiv9/
+            mre_equiv7/manifest.json
+            mre_x20/
+            prior_x22/
+            prior_equiv6/
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+  shard:
+    name: 17SHA single CPU strict E2E original / placebo / proof-first shard ${{ matrix.shard }}
+    needs: freeze
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-s1-frozen-17SHA-exact-binaries
+      - name: Matched E2E 8s one logical CPU no proof forgery
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_proof_first_s1.py verify | tee mre_gf2_s1/verify-$SHARD.log
+          grep -q '^GF2_S1_VERIFY_PASS' mre_gf2_s1/verify-$SHARD.log
+          python3 -u research/drnas_gf2_proof_first_s1.py shard --shard "$SHARD" | tee "mre_gf2_s1/shard-$SHARD.log"
+          grep -q "^GF2_S1_SHARD_PASS $SHARD " "mre_gf2_s1/shard-$SHARD.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gf2-s1-shard-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            mre_gf2_s1/shard-${{ matrix.shard }}.json
+            mre_gf2_s1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 204 original SHA paired SAT witness, GF2 certificate, PAR2 and regressions
+    needs: [freeze,shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: gf2-s1-frozen-17SHA-exact-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gf2-s1-shard-*
+          merge-multiple: true
+      - name: Validate 204 SHA matched original-CNF E2E and publish transparent PAR2
+        run: |
+          set -euo pipefail
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_proof_first_s1.py verify
+          python3 -u research/drnas_gf2_proof_first_s1.py audit | tee mre_gf2_s1/audit.log
+          grep -q '^GF2_S1_FINAL ' mre_gf2_s1/audit.log
+          grep '^GF2_S1_FINAL ' mre_gf2_s1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF2-S1-17SHA-204-E2E-STRICT-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_gf2_s1/report.json
+            mre_gf2_s1/audit.log
