@@ -587,14 +587,14 @@ private:
                 if(i)std::cerr<<",";
                 std::cerr<<c.lits[i];
             }
-            std::cerr<<"\\n";
+            std::cerr<<"\n";
             for(int lit:c.lits) {
                 int v=var(lit);
                 if(lit_value(lit)!=-1)continue;
                 int parent=reasons_[v];
                 if(parent<0)continue;
                 std::cerr<<"REDUCE2_EDGE conflict="<<number<<" from="<<cid
-                         <<" to="<<parent<<" var="<<v<<"\\n";
+                         <<" to="<<parent<<" var="<<v<<"\n";
                 if(size_t(parent)<visited.size()&&!visited[size_t(parent)])
                     stack.push_back(parent);
             }
