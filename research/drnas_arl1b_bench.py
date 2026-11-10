@@ -65,10 +65,10 @@ def run(arm,rep):
  if status=="UNSAT":raise RuntimeError("Unexpected UNSAT on SATLIB satisfiable instance: "+arm)
  if status=="UNKNOWN" and rc not in (0,124,-9,-24):raise RuntimeError(f"solver error {arm} {rc} {stderr[-300:]}")
  stats={}
- m=re.search(r"^ARL1B_TRIAL (.*)$",stdout,re.M)
+ m=re.search(r"^(?:ARL1B_TRIAL|ARL1A_TRIAL) (.*)$",stdout,re.M)
  if m:stats["ARL1B_TRIAL"]=dict(x.split("=",1) for x in m.group(1).split() if "=" in x)
  if arm=="drnas_trace":
-  assert m,"missing ARL1A telemetry"
+  assert m,"missing ARL1B telemetry"
   d=stats["ARL1B_TRIAL"]
   assert d["decision"] in ("commit","sleep","fallback"),d
   assert int(d["accepted"])<=4 and int(d["pairs"])<=4097,d
