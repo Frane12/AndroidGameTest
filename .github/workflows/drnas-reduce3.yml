@@ -1,0 +1,72 @@
+name: DRNAS REDUCE3 two frozen SATLIB formulas
+run-name: REDUCE3 uf20 and uf50 trace native Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-atom-reduce3-20261111]
+    paths:
+      - research/drnas_reduce3.py
+      - research/drnas_atom_reduce3.py
+      - research/drnas_atom_reduce2.py
+      - research/drnas_atom_reduce1.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-reduce3.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_reduce3.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_reduce3/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_reduce3/kissat-src
+          git -C mre_reduce3/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_reduce3/kissat-src && ./configure && make -j2)
+          install -m 755 mre_reduce3/kissat-src/build/kissat mre_reduce3/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_reduce3/bin/cadical
+      - name: Build original DRNAS and 500-event tracer
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 research/drnas_factor42_native.cpp -o mre_reduce3/bin/drnas
+          g++ -std=c++17 -O2 -DDRNAS_MICRO_TRACE -DDRNAS_PROFILE research/drnas_factor42_native.cpp -o mre_reduce3/bin/drnas_trace
+          g++ -std=c++17 -O2 research/drnas_native_core_r3c.cpp -o mre_reduce3/bin/selftest
+          g++ -std=c++17 -O2 -DDRNAS_MICRO_TRACE research/drnas_native_core_r3c.cpp -o mre_reduce3/bin/trace_selftest
+          mre_reduce3/bin/selftest --selftest
+          mre_reduce3/bin/trace_selftest --selftest
+      - name: Run SHA-locked formula with native trace and references
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_reduce3.py | tee mre_reduce3/benchmark.log
+          grep '^MICRO_FINAL ' mre_reduce3/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-REDUCE3-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_reduce3/audit.json
+            mre_reduce3/source.json
+            mre_reduce3/*.cnf
+            mre_reduce3/*.log
+            mre_reduce3/path_analysis.json
+            mre_reduce3/reduction_audit.json
+            mre_reduce3/reason_audit.json
+            mre_reduce3/reduce3_audit.json
