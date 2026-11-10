@@ -16,7 +16,7 @@ import tarfile
 import time
 import urllib.request
 
-from drnas_factor7_dimacs import canonical_dimacs,witness_ok
+from drnas_factor6_dimacs import canonical_dimacs,witness_ok
 
 OUT=pathlib.Path("mre_factor7")
 OUT.mkdir(exist_ok=True)
