@@ -63,8 +63,8 @@ def certified_originals():
          p["independent_XLRUP_CakeML_verified_count"]==2,"prior CMS XLRUP audited evidence absent")
     confirmed=set()
     for k,v in p["certificates"].items():
-        if v["independent_verified"] and
-           v["certification_status"]=="CERTIFIED_ORIGINAL_UNSAT_BY_CMS_XLRUP_CAKEML":
+        if (v["independent_verified"] and
+            v["certification_status"]=="CERTIFIED_ORIGINAL_UNSAT_BY_CMS_XLRUP_CAKEML"):
             confirmed.add(k)
     need(len(confirmed)==2,"source-original independent certificates drift")
     return confirmed
