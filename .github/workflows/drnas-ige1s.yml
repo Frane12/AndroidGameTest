@@ -1,0 +1,46 @@
+name: DRNAS IGE1-S proof-first structural feedback
+run-name: IGE1-S 16 source CNFs x 2 arms x 2 reps 64 native oneCPU E2E plus exact structural telemetry
+on:
+  push:
+    branches: [experiment/drnas-ige1s-structural-feedback-20261110]
+    paths:
+      - research/drnas_ige1s_benchmark.py
+      - .github/workflows/drnas-ige1s.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ige1s:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native R3C and SRE2-C control
+        run: |
+          set -euo pipefail
+          mkdir -p mre_ige1s/bin
+          python3 -m py_compile research/drnas_ige1s_benchmark.py
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_sre2c_native.cpp -o mre_ige1s/bin/drnas_sre2c
+          ldd mre_ige1s/bin/drnas_sre2c | tee mre_ige1s/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_ige1s/ldd.log
+          mre_ige1s/bin/drnas_sre2c --selftest | tee mre_ige1s/selftest.log
+      - name: Run source-verified structural feedback experiment on one CPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_ige1s_benchmark.py | tee mre_ige1s/benchmark.log
+          grep -q '^IGE1S_FINAL ' mre_ige1s/benchmark.log
+          grep '^IGE1S_FINAL ' mre_ige1s/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-IGE1S-64-ONECPU-STRUCTURAL-FEEDBACK-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_ige1s/audit.json
+            mre_ige1s/*.cnf
+            mre_ige1s/*.log
+            mre_ige1s/bin/drnas_sre2c
