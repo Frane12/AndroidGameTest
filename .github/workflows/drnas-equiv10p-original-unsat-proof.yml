@@ -1,0 +1,62 @@
+name: DRNAS EQUIV10P - independent UNSAT DRAT LRAT original SHA audit
+run-name: EQUIV10P - native UNSAT SHA327b independent DRAT to LRAT 180s
+on:
+  push:
+    branches: [experiment/drnas-equiv10-proof-and-medium-20261110]
+    paths:
+      - .github/workflows/drnas-equiv10p-original-unsat-proof.yml
+      - research/drnas_equiv10_proof_audit.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv10p-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  proof:
+    name: Prove native original SHA independently (or report UNVERIFIED)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore untouched EQUIV9 SHA original and independent reference binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv7/bin/cadical_3_0_1
+          test -s mre_x4/bin/native
+          chmod +x mre_equiv7/bin/cadical_3_0_1 mre_x4/bin/native built/bin/kissat_4_0_4
+      - name: Build pinned external DRAT verifier and independent LRAT checker
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/marijnheule/drat-trim /tmp/drat-trim
+          git -C /tmp/drat-trim checkout --quiet 2e5e29cb0019d5cfd547d4208dca1b3ec290349f
+          test "$(git -C /tmp/drat-trim rev-parse HEAD)" = 2e5e29cb0019d5cfd547d4208dca1b3ec290349f
+          make -C /tmp/drat-trim -j2 drat-trim lrat-check
+      - name: Test proof verifier on independently checked SAT and UNSAT toy formulas
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_equiv10_proof_audit.py
+          python3 -u research/drnas_equiv10_proof_audit.py selftest
+      - name: Attempt original SHA independent CaDiCaL DRAT to LRAT certificate
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_equiv10_proof_audit.py certify | tee mre_equiv10proof/audit.log
+          grep -q '^EQUIV10P_FINAL ' mre_equiv10proof/audit.log
+          grep '^EQUIV10P_FINAL ' mre_equiv10proof/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV10P-INDEPENDENT-UNSAT-ORIGINAL-SHA-AUDIT
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mre_equiv10proof/report.json
+            mre_equiv10proof/audit.log
