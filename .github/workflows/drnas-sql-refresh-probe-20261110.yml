@@ -1,0 +1,52 @@
+name: DRNAS SQL 20261110 - inspect frozen existing and nine completed E2E evidence artifacts
+on:
+  push:
+    branches: [experiment/drnas-sql-cumulative-refresh-20261110]
+    paths: [.github/workflows/drnas-sql-refresh-probe-20261110.yml]
+  workflow_dispatch:
+permissions: {contents: read, actions: read}
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore immutable cumulative and completed E2E benchmark audits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p gathered/baseline
+          gh run download 42515525795 -R Frane12/AndroidGameTest -n DRNAS-CUMULATIVE-SQLITE-MRE-1892-20261108 -D gathered/baseline
+          mkdir -p gathered/dmd6 gathered/dmd7 gathered/dmd8 gathered/equiv7 gathered/equiv8 gathered/decomp2 gathered/decomp3gate gathered/decomp4 gathered/equiv9
+          gh run download 42710818842 -R Frane12/AndroidGameTest -n DRNAS-DMD6-384-ONECPU-GRAPH-SCC-PROOF-PAR2-FINAL -D gathered/dmd6
+          gh run download 42713743557 -R Frane12/AndroidGameTest -n DRNAS-DMD7-PROOF-FIRST-ONECPU-SCREEN-E2E-FINAL -D gathered/dmd7
+          gh run download 42716917451 -R Frane12/AndroidGameTest -n DRNAS-DMD8-FROZEN-126-PROOF-REPLAY-RECOVERED-FINAL -D gathered/dmd8
+          gh run download 42718326798 -R Frane12/AndroidGameTest -n DRNAS-EQUIV7-FRESH-SOURCEONLY-576-E2E-PAR2-FINAL -D gathered/equiv7
+          gh run download 42718184439 -R Frane12/AndroidGameTest -n DRNAS-EQUIV8-SINGLECPU-SEED-HEDGE-96-E2E-FINAL -D gathered/equiv8
+          gh run download 42718727450 -R Frane12/AndroidGameTest -n DRNAS-DECOMP2-64-ONECPU-EXACT-SEP-E2E-PAR2-FINAL -D gathered/decomp2
+          gh run download 42722091032 -R Frane12/AndroidGameTest -n DRNAS-DECOMP3-GATE-48-ONECPU-E2E-PAR2-FINAL -D gathered/decomp3gate
+          gh run download 42723849229 -R Frane12/AndroidGameTest -n DRNAS-DECOMP4-24-SHA-SEEDHEDGE-240-E2E-PAR2-FINAL -D gathered/decomp4
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n DRNAS-EQUIV9-PROSPECTIVE-SHA-168-E2E-FINAL -D gathered/equiv9
+      - name: Inspect exact filenames, schema, row examples and immutable base
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,sqlite3
+          root=pathlib.Path("gathered")
+          for label in ("baseline","dmd6","dmd7","dmd8","equiv7","equiv8","decomp2","decomp3gate","decomp4","equiv9"):
+              print("SQL_PREFLIGHT_LABEL",label,flush=True)
+              p=root/label
+              for f in sorted(p.rglob("*")):
+                  if not f.is_file():continue
+                  print("SQL_PREFLIGHT_FILE",label,str(f.relative_to(p)),f.stat().st_size,flush=True)
+                  if f.name.endswith(".json"):
+                      try:
+                          x=json.loads(f.read_text())
+                          print("SQL_PREFLIGHT_JSON",label,f.name,dict(keys=list(x)[:35],toptype=type(x).__name__) if isinstance(x,dict) else dict(type="array",n=len(x),first=x[0] if x else None),flush=True)
+                      except Exception as e:print("SQL_PREFLIGHT_BADJSON",str(e))
+          for f in (root/"baseline").rglob("*.sqlite"):
+              d=sqlite3.connect(f)
+              print("SQL_PREFLIGHT_SQLITE",str(f),d.execute("PRAGMA integrity_check").fetchone()[0],[(n,d.execute('SELECT COUNT(*) FROM '+n).fetchone()[0]) for n in ("datasets","formulas","attempts","mre_audit_runs","mre_audit_attempts")],flush=True)
+              d.close()
+          PY
