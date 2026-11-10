@@ -88,7 +88,8 @@ def certify():
     with tempfile.TemporaryDirectory(prefix="equiv10p-") as d:
         p=pathlib.Path(d)
         drat=p/"original.drat";lrat=p/"original.lrat"
-        generated=run([CAD,"--no-binary",source,drat],CAP,PROOF_BYTES_LIMIT)
+        generated=run([CAD,source,drat],CAP,PROOF_BYTES_LIMIT)
+        result["DRAT_format"]="binary"
         result["cadical_proof_solve"]=generated
         if generated["rc"]==20 and drat.is_file() and drat.stat().st_size>0:
             result["DRAT_bytes"]=drat.stat().st_size
