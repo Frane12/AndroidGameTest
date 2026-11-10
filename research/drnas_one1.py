@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""ONE1: exactly one frozen SATLIB CNF, five matched repeats, 1 CPU, 40s cap."""
+"""ONE1: exactly one frozen SATLIB CNF, five matched repeats, 1 CPU, 40s cap.
+All reference and native runs use the same source-normalized SHA.
+"""
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_one1");OUT.mkdir(exist_ok=True)
 CAP=40
