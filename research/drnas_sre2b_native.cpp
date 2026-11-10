@@ -44,6 +44,8 @@ static void sre2b_selftest(){
   <<" source_brute_equisat=true SRE1_SRE2A_retested=true\n";
 }
 }
+#ifndef DRNAS_SRE2C_EMBED
+
 int main(int argc,char**argv){
  try{
   if(argc==2 && std::string(argv[1])=="--selftest"){
@@ -122,3 +124,5 @@ int main(int argc,char**argv){
   std::cerr<<"SRE2B_FAIL_CLOSED "<<e.what()<<"\n";return 2;
  }
 }
+
+#endif // DRNAS_SRE2C_EMBED
