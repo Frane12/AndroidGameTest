@@ -50,7 +50,7 @@ def selftest():
             ("unsat",[(1,),(-1,),(2,3),(5,),(6,7)],"UNSAT"),
         ):
             test=OUT/f"selftest_{tag}.cnf"
-            test.write_text("p cnf 8 "+str(len(clauses))+"\\n"+"".join(" ".join(map(str,c))+" 0\\n" for c in clauses))
+            test.write_text("p cnf 8 "+str(len(clauses))+"\n"+"".join(" ".join(map(str,c))+" 0\n" for c in clauses))
             trial=run(test,clauses,"drnas_opportunityE",2)
             assert trial["status"]==expected and trial["telemetry"].get("fallback")=="0",trial
             assert int(trial["telemetry"].get("components",0))>=2,trial
@@ -89,7 +89,7 @@ def sources():
     ):
         idx=len(result)
         header=(8,len(clauses))
-        raw=(f"p cnf {header[0]} {header[1]}\\n"+"".join(" ".join(map(str,c))+" 0\\n" for c in clauses)).encode()
+        raw=(f"p cnf {header[0]} {header[1]}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in clauses)).encode()
         normalized,validated,parsed=canonical_dimacs(raw)
         assert validated==header and parsed==clauses
         (OUT/f"source_{idx}.cnf").write_bytes(normalized)
