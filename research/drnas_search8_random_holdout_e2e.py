@@ -190,13 +190,13 @@ def freeze():
  need(len({c["sha256"] for c in cases})==COUNT,"duplicate original SHA")
  cases.sort(key=lambda c:c["sha256"])
  # Freeze and verify rank permutations for ALL new SHA, before any CDCL.
- rank_hashes={}
+ rank_hash_map={}
  for c in cases:
   maps=rank_hashes(c)
   need(len(set(maps[a] for a in RANDOM_ARMS))==3 and
        maps["cadical_guided"] not in {maps[a] for a in RANDOM_ARMS},
        "precommitted random ranking not unique from mathematical ranking")
-  rank_hashes[c["sha256"]]=maps
+  rank_hash_map[c["sha256"]]=maps
   print("SEARCH8_MAP_FREEZE "+json.dumps(dict(sha256=c["sha256"],
         cohort=c["cohort"],r03=maps["random_03"],
         r08=maps["random_08"],control01=maps["random_01"],
@@ -209,7 +209,7 @@ def freeze():
   source_freeze_trace=trace,source_total_bytes=total,years=dict(peryear),
   frozen_structure_quota=dict(counts),
   fixed_permutation_algorithm="UNCHANGED SEARCH7 SHA256(S7_SALT|new_original_SHA|arm) first 15 hex",
-  rank_hashes=rank_hashes,all_random_maps_source_only_precomputed=True,
+  rank_hashes=rank_hash_map,all_random_maps_source_only_precomputed=True,
   no_source_solver_screening=True,no_reference_outcome_used_to_select=True,
   SHA_disjoint_from_REGISTERED_history=True,
   history_not_globally_exhaustive=True,
@@ -227,7 +227,7 @@ def freeze():
  print("SEARCH8_FROZEN "+json.dumps(dict(SHA=len(cases),
       original_sha_exclude_prior_REGISTERED=True,
       strata=dict(counts),years=dict(peryear),
-      fixed_random_rank_count=len(rank_hashes)*len(RANDOM_ARMS),
+      fixed_random_rank_count=len(rank_hash_map)*len(RANDOM_ARMS),
       repeats=REPS,arms=len(ARMS),trials=EXPECTED,
       not_globally_unseen_proven=True),sort_keys=True),flush=True)
 def verify():
