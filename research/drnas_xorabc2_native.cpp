@@ -254,12 +254,13 @@ static Prep derive(const Cnf& cnf,int maxwidth,Clock::time_point started){
  map<int,Row> basis;bool contradiction=false;
  for(size_t i=0;i<eqs.size();i++){
   Row row=from_eq(eqs[i],int(i),words);
+  bool inserted=false;
   while(!row.vs.empty()){
    int pivot=row.vs.back();auto it=basis.find(pivot);
-   if(it==basis.end()){basis.emplace(pivot,move(row));break;}
+   if(it==basis.end()){basis.emplace(pivot,move(row));inserted=true;break;}
    row=sum(row,it->second);
   }
-  if(row.vs.empty()&&row.rhs){contradiction=true;break;}
+  if(!inserted&&row.vs.empty()&&row.rhs){contradiction=true;break;}
   if(i%64==0&&elapsed_ms(started)>MAX_CPU_PREP_MS){
    result.abstain=true;result.gate="time_budget";return result;
   }
