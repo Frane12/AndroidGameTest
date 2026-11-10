@@ -1,8 +1,8 @@
 // FACTOR2: Native C++ exact component projection with automatic separator.
 // This is a bounded prototype; no independent LRAT proof is emitted.
-#define main drnas_sre2c_embedded_main
+#define DRNAS_FACTOR2_EMBED
 #include "drnas_sre2c_native.cpp"
-#undef main
+#undef DRNAS_FACTOR2_EMBED
 #include <numeric>
 namespace factor2 {
 using drnas::CNF;
