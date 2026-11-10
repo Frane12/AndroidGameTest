@@ -16,7 +16,8 @@ CAD=pathlib.Path("mre_equiv7/bin/cadical_3_0_1")
 DRAT=pathlib.Path("/tmp/drat-trim/drat-trim")
 LRAT=pathlib.Path("/tmp/drat-trim/lrat-check")
 CAP=180
-PROOF_BYTES_LIMIT=96*1024*1024
+PROOF_BYTES_LIMIT=512*1024*1024
+KISSAT=pathlib.Path("built/bin/kissat_4_0_4")
 
 def sha(p):
     h=hashlib.sha256()
@@ -30,6 +31,7 @@ def run(cmd,seconds,limit_fsize=None):
         if limit_fsize:
             resource.setrlimit(resource.RLIMIT_FSIZE,(limit_fsize,limit_fsize))
         resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+        os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
     t=time.monotonic()
     try:
         p=subprocess.run([str(x) for x in cmd],capture_output=True,text=True,
@@ -72,40 +74,68 @@ def selftest():
 def certify():
     OUT.mkdir(exist_ok=True)
     source,case=original()
-    native=e9.trial(case,0,"native1",10)
-    need(native["sha256"]==TARGET_SHA,"native trial SHA")
-    result=dict(protocol=PROTO,original_sha256=TARGET_SHA,
-        source_year=case["year"],source_gbd=case["gbd"],
-        native_backend_status=native["status"],
-        native_backend_time_s=native["wall_E2E_s"],
+    need(KISSAT.is_file() and CAD.is_file(), "missing pinned independent solvers")
+    # Explicitly reproduce the original Native claim with two distinct cold seeds.
+    native_rows=[]
+    for rep in (0,1):
+        t=e9.trial(case,rep,"native1",10)
+        need(t["sha256"]==TARGET_SHA and t["original_sha256_verified"],
+             "native original SHA mismatch")
+        native_rows.append(dict(rep=rep,seed=t["seed_base"],status=t["status"],
+                                wall_E2E_s=t["wall_E2E_s"],
+                                SAT_original_witness_verified=t["SAT_original_witness_verified"]))
+    result=dict(protocol=PROTO+"-512MiB-independent-crosscheck-v2",
+        original_sha256=TARGET_SHA,source_year=case["year"],source_gbd=case["gbd"],
+        native_backend_status=native_rows[0]["status"],
+        native_backend_time_s=native_rows[0]["wall_E2E_s"],
+        native_reproductions=native_rows,
         native_produced_independent_proof=False,
         source_original_verified=sha(source)==TARGET_SHA,
-        proof_producer="pinned CaDiCaL 3.0.1, independent from native",
+        proof_producers=["pinned Kissat 4.0.4","pinned CaDiCaL 3.0.1"],
         checker="drat-trim / lrat-check pinned commit 2e5e29c",
         independent_LRAT_verified=False,certification_status="UNVERIFIED",
         child_affinity=[min(os.sched_getaffinity(0))],cap_s=CAP,
-        proof_bytes_limit=PROOF_BYTES_LIMIT)
-    with tempfile.TemporaryDirectory(prefix="equiv10p-") as d:
-        p=pathlib.Path(d)
-        drat=p/"original.drat";lrat=p/"original.lrat"
-        generated=run([CAD,source,drat],CAP,PROOF_BYTES_LIMIT)
-        result["DRAT_format"]="binary"
-        result["cadical_proof_solve"]=generated
-        if generated["rc"]==20 and drat.is_file() and drat.stat().st_size>0:
-            result["DRAT_bytes"]=drat.stat().st_size
-            result["DRAT_sha256"]=sha(drat)
-            checked=run([DRAT,source,drat,"-L",lrat],min(90,CAP),PROOF_BYTES_LIMIT)
-            result["DRAT_checker_result"]=checked
-            if valid_verified(checked) and lrat.is_file() and lrat.stat().st_size>0:
-                result["LRAT_bytes"]=lrat.stat().st_size
-                result["LRAT_sha256"]=sha(lrat)
-                replay=run([LRAT,source,lrat],min(90,CAP),None)
-                result["independent_LRAT_replay"]=replay
-                if valid_verified(replay):
-                    result["independent_LRAT_verified"]=True
-                    result["certification_status"]="CERTIFIED_ORIGINAL_UNSAT"
+        proof_bytes_limit=PROOF_BYTES_LIMIT,one_logical_cpu=True,
+        proof_attempts=[],large_proof_artifacts_uploaded=False)
+    # Every producer is a different CDCL implementation from Native.
+    # Store only small metadata: proofs are deleted with temporary directories.
+    for name,binary,seconds in (
+            ("kissat4",KISSAT,150),
+            ("cadical301",CAD,180)):
+        with tempfile.TemporaryDirectory(prefix="equiv10p-"+name+"-") as d:
+            p=pathlib.Path(d)
+            drat=p/"original.drat"
+            lrat=p/"original.lrat"
+            generated=run([binary,source,drat],seconds,PROOF_BYTES_LIMIT)
+            attempt=dict(producer=name,solver=generated,
+                         produced_UNSAT=(generated["rc"]==20),
+                         proof_file_limit_hit=(generated["rc"]==-25))
+            if drat.is_file():
+                attempt["DRAT_bytes"]=drat.stat().st_size
+            if generated["rc"]==20 and drat.is_file() and drat.stat().st_size>0:
+                attempt["DRAT_sha256"]=sha(drat)
+                checked=run([DRAT,source,drat,"-L",lrat],150,PROOF_BYTES_LIMIT)
+                attempt["DRAT_checker_result"]=checked
+                if lrat.is_file():
+                    attempt["LRAT_bytes"]=lrat.stat().st_size
+                if valid_verified(checked) and lrat.is_file() and lrat.stat().st_size>0:
+                    attempt["LRAT_sha256"]=sha(lrat)
+                    replay=run([LRAT,source,lrat],150,PROOF_BYTES_LIMIT)
+                    attempt["independent_LRAT_replay"]=replay
+                    if valid_verified(replay):
+                        result["independent_LRAT_verified"]=True
+                        result["certification_status"]="CERTIFIED_ORIGINAL_UNSAT"
+                        result["certificate_producer"]=name
+            result["proof_attempts"].append(attempt)
+            print("EQUIV10P_PROOF_ATTEMPT "+json.dumps(
+                dict(producer=name,rc=generated["rc"],seconds=generated["elapsed_s"],
+                     DRAT_bytes=attempt.get("DRAT_bytes",0),
+                     verified=result["independent_LRAT_verified"],
+                     hit_file_limit=attempt["proof_file_limit_hit"])),flush=True)
+        if result["independent_LRAT_verified"]:
+            break
     if not result["independent_LRAT_verified"]:
-        # This is only a second backend opinion, NEVER a certified UNSAT proof.
+        # Second backend without a proof can only support agreement, never certification.
         plain=run([CAD,source],90,None)
         result["cadical_plain_no_proof_crosscheck"]=dict(
             rc=plain["rc"],elapsed_s=plain["elapsed_s"],timeout=plain["timeout"],
@@ -113,9 +143,12 @@ def certify():
         result["independent_backend_agreement_no_LRAT"]=(plain["rc"]==20)
     else:
         result["independent_backend_agreement_no_LRAT"]=True
-    need(sha(source)==TARGET_SHA,"original CNF modified")
+    if any(a["solver"]["rc"]==10 for a in result["proof_attempts"]):
+        result["warning"]="INDEPENDENT_BACKEND_SAT_REPORTED_CHECK_WITNESS"
+    need(sha(source)==TARGET_SHA, "original CNF modified")
     (OUT/"report.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
     print("EQUIV10P_FINAL "+json.dumps(result,sort_keys=True),flush=True)
+
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("action",choices=("selftest","certify"))
