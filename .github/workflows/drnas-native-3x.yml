@@ -1,0 +1,162 @@
+name: DRNAS Native 3X - own CDCL GF2 branch guidance six parallel variants
+run-name: DRNAS NATIVE 3X 6 original SHA x 6 own CDCL modes x 2 reps 6s 72 E2E oneCPU
+on:
+  push:
+    branches: [experiment/drnas-native-3x-gf2-decision-guidance-20261110]
+    paths:
+      - research/drnas_native_3x.cpp
+      - research/drnas_native_3x_test.py
+      - .github/workflows/drnas-native-3x.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-native-3x-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Build standalone original C++ CDCL, brute truth tables GF2 and branch decisions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile OWN DRNAS Native 3X and check zero foreign solver backends
+        run: |
+          set -euo pipefail
+          mkdir -p mre_drnas_native_3x/bin
+          python3 -m py_compile research/drnas_native_3x_test.py
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_native_3x.cpp -o mre_drnas_native_3x/bin/drnas_native_3x
+          ldd mre_drnas_native_3x/bin/drnas_native_3x | tee mre_drnas_native_3x/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_drnas_native_3x/ldd.log
+          python3 -u research/drnas_native_3x_test.py verify | tee mre_drnas_native_3x/verify.log
+          grep -q '^DRNAS_NATIVE_3X_GUIDANCE_SELFTEST_PASS ' mre_drnas_native_3x/verify.log
+          grep -q '^NATIVE_3X_VERIFY_PASS ' mre_drnas_native_3x/verify.log
+          grep '^NATIVE_3X_VERIFY_PASS ' mre_drnas_native_3x/verify.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-3x-own-cdcl-single-source-binary
+          retention-days: 28
+          if-no-files-found: error
+          path: |
+            mre_drnas_native_3x/bin/drnas_native_3x
+            mre_drnas_native_3x/verify.log
+            mre_drnas_native_3x/ldd.log
+  freeze:
+    name: Freeze six original SHA from known MIXAB3, no reference solver runtime
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-3x-own-cdcl-single-source-binary
+          path: .
+      - name: Restore immutable original source CNFs, record precommitted SHA set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/native3x-source mre_mixab3/cases
+          gh run download 42811023064 -R Frane12/AndroidGameTest -n mixab3-fresh12-CMS17-Kissat4-GF2 -D /tmp/native3x-source
+          cp /tmp/native3x-source/mre_mixab3/manifest.json mre_mixab3/manifest.json
+          cp /tmp/native3x-source/mre_mixab3/cases/*.cnf mre_mixab3/cases/
+          chmod +x mre_drnas_native_3x/bin/drnas_native_3x
+          python3 -u research/drnas_native_3x_test.py freeze | tee mre_drnas_native_3x/freeze.log
+          grep -q '^NATIVE_3X_FROZEN ' mre_drnas_native_3x/freeze.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-3x-immutable-six-original-sha-and-bin
+          retention-days: 28
+          if-no-files-found: error
+          path: |
+            mre_drnas_native_3x/manifest.json
+            mre_drnas_native_3x/cases/*.cnf
+            mre_drnas_native_3x/bin/drnas_native_3x
+            mre_drnas_native_3x/freeze.log
+  trials:
+    needs: freeze
+    name: "Native 3X ${{ matrix.mode }} / SHA shard ${{ matrix.shard }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        shard: [0, 1, 2]
+        mode:
+          - plain
+          - gf2
+          - gf2_shadow
+          - gf2_static
+          - gf2_live
+          - gf2_live_strong
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-3x-immutable-six-original-sha-and-bin
+          path: .
+      - name: Original CNF SHA-paired oneCPU solver time plus GF2-guidance telemetry
+        env:
+          MODE: ${{ matrix.mode }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x mre_drnas_native_3x/bin/drnas_native_3x
+          python3 -u research/drnas_native_3x_test.py shard --mode "$MODE" --shard "$SHARD" | tee "mre_drnas_native_3x/shard-$SHARD-$MODE.log"
+          grep -q "^NATIVE_3X_SHARD_PASS $SHARD $MODE 4$" "mre_drnas_native_3x/shard-$SHARD-$MODE.log"
+          test -s "mre_drnas_native_3x/shard-$SHARD-$MODE.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-3x-result-${{ matrix.mode }}-s${{ matrix.shard }}
+          retention-days: 28
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_3x/shard-${{ matrix.shard }}-${{ matrix.mode }}.json
+            mre_drnas_native_3x/shard-${{ matrix.shard }}-${{ matrix.mode }}.log
+  audit:
+    name: Complete 72 own CDCL oneCPU strict PAR2 paired original CNF proof-first audit
+    needs: [freeze, trials]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-3x-immutable-six-original-sha-and-bin
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-3x-result-*
+          merge-multiple: true
+          path: mre_drnas_native_3x
+      - name: Strict SHA + all 72 + proof vs raw UNSAT distinction
+        run: |
+          set -euo pipefail
+          chmod +x mre_drnas_native_3x/bin/drnas_native_3x
+          test "$(find mre_drnas_native_3x -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 18
+          python3 -u research/drnas_native_3x_test.py audit | tee mre_drnas_native_3x/audit.log
+          grep -q '^NATIVE_3X_FINAL ' mre_drnas_native_3x/audit.log
+          grep '^NATIVE_3X_FINAL ' mre_drnas_native_3x/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NATIVE-3X-72-OWN-CDCL-GF2-DECISION-6ARMS-ONECPU-PAR2-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_3x/manifest.json
+            mre_drnas_native_3x/audit.json
+            mre_drnas_native_3x/audit.log
+            mre_drnas_native_3x/shard-*.json
