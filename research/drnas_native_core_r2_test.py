@@ -110,7 +110,7 @@ def fuzz():
         require(p.returncode==0 and expected in p.stdout,
                 arm+" selftest failed "+p.stderr[-900:])
         print(p.stdout.strip(),flush=True)
-    rng=random.Random(0xD2A5R2) if False else random.Random(0xD2A52026)
+    rng=random.Random(0xD2A52026)
     summaries=collections.Counter();verified_conflicts=0;gf2_activated=0
     with tempfile.TemporaryDirectory(dir=ROOT) as td:
         filename=pathlib.Path(td)/"original.cnf"
