@@ -1,0 +1,132 @@
+name: DRNAS SEEDGATE1 - source shape seed routing vs placebo and 1s hedge
+run-name: SEEDGATE1 12 SHA EQUIV9 transfer 8 arms 192 E2E paired one core 20s
+on:
+  push:
+    branches: [experiment/drnas-seedgate1-onecore-transfer-20261110]
+    paths:
+      - .github/workflows/drnas-seedgate1-sha-transfer.yml
+      - research/drnas_seedgate1_sha_transfer.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-seedgate1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 12 entire EQUIV9 original CNF SHA and shape/hash policy before running
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore unchanged EQUIV9 sources, pinned backend binaries and original registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n equiv9-16-sourceonly-SHA-frozen-original-binaries -D .
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv9/cases/47a1a6f5687ed19c5c0f77c2c81f3f81.cnf
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Freeze transfer-only SHA and single-CPU fixed policies and run toy model verification
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_seedgate1_sha_transfer.py
+          python3 -u research/drnas_seedgate1_sha_transfer.py selftest
+          python3 -u research/drnas_seedgate1_sha_transfer.py freeze | tee mre_seedgate1/freeze.log
+          python3 -u research/drnas_seedgate1_sha_transfer.py verify
+          grep -q '^SEEDGATE1_FROZEN ' mre_seedgate1/freeze.log
+          grep '^SEEDGATE1_FROZEN ' mre_seedgate1/freeze.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seedgate1-frozen-EQUIV9-12SHA-and-original-binaries
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_seedgate1/manifest.json
+            mre_seedgate1/freeze.log
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_equiv7/bin/cadical_3_0_1
+            built/bin/kissat_4_0_4
+            mre_x4/bin/native
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: SEEDGATE1 32 matched one-core E2E trials EQUIV9 transfer shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 26
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: seedgate1-frozen-EQUIV9-12SHA-and-original-binaries
+          path: .
+      - name: Matched E2E SAT witness verification and one logical CPU, no live portfolio
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_seedgate1_sha_transfer.py verify
+          python3 -u research/drnas_seedgate1_sha_transfer.py shard --shard ${{ matrix.shard }} | tee mre_seedgate1/shard-${{ matrix.shard }}.log
+          grep -q '^SEEDGATE1_SHARD_PASS ${{ matrix.shard }} 32$' mre_seedgate1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seedgate1-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_seedgate1/shard-${{ matrix.shard }}.json
+            mre_seedgate1/shard-${{ matrix.shard }}.log
+  audit:
+    name: Strict 192 original SHA E2E PAR2 and placebo-controlled seed differences
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: seedgate1-frozen-EQUIV9-12SHA-and-original-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seedgate1-shard-*
+          path: mre_seedgate1
+          merge-multiple: true
+      - name: Full original SHA certification-status, PAR2 speedup and regression audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_seedgate1_sha_transfer.py audit | tee mre_seedgate1/audit.log
+          grep -q '^SEEDGATE1_FINAL ' mre_seedgate1/audit.log
+          grep '^SEEDGATE1_FINAL ' mre_seedgate1/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEEDGATE1-12SHA-192-E2E-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_seedgate1/audit.log
+            mre_seedgate1/report.json
+            mre_seedgate1/manifest.json
+            mre_seedgate1/shard-*.json
