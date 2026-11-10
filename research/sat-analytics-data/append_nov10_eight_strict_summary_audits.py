@@ -129,7 +129,7 @@ def main():
                 count=int(score_get(s,"trials","attempts"))
                 solved=int(s["solved"])
                 need(0<=solved<=count and float(s["PAR2_s"])>=0,"bad score "+label+"/"+arm)
-                db.execute("INSERT INTO nov10_audit_arms VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT INTO nov10_audit_arms VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (run,arm,count,solved,float(s["PAR2_s"]),
                     score_get(s,"SAT_original_verified","SAT_verified"),
                     score_get(s,"UNSAT_math_this_arm","UNSAT_proved_directly_this_arm","UNSAT_GF2_math_verified"),
