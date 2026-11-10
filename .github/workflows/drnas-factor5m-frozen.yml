@@ -1,0 +1,58 @@
+name: DRNAS FACTOR5M frozen medium sidecar 40s
+run-name: FACTOR5M 4 prior frozen SATLIB CNFs x DRNAS FACTOR4 Kissat CMS 40s
+on:
+  push:
+    branches: [experiment/drnas-factor5-official40-20261110]
+    paths:
+      - research/drnas_factor5m_frozen.py
+      - research/drnas-sat-v7-4/frozen_real_medium.json
+      - .github/workflows/drnas-factor5m-frozen.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official40:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install official archive reader and solver dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages remotezip
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake libgmp-dev zlib1g-dev
+      - name: Build native DRNAS and Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor5m/bin
+          g++ -std=c++17 -O2 research/drnas_factor4_native.cpp -o mre_factor5m/bin/drnas_factor4
+          git clone --depth 1 https://github.com/arminbiere/kissat.git mre_factor5m/kissat-src
+          (cd mre_factor5m/kissat-src && ./configure && make -j2)
+          cp mre_factor5m/kissat-src/build/kissat mre_factor5m/bin/kissat
+          git clone --depth 1 https://github.com/msoos/cryptominisat.git mre_factor5m/cms-src
+          cmake -S mre_factor5m/cms-src -B mre_factor5m/cms-build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=OFF -DENABLE_PYTHON_INTERFACE=OFF -DNOM4RI=ON
+          cmake --build mre_factor5m/cms-build -j2
+          cp mre_factor5m/cms-build/cryptominisat5 mre_factor5m/bin/cryptominisat5
+          mre_factor5m/bin/kissat --version
+          mre_factor5m/bin/cryptominisat5 --version || true
+      - name: Four prior frozen SATLIB CNFs 40 CPU seconds per solverr
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor5m_frozen.py | tee mre_factor5m/benchmark.log
+          grep -q '^FACTOR5M_FINAL ' mre_factor5m/benchmark.log
+          grep '^FACTOR5M_FINAL ' mre_factor5m/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR5M-4-FROZEN-SATLIB-40S-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor5m/audit.json
+            mre_factor5m/sources.json
+            mre_factor5m/*.cnf
+            mre_factor5m/*.log
