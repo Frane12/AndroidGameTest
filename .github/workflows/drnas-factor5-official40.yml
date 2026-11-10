@@ -1,0 +1,54 @@
+name: DRNAS FACTOR5 four official CNF 40s
+run-name: FACTOR5 4 official SAT2024 CNF x DRNAS A FACTOR4 Kissat CMS 40s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-factor5-official40-20261110]
+    paths:
+      - research/drnas_factor5_official40.py
+      - .github/workflows/drnas-factor5-official40.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official40:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install official archive reader and solver dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages remotezip
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat5 build-essential
+      - name: Build native DRNAS and Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor5/bin
+          g++ -std=c++17 -O2 research/drnas_factor4_native.cpp -o mre_factor5/bin/drnas_factor4
+          git clone --depth 1 https://github.com/arminbiere/kissat.git mre_factor5/kissat-src
+          (cd mre_factor5/kissat-src && ./configure && make -j2)
+          cp mre_factor5/kissat-src/build/kissat mre_factor5/bin/kissat
+          cp "$(command -v cryptominisat5)" mre_factor5/bin/cryptominisat5
+          mre_factor5/bin/kissat --version
+          mre_factor5/bin/cryptominisat5 --version || true
+      - name: Four official SHA locked CNFs 40 CPU second per solver
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor5_official40.py | tee mre_factor5/benchmark.log
+          grep -q '^FACTOR5_FINAL ' mre_factor5/benchmark.log
+          grep '^FACTOR5_FINAL ' mre_factor5/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR5-4-OFFICIAL-40S-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor5/audit.json
+            mre_factor5/sources.json
+            mre_factor5/*.cnf
+            mre_factor5/*.log
