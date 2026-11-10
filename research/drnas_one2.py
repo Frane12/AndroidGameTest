@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ONE2: cached blocker A/B on one frozen SATLIB CNF, 5 repeats, one CPU, 40s cap.
-All reference and native runs use the same source-normalized SHA.
+All reference and native runs use the same source-normalized SHA; blocker is the only C++ variable.
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_one2");OUT.mkdir(exist_ok=True)
