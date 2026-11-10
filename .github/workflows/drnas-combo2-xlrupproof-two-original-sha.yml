@@ -1,0 +1,99 @@
+name: DRNAS COMBO2 - independent XLRUP certification of two original UNSAT SHA
+run-name: COMBO2-PROOF 2 original SHA CMS5.17 XLRUP CakeML oneCPU plus strictly posthoc PAR2
+on:
+  push:
+    branches: [experiment/drnas-combo2-xlrupproof-20261110]
+    paths:
+      - .github/workflows/drnas-combo2-xlrupproof-two-original-sha.yml
+      - research/drnas_combo2_independent_xlrup_cert.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-combo2-proof-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  independent_proof:
+    name: Certify original SHA 732145 and 6e0549 via pinned CMS binary XLRUP and CakeML
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable COMBO2 original CNFs and original 168 E2E audited report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42793704014 -R Frane12/AndroidGameTest -n combo2-source-sha-frozen-CMS17-Kissat4-Native-and-GF2-exact -D .
+          mkdir -p prior_combo2_tmp prior_combo2
+          gh run download 42793704014 -R Frane12/AndroidGameTest -n DRNAS-COMBO2-168-ONECPU-ORIGINAL-SHA-PAR2-FINAL -D prior_combo2_tmp
+          find prior_combo2_tmp -name report.json -print
+          REPORT="$(find prior_combo2_tmp -type f -name report.json | head -n1)"
+          test -n "$REPORT"
+          test "$(find prior_combo2_tmp -type f -name report.json | wc -l)" -eq 1
+          cp "$REPORT" prior_combo2/report.json
+          test -s mre_combo2/manifest.json
+          test -s mre_search6/manifest.json
+          test -s prior_combo2/report.json
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          m=json.loads(pathlib.Path("mre_combo2/manifest.json").read_text())
+          r=json.loads(pathlib.Path("prior_combo2/report.json").read_text())
+          sha={c["sha256"] for c in m["original_cases"]}
+          targets={"732145a705686c5e303fd54b8fbd4370c5f7abc083e2c4320ac375ef4c7d1b0f",
+                   "6e054967f4c71d900b2bba2508fea2054ac13de78fa0b0b6a94753f66e9e95fc"}
+          assert len(sha)==12 and targets<=sha and targets<=set(r["per_SHA"])
+          for c in m["original_cases"]:
+            if c["sha256"] in targets:
+              data=pathlib.Path("mre_search6/cases")/c["filename"]
+              assert data.is_file()
+              assert hashlib.sha256(data.read_bytes()).hexdigest()==c["sha256"]
+          print("COMBO2_PROOF_SOURCE_SHA_LOCK_PASS")
+          PY
+      - name: Build pinned proof-producing CryptoMiniSat 5.17 source commit
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake ninja-build git pkg-config libgmp-dev zlib1g-dev
+          git clone -q https://github.com/msoos/cryptominisat /tmp/drnas-c2proof-cms
+          git -C /tmp/drnas-c2proof-cms checkout -q 03954f7f7815ea3984774c95a66e7c224cd25952
+          test "$(git -C /tmp/drnas-c2proof-cms rev-parse HEAD)" = 03954f7f7815ea3984774c95a66e7c224cd25952
+          cmake -G Ninja -S /tmp/drnas-c2proof-cms -B /tmp/drnas-c2proof-cms/build -DCMAKE_BUILD_TYPE=Release -DNOCADICAL=ON -DENABLE_TESTING=OFF -DNOZLIB=ON
+          cmake --build /tmp/drnas-c2proof-cms/build --target cryptominisat5 -j 2
+          test -x /tmp/drnas-c2proof-cms/build/cryptominisat5
+          /tmp/drnas-c2proof-cms/build/cryptominisat5 --version
+      - name: Build independently checked CakeML XLRUP verifier from pinned commit
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/meelgroup/frat-xor /tmp/drnas-c2proof-frat
+          git -C /tmp/drnas-c2proof-frat checkout -q 18cd6bc17af10a9891c10a846ce966166f9fe0dc
+          test "$(git -C /tmp/drnas-c2proof-frat rev-parse HEAD)" = 18cd6bc17af10a9891c10a846ce966166f9fe0dc
+          make -C /tmp/drnas-c2proof-frat/cake_xlrup
+          test -x /tmp/drnas-c2proof-frat/cake_xlrup/cake_xlrup
+      - name: Independent original CNF UNSAT toy plus SAT negative-control selftest
+        run: |
+          set -euo pipefail
+          mkdir -p mre_combo2proof
+          python3 -m py_compile research/drnas_combo2_independent_xlrup_cert.py
+          python3 -u research/drnas_combo2_independent_xlrup_cert.py selftest | tee mre_combo2proof/selftest.log
+          grep -q '^COMBO2_PROOF_SELFTEST_PASS ' mre_combo2proof/selftest.log
+      - name: Certify both original SHA under 180s 256MiB proof caps; rescore unchanged 168 E2E
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_combo2_independent_xlrup_cert.py certify | tee mre_combo2proof/audit.log
+          grep -q '^COMBO2_PROOF_FINAL ' mre_combo2proof/audit.log
+          grep '^COMBO2_PROOF_FINAL ' mre_combo2proof/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-COMBO2-2ORIGINAL-SHA-INDEPENDENT-XLRUP-CAKEML-STRICT-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_combo2proof/selftest.log
+            mre_combo2proof/audit.log
+            mre_combo2proof/report.json
+            mre_combo2proof/proof_*.json
