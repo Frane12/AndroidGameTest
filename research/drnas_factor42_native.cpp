@@ -209,6 +209,9 @@ int main(int argc,char**argv){
 #ifdef DRNAS_PROFILE
   solver.print_profile();
 #endif
+#ifdef DRNAS_WATCH_DIAG
+  solver.print_watch_diag();
+#endif
   if(result.status==10){
    std::cout<<"s SATISFIABLE\nv ";
    for(int v=1;v<=f.vars;++v)std::cout<<(result.model[v]<0?-v:v)<<" ";
