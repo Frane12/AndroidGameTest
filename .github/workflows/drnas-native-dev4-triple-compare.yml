@@ -1,0 +1,89 @@
+name: DRNAS Native DEV4 — same runner R1 vs Kissat 4 vs CryptoMiniSat 5
+run-name: DEV4 TRIPLE 4 frozen original SHA x 3 arms x 3 reps 10s oneCPU matched E2E
+on:
+  push:
+    branches: [experiment/drnas-native-dev4-triple-compare-20261110]
+    paths:
+      - research/drnas_native_dev4_triple_compare.py
+      - .github/workflows/drnas-native-dev4-triple-compare.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-native-dev4-triple-compare
+  cancel-in-progress: true
+jobs:
+  paired_original:
+    name: One GitHub host, SAME one CPU, 36 matched original-SAT verified trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compile own standalone DRNAS R1 C++17 from source, zero foreign SAT libs
+        run: |
+          set -euo pipefail
+          mkdir -p mre_drnas_native_dev4_triple/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            research/drnas_native_core_r1.cpp \
+            -o mre_drnas_native_dev4_triple/bin/drnas_native_core_r1
+          ldd mre_drnas_native_dev4_triple/bin/drnas_native_core_r1 \
+            | tee mre_drnas_native_dev4_triple/drnas-ldd.txt
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat|libgmp' \
+            mre_drnas_native_dev4_triple/drnas-ldd.txt
+          sha256sum mre_drnas_native_dev4_triple/bin/drnas_native_core_r1
+          python3 -m py_compile research/drnas_native_dev4_triple_compare.py
+      - name: Restore MIXAB4 immutable original source CNFs and pinned external reference executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42816574288 -R Frane12/AndroidGameTest \
+            -n mixab4-reference-easy6-CMS17-Kissat4-LRAT -D .
+          test -s mre_mixab4/manifest.json
+          test -d mre_mixab4/cases
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv12/bin/cryptominisat5
+          chmod +x built/bin/kissat_4_0_4 mre_equiv12/bin/cryptominisat5
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          ldd mre_equiv12/bin/cryptominisat5 \
+             | tee mre_drnas_native_dev4_triple/cms-ldd.txt
+          ! grep -q 'not found' mre_drnas_native_dev4_triple/cms-ldd.txt
+          # Kissat and CMS run ONLY as independent reference subprocesses.
+      - name: Restore EQUIV10M5 exact source-frozen original SAT formula (fourth SHA)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/drnas-dev4-triple-equiv mre_equiv10m5 mre_equiv9/cases
+          gh run download 42729709584 -R Frane12/AndroidGameTest \
+            -n equiv10m5-exact-five-SHA-frozen-and-pinned-onecore-binaries \
+            -D /tmp/drnas-dev4-triple-equiv
+          test -s /tmp/drnas-dev4-triple-equiv/mre_equiv10m5/manifest.json
+          cp /tmp/drnas-dev4-triple-equiv/mre_equiv10m5/manifest.json \
+             mre_equiv10m5/manifest.json
+          cp /tmp/drnas-dev4-triple-equiv/mre_equiv9/cases/*.cnf mre_equiv9/cases/
+      - name: Paired E2E and real solver wall times, 3 repeated arms, exact original SHA, model proof
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_native_dev4_triple_compare.py \
+            | tee mre_drnas_native_dev4_triple/trials.log
+          grep -q '^DRNAS_TRIPLE_FROZEN ' mre_drnas_native_dev4_triple/trials.log
+          grep -q '^DRNAS_TRIPLE_AUDIT_PASS 36$' mre_drnas_native_dev4_triple/trials.log
+          grep '^DRNAS_TRIPLE_FINAL ' mre_drnas_native_dev4_triple/trials.log \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-NATIVE-DEV4-TRIPLE-36-SAME-CPU-ONE-RUNNER-PAR2
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_drnas_native_dev4_triple/frozen-comparison.json
+            mre_drnas_native_dev4_triple/paired-trials.json
+            mre_drnas_native_dev4_triple/final-report.json
+            mre_drnas_native_dev4_triple/trials.log
+            mre_drnas_native_dev4_triple/drnas-ldd.txt
+            mre_drnas_native_dev4_triple/cms-ldd.txt
