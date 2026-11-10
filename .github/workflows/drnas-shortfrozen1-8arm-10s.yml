@@ -1,0 +1,158 @@
+name: DRNAS SHORTFROZEN1 - 5 unchanged easy-medium original SHA 8 arms 10s one CPU
+run-name: SHORTFROZEN1 5 frozen original 2024-25 SHA x 8 arms x 2 reps x 10s = 80 paired E2E
+on:
+  push:
+    branches: [experiment/drnas-shortfrozen1-8arm-10s-20261110]
+    paths:
+      - research/drnas_shortfrozen1_8arm_10s.py
+      - .github/workflows/drnas-shortfrozen1-8arm-10s.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-shortfrozen1-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  freeze:
+    name: Replay frozen EQUIV10M5 five original SHA and signed binary pins, selftest SAT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore original unchanged frozen five SHA and EQUIV12 solver binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42731295088 -R Frane12/AndroidGameTest \
+            -n equiv12-five-SHA-original-binaries-immutable -D .
+          test -s mre_equiv10m5/manifest.json
+          test -s mre_equiv10medium/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv12/bin/cryptominisat5
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv7/bin/cadical_3_0_1
+          chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native \
+            built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          ldd mre_equiv12/bin/cryptominisat5 | tee cms-ldd.log
+          ! grep -q 'not found' cms-ldd.log
+          python3 -m py_compile research/drnas_shortfrozen1_8arm_10s.py
+      - name: Verify eight solver SAT original model selftest and lock unchanged five source SHA
+        run: |
+          set -euo pipefail
+          mkdir -p mre_shortfrozen1
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_shortfrozen1_8arm_10s.py selftest | tee mre_shortfrozen1/selftest.log
+          grep -q '^SHORTFROZEN1_SELFTEST_PASS ' mre_shortfrozen1/selftest.log
+          python3 -u research/drnas_shortfrozen1_8arm_10s.py freeze | tee mre_shortfrozen1/freeze.log
+          grep -q '^SHORTFROZEN1_FREEZE_PASS ' mre_shortfrozen1/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shortfrozen1-five-original-SHA-pinned-native-CMS-reference
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre_equiv10m5/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_shortfrozen1/manifest.json
+            mre_shortfrozen1/selftest.log
+            mre_shortfrozen1/freeze.log
+  paired:
+    name: SHORTFROZEN1 original SHA ${{ matrix.shard }} - 16 one-core E2E trials 10s
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: shortfrozen1-five-original-SHA-pinned-native-CMS-reference
+          path: .
+      - name: Matched source original SAT witness SHA and single CPU 8-arm short benchmark
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native \
+            built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          ldd mre_equiv12/bin/cryptominisat5 | tee mre_shortfrozen1/ldd-shard-${{ matrix.shard }}.log
+          ! grep -q 'not found' mre_shortfrozen1/ldd-shard-${{ matrix.shard }}.log
+          python3 -u research/drnas_shortfrozen1_8arm_10s.py verify
+          python3 -u research/drnas_shortfrozen1_8arm_10s.py shard \
+            --shard ${{ matrix.shard }} | tee mre_shortfrozen1/shard-${{ matrix.shard }}.log
+          grep -q '^SHORTFROZEN1_SHARD_PASS ${{ matrix.shard }} 16' \
+            mre_shortfrozen1/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shortfrozen1-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_shortfrozen1/shard-${{ matrix.shard }}.json
+            mre_shortfrozen1/shard-${{ matrix.shard }}.log
+  audit:
+    name: SHORTFROZEN1 final 80 paired original SAT/UNSAT 1CPU PAR2 and 5 source breakdown
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: shortfrozen1-five-original-SHA-pinned-native-CMS-reference
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shortfrozen1-shard-*
+          path: mre_shortfrozen1
+          merge-multiple: true
+      - name: Audit exact 80 completed and paired E2E, proof tier, strict PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_shortfrozen1_8arm_10s.py audit | tee mre_shortfrozen1/audit.log
+          grep -q '^SHORTFROZEN1_FINAL ' mre_shortfrozen1/audit.log
+          python3 - <<'PY'
+          import json,os,pathlib
+          q=json.loads(pathlib.Path("mre_shortfrozen1/report.json").read_text())
+          assert q["total_trials"]==80 and q["source_count"]==5
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("# SHORTFROZEN1 – short 10-second original SHA one-CPU paired E2E\n")
+            f.write("5 previously selected 2024/25 original SHA; 1 easy + 4 medium; 8 arms × 2 seeds = 80. **NOT BLIND.**\n\n")
+            f.write("| Solver | Solved | PAR2 total s | x vs Kissat |\n|---|---:|---:|---:|\n")
+            for name,row in sorted(q["scores"].items(),key=lambda x:x[1]["PAR2_s"]):
+              f.write(f"| {name} | {row['solved']}/{row['attempts']} | {row['PAR2_s']:.4f} | {row['speedup_vs_kissat_PAR2_x']:.4f}x |\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SHORTFROZEN1-5SHA-80-E2E-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_shortfrozen1/manifest.json
+            mre_shortfrozen1/report.json
+            mre_shortfrozen1/audit.log
+            mre_shortfrozen1/shard-*.json
