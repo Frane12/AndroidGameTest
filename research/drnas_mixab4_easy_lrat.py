@@ -250,9 +250,14 @@ def selftest():
         q.write_text("p cnf 1 2\n1 0\n-1 0\n")
         test=reference_probe(q,seconds=3)
         need(test["status"]=="UNSAT","LRAT positive toy failed: "+str({k:v for k,v in test.items() if k!="proof_raw"}))
+        # Use a SAT original as the negative certificate control.
+        # For the contradictory-unit toy, a trivial empty proof may be
+        # accepted via initial unit propagation, so it is not a sound negative.
+        satq=pathlib.Path(td)/"satisfiable.cnf"
+        satq.write_text("p cnf 1 1\n1 0\n")
         bad=pathlib.Path(td)/"invalid.lrat"
-        bad.write_text("1 0 0\n")
-        need(not lrat_check(q,bad),"LRAT corrupt negative toy passed")
+        bad.write_text("2 0 1 0\n")
+        need(not lrat_check(satq,bad),"LRAT false UNSAT certificate accepted on SAT input")
     with tempfile.TemporaryDirectory() as d:
         p=pathlib.Path(d)/"toy.cnf"
         for k in (2,3,4):
