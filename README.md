@@ -7,6 +7,18 @@
 
 This repository is a **public research and reproducibility hub** for DRNAS SAT experiments (alongside older Android porting work). SAT implementation and benchmark sources currently live primarily on **pinned experimental branches**, linked below. Results are exploratory, **not peer-reviewed**; Gaussian elimination and XOR-aware SAT solving are established prior art.
 
+## New here? Researcher's quick start
+
+**DRNAS SAT / ORION** investigates whether source-certified XOR/GF(2) and cross-representation mathematical reductions can **avoid unnecessary CDCL search** on original SAT formulas, with a selective fallback to conventional solvers.
+
+| Read first | What you will find |
+| --- | --- |
+| **[Technical architecture](docs/ARCHITECTURE.md)** | Input-to-result processing diagram, GF(2)/CDCL/MRE/CRR components, and a clear distinction between implemented experiments and proposed integration |
+| **[Independent reproduction guide](docs/REPRODUCIBILITY.md)** | Original-CNF SAT witness checks, independent UNSAT proof requirements, PAR-2 calculation, pinned R32q/R194 evidence and reviewer checklist |
+| **[Research status and benchmark index](research/DRNAS_SAT_STATUS.md)** | Audited results, solved counts, timeouts, sources, negative controls, limitations and open questions |
+
+**Scope:** research prototype and backend-assisted experiments, not yet an independently validated generally superior standalone SAT solver. All reported gains are tied to named cohorts, exact runs, and explicit proof-verification status.
+
 ## Experimental results — start here
 
 | Reproducible run | What was measured | Result and scope |
