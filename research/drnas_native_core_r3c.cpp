@@ -567,6 +567,41 @@ private:
         decision_marks_.resize(target_level);
         propagation_head_ = std::min(propagation_head_, target);
     }
+#ifdef DRNAS_MICRO_TRACE
+    // Frozen diagnostic only: walk the ACTUAL implication reasons at a conflict.
+    // This emits the clause graph as it existed BEFORE CDCL learns the new clause.
+    void micro_reason_graph(int conflict) {
+        if (!(n_<=50 && (stats_.conflicts<=5 || (stats_.conflicts>=16 && stats_.conflicts<=20))))return;
+        const uint64_t number=stats_.conflicts;
+        std::vector<int> stack{conflict};
+        std::vector<uint8_t> visited(clauses_.size(),0);
+        size_t steps=0;
+        while(!stack.empty() && steps++ < 2000) {
+            int cid=stack.back();stack.pop_back();
+            if(cid<0 || size_t(cid)>=clauses_.size() || visited[size_t(cid)])continue;
+            visited[size_t(cid)]=1;
+            const auto& c=clauses_[size_t(cid)];
+            std::cerr<<"REDUCE2_NODE conflict="<<number<<" cid="<<cid
+                     <<" learned="<<int(c.learned)<<" clause=";
+            for(size_t i=0;i<c.lits.size();++i) {
+                if(i)std::cerr<<",";
+                std::cerr<<c.lits[i];
+            }
+            std::cerr<<"\\n";
+            for(int lit:c.lits) {
+                int v=var(lit);
+                if(lit_value(lit)!=-1)continue;
+                int parent=reasons_[v];
+                if(parent<0)continue;
+                std::cerr<<"REDUCE2_EDGE conflict="<<number<<" from="<<cid
+                         <<" to="<<parent<<" var="<<v<<"\\n";
+                if(size_t(parent)<visited.size()&&!visited[size_t(parent)])
+                    stack.push_back(parent);
+            }
+        }
+        require(stack.empty(),"micro reason graph exceeded diagnostic bound");
+    }
+#endif
     // Resolve the conflict with reasons until precisely one literal comes
     // from the current decision level: the asserting 1-UIP clause.
     std::pair<std::vector<int>, int> analyze(int conflict) {
@@ -713,6 +748,7 @@ public:
             if (conflicting >= 0) {
                 ++stats_.conflicts;
 #ifdef DRNAS_MICRO_TRACE
+                micro_reason_graph(conflicting);
                 micro_log("kind=conflict cid="+std::to_string(conflicting)+
                           " level="+std::to_string(level())+
                           " number="+std::to_string(stats_.conflicts)+
