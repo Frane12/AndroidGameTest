@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""MICRO1: two SHA-locked SATLIB CNFs, independent shards, CDCL event trace."""
+"""MICRO1: two SHA-locked SATLIB CNFs, independent shards, CDCL event trace.
+Compare two original instances without solver-time-based instance selection.
+"""
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_micro1");OUT.mkdir(exist_ok=True)
 SHARD=int(os.environ.get("MICRO_SHARD","0"));assert SHARD in (0,1)
