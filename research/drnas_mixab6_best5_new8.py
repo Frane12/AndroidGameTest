@@ -36,6 +36,9 @@ ab4.EXPECTED=EXPECTED
 ab4.PROTO=PROTO
 ab4.YEARS=("2024","2025","2023","2022","2021")
 ab4.SALT="MIXAB6-20261110-NEW8-REFERENCE-EASY-CADICAL-ONLY-FROZEN"
+# Pilot reached seven accepted source-only originals in 240 frozen candidates.
+# Expand only the metadata/reference-selection search budget, not benchmark arms.
+ab4.MAX_CANDIDATES=400
 ab4.PRIOR_PATHS=tuple(ab4.PRIOR_PATHS)+(PREV,)
 ab4.s2.REPS=max(ab4.s2.REPS,REPS)
 ab4.e9.REPS=max(ab4.e9.REPS,REPS)
