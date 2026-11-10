@@ -19,7 +19,7 @@ for i,family in enumerate(families):
   items.sort(key=lambda x:hashlib.sha256((family+"|"+pathlib.PurePosixPath(x.name).name).encode()).hexdigest())
   item=items[2 if len(items)>2 else 0] # previously frozen selection rank, not runtime
   cnf=tf.extractfile(item).read()
-  if not re.search(rb"(?mi)^\\s*p\\s+cnf\\s+\\d+\\s+\\d+",cnf):raise RuntimeError("bad original CNF "+family+" "+item.name+" prefix="+repr(cnf[:160]))
+  if not re.search(rb"(?mi)^\s*p\s+cnf\s+\d+\s+\d+",cnf):raise RuntimeError("bad original CNF "+family+" "+item.name+" prefix="+repr(cnf[:160]))
   path=OUT/f"medium_{i}.cnf";path.write_bytes(cnf)
   sources.append(dict(id=i,family=family,source_archive=entry["url"],archive_sha256=entry["archive_sha256"],entry=item.name,sha256=hashlib.sha256(cnf).hexdigest(),bytes=len(cnf)))
 print("FACTOR5M_SOURCES "+json.dumps(sources,sort_keys=True),flush=True)
