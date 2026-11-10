@@ -1,0 +1,154 @@
+name: DRNAS EQUIV13 - SHA-disjoint source SCC XOR router vs balanced placebo
+run-name: EQUIV13 12 new official CNF x 6 arms x 2 seeds 144 single-core E2E
+on:
+  push:
+    branches: [experiment/drnas-equiv13-source-structure-router-20261110]
+    paths:
+      - .github/workflows/drnas-equiv13-structural-router.yml
+      - research/drnas_equiv13_structural_router.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-equiv13-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-only 12 SHA preregistration; check frozen CMS/Native/Kissat, SCC XOR selftests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore EQUIV12 pinned solvers and all prior SHA source exclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42731295088 -R Frane12/AndroidGameTest -n equiv12-five-SHA-original-binaries-immutable -D .
+          test -s mre_equiv9/manifest.json
+          test -s mre_equiv10m5/manifest.json
+          test -s mre_equiv12/manifest.json
+          test -s mre_x20/manifest.json
+          test -s prior_x22/mre_x22/manifest.json
+          test -s prior_equiv6/mre_equiv6/manifest.json
+          test -s mre_equiv7/manifest.json
+          test -s mre_equiv12/bin/cryptominisat5
+          test -s mre_x4/bin/native
+          test -s built/bin/kissat_4_0_4
+          test -s mre_equiv7/bin/cadical_3_0_1
+          chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+      - name: Verify dynamic CMS linkage and six-arm original SAT plus structural XOR SCC toy
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          ldd mre_equiv12/bin/cryptominisat5 | tee mre_equiv12/ldd-equiv13.log
+          ! grep -q 'not found' mre_equiv12/ldd-equiv13.log
+          mre_equiv12/bin/cryptominisat5 --version
+          python3 -m py_compile research/drnas_equiv13_structural_router.py
+          python3 -u research/drnas_equiv13_structural_router.py selftest | tee mre_equiv13/selftest.log
+          grep -q '^EQUIV13_SELFTEST_PASS ' mre_equiv13/selftest.log
+      - name: Freeze official 2021-23 original source SHA without running a reference solver
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_equiv13_structural_router.py freeze | tee mre_equiv13/freeze.log
+          python3 -u research/drnas_equiv13_structural_router.py verify
+          grep -q '^EQUIV13_FROZEN ' mre_equiv13/freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv13-12-source-only-original-SHA-frozen-six-solvers
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv10medium/manifest.json
+            mre_equiv10m5/manifest.json
+            mre_equiv12/manifest.json
+            mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre_equiv7/bin/cadical_3_0_1
+            mre5/lib/libcryptominisat5.so.5.11
+            mre_equiv13/manifest.json
+            mre_equiv13/selftest.log
+            mre_equiv13/freeze.log
+            mre_equiv13/selection-progress.json
+  paired:
+    name: Original SHA E2E 36 matched router placebo Kissat Native CMS CaDiCaL shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 19
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv13-12-source-only-original-SHA-frozen-six-solvers
+          path: .
+      - name: One CPU, source-only router and balanced placebo, full E2E and SAT model verification
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          ldd mre_equiv12/bin/cryptominisat5 | tee mre_equiv13/ldd-shard-${{ matrix.shard }}.log
+          ! grep -q 'not found' mre_equiv13/ldd-shard-${{ matrix.shard }}.log
+          python3 -u research/drnas_equiv13_structural_router.py verify
+          python3 -u research/drnas_equiv13_structural_router.py shard --shard ${{ matrix.shard }} | tee mre_equiv13/shard-${{ matrix.shard }}.log
+          grep -q '^EQUIV13_SHARD_PASS ${{ matrix.shard }} 36$' mre_equiv13/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equiv13-shard-${{ matrix.shard }}
+          retention-days: 21
+          path: |
+            mre_equiv13/shard-${{ matrix.shard }}.json
+            mre_equiv13/shard-${{ matrix.shard }}.log
+  audit:
+    name: 144 strict SHA-source PAR2 CPU and E2E original model placebo paired audit
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: equiv13-12-source-only-original-SHA-frozen-six-solvers
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: equiv13-shard-*
+          path: mre_equiv13
+          merge-multiple: true
+      - name: Fail closed original SHA, matched placebo distribution, PAR2 and proof statuses
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          python3 -u research/drnas_equiv13_structural_router.py audit | tee mre_equiv13/audit.log
+          grep -q '^EQUIV13_FINAL ' mre_equiv13/audit.log
+          grep '^EQUIV13_FINAL ' mre_equiv13/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-EQUIV13-SCC-XOR-ROUTER-PLACEBO-144-E2E-FINAL
+          retention-days: 30
+          path: |
+            mre_equiv13/manifest.json
+            mre_equiv13/report.json
+            mre_equiv13/audit.log
+            mre_equiv13/shard-*.json
