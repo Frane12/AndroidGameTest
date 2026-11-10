@@ -1,0 +1,85 @@
+name: DRNAS SAT SQL 20261110 - extend 57050 with EQUIV10M5 50 and certified UNSAT proof
+on:
+  push:
+    branches: [experiment/drnas-sql-cumulative-refresh-20261110]
+    paths:
+      - research/sat-analytics-data/append_equiv10m5_proof_audits_20261110.py
+      - .github/workflows/drnas-sql-latest-proof-addition-20261110.yml
+  workflow_dispatch:
+permissions: {contents: read, actions: read}
+concurrency:
+  group: drnas-sql-20261110-latest-57100
+  cancel-in-progress: true
+jobs:
+  extend:
+    name: Immutable SQL plus 50 EQUIV10M5 E2E and two independent proof-status audits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore verified previous 57050 SQL artifact plus newly complete raw audits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p latest_input/base latest_input/equiv10m5 latest_input/equiv11 latest_input/equiv10p512
+          gh run download 42730606318 -R Frane12/AndroidGameTest -n DRNAS-CUMULATIVE-SQLITE-FULL-57050-20261110 -D latest_input/base
+          BASE="$(find latest_input/base -type f -name 'sat_analytics_refresh_20261110.sqlite' -print -quit)"
+          test -n "$BASE" && test -s "$BASE"
+          cp -f "$BASE" latest_input/baseline_verified_57050.sqlite
+          gh run download 42729709584 -R Frane12/AndroidGameTest -n DRNAS-EQUIV10M5-FIVE-SHA-50-E2E-PAR2-FINAL -D latest_input/equiv10m5
+          gh run download 42729025702 -R Frane12/AndroidGameTest -n DRNAS-EQUIV11-INDEPENDENT-XLRUP-ORIGINAL-SHA-AUDIT -D latest_input/equiv11
+          gh run download 42728822870 -R Frane12/AndroidGameTest -n DRNAS-EQUIV10P-512MiB-INDEPENDENT-UNSAT-SHA-AUDIT -D latest_input/equiv10p512
+          for run in 42730606318 42729709584 42729025702 42728822870; do
+            state="$(gh api "repos/Frane12/AndroidGameTest/actions/runs/$run" --jq .conclusion)"
+            test "$state" = success || { echo "INDEPENDENT AUDIT RUN NOT COMPLETE: $run $state"; exit 1; }
+          done
+          find latest_input/equiv10m5 -type f -printf 'EQUIV10M5_ARTIFACT %P %s bytes\n'
+          find latest_input/equiv11 -type f -printf 'EQUIV11_ARTIFACT %P %s bytes\n'
+          find latest_input/equiv10p512 -type f -printf 'EQUIV10P512_ARTIFACT %P %s bytes\n'
+      - name: Strictly append source-SHA EQUIV10M5 trials and independent XLRUP proof evidence
+        run: |
+          set -euo pipefail
+          mkdir -p sql_latest_20261110
+          python3 -m py_compile research/sat-analytics-data/append_equiv10m5_proof_audits_20261110.py
+          python3 -u research/sat-analytics-data/append_equiv10m5_proof_audits_20261110.py \
+            --baseline latest_input/baseline_verified_57050.sqlite \
+            --inputs latest_input \
+            --out sql_latest_20261110 | tee sql_latest_20261110/ingest.log
+          grep -q '^DRNAS_SQL_LATEST_SUCCESS' sql_latest_20261110/ingest.log
+          python3 - <<'PY'
+          import sqlite3,json,pathlib,os
+          p=pathlib.Path("sql_latest_20261110/sat_analytics_refresh_20261110_latest.sqlite")
+          con=sqlite3.connect(p)
+          counts={table:con.execute("SELECT count(*) FROM "+table).fetchone()[0]
+             for table in ("datasets","formulas","attempts","mre_audit_runs","mre_audit_attempts",
+                "sat_recent_runs","sat_recent_attempts","sat_recent_proof_audits")}
+          assert counts["attempts"]==53330 and counts["mre_audit_attempts"]==1892
+          assert counts["sat_recent_runs"]==10 and counts["sat_recent_attempts"]==1878
+          assert counts["sat_recent_proof_audits"]==2
+          assert con.execute("SELECT sum(independently_certified) FROM sat_recent_proof_audits").fetchone()[0]==1
+          assert con.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("# DRNAS SAT SQLite 2026-11-10 — latest verified evidence\n")
+              f.write("**57,100 recorded benchmark attempts**, original 53,330 historical rows unchanged; +1,892 MRE; +1,878 post-MRE E2E.\n\n")
+              f.write("**EQUIV11 independently certified original SHA 327b UNSAT** using CryptoMiniSat binary XLRUP checked by CakeML; native solver did not produce that certificate.\n\n")
+              f.write("EQUIV10P-512MiB native UNSAT remains independently UNVERIFIED.\n\n")
+              f.write("| EQUIV10M5 mode | Solved | PAR2 s |\n|---|---:|---:|\n")
+              for arm,n,solved,par2 in con.execute("SELECT mode,attempts,reported_solved,par2_s FROM sat_recent_scores WHERE run_id=42729709584 ORDER BY par2_s"):
+                  f.write(f"| {arm} | {solved}/{n} | {par2:.3f} |\n")
+          print("DRNAS_SQL_LATEST_COUNTS",json.dumps(counts,sort_keys=True))
+          con.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CUMULATIVE-SQLITE-57100-EQUIV11-XLRUP-20261110
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            sql_latest_20261110/sat_analytics_refresh_20261110_latest.sqlite
+            sql_latest_20261110/latest_refresh_audit.json
+            sql_latest_20261110/sqlite_sha256.txt
+            sql_latest_20261110/ingest.log
