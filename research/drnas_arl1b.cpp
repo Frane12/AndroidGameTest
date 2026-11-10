@@ -6,6 +6,7 @@
 #include "drnas_native_core_r3c.cpp"
 #undef main
 #include <unordered_set>
+#include <unordered_map>
 namespace arl1 {
 using drnas::CNF;
 using drnas::Clock;
@@ -100,15 +101,14 @@ static CNF first_look(const CNF& f,Result& r,double overall_cap,Clock::time_poin
 int main(int argc,char**argv) {
  try{
   if(argc!=6||std::string(argv[2])!="--mode"||std::string(argv[4])!="--time"){
-   std::cerr<<"usage: arl1a FILE --mode A|ARL1B|ARL1B --time SECONDS\n";return 2;
+   std::cerr<<"usage: arl1b FILE --mode A|ARL1B --time SECONDS\n";return 2;
   }
-  const std::string arm=argv[3];drnas::require(arm=="A"||arm=="ARL1A"||arm=="ARL1B","bad mode");
+  const std::string arm=argv[3];drnas::require(arm=="A"||arm=="ARL1B","bad mode");
   const double cap=std::stod(argv[5]);drnas::require(cap>0&&cap<=3600,"bad cap");
   auto start=drnas::Clock::now();
   const drnas::CNF original=drnas::read_dimacs(argv[1]);
   arl1::Result p;drnas::CNF working=original;
   if(arm=="ARL1B")working=arl1::first_look(original,p,cap,start);
-  else if(arm=="ARL1A")working=arl1::first_look(original,p,cap,start);
   else {p.decision="baseline";p.reason="baseline_no_scan";}
   drnas::NativeCDCL solver(working.vars);
   solver.add_cnf(working);
