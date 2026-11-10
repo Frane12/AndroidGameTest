@@ -317,7 +317,9 @@ def trial(c,rep,arm):
     if selected=="cms517_default":
         inner=cms_trial(c,rep,remaining)
     else:
-        inner=e9.trial(c,rep,selected,remaining)
+        # EQUIV9 runner expects an explicit cohort; EQUIV13 sources are
+        # prospective and deliberately have no EQUIV9 cohort assignment.
+        inner=e9.trial(dict(c,cohort="holdout"),rep,selected,remaining)
     elapsed=time.perf_counter()-started
     status=inner["status"];witness=inner["SAT_original_witness_verified"]
     if elapsed>=CAP:
