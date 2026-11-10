@@ -1,0 +1,73 @@
+name: DRNAS FACTOR4.2 40 frozen against Kissat
+run-name: FACTOR4.2 40 frozen CNFs A D Kissat 40s oneCPU shard ${{ matrix.shard }}
+on:
+  push:
+    branches: [experiment/drnas-factor42-40frozen-20261110]
+    paths:
+      - research/drnas_factor42_native.cpp
+      - research/drnas_factor42_40frozen.py
+      - .github/workflows/drnas-factor42-40frozen.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and verify source manifest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_factor42_40frozen.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential
+      - name: Restore pinned Kissat binary
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .reference-solvers/bin/kissat
+          key: factor42-ubuntu2404-kissat-8af8e56f174b778aef3aa45af9f739b2a5f492c2-v1
+      - name: Build pinned Kissat only on cache miss
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .reference-solvers/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git .reference-solvers/kissat-src
+          git -C .reference-solvers/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd .reference-solvers/kissat-src && ./configure && make -j2)
+          install -m 755 .reference-solvers/kissat-src/build/kissat .reference-solvers/bin/kissat
+      - name: Always compile DRNAS FACTOR4.2
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor42/bin
+          g++ -std=c++17 -O2 research/drnas_factor42_native.cpp -o mre_factor42/bin/drnas_factor42
+          install -m 755 .reference-solvers/bin/kissat mre_factor42/bin/kissat
+          ldd mre_factor42/bin/kissat | tee mre_factor42/kissat.ldd
+          ! grep -q 'not found' mre_factor42/kissat.ldd
+      - name: Run eight source-frozen CNFs x A D Kissat at 40 CPU seconds
+        env:
+          FACTOR42_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor42_40frozen.py | tee mre_factor42/benchmark.log
+          grep -q '^FACTOR42_FINAL ' mre_factor42/benchmark.log
+          grep '^FACTOR42_FINAL ' mre_factor42/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR42-SHARD-${{ matrix.shard }}-40S-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor42/audit.json
+            mre_factor42/sources.json
+            mre_factor42/*.cnf
+            mre_factor42/*.log
