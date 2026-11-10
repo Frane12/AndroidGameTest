@@ -133,7 +133,7 @@ def normalize(label,r,report):
   par2=floatnum(rawp)
  else:
   par2=2*cap if status=="TIMEOUT" or (status=="UNSAT" and
-                   (label=="equiv7" or (label=="equiv9" and not unsat_agree))) else wall
+                   (label in ("equiv7","equiv9") and not unsat_agree)) else wall
  need(par2 is not None and par2<=2*cap+0.0001,"invalid PAR2 limit "+label)
  if status=="TIMEOUT":need(abs(par2-2*cap)<.0001,"missing 2x cap penalty")
  if status=="SAT":need(abs(par2-wall)<0.02,"verified SAT PAR2!=E2E")
