@@ -45,14 +45,20 @@ jobs:
           test "$(git -C /tmp/drnas-e12-cms rev-parse HEAD)" = 03954f7f7815ea3984774c95a66e7c224cd25952
           cmake -G Ninja -S /tmp/drnas-e12-cms -B /tmp/drnas-e12-cms/build -DCMAKE_BUILD_TYPE=Release -DNOCADICAL=ON -DENABLE_TESTING=OFF -DNOZLIB=ON
           cmake --build /tmp/drnas-e12-cms/build --target cryptominisat5 -j 2
-          mkdir -p mre_equiv12/bin
+          mkdir -p mre_equiv12/bin mre_equiv12/lib
           cp /tmp/drnas-e12-cms/build/cryptominisat5 mre_equiv12/bin/cryptominisat5
+          # The new CMS binary dynamically links its own 5.17 .so (not the historical 5.11 lib).
+          find /tmp/drnas-e12-cms/build -maxdepth 5 -name 'libcryptominisat5.so*' -exec cp -a {} mre_equiv12/lib/ \;
+          test -n "$(find mre_equiv12/lib -name 'libcryptominisat5.so*' -print -quit)"
           chmod +x mre_equiv12/bin/cryptominisat5
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          ldd mre_equiv12/bin/cryptominisat5 | tee mre_equiv12/ldd-build.log
+          ! grep -q 'not found' mre_equiv12/ldd-build.log
           mre_equiv12/bin/cryptominisat5 --version
       - name: Six arms original model negative control, freeze & checksum
         run: |
           set -euo pipefail
-          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
           python3 -m py_compile research/drnas_equiv12_cms_native_crossover.py
           python3 -u research/drnas_equiv12_cms_native_crossover.py selftest | tee mre_equiv12/selftest.log
           python3 -u research/drnas_equiv12_cms_native_crossover.py freeze | tee mre_equiv12/freeze.log
@@ -79,6 +85,8 @@ jobs:
             mre_equiv7/bin/cadical_3_0_1
             mre5/lib/libcryptominisat5.so.5.11
             mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_equiv12/ldd-build.log
             mre_equiv12/manifest.json
             mre_equiv12/freeze.log
             mre_equiv12/selftest.log
@@ -102,8 +110,12 @@ jobs:
       - name: Original SHA-verified matched six-arm 1CPU end-to-end
         run: |
           set -euo pipefail
-          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
           chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
+          # Validate the CMS runtime on this FRESH runner (build runner paths do not exist here).
+          ldd mre_equiv12/bin/cryptominisat5 | tee mre_equiv12/ldd-shard-${{ matrix.shard }}.log
+          ! grep -q 'not found' mre_equiv12/ldd-shard-${{ matrix.shard }}.log
+          mre_equiv12/bin/cryptominisat5 --version
           python3 -u research/drnas_equiv12_cms_native_crossover.py verify
           python3 -u research/drnas_equiv12_cms_native_crossover.py shard --shard ${{ matrix.shard }} | tee mre_equiv12/shard-${{ matrix.shard }}.log
           grep -q '^EQUIV12_SHARD_PASS ${{ matrix.shard }} 12$' mre_equiv12/shard-${{ matrix.shard }}.log
@@ -135,7 +147,7 @@ jobs:
       - name: Audit matched samples, prove only originally verified statuses
         run: |
           set -euo pipefail
-          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
           chmod +x mre_equiv12/bin/cryptominisat5 mre_x4/bin/native built/bin/kissat_4_0_4 mre_equiv7/bin/cadical_3_0_1
           python3 -u research/drnas_equiv12_cms_native_crossover.py audit | tee mre_equiv12/audit.log
           grep -q '^EQUIV12_FINAL ' mre_equiv12/audit.log
