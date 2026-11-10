@@ -110,7 +110,7 @@ def reference_probe(p,seconds=SCREEN_CAP):
     import tempfile
     with tempfile.TemporaryDirectory(dir=ROOT) as td:
         proof=pathlib.Path(td)/"result.lrat"
-        cmd=[str(CADICAL),"--lrat","--no-binary","--no-factor",
+        cmd=[str(CADICAL),"--lrat","--no-binary",
              str(p),str(proof)]
         try:
             r=subprocess.run(cmd,capture_output=True,text=True,timeout=seconds)
@@ -249,7 +249,7 @@ def selftest():
         q=pathlib.Path(td)/"unsat.cnf"
         q.write_text("p cnf 1 2\n1 0\n-1 0\n")
         test=reference_probe(q,seconds=3)
-        need(test["status"]=="UNSAT","LRAT positive toy failed")
+        need(test["status"]=="UNSAT","LRAT positive toy failed: "+str({k:v for k,v in test.items() if k!="proof_raw"}))
         bad=pathlib.Path(td)/"invalid.lrat"
         bad.write_text("1 0 0\n")
         need(not lrat_check(q,bad),"LRAT corrupt negative toy passed")
