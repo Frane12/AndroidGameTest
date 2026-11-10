@@ -51,7 +51,7 @@ for family in families:
    if len(clauses)!=header[1]:
     # Never silently drop clauses or alter declared clause count: quarantine source.
     raise RuntimeError(f"source header clause mismatch: {family} {item.name} declared={header[1]} actual={len(clauses)}")
-   data=(f"p cnf {header[0]} {header[1]}\\n"+"".join(" ".join(map(str,c))+" 0\\n" for c in clauses)).encode()
+   data=(f"p cnf {header[0]} {header[1]}\n"+"".join(" ".join(map(str,c))+" 0\n" for c in clauses)).encode()
    sources.append(dict(id=len(sources),family=family,archive_entry=item.name,
     archive_sha256=entry["archive_sha256"],sha256=hashlib.sha256(data).hexdigest(),
     raw_sha256=hashlib.sha256(cnf).hexdigest(),bytes=len(data),data=data))
