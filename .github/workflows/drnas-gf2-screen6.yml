@@ -1,0 +1,135 @@
+name: DRNAS GF2-SCREEN6 - all source exact XOR pair triple bounded Gaussian proof screening
+run-name: GF2-SCREEN6 17 original SHA all certified XOR 2/3-row and bounded Gauss no CDCL
+on:
+  push:
+    branches: [experiment/drnas-gf2-screen6-allxor-boundedgauss-20261110]
+    paths:
+      - research/drnas_gf2_screen6.py
+      - .github/workflows/drnas-gf2-screen6.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gf2-screen6-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Recover 17 original SHA and selftest independent 2/3 XOR and Gaussian proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore immutable previously seen 17 original source SHA CNFs and manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42776296568 -R Frane12/AndroidGameTest -n gf2-s1-frozen-17SHA-exact-binaries -D .
+          test -s mre_gf2_s1/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_binary_scc2/manifest.json
+          test -d mre_equiv9/cases
+      - name: Run controlled algebraic selftests; freeze all sources, code, caps
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          mkdir -p mre_gf2screen6
+          python3 -m py_compile research/drnas_gf2_screen6.py
+          python3 -u research/drnas_gf2_screen6.py selftest | tee mre_gf2screen6/selftest.log
+          grep -q '^GF2_SCREEN6_SELFTEST_PASS ' mre_gf2screen6/selftest.log
+          python3 -u research/drnas_gf2_screen6.py freeze | tee mre_gf2screen6/freeze.log
+          grep -q '^GF2_SCREEN6_FROZEN ' mre_gf2screen6/freeze.log
+          python3 -u research/drnas_gf2_screen6.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-gf2-screen6-frozen-17-original-SHA-and-protocol
+          if-no-files-found: warn
+          retention-days: 21
+          path: |
+            mre_gf2screen6/manifest.json
+            mre_gf2screen6/selftest.log
+            mre_gf2screen6/freeze.log
+            mre_gf2_s1/manifest.json
+            mre_binary_scc2/manifest.json
+            mre_binary_scc1/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+  screen:
+    name: Original CNF XOR all rows pair triple Gaussian shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-gf2-screen6-frozen-17-original-SHA-and-protocol
+          path: .
+      - name: Screen original CNF without SAT solver; replay short algebraic candidates
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_screen6.py verify
+          python3 -u research/drnas_gf2_screen6.py shard --shard ${{ matrix.shard }} | tee mre_gf2screen6/shard-${{ matrix.shard }}.log
+          grep -q '^GF2_SCREEN6_SHARD_PASS ' mre_gf2screen6/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gf2-screen6-shard-${{ matrix.shard }}
+          if-no-files-found: warn
+          retention-days: 21
+          path: |
+            mre_gf2screen6/shard-${{ matrix.shard }}.json
+            mre_gf2screen6/shard-${{ matrix.shard }}.log
+  audit:
+    name: Reverify 17 SHA original CNF 2/3-row Gaussian parent proof and caps
+    needs: screen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-gf2-screen6-frozen-17-original-SHA-and-protocol
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gf2-screen6-shard-*
+          path: mre_gf2screen6
+          merge-multiple: true
+      - name: Independent original CNF source replay of every retained GF2 proof
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_gf2_screen6.py verify
+          python3 -u research/drnas_gf2_screen6.py audit | tee mre_gf2screen6/audit.log
+          grep -q '^GF2_SCREEN6_FINAL ' mre_gf2screen6/audit.log
+          grep '^GF2_SCREEN6_FINAL ' mre_gf2screen6/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF2-SCREEN6-17SHA-ALL-XOR-2-3-GAUSS-PROOF-FINAL
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mre_gf2screen6/report.json
+            mre_gf2screen6/audit.log
+            mre_gf2screen6/manifest.json
+            mre_gf2screen6/shard-*.json
