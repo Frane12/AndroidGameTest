@@ -1,0 +1,84 @@
+name: DRNAS FACTOR7 structural opportunity gate one CPU
+run-name: FACTOR7 4 pinned SATLIB + 2 controls x DRNAS A D E Kissat CMS 8s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-factor7-opportunity-20261110]
+    paths:
+      - research/drnas_factor7_opportunity.py
+      - research/drnas_factor7_dimacs.py
+      - research/drnas_factor7_native.cpp
+      - research/drnas-sat-v7-4/frozen_real_medium.json
+      - .github/workflows/drnas-factor7-opportunity.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official40:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install official archive reader and solver dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages remotezip
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake libgmp-dev zlib1g-dev
+      - name: Validate DIMACS parser and regression tests
+        run: python3 research/drnas_factor7_structural.py --selftest-only
+      - name: Restore pinned reference solver binaries
+        id: solver-cache
+        uses: actions/cache@v4
+        with:
+          path: .reference-solvers/bin
+          key: linux-ubuntu2404-x64-kissat-8af8e56f174b-cms-97c6efeae45d-staticlib-v2
+      - name: Compile pinned reference solvers on cache miss only
+        if: steps.solver-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .reference-solvers/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git .reference-solvers/kissat-src
+          git -C .reference-solvers/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd .reference-solvers/kissat-src && ./configure && make -j2)
+          cp .reference-solvers/kissat-src/build/kissat .reference-solvers/bin/kissat
+          git clone --quiet https://github.com/msoos/cryptominisat.git .reference-solvers/cms-src
+          git -C .reference-solvers/cms-src checkout --detach 97c6efeae45d93c45d2ebc3e4e83c2014c79513d
+          cmake -S .reference-solvers/cms-src -B .reference-solvers/cms-build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=OFF -DENABLE_PYTHON_INTERFACE=OFF -DNOM4RI=ON -DBUILD_SHARED_LIBS=OFF -DSTATIC_BINARY=OFF
+          cmake --build .reference-solvers/cms-build -j2
+          cp .reference-solvers/cms-build/cryptominisat5 .reference-solvers/bin/cryptominisat5
+      - name: Compile current DRNAS and verify cached reference binaries
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor7/bin
+          g++ -std=c++17 -O2 research/drnas_factor7_native.cpp -o mre_factor7/bin/drnas_factor4
+          for solver in kissat cryptominisat5; do
+            test -s ".reference-solvers/bin/$solver"
+            install -m 755 ".reference-solvers/bin/$solver" "mre_factor7/bin/$solver"
+            ldd "mre_factor7/bin/$solver" | tee "mre_factor7/$solver.ldd"
+            ! grep -q 'not found' "mre_factor7/$solver.ldd"
+          done
+          mre_factor7/bin/kissat --version
+          mre_factor7/bin/cryptominisat5 --version
+          echo "Reference binaries cache hit: ${{ steps.solver-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate compiled native mode E on SAT and UNSAT controls
+        run: python3 research/drnas_factor7_opportunity.py --selftest-only
+      - name: Four pinned SATLIB CNFs plus two deterministic positive controls 8s
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor7_opportunity.py | tee mre_factor7/benchmark.log
+          grep -q '^FACTOR7_FINAL ' mre_factor7/benchmark.log
+          grep '^FACTOR7_FINAL ' mre_factor7/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR7-OPPORTUNITY-4-SATLIB-2-CONTROLS-8S-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor7/audit.json
+            mre_factor7/sources.json
+            mre_factor7/*.cnf
+            mre_factor7/*.log
