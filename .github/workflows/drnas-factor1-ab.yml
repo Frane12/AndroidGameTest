@@ -1,0 +1,44 @@
+name: DRNAS FACTOR1 A B certified separator projection
+run-name: FACTOR1 24 original CNF x A native B component projection x 3 reps 144 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-factor1-ab-20261110]
+    paths:
+      - research/drnas_factor1_ab.py
+      - .github/workflows/drnas-factor1-ab.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  factor1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build DRNAS native and validate experiment
+        run: |
+          set -euo pipefail
+          mkdir -p mre_factor1/bin
+          python3 -m py_compile research/drnas_factor1_ab.py
+          g++ -std=c++17 -O2 research/drnas_sre2c_native.cpp -o mre_factor1/bin/drnas_sre2c
+          mre_factor1/bin/drnas_sre2c --selftest | tee mre_factor1/selftest.log
+      - name: Run 144 source-verified oneCPU A B comparisons
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_factor1_ab.py | tee mre_factor1/benchmark.log
+          grep -q '^FACTOR1_FINAL ' mre_factor1/benchmark.log
+          grep '^FACTOR1_FINAL ' mre_factor1/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-FACTOR1-AB-144-ONECPU-PROJECTION-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_factor1/audit.json
+            mre_factor1/*.cnf
+            mre_factor1/*.log
+            mre_factor1/bin/drnas_sre2c
