@@ -1,0 +1,173 @@
+name: DRNAS COMBO5 - exact short XOR2/3 original-CNF certified relations vs CMS
+run-name: COMBO5 29 frozen original SHA x 6 arms x 2 reps 10s 348 oneCPU paired CMS XOR2/3 placebo
+on:
+  push:
+    branches: [experiment/drnas-combo5-short-xor-relations-20261110]
+    paths:
+      - .github/workflows/drnas-combo5-short-xor-e2e.yml
+      - research/drnas_combo5_short_relations.py
+      - research/drnas_gf2_screen6.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-combo5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Reconstruct 17 GF2-S1 and 12 SEARCH6 frozen original SHA, independently test exact pair reductions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Stage pinned original CNF sources and CMS Kissat GF2 binaries without artifact collisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42759838384 -R Frane12/AndroidGameTest -n equiv13-12-source-only-original-SHA-frozen-six-solvers -D .
+          mkdir -p artifacts_s1 artifacts_search6 artifacts_proof
+          gh run download 42776296568 -R Frane12/AndroidGameTest -n gf2-s1-frozen-17SHA-exact-binaries -D artifacts_s1
+          gh run download 42789740518 -R Frane12/AndroidGameTest -n SEARCH6-12SHA-4STRATA-SOURCEONLY-NATIVE-FROZEN -D artifacts_search6
+          gh run download 42796021996 -R Frane12/AndroidGameTest -n DRNAS-COMBO2-2ORIGINAL-SHA-INDEPENDENT-XLRUP-CAKEML-STRICT-AUDIT -D artifacts_proof
+          test -s artifacts_s1/mre_gf2_s1/manifest.json
+          test -s artifacts_s1/mre_binary_scc2/manifest.json
+          test -s artifacts_search6/mre_search6/manifest.json
+          cp -a artifacts_s1/mre_gf2_s1 ./mre_gf2_s1
+          cp -a artifacts_s1/mre_binary_scc2 ./mre_binary_scc2
+          cp -a artifacts_s1/mre_binary_scc1 ./mre_binary_scc1
+          mkdir -p mre_equiv9/cases
+          cp -a artifacts_s1/mre_equiv9/cases/. mre_equiv9/cases/
+          mv artifacts_search6/mre_search6 ./mre_search6
+          mkdir -p prior_combo2proof
+          CERT="$(find artifacts_proof -type f -name report.json | head -n1)"
+          test -n "$CERT"
+          test "$(find artifacts_proof -type f -name report.json | wc -l)" -eq 1
+          cp "$CERT" prior_combo2proof/report.json
+          test -s mre_gf2_s1/bin/gf2_exact
+          test -s mre_equiv12/bin/cryptominisat5
+          test -s mre_equiv12/lib/libcryptominisat5.so.5.17
+          test -s built/bin/kissat_4_0_4
+          test -s mre5/lib/libcryptominisat5.so.5.11
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          ldd mre_equiv12/bin/cryptominisat5 | tee combo5-cms-ldd.txt
+          ! grep -q 'not found' combo5-cms-ldd.txt
+      - name: Independent original-CNF positive/negative GF2 pair and 196-equation contradiction selftest
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_combo5_short_relations.py research/drnas_gf2_screen6.py
+          mkdir -p mre_combo5
+          python3 -u research/drnas_combo5_short_relations.py selftest | tee mre_combo5/selftest.log
+          grep -q '^COMBO5_SELFTEST_PASS ' mre_combo5/selftest.log
+          python3 -u research/drnas_combo5_short_relations.py freeze | tee mre_combo5/freeze.log
+          grep -q '^COMBO5_FROZEN ' mre_combo5/freeze.log
+          python3 -u research/drnas_combo5_short_relations.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: combo5-frozen-29-original-SHA-pinned-CMS-Kissat-GF2-and-CakeML-provenance
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_combo5/manifest.json
+            mre_combo5/selftest.log
+            mre_gf2_s1/bin/gf2_exact
+            mre_gf2_s1/manifest.json
+            mre_binary_scc2/manifest.json
+            mre_binary_scc1/manifest.json
+            mre_search6/manifest.json
+            mre_search6/cases/*.cnf
+            mre_equiv9/manifest.json
+            mre_equiv9/cases/*.cnf
+            mre_equiv10m5/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv12/manifest.json
+            mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            prior_combo2proof/report.json
+            mre_equiv7/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  shard:
+    name: Original SHA full E2E 6 arms CMS original placebo proven XOR2/3 pair triple shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: combo5-frozen-29-original-SHA-pinned-CMS-Kissat-GF2-and-CakeML-provenance
+          path: .
+      - name: 10s oneCPU E2E exact original SHA model and GF2 proof replay plus matched placebo
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4
+          ldd mre_equiv12/bin/cryptominisat5 | tee mre_combo5/cms-linked-$SHARD.txt
+          ! grep -q 'not found' mre_combo5/cms-linked-$SHARD.txt
+          python3 -u research/drnas_combo5_short_relations.py verify | tee mre_combo5/verify-$SHARD.log
+          grep -q '^COMBO5_VERIFY_PASS ' mre_combo5/verify-$SHARD.log
+          python3 -u research/drnas_combo5_short_relations.py shard --shard "$SHARD" | tee "mre_combo5/shard-$SHARD.log"
+          grep -q "^COMBO5_SHARD_PASS $SHARD " "mre_combo5/shard-$SHARD.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: combo5-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_combo5/shard-${{ matrix.shard }}.json
+            mre_combo5/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 348 SHA locked original SAT, independently verified GF2 and strict PAR2 against CMS placebo
+    needs: [freeze,shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: combo5-frozen-29-original-SHA-pinned-CMS-Kissat-GF2-and-CakeML-provenance
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: combo5-shard-*
+          merge-multiple: true
+          path: mre_combo5
+      - name: Verify 348 matched originals and original-source proof statuses, no reruns
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4
+          python3 -u research/drnas_combo5_short_relations.py verify
+          for i in 0 1 2 3 4 5; do test -s "mre_combo5/shard-$i.json"; done
+          python3 -u research/drnas_combo5_short_relations.py audit | tee mre_combo5/audit.log
+          grep -q '^COMBO5_FINAL ' mre_combo5/audit.log
+          grep '^COMBO5_FINAL ' mre_combo5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-COMBO5-29SHA-348-E2E-ORIGINAL-GF2-SHORT-REL-PAR2-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_combo5/manifest.json
+            mre_combo5/report.json
+            mre_combo5/audit.log
+            mre_combo5/shard-*.json
