@@ -8,6 +8,8 @@ import drnas_xorabc3_live_trail as abc3
 
 OUT=pathlib.Path("mre_gf_cdcl_novel2c")
 MIX=pathlib.Path("mre_mixab4")
+MIX3=pathlib.Path("mre_mixab3")
+EQUIV5=pathlib.Path("mre_equiv10m5")
 def need(x,msg):
     if not x: raise RuntimeError("NOVEL2C_SCREEN_FAIL_CLOSED "+str(msg))
 def sha(p):return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
@@ -27,7 +29,21 @@ def roster():
         cs.append(dict(cohort="mixab4_reference_easy6",sha256=c["sha256"],path=str(p),gbd=c.get("gbd"),
                        independent_lrat=c.get("independent_lrat_proof_file"),
                        independent_drat=c.get("independent_drat_proof_file")))
-    need(len({c["sha256"] for c in cs})==46,"46 disjoint originals required")
+    mix3=json.loads((MIX3/"manifest.json").read_text())["original_cases"]
+    need(len(mix3)==12,"MIXAB3 original roster not 12")
+    for c in mix3:
+        p=MIX3/"cases"/c["filename"]
+        need(p.is_file() and sha(p)==c["sha256"],"MIXAB3 SHA mismatch")
+        cs.append(dict(cohort="mixab3_source_only12",sha256=c["sha256"],path=str(p),gbd=c.get("gbd")))
+    equiv=json.loads((EQUIV5/"manifest.json").read_text())["cases"]
+    need(len(equiv)==5,"EQUIV10M5 roster not five")
+    for c in equiv:
+        p=pathlib.Path("mre_equiv9/cases")/c["filename"]
+        need(p.is_file() and sha(p)==c["sha256"],"EQUIV10M5 SHA mismatch")
+        cs.append(dict(cohort="equiv10m5_reference_easy_medium5",
+                       sha256=c["sha256"],path=str(p),gbd=c.get("gbd"),
+                       reference_band=c.get("reference_band")))
+    need(len({c["sha256"] for c in cs})==63,"63 distinct original SHA required")
     return cs
 def source_rows(src):
     with tempfile.TemporaryDirectory(dir=OUT) as td:
@@ -56,19 +72,31 @@ def main():
     OUT.mkdir(exist_ok=True)
     cases=roster();reports=[]
     for c in cases:
-        rows,meta=source_rows(c["path"])
-        reports.append(dict(**c,**profile(rows),source_equations=meta["equations"]))
+        try:
+            rows,meta=source_rows(c["path"])
+            reports.append(dict(**c,**profile(rows),
+                                source_equations=meta["equations"],
+                                screening_unsupported=False))
+        except (RuntimeError,ValueError) as e:
+            reports.append(dict(**c,short_reductions=0,binary_reductions=0,
+                                unit_reductions=0,source_rows=None,
+                                screening_unsupported=True,
+                                screening_error=str(e)[:350]))
     eligible=[r for r in reports if r["short_reductions"]]
-    easy=[r for r in eligible if r["cohort"]=="mixab4_reference_easy6"]
+    easy=[r for r in eligible if r["cohort"] in
+          ("mixab4_reference_easy6","equiv10m5_reference_easy_medium5")]
     summary=dict(protocol="GFCDCL-NOVEL2C-SOURCE-SCREEN-v1",
                  cohort_sizes=dict(collections.Counter(r["cohort"] for r in reports)),
                  eligible_by_cohort=dict(collections.Counter(r["cohort"] for r in eligible)),
                  easy_with_reductions=len(easy),total_eligible=len(eligible),
+                 unsupported=sum(r["screening_unsupported"] for r in reports),
                  no_candidate_timing_used=True, original_sha_verified=True,
                  cases=reports)
     (OUT/"screen.json").write_text(json.dumps(summary,sort_keys=True,indent=2)+"\n")
     print("NOVEL2C_SCREEN_SUMMARY "+json.dumps({k:v for k,v in summary.items() if k!="cases"},sort_keys=True),flush=True)
-    for row in sorted(eligible,key=lambda r:(r["cohort"]!="mixab4_reference_easy6",-r["binary_reductions"],-r["short_reductions"],r["sha256"])):
+    for row in sorted(eligible,key=lambda r:(r["cohort"] not in
+           ("mixab4_reference_easy6","equiv10m5_reference_easy_medium5"),
+           -r["binary_reductions"],-r["short_reductions"],r["sha256"])):
         print("NOVEL2C_ELIGIBLE "+json.dumps({k:v for k,v in row.items() if k!="path"},sort_keys=True),flush=True)
-    print("NOVEL2C_SCREEN_PASS 46",flush=True)
+    print("NOVEL2C_SCREEN_PASS 63",flush=True)
 if __name__=="__main__":main()
