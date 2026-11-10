@@ -1,0 +1,107 @@
+name: DRNAS SAT SQL 20261110 - preserve full 53330 and append 1892 MRE plus 1828 audited E2E
+on:
+  push:
+    branches: [experiment/drnas-sql-cumulative-refresh-20261110]
+    paths:
+      - research/sat-analytics-data/refresh_full_core_mre_recent_20261110.py
+      - .github/workflows/drnas-sql-additive-refresh-20261110.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sql-20261110-provenance-full-core
+  cancel-in-progress: true
+jobs:
+  full_cumulative_refresh:
+    name: Immutable V15.3.1 full core + MRE sidecar + nine finished source SHA E2E audits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Download immutable 53330 original baseline and 1892 audited MRE sidecar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p sql_inputs/core sql_inputs/mre
+          gh run download 42044317651 -R Frane12/AndroidGameTest -n DRNAS-V1531-SQLite-Analytics -D sql_inputs/core
+          gh run download 42515525795 -R Frane12/AndroidGameTest -n DRNAS-CUMULATIVE-SQLITE-MRE-1892-20261108 -D sql_inputs/mre
+          sha256sum sql_inputs/core/sat_analytics.sqlite
+          test -s sql_inputs/mre/research/sat-analytics-data/current/sat_analytics.sqlite
+      - name: Download only completed audit artifacts with all raw source-locked shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p sql_inputs/runs
+          for label in dmd6 dmd7 dmd8 equiv7 equiv8 decomp2 decomp3gate decomp4 equiv9; do
+            mkdir -p "sql_inputs/runs/$label"
+          done
+          gh run download 42710818842 -R Frane12/AndroidGameTest -n DRNAS-DMD6-384-ONECPU-GRAPH-SCC-PROOF-PAR2-FINAL -D sql_inputs/runs/dmd6
+          gh run download 42713743557 -R Frane12/AndroidGameTest -n DRNAS-DMD7-PROOF-FIRST-ONECPU-SCREEN-E2E-FINAL -D sql_inputs/runs/dmd7
+          gh run download 42716917451 -R Frane12/AndroidGameTest -n DRNAS-DMD8-FROZEN-126-PROOF-REPLAY-RECOVERED-FINAL -D sql_inputs/runs/dmd8
+          gh run download 42715717640 -R Frane12/AndroidGameTest -p 'dmd8-shard-*' -D sql_inputs/dmd8-raw
+          find sql_inputs/dmd8-raw -name 'shard-*.json' -exec cp -fv {} sql_inputs/runs/dmd8/ \;
+          gh run download 42718326798 -R Frane12/AndroidGameTest -n DRNAS-EQUIV7-FRESH-SOURCEONLY-576-E2E-PAR2-FINAL -D sql_inputs/runs/equiv7
+          gh run download 42718184439 -R Frane12/AndroidGameTest -n DRNAS-EQUIV8-SINGLECPU-SEED-HEDGE-96-E2E-FINAL -D sql_inputs/runs/equiv8
+          gh run download 42718727450 -R Frane12/AndroidGameTest -n DRNAS-DECOMP2-64-ONECPU-EXACT-SEP-E2E-PAR2-FINAL -D sql_inputs/runs/decomp2
+          gh run download 42722091032 -R Frane12/AndroidGameTest -n DRNAS-DECOMP3-GATE-48-ONECPU-E2E-PAR2-FINAL -D sql_inputs/runs/decomp3gate
+          gh run download 42723849229 -R Frane12/AndroidGameTest -n DRNAS-DECOMP4-24-SHA-SEEDHEDGE-240-E2E-PAR2-FINAL -D sql_inputs/runs/decomp4
+          gh run download 42723490843 -R Frane12/AndroidGameTest -n DRNAS-EQUIV9-PROSPECTIVE-SHA-168-E2E-FINAL -D sql_inputs/runs/equiv9
+          for id in 42710818842 42713743557 42716917451 42718326798 42718184439 42718727450 42722091032 42723849229 42723490843; do
+            conclusion="$(gh api "repos/Frane12/AndroidGameTest/actions/runs/$id" --jq .conclusion)"
+            test "$conclusion" = success || { echo "AUDIT RUN NOT SUCCESSFUL: $id $conclusion"; exit 1; }
+          done
+      - name: Build append-only cumulative SQLite and strict rowwise original-SHA paired PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/sat-analytics-data/refresh_full_core_mre_recent_20261110.py
+          python3 -u research/sat-analytics-data/refresh_full_core_mre_recent_20261110.py \
+            --historical sql_inputs/core/sat_analytics.sqlite \
+            --mre-sidecar sql_inputs/mre/research/sat-analytics-data/current/sat_analytics.sqlite \
+            --inputs sql_inputs/runs \
+            --out sql_refreshed_20261110 | tee sql_refreshed_20261110/refresh.log
+          grep -q '^DRNAS_SQL_REFRESH_SUCCESS' sql_refreshed_20261110/refresh.log
+          python3 - <<'PY'
+          import sqlite3,json,pathlib,os
+          p=pathlib.Path("sql_refreshed_20261110/sat_analytics_refresh_20261110.sqlite")
+          con=sqlite3.connect(p)
+          counts={t:con.execute("SELECT COUNT(*) FROM "+t).fetchone()[0] for t in
+             ["datasets","formulas","attempts","mre_audit_runs","mre_audit_attempts",
+              "sat_recent_runs","sat_recent_attempts","sat_recent_originals"]}
+          assert counts["datasets"]==231 and counts["formulas"]==2979 and counts["attempts"]==53330
+          assert counts["mre_audit_runs"]==8 and counts["mre_audit_attempts"]==1892
+          assert counts["sat_recent_runs"]==9 and counts["sat_recent_attempts"]==1828
+          assert con.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+          print("DRNAS_SQL_FINAL_COUNTS",json.dumps(counts,sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("# DRNAS SQL 2026-11-10 cumulative verified refresh\n")
+            f.write("**Verified immutable core: 53,330 attempts / 2,979 formula records / 231 datasets.**\n\n")
+            f.write("**Nov 8 MRE sidecar: 1,892 attempts / 8 runs.**\n\n")
+            f.write("**Nine newer E2E audits: 1,828 attempts.**\n\n")
+            f.write("**Across append-only namespaces: 57,050 measured attempts, with repeated SHA cohorts kept distinct.**\n\n")
+            f.write("| Series | Mode | Solved as audited | PAR2 s |\n|---|---|---:|---:|\n")
+            for row in con.execute("""SELECT r.label,s.mode,s.reported_solved,s.attempts,s.par2_s
+             FROM sat_recent_scores s JOIN sat_recent_runs r USING (run_id)
+             WHERE s.cohort IN ('all','holdout')
+             ORDER BY r.run_id,s.par2_s"""):
+                f.write(f"| {row[0]} | {row[1]} | {row[2]}/{row[3]} | {row[4]:.3f} |\n")
+          con.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-CUMULATIVE-SQLITE-FULL-57050-20261110
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            sql_refreshed_20261110/sat_analytics_refresh_20261110.sqlite
+            sql_refreshed_20261110/refresh_audit.json
+            sql_refreshed_20261110/recent_modes.csv
+            sql_refreshed_20261110/recent_per_source.csv
+            sql_refreshed_20261110/recent_audited_scores.csv
+            sql_refreshed_20261110/sqlite_sha256.txt
+            sql_refreshed_20261110/refresh.log
