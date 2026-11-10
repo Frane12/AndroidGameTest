@@ -59,7 +59,8 @@ static vector<vector<int>> enc(const vector<int>& v,int rhs){
  vector<vector<int>> out;for(int mask=0;mask<(1<<int(v.size()));mask++){
   if((__builtin_popcount(unsigned(mask))&1)==rhs)continue;
   vector<int> clause;for(int i=0;i<int(v.size());i++)
-   clause.push_back((mask&(1<<i))?-v[i]:v[i]);out.push_back(clause);
+   clause.push_back((mask&(1<<i))?-v[i]:v[i]);
+  out.push_back(clause);
  }return out;
 }
 static void selftest(){
