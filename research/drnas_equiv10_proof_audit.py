@@ -42,7 +42,7 @@ def run(cmd,seconds,limit_fsize=None):
                     elapsed_s=round(time.monotonic()-t,5),timeout=True)
 def valid_verified(out):
     text=(out.get("stdout","")+" "+out.get("stderr",""))
-    return (out["rc"]==0 and re.search(r"\\bVERIFIED\\b",text)
+    return (out["rc"]==0 and re.search(r"\bVERIFIED\b",text)
             and not re.search(r"NOT VERIFIED|NOT VERIFIED|FAILED|ERROR",text,re.I))
 def original():
     m=e9.verify()
@@ -57,7 +57,7 @@ def selftest():
     with tempfile.TemporaryDirectory() as d:
         p=pathlib.Path(d)
         cnf=p/"toy-unsat.cnf"
-        cnf.write_text("p cnf 1 2\\n1 0\\n-1 0\\n")
+        cnf.write_text("p cnf 1 2\n1 0\n-1 0\n")
         generated=run([CAD,"--no-binary",cnf,p/"toy.drat"],30)
         need(generated["rc"]==20 and (p/"toy.drat").exists(),"proof producer toy UNSAT failed")
         checked=run([DRAT,cnf,p/"toy.drat","-L",p/"toy.lrat"],30)
@@ -65,7 +65,7 @@ def selftest():
         replay=run([LRAT,cnf,p/"toy.lrat"],30)
         need(bool(valid_verified(replay)),"independent LRAT toy replay failed")
         sat=p/"toy-sat.cnf"
-        sat.write_text("p cnf 1 1\\n1 0\\n")
+        sat.write_text("p cnf 1 1\n1 0\n")
         satresult=run([CAD,"--no-binary",sat,p/"sat.drat"],30)
         need(satresult["rc"]==10,"SAT negative control failed")
         print("EQUIV10P_SELFTEST_PASS "+json.dumps(dict(toy_UNSAT_DRAT_verified=True,toy_LRAT_verified=True,toy_SAT_not_misclassified=True)),flush=True)
@@ -104,7 +104,7 @@ def certify():
                     result["independent_LRAT_verified"]=True
                     result["certification_status"]="CERTIFIED_ORIGINAL_UNSAT"
     need(sha(source)==TARGET_SHA,"original CNF modified")
-    (OUT/"report.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\\n")
+    (OUT/"report.json").write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
     print("EQUIV10P_FINAL "+json.dumps(result,sort_keys=True),flush=True)
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
