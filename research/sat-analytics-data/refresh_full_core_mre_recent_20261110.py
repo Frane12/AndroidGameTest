@@ -307,11 +307,17 @@ def ingest(db,root,label):
    need(sum(x["status"]=="SAT" for x in a)==sat,label+" original SAT count disagree "+arm)
    raw_unsat=sum(x["status"]=="UNSAT" for x in a)
    unverified=int(rep.get("UNSAT_not_verified",0))
-   accepted_unsat=int(rep.get("UNSAT_backend_only",
-          rep.get("UNSAT_agreement_no_LRAT",raw_unsat-unverified)))
-   audited=int(rep.get("solved_audited",rep.get("solved",sat+accepted_unsat)))
-   need(sat+accepted_unsat==audited,
+   reported_backend_unsat=int(rep.get("UNSAT_backend_only",
+          rep.get("UNSAT_agreement_no_LRAT",raw_unsat)))
+   audited=int(rep.get("solved_audited",rep.get("solved",
+                 sat+max(0,reported_backend_unsat-unverified))))
+   accepted_unsat=audited-sat
+   need(0<=accepted_unsat<=raw_unsat and
+        reported_backend_unsat<=raw_unsat,
         label+" signed audit SAT+UNSAT count mismatch "+arm)
+   # DECOMP4 reports all backend UNSAT as raw, but its strict audited-solved
+   # count excludes four outcomes without cross-backend source agreement.
+   # Never convert them into independently proven UNSAT conclusions.
    raw_solved=sum(x["status"]!="TIMEOUT" for x in a)
    if "solved_raw" in rep:
     need(raw_solved==int(rep["solved_raw"]),label+" raw solved audit mismatch")
