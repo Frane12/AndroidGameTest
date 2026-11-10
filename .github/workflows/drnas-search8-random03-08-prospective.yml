@@ -1,0 +1,146 @@
+name: DRNAS SEARCH8 - prospective original SHA heldout random03 random08 vs guided baseline
+run-name: SEARCH8 16 new SAT24-25 SHA 4x4 source strata x 8 arms x 3 repeats 12s 384 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-search8-blind-random03-08-holdout-20261110]
+    paths:
+      - .github/workflows/drnas-search8-random03-08-prospective.yml
+      - research/drnas_search8_random_holdout_e2e.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-search8-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 16 SHA source-only 4x4 SAT24-25 and four fixed rank hashes per original
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original native CDCL binary and SEARCH6/5/4 historical exclusion evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42789740518 -R Frane12/AndroidGameTest -n SEARCH6-12SHA-4STRATA-SOURCEONLY-NATIVE-FROZEN -D .
+          test -s mre_search6/manifest.json
+          test -s mre_search3/bin/search3_cadical
+          test -s mre_search2/bin/search1_relabel
+          test -s mre_equiv6/manifest.json
+          test -s prior_search2/mre_equiv13/manifest.json
+          test -s prior_hist/search5/mre_search5/manifest.json
+          test -s prior_hist/search4/mre_search4_fresh/manifest.json
+          mkdir -p prior_hist/search6/mre_search6
+          cp mre_search6/manifest.json prior_hist/search6/mre_search6/manifest.json
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          sha256sum mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel
+      - name: Freeze 16 source-only new original CNF SHA excluding SEARCH7/6 historic and precommit random03/08/01 map SHA
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_search8_random_holdout_e2e.py
+          mkdir -p mre_search8
+          python3 -u research/drnas_search8_random_holdout_e2e.py freeze | tee mre_search8/freeze.log
+          grep -q '^SEARCH8_FROZEN ' mre_search8/freeze.log
+          test "$(grep -c '^SEARCH8_MAP_FREEZE ' mre_search8/freeze.log)" -eq 16
+          test "$(find mre_search8/cases -maxdepth 1 -name '*.cnf' | wc -l)" -eq 16
+          python3 -u research/drnas_search8_random_holdout_e2e.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH8-16-NEW-SAT24-25-ORIGINAL-SHA-LOCKED-FIXED-R03R08
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search8/manifest.json
+            mre_search8/source_progress.json
+            mre_search8/freeze.log
+            mre_search8/cases/*.cnf
+            mre_search3/bin/search3_cadical
+            mre_search2/bin/search1_relabel
+            mre_equiv6/bin/cadical_3_0_1
+            built/bin/kissat_4_0_4
+            mre_equiv6/manifest.json
+            prior_search2/mre_equiv13/manifest.json
+            prior_hist/search4/mre_search4_fresh/manifest.json
+            prior_hist/search5/mre_search5/manifest.json
+            prior_hist/search6/mre_search6/manifest.json
+            mre5/lib/libcryptominisat5.so.5.11
+  paired:
+    name: SEARCH8 48 paired original SHA E2E random03 08 01 vs guided Kissat CaDiCaL shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: SEARCH8-16-NEW-SAT24-25-ORIGINAL-SHA-LOCKED-FIXED-R03R08
+          path: .
+      - name: Three stable-seed SHA paired original-model verified serial single CPU native CDCL attempts
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search8_random_holdout_e2e.py verify
+          python3 -u research/drnas_search8_random_holdout_e2e.py shard --shard ${{ matrix.shard }} | tee mre_search8/shard-${{ matrix.shard }}.log
+          grep -q '^SEARCH8_SHARD_PASS ' mre_search8/shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH8-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search8/shard-${{ matrix.shard }}.json
+            mre_search8/shard-${{ matrix.shard }}.log
+  audit:
+    name: SEARCH8 strict 384 SHA E2E original SAT model and PAR2 proof control
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: SEARCH8-16-NEW-SAT24-25-ORIGINAL-SHA-LOCKED-FIXED-R03R08
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SEARCH8-shard-*
+          merge-multiple: true
+          path: mre_search8
+      - name: Verify all SHA and maps each repeat, strict UNSAT reference consensus and per-shard PAR2
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          for i in 0 1 2 3 4 5 6 7; do test -s "mre_search8/shard-$i.json"; done
+          python3 -u research/drnas_search8_random_holdout_e2e.py verify
+          python3 -u research/drnas_search8_random_holdout_e2e.py audit | tee mre_search8/audit.log
+          grep -q '^SEARCH8_FINAL ' mre_search8/audit.log
+          grep '^SEARCH8_FINAL ' mre_search8/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEARCH8-384-NEW-ORIGINAL-SHA-R03R08-PAR2-AUDIT-FINAL
+          retention-days: 30
+          path: |
+            mre_search8/manifest.json
+            mre_search8/report.json
+            mre_search8/audit.log
+            mre_search8/shard-*.json
