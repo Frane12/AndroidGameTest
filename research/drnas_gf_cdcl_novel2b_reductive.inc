@@ -15,7 +15,7 @@ static vector<XorRow> gfcdcl2b_reductive_closure(
         set_symmetric_difference(a.begin(),a.end(),b.begin(),b.end(),
                                  back_inserter(derived));
         int width=(int)derived.size();
-        int gain=max(a.size(),b.size())-derived.size();
+        int gain=(int)max(a.size(),b.size())-width;
         // Strictly reducing source width is a structural precondition
         // for possible new propagation beyond original complete XOR CNF UP.
         if(width<2||width>6||gain<=0)continue;
