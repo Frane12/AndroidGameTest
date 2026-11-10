@@ -24,14 +24,20 @@ def get(path):return json.loads(pathlib.Path(path).read_text())
 def dimacs(n,cls):
  return ("c DRNAS SRE1 synthetic real-world SAT laboratory\np cnf %d %d\n"%(n,len(cls)))+ "".join(" ".join(map(str,c))+" 0\n" for c in cls)
 def parse(path):
- n=0;cls=[]
+ n=None;declared=None;cls=[];current=[]
  for line in pathlib.Path(path).read_text().splitlines():
   line=line.strip()
-  if not line or line.startswith("c"):continue
+  if not line or line.startswith("c") or line.startswith("%"):continue
   if line.startswith("p"):
-   _,fmt,n,declared=line.split();n=int(n);continue
-  cls.append([int(x) for x in line.split() if int(x)!=0])
- fail(len(cls)==int(declared),"DIMACS clause count mismatch")
+   header=line.split()
+   fail(len(header)==4 and header[1]=="cnf","invalid DIMACS header")
+   n=int(header[2]);declared=int(header[3]);continue
+  for word in line.split():
+   v=int(word)
+   if v==0:cls.append(current);current=[]
+   else:current.append(v)
+ fail(n is not None and not current and len(cls)==declared,
+      "DIMACS clause count or unterminated clause")
  return n,cls
 def truth(n,cls):
  fail(n<=15,"independent brute checker only for synthetic <=15 vars")
