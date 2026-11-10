@@ -214,7 +214,7 @@ def freeze():
     print("MIXAB4_FROZEN "+json.dumps(dict(sources=N,arms=len(ARMS),
         trials=EXPECTED,source_only=False,reference_easy=True,
         independent_lrat_sources=sum(bool(c["independent_lrat_proof_file"])
-                                     for c in selected)),flush=True)
+                                     for c in selected))),flush=True)
 
 def verify():
     m=read(ROOT/"manifest.json")
