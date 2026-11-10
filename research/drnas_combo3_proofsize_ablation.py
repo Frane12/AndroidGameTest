@@ -85,6 +85,9 @@ def trial(source,arm,rep):
     started=time.perf_counter()
     info=prev.run(cmd,SOLVE_CAP,root,"generator",MAX_PROOF)
     status=prev.status_of(info)
+    if status=="UNKNOWN" and info["wall_s"]<0.1:
+        need(False,"CMS failed immediately with rc="+str(info["return_code"])+
+             " stderr="+info["stderr_tail"][:500])
     ck=None;verified=False;bytes_=0;proof_sha=None;reason="UNVERIFIED"
     if proof.is_file():
         bytes_=proof.stat().st_size
