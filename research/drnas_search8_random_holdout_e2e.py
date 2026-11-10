@@ -69,6 +69,7 @@ def config_s7():
  s7.RANDOM_ARMS=RANDOM_ARMS;s7.ARMS=ARMS
  s7.PROTO=PROTO;s7.CAP=CAP;s7.REPS=REPS;s7.SHARDS=SHARDS
  s3.REPS=REPS;s3.CAP=CAP
+ e9.REPS=REPS  # Existing Kissat seedpair supports third independently hashed seed.
  need(s7.SALT=="DRNAS-SEARCH7-20261110-10-FIXED-INDEPENDENT-SEEDS-SAME-REPS-v1",
       "SEARCH7 random seed identity changed")
 def prereq():
