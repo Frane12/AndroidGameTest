@@ -68,8 +68,8 @@ patch("solver.cpp","int Solver::active () const {",
 """// DRNAS SEARCH2 experimental public-to-internal variable mapping.
 void Solver::drnas_seed_initial_order (const std::vector<int> &external_order) {
   REQUIRE_VALID_STATE ();
-  REQUIRE (state () == CONFIGURING,
-           "SEARCH2 priorities must be seeded immediately after DIMACS read");
+  REQUIRE (state () == CONFIGURING || state () == STEADY,
+           "SEARCH2 priorities must be seeded before first solve");
   std::vector<unsigned char> seen (external->e2i.size (), 0);
   std::vector<int> internal_ids;
   internal_ids.reserve (external_order.size ());
