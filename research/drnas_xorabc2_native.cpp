@@ -173,7 +173,8 @@ static void write_cnf(const string& output,const Cnf& original,
  for(const Row& row:chosen)additional+=size_t(1)<<(row.vs.size()-1);
  f<<"p cnf "<<original.n<<" "<<original.clauses.size()+additional<<"\n";
  auto write_clause=[&](const vector<int>& cl){
-  for(int lit:cl)f<<lit<<" ";f<<"0\n";
+  for(int lit:cl){f<<lit<<" ";}
+  f<<"0\n";
  };
  for(const auto& cl:original.clauses)write_clause(cl);
  for(const Row& r:chosen)
