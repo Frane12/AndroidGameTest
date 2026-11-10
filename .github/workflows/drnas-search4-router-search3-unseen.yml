@@ -1,0 +1,141 @@
+name: DRNAS SEARCH4 router and SEARCH3 independent original 2024-25 holdout
+run-name: SEARCH4 select reverse VMTF original + SEARCH3 new 2024-25 SHA 240 1CPU E2E
+on:
+  push:
+    branches: [experiment/drnas-search4-router-search3-unseen-20261110]
+    paths:
+      - .github/workflows/drnas-search4-router-search3-unseen.yml
+      - research/drnas_search4_router_unseen.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-search4-holdout-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Freeze 16 official SAT24/25 original SHA with no solver/outcome source screening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Fetch pinned SEARCH3 native CDCL and SEARCH2 & EQUIV6 history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42779073673 -R Frane12/AndroidGameTest -n SEARCH3-16SHA-SEARCH2-DISJOINT-NATIVE-CAD301-FROZEN -D .
+          test -s mre_search3/bin/search3_cadical
+          test -s mre_search2/bin/search1_relabel
+          test -s mre_equiv6/manifest.json
+          test -s prior_search2/mre_equiv13/manifest.json
+          test -s mre_equiv6/bin/cadical_3_0_1
+          test -s built/bin/kissat_4_0_4
+          mkdir -p prior_hist
+          gh run download 42759838384 -R Frane12/AndroidGameTest -n equiv13-12-source-only-original-SHA-frozen-six-solvers -D prior_hist
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          sha256sum mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel
+      - name: Source-only prespecified 2024/25 original CNF freeze and HASH disjoint two cohorts
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -m py_compile research/drnas_search4_router_unseen.py
+          python3 -u research/drnas_search4_router_unseen.py freeze | tee mre_search4_freeze.log
+          grep -q '^SEARCH4_FROZEN ' mre_search4_freeze.log
+          python3 -u research/drnas_search4_router_unseen.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SEARCH4-S3HOLDOUT-official-SAT24-25-16SHA-sourceonly-frozen
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search4_fresh/manifest.json
+            mre_search4_fresh/freeze_progress.json
+            mre_search4_fresh/cases/*.cnf
+            mre_search4_freeze.log
+            mre_search3/bin/search3_cadical
+            mre_search2/bin/search1_relabel
+            mre_equiv6/bin/cadical_3_0_1
+            built/bin/kissat_4_0_4
+            mre_equiv6/manifest.json
+            prior_search2/mre_equiv13/manifest.json
+            prior_hist/**/manifest.json
+  paired:
+    name: ${{ matrix.group }} native original oneCPU two SHA x 2 repeats shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        group: [search3_holdout,search4_router]
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: SEARCH4-S3HOLDOUT-official-SAT24-25-16SHA-sourceonly-frozen
+          path: .
+      - name: Fixed original SHA and native CDCL decision priority one-core E2E
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search4_router_unseen.py verify
+          python3 -u research/drnas_search4_router_unseen.py shard --group ${{ matrix.group }} --shard ${{ matrix.shard }} | tee mre_search4_${{ matrix.group }}_${{ matrix.shard }}.log
+          grep -q '^SEARCH4_SHARD_PASS ' mre_search4_${{ matrix.group }}_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search4trial-${{ matrix.group }}-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_search4_fresh/${{ matrix.group }}/shard-${{ matrix.shard }}.json
+            mre_search4_${{ matrix.group }}_${{ matrix.shard }}.log
+  audit:
+    name: ${{ matrix.group }} independently validated original SHA PAR2 audit
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [search3_holdout,search4_router]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: SEARCH4-S3HOLDOUT-official-SAT24-25-16SHA-sourceonly-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: search4trial-${{ matrix.group }}-shard-*
+          path: mre_search4_fresh/${{ matrix.group }}
+          merge-multiple: true
+      - name: Strict count/PAR2/cross-solver outcome and original SAT witness audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+          python3 -u research/drnas_search4_router_unseen.py verify
+          python3 -u research/drnas_search4_router_unseen.py audit --group ${{ matrix.group }} | tee mre_search4_audit_${{ matrix.group }}.log
+          grep -q '^SEARCH4_FINAL ' mre_search4_audit_${{ matrix.group }}.log
+          grep '^SEARCH4_FINAL ' mre_search4_audit_${{ matrix.group }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEARCH4-FRESH-${{ matrix.group }}-ORIGINAL-SHA-PAR2-FINAL
+          retention-days: 30
+          path: |
+            mre_search4_fresh/manifest.json
+            mre_search4_fresh/${{ matrix.group }}/audit.json
+            mre_search4_fresh/${{ matrix.group }}/shard-*.json
+            mre_search4_audit_${{ matrix.group }}.log
