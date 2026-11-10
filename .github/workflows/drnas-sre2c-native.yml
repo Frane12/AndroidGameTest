@@ -1,0 +1,51 @@
+name: DRNAS SRE2-C live GF2 native CDCL communication
+run-name: SRE2-C 90 paired oneCPU live GF2 trail propagation vs SRE2B shadow and plain
+on:
+  push:
+    branches: [experiment/drnas-sre2c-live-gf2-20261110]
+    paths:
+      - research/drnas_sre2c_native.cpp
+      - research/drnas_sre2c_benchmark.py
+      - .github/workflows/drnas-sre2c-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sre2c:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile own native R3C CDCL plus SRE1 SRE2A SRE2B and GF2 live
+        run: |
+          set -euo pipefail
+          mkdir -p mre_sre2c/bin
+          python3 -m py_compile research/drnas_sre2c_benchmark.py
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic research/drnas_sre2c_native.cpp -o mre_sre2c/bin/drnas_sre2c
+          ldd mre_sre2c/bin/drnas_sre2c | tee mre_sre2c/ldd.log
+          ! grep -Ei 'cadical|kissat|cryptominisat|libipasir|libsat' mre_sre2c/ldd.log
+      - name: Recheck all structural reductions and native live GF2 original model
+        run: |
+          set -euo pipefail
+          mre_sre2c/bin/drnas_sre2c --selftest | tee mre_sre2c/selftest.log
+          grep -q '^SRE2C_SELFTEST_PASS ' mre_sre2c/selftest.log
+      - name: Run 90 native E2E source-verified oneCPU trials
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_sre2c_benchmark.py | tee mre_sre2c/benchmark.log
+          grep -q '^SRE2C_FINAL ' mre_sre2c/benchmark.log
+          grep '^SRE2C_FINAL ' mre_sre2c/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SRE2C-LIVE-GF2-CDCL-90-ONECPU-PROOF-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_sre2c/audit.json
+            mre_sre2c/*.cnf
+            mre_sre2c/*.log
+            mre_sre2c/bin/drnas_sre2c
