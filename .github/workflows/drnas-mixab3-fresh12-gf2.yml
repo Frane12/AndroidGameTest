@@ -1,0 +1,147 @@
+name: DRNAS MIXAB3 - 12 prospective official originals 12s GF2 CMS Kissat placebo
+run-name: MIXAB3 12 fresh SHA x 7 arms x 2 reps 12s 168 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-mixab3-frozen40-20s-20261110]
+    paths:
+      - .github/workflows/drnas-mixab3-fresh12-gf2.yml
+      - research/drnas_mixab3_fresh12_gf2.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mixab3-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Source-only SHA-ranked SAT2021-23 fresh originals plus pinned GF2 CMS Kissat binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore previous immutable solver binaries and original SHA registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42803240040 -R Frane12/AndroidGameTest -n mixab2-frozen40-CMS17-Kissat4-GF2 -D .
+          gh run download 42790519258 -R Frane12/AndroidGameTest -n combo1-source-sha-frozen-CMS17-Kissat4-Native-and-GF2-exact -D search5_staging
+          test -s search5_staging/mre_search5/manifest.json
+          mv search5_staging/mre_search5 ./mre_search5
+          test -s mre_search5/manifest.json
+          test -s mre_search6/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_gf2_s1/bin/gf2_exact
+          test -s mre_equiv12/bin/cryptominisat5
+          test -s built/bin/kissat_4_0_4
+          test -s mre_x4/bin/native
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          ldd mre_equiv12/bin/cryptominisat5 | tee mix-cms-ldd.txt
+          ! grep -q 'not found' mix-cms-ldd.txt
+          python3 -m py_compile research/drnas_mixab3_fresh12_gf2.py
+          python3 -u research/drnas_mixab3_fresh12_gf2.py selftest | tee mix-selftest.log
+          grep -q '^MIXAB3_SELFTEST_PASS ' mix-selftest.log
+          python3 -u research/drnas_mixab3_fresh12_gf2.py freeze | tee mix-freeze.log
+          grep -q '^MIXAB3_FROZEN ' mix-freeze.log
+          python3 -u research/drnas_mixab3_fresh12_gf2.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixab3-fresh12-CMS17-Kissat4-GF2
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_mixab3/manifest.json
+            mre_mixab3/selection-progress.json
+            mre_mixab3/cases/*.cnf
+            mre_gf2_s1/bin/gf2_exact
+            mre_search5/manifest.json
+                        mre_search6/manifest.json
+                        mre_equiv9/manifest.json
+                        mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_equiv7/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv10m5/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  shard:
+    name: 2 fresh official SHA x 2 reps x 7 arms one CPU shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixab3-frozen40-CMS17-Kissat4-GF2
+          path: .
+      - name: One logical CPU original SHA E2E with independent SAT and GF2 proof controls
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          python3 -u research/drnas_mixab3_fresh12_gf2.py verify
+          python3 -u research/drnas_mixab3_fresh12_gf2.py shard --shard "$SHARD" | tee "mre_mixab3/shard-$SHARD.log"
+          grep -q "^MIXAB3_SHARD_PASS $SHARD 28$" "mre_mixab3/shard-$SHARD.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixab3-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_mixab3/shard-${{ matrix.shard }}.json
+            mre_mixab3/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 168 prospective SHA source-only SAT cert GF2 direct vs external PAR2
+    needs: [freeze,shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixab3-frozen40-CMS17-Kissat4-GF2
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mixab3-shard-*
+          merge-multiple: true
+          path: mre_mixab3
+      - name: Fail closed on duplicate missing or wrong original SHA, independent GF2 and PAR2 audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          python3 -u research/drnas_mixab3_fresh12_gf2.py verify
+          for i in 0 1 2 3 4 5; do test -s "mre_mixab3/shard-$i.json"; done
+          python3 -u research/drnas_mixab3_fresh12_gf2.py audit | tee mre_mixab3/audit.log
+          grep -q '^MIXAB3_FINAL ' mre_mixab3/audit.log
+          grep '^MIXAB3_FINAL ' mre_mixab3/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MIXAB3-168-FRESH12-ONECPU-PAR2-STRICT-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_mixab3/manifest.json
+            mre_mixab3/report.json
+            mre_mixab3/audit.log
+            mre_mixab3/shard-*.json
