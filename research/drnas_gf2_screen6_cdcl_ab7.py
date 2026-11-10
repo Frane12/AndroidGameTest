@@ -258,7 +258,7 @@ def shard(i):
         save(ROOT/f"shard-{i}.json",rs)
         print("GF2_AB7_TRIAL "+json.dumps(rec,sort_keys=True),flush=True)
     need(len(rs)==len(ARMS),"incomplete paired shard")
-    print("GF2_AB7_SHARD_PASS "+json.dumps(dict(shard=i,trial_count=len(rs)),flush=True))
+    print("GF2_AB7_SHARD_PASS "+json.dumps(dict(shard=i,trial_count=len(rs))),flush=True)
 
 def audit():
     m=verify()
