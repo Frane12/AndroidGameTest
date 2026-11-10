@@ -1,0 +1,74 @@
+name: DRNAS SEARCH4 and SEARCH3 holdout audit-only recovery
+run-name: SEARCH4/S3HOLDOUT audit-only 240 completed SHA trials from run 42784853520
+on:
+  push:
+    branches: [experiment/drnas-search4-router-search3-unseen-20261110]
+    paths:
+      - .github/workflows/drnas-search4-audit-only-recovery.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-search4-audit-only-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: Reaudit 240 completed original SHA E2E, no reruns
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore original pinned source and all completed shard artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO=Frane12/AndroidGameTest
+          RUN=42784853520
+          gh run download "$RUN" -R "$REPO" -n SEARCH4-S3HOLDOUT-official-SAT24-25-16SHA-sourceonly-frozen -D .
+          for group in search3_holdout search4_router; do
+            for i in 0 1 2 3; do
+              gh run download "$RUN" -R "$REPO" -n "search4trial-${group}-shard-${i}" -D .
+            done
+          done
+          find mre_search4_fresh -type f -name 'shard-*.json' -print | sort
+          for group in search3_holdout search4_router; do
+            for i in 0 1 2 3; do
+              test -s "mre_search4_fresh/$group/shard-$i.json"
+            done
+          done
+          chmod +x mre_search3/bin/search3_cadical mre_search2/bin/search1_relabel mre_equiv6/bin/cadical_3_0_1 built/bin/kissat_4_0_4
+      - name: Verify registered SHA and freeze integrity
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_search4_router_unseen.py verify
+          echo SEARCH4_AUDIT_RECOVERY_SHA_VERIFIED
+      - name: Audit SEARCH3 original 2024-25 new cohort without repeating solver work
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_search4_router_unseen.py audit --group search3_holdout | tee search3_holdout_audit.log
+          grep -q '^SEARCH4_FINAL ' search3_holdout_audit.log
+          grep '^SEARCH4_FINAL ' search3_holdout_audit.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Audit SEARCH4 separately with zero solver reruns
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre5/lib"
+          python3 -u research/drnas_search4_router_unseen.py audit --group search4_router | tee search4_router_audit.log
+          grep -q '^SEARCH4_FINAL ' search4_router_audit.log
+          grep '^SEARCH4_FINAL ' search4_router_audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-SEARCH4-SEARCH3-HOLDOUT-240-ORIGINAL-SHA-PAR2-RECOVERED-AUDIT
+          retention-days: 30
+          path: |
+            mre_search4_fresh/manifest.json
+            mre_search4_fresh/search3_holdout/audit.json
+            mre_search4_fresh/search4_router/audit.json
+            search3_holdout_audit.log
+            search4_router_audit.log
