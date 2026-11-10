@@ -1,0 +1,165 @@
+name: DRNAS MIXAB4 - 6 reference-easy prospective originals 12s GF2 CMS Kissat LRAT placebo
+run-name: MIXAB4 6 reference-screened SHA x 6 arms x 2 reps 12s 72 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-mixab4-easy-lrat-20261110]
+    paths:
+      - .github/workflows/drnas-mixab4-easy-lrat.yml
+      - research/drnas_mixab4_easy_lrat.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mixab4-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Reference-only easy SAT2021-25 originals with independently checked LRAT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore immutable CMS Kissat GF2 binaries and prior SHA registries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42811023064 -R Frane12/AndroidGameTest -n mixab3-fresh12-CMS17-Kissat4-GF2 -D .
+          gh run download 42790519258 -R Frane12/AndroidGameTest -n combo1-source-sha-frozen-CMS17-Kissat4-Native-and-GF2-exact -D search5_staging
+          test -s search5_staging/mre_search5/manifest.json
+          mv search5_staging/mre_search5 ./mre_search5
+          test -s mre_search5/manifest.json
+          test -s mre_search6/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s mre_gf2_s1/bin/gf2_exact
+          test -s mre_equiv12/bin/cryptominisat5
+          test -s built/bin/kissat_4_0_4
+          test -s mre_x4/bin/native
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical gcc make
+          git clone -q https://github.com/marijnheule/drat-trim.git /tmp/drat-trim
+          git -C /tmp/drat-trim checkout -q 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          make -C /tmp/drat-trim lrat-check
+          mkdir -p mre_mixab4/bin
+          cp /tmp/drat-trim/lrat-check mre_mixab4/bin/lrat-check
+          chmod +x mre_mixab4/bin/lrat-check
+          cadical --version | tee mre_mixab4/cadical-version.txt
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          ldd mre_equiv12/bin/cryptominisat5 | tee mix-cms-ldd.txt
+          ! grep -q 'not found' mix-cms-ldd.txt
+          python3 -m py_compile research/drnas_mixab4_easy_lrat.py
+          python3 -u research/drnas_mixab4_easy_lrat.py selftest | tee mix-selftest.log
+          grep -q '^MIXAB4_SELFTEST_PASS ' mix-selftest.log
+          python3 -u research/drnas_mixab4_easy_lrat.py freeze | tee mix-freeze.log
+          grep -q '^MIXAB4_FROZEN ' mix-freeze.log
+          python3 -u research/drnas_mixab4_easy_lrat.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixab4-reference-easy6-CMS17-Kissat4-LRAT
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_mixab4/manifest.json
+            mre_mixab4/selection-progress.json
+            mre_mixab4/cases/*.cnf
+            mre_mixab4/proofs/*.lrat
+            mre_mixab4/bin/lrat-check
+            mre_mixab4/cadical-version.txt
+            mre_mixab3/manifest.json
+            mre_gf2_s1/bin/gf2_exact
+            mre_search5/manifest.json
+                        mre_search6/manifest.json
+                        mre_equiv9/manifest.json
+                        mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_equiv7/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv10m5/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  shard:
+    name: 2 reference-easy SHA x 2 reps x 6 arms one CPU shard ${{ matrix.shard }}
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixab4-reference-easy6-CMS17-Kissat4-LRAT
+          path: .
+      - name: One logical CPU original SHA E2E with independent SAT and GF2 proof controls
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          python3 -u research/drnas_mixab4_easy_lrat.py verify
+          python3 -u research/drnas_mixab4_easy_lrat.py shard --shard "$SHARD" | tee "mre_mixab4/shard-$SHARD.log"
+          grep -q "^MIXAB4_SHARD_PASS $SHARD 24$" "mre_mixab4/shard-$SHARD.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixab4-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_mixab4/shard-${{ matrix.shard }}.json
+            mre_mixab4/shard-${{ matrix.shard }}.log
+  audit:
+    name: Audit 72 reference-easy SHA external LRAT+GF2 SAT original PAR2
+    needs: [freeze,shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixab4-reference-easy6-CMS17-Kissat4-LRAT
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mixab4-shard-*
+          merge-multiple: true
+          path: mre_mixab4
+      - name: Fail closed on duplicate missing or wrong original SHA, independent GF2 and PAR2 audit
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          python3 -u research/drnas_mixab4_easy_lrat.py verify
+          for i in 0 1 2; do test -s "mre_mixab4/shard-$i.json"; done
+          python3 -u research/drnas_mixab4_easy_lrat.py audit | tee mre_mixab4/audit.log
+          grep -q '^MIXAB4_FINAL ' mre_mixab4/audit.log
+          grep '^MIXAB4_FINAL ' mre_mixab4/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MIXAB4-72-EASY6-LRAT-ONECPU-PAR2-STRICT-FINAL
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_mixab4/manifest.json
+            mre_mixab4/report.json
+            mre_mixab4/audit.log
+            mre_mixab4/proofs/*.lrat
+            mre_mixab4/shard-*.json
