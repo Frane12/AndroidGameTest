@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ARL1A: original SHA paired one CPU native first look, one probe, immediate decision.
-Compare two frozen original instances without solver-time-based selection. No changes to CDCL decisions.
+Compare frozen original inputs using the identical native solver with and without one bounded probe.
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_arl1a");OUT.mkdir(exist_ok=True)
