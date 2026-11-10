@@ -1,0 +1,75 @@
+name: DRNAS BCP1 40 frozen against Kissat
+run-name: BCP1 40 frozen CNFs A bcp1 Kissat 40s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-bcp1-40frozen-20261110]
+    paths:
+      - research/drnas_native_core_r3c.cpp
+      - research/drnas_factor42_native.cpp
+      - research/drnas_bcp1_40.py
+      - .github/workflows/drnas-bcp1-40frozen.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and verify source manifest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_bcp1_40.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential
+      - name: Restore pinned Kissat binary
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .reference-solvers/bin/kissat
+          key: bcp1-ubuntu2404-kissat-8af8e56f174b778aef3aa45af9f739b2a5f492c2-v1
+      - name: Build pinned Kissat only on cache miss
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .reference-solvers/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git .reference-solvers/kissat-src
+          git -C .reference-solvers/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd .reference-solvers/kissat-src && ./configure && make -j2)
+          install -m 755 .reference-solvers/kissat-src/build/kissat .reference-solvers/bin/kissat
+      - name: Always compile DRNAS BCP1
+        run: |
+          set -euo pipefail
+          mkdir -p mre_bcp1/bin
+          g++ -std=c++17 -O2 research/drnas_factor42_native.cpp -o mre_bcp1/bin/drnas_baseline
+          g++ -std=c++17 -O2 -DDRNAS_BCP1 research/drnas_factor42_native.cpp -o mre_bcp1/bin/drnas_bcp1
+          install -m 755 .reference-solvers/bin/kissat mre_bcp1/bin/kissat
+          ldd mre_bcp1/bin/kissat | tee mre_bcp1/kissat.ldd
+          ! grep -q 'not found' mre_bcp1/kissat.ldd
+      - name: Run eight source-frozen CNFs x A profile Kissat at 40 CPU seconds
+        env:
+          BCP1_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" \
+            python3 -u research/drnas_bcp1_40.py | tee mre_bcp1/benchmark.log
+          grep -q '^BCP1_FINAL ' mre_bcp1/benchmark.log
+          grep '^BCP1_FINAL ' mre_bcp1/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-BCP1-SHARD-${{ matrix.shard }}-40S-AUDIT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_bcp1/audit.json
+            mre_bcp1/sources.json
+            mre_bcp1/*.cnf
+            mre_bcp1/*.log
