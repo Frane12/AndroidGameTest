@@ -242,6 +242,7 @@ def verify():
     return m
 
 def selftest():
+    ROOT.mkdir(parents=True,exist_ok=True)
     need(gf.BIN.is_file() and CHECKER.is_file() and CADICAL.is_file(),
          "exact native scanner or independent LRAT checker absent")
     with tempfile.TemporaryDirectory() as td:
