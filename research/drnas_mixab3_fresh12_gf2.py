@@ -98,7 +98,7 @@ def signature():
         scanner_binary_sha=sha(gf.BIN),native_bin_sha=sha(e9.NATIVE),
         kissat_bin_sha=sha(e9.KISSAT),cms_bin_sha=sha(CMS),
         previous_registries=checks,
-        provenance="Fresh official SAT2021-23 source-only MiniSat1m indexed originals; GBD and SHA exclusion to available prior registries; fixed year quota; no solver selection")
+        provenance="Fresh official SAT2021-23 source-only indexed originals (MiniSat1m then main fallback); GBD and SHA exclusion to prior registries; fixed year quota; no solver selection")
 
 def freeze():
     import mre7_extended_easy_freeze as pool
@@ -116,8 +116,12 @@ def freeze():
              "official source index drift")
         official[yr]=dict(main_index_sha=h1,mini_index_sha=h2,
                           eligible_count=len(easy))
-        ordered=sorted(easy,key=lambda g:hashlib.sha256(
-            (SALT+"|"+yr+"|"+g).encode()).hexdigest())
+        # Precommitted metadata-only fallback to the complete official main track
+        # when MiniSat1m=yes originals exceed the geometry/byte limits.
+        orderkey=lambda g:hashlib.sha256(
+            (SALT+"|"+yr+"|"+g).encode()).hexdigest()
+        ordered=(sorted(easy,key=orderkey)+
+                 sorted((g for g in whole if g not in set(easy)),key=orderkey))
         taken=0
         for gbd in ordered:
             if taken==YEAR_QUOTA:break
@@ -139,7 +143,7 @@ def freeze():
                 need(n2==n and len(clauses)==k,"original DIMACS parse mismatch")
                 selected.append(dict(year=yr,gbd=gbd,sha256=ident,
                     filename=f.name,bytes=len(plain),vars=n,clauses=k,
-                    source_cohort="official_mini1m_no_outcome_selection"))
+                    source_cohort="official_main_source_only_no_outcome_selection"))
                 excluded_sha.add(ident)
                 excluded_ids.add(gbd)
                 taken+=1
