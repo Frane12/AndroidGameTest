@@ -128,9 +128,15 @@ def normalize(label,r,report):
   unsat_agree=sha64 in report.get("consensus_original_SHA",[])
  if label=="equiv9" and status=="UNSAT":
   unsat_agree=sha64 in report.get("UNSAT_reference_agreement_SHA",[])
+ if label=="decomp4" and status=="UNSAT":
+  unsat_agree=sha64 in report.get("UNSAT_reference_agreement_SHA",[])
  rawp=r.get("PAR2_s")
  if rawp is not None:
   par2=floatnum(rawp)
+  if label=="decomp4" and status=="UNSAT" and not unsat_agree:
+   # Actual backend time is retained in raw_json but final strict PAR2
+   # penalizes a Kissat-only UNSAT without independent backend agreement.
+   par2=2*cap
  else:
   par2=2*cap if status=="TIMEOUT" or (status=="UNSAT" and
                    (label in ("equiv7","equiv9") and not unsat_agree)) else wall
@@ -246,6 +252,19 @@ def ingest(db,root,label):
  report,report_sha=find_report(root,label)
  rows,files=raw_rows(root/label,label)
  need(len(rows)==s["n"],label+" wrong raw trial count "+str(len(rows)))
+ if label=="decomp4":
+  # Cross-backend agreement is source-level and independent of the
+  # individual native seed. Exactly seven original SHA were agreed.
+  grouped=collections.defaultdict(lambda:collections.defaultdict(set))
+  for row in rows:
+   grouped[source_id(row)][row["arm"]].add(row["status"])
+  consensus={src for src,modes in grouped.items()
+    if "UNSAT" in modes.get("kissat_raw",set())
+    and any("UNSAT" in statuses for mode,statuses in modes.items()
+            if mode!="kissat_raw")}
+  need(len(consensus)==int(report["cross_backend_UNSAT_no_LRAT"])==7,
+       "DECOMP4 source consensus SHA does not match final audit")
+  report["UNSAT_reference_agreement_SHA"]=sorted(consensus)
  for name,digest,nbytes in files:
   need(len(digest)==64 and nbytes>100,label+" invalid original artifact")
  parsed=[normalize(label,x,report) for x in rows]
