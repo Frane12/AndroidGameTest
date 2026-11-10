@@ -199,7 +199,7 @@ def derive_pairxor(base_path,folder,src):
         derived=[dict(vars=list(c),rhs=rhs,parent_i=candidates[(c,rhs)][0],
                       parent_j=candidates[(c,rhs)][1]) for c,rhs in chosen])
     filename=pathlib.Path(folder)/"pairxor.tsv"
-    filename.write_text("".join(f"{len(c)} {rhs} "+" ".join(map(str,c))+"\\n"
+    filename.write_text("".join(f"{len(c)} {rhs} "+" ".join(map(str,c))+"\n"
                            for c,rhs in chosen))
     # A separate pass independently replays EVERY derivation from the
     # independently verified source rows; fail closed on any discrepancy.
@@ -320,12 +320,7 @@ def trial(case,rep,arm,limit=CAP):
             if arm=="kissat_orig":
                 cmd=e9.command("kissat1",src,e9.seedpair(case["sha256"],rep)[0])
             else:
-                real_rows=rows
-            if mode in ("linear","linear_shadow"):real_rows=dfile
-            if mode=="linear_mixed":
-                real_rows=pathlib.Path(folder)/"mixed.tsv"
-                real_rows.write_text(rows.read_text()+dfile.read_text())
-            cmd=[DRIVER,mode,src,real_rows]
+                cmd=[DRIVER,mode,src,rows]
             result,verified,metrics,solverwall=run_child(cmd,clauses,remaining,cpu)
     elapsed=time.perf_counter()-begin
     if elapsed>=limit:result="TIMEOUT";verified=False
@@ -370,7 +365,12 @@ def selftest():
         cpu=min(os.sched_getaffinity(0))
         answers={}
         for mode in ("clean","active","linear","linear_mixed","linear_shadow"):
-            cmd=[DRIVER,mode,src,rows]
+            real_rows=rows
+            if mode in ("linear","linear_shadow"):real_rows=dfile
+            if mode=="linear_mixed":
+                real_rows=pathlib.Path(folder)/"mixed.tsv"
+                real_rows.write_text(rows.read_text()+dfile.read_text())
+            cmd=[DRIVER,mode,src,real_rows]
             status,checked,tele,wall=run_child(cmd,original,3,cpu)
             need(status=="SAT" and checked and tele.get("disabled")==0,
                  "toy original SAT model or callback state "+mode)
