@@ -1,0 +1,69 @@
+name: DRNAS GF-CDCL CONFLICT1 native proof-checked XOR conflict experiment
+run-name: GF-CDCL CONFLICT1 2 frozen source SHA x 4 arms x 2 reps 6s 16 oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-gf-cdcl-conflict1-20261110]
+    paths:
+      - .github/workflows/drnas-gf-cdcl-conflict1.yml
+      - research/drnas_gf_cdcl_conflict1.cpp
+      - research/drnas_gf_cdcl_conflict1_smoke.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gf-cdcl-conflict1-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  smoke:
+    name: Rebuild pinned CaDiCaL and compare real-trail GF2 conflict vs placebo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore frozen 40 original SHA and verified XOR native source rows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42814965607 -R Frane12/AndroidGameTest -n xorabc3-frozen40-CaDiCaL210-live-Kissat-CMS -D .
+          test -s mre_xorabc3/manifest.json
+          test -s mre_xorabc3/cadical-source-commit.txt
+          test -s mre_xorabc3/bin/xorabc3_trail
+          test -s mre_xorabc3/bin/xorabc3_rows
+          test -s mre_xorabc2/manifest.json
+          chmod +x mre_xorabc3/bin/xorabc3_trail mre_xorabc3/bin/xorabc3_rows
+          chmod +x mre_xorabc2/bin/xorabc2_native
+          chmod +x mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          python3 -m py_compile research/drnas_gf_cdcl_conflict1_smoke.py
+      - name: Compile GF-CDCL full-row conflict extension with exact same source-pinned CaDiCaL
+        run: |
+          set -euo pipefail
+          mkdir -p mre_gf_cdcl_conflict1/bin
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/gfcdcl-cadical
+          cd /tmp/gfcdcl-cadical
+          git checkout -q "$(cat "$GITHUB_WORKSPACE/mre_xorabc3/cadical-source-commit.txt")"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src "$GITHUB_WORKSPACE/research/drnas_gf_cdcl_conflict1.cpp" ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_gf_cdcl_conflict1/bin/gf_cdcl_conflict1"
+          cd "$GITHUB_WORKSPACE"
+          mre_gf_cdcl_conflict1/bin/gf_cdcl_conflict1 selftest | tee mre_gf_cdcl_conflict1/native-selftest.log
+          grep -q '^GFCDCL_CONFLICT1_SELFTEST_PASS ' mre_gf_cdcl_conflict1/native-selftest.log
+          grep -q '^R148_DIRECT_SELFTEST_PASS ' mre_gf_cdcl_conflict1/native-selftest.log
+      - name: Two SHA original E2E single CPU conflict direct shadow and clean
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          python3 -u research/drnas_gf_cdcl_conflict1_smoke.py | tee mre_gf_cdcl_conflict1/smoke.log
+          grep -q '^GFCDCL_CONFLICT1_SMOKE_PASS 16$' mre_gf_cdcl_conflict1/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-GF-CDCL-CONFLICT1-16-FROZEN-ONECPU-SMOKE
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_gf_cdcl_conflict1/native-selftest.log
+            mre_gf_cdcl_conflict1/smoke.json
+            mre_gf_cdcl_conflict1/smoke.log
