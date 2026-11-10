@@ -68,8 +68,8 @@ static SRE1 sre1_reduce(const CNF& input,bool enable_gf2_pairs=true) {
     const int n=input.vars;
     std::vector<std::vector<int>> adj(2*n),rev(2*n);
     auto edge=[&](int a,int b){
-        adj[at(a)].push_back(at(b));
-        rev[at(b)].push_back(at(a));
+        adj[SRE1::at(a)].push_back(SRE1::at(b));
+        rev[SRE1::at(b)].push_back(SRE1::at(a));
         ++z.graph_arcs;
     };
     auto add_binary=[&](int a,int b){
@@ -133,7 +133,7 @@ static SRE1 sre1_reduce(const CNF& input,bool enable_gf2_pairs=true) {
         ++components;
     }
     z.graph_scc=components;
-    for(int v=1;v<=n;++v)if(comp[at(v)]==comp[at(-v)])
+    for(int v=1;v<=n;++v)if(comp[SRE1::at(v)]==comp[SRE1::at(-v)])
         z.contradiction=true;
     if(z.contradiction){
         // A contradictory implication SCC is sound UNSAT (raw/no LRAT).
@@ -144,7 +144,7 @@ static SRE1 sre1_reduce(const CNF& input,bool enable_gf2_pairs=true) {
     }
     std::vector<int> root(components,INT_MAX);
     for(int v=1;v<=n;++v){
-        int pair=std::min(comp[at(v)],comp[at(-v)]);
+        int pair=std::min(comp[SRE1::at(v)],comp[SRE1::at(-v)]);
         root[pair]=std::min(root[pair],v);
     }
     std::vector<int> root_index(n+1,0);
@@ -152,11 +152,11 @@ static SRE1 sre1_reduce(const CNF& input,bool enable_gf2_pairs=true) {
     std::vector<uint8_t> inverted(n+1,0);
     int initial=0;
     for(int v=1;v<=n;++v){
-        const int p=std::min(comp[at(v)],comp[at(-v)]);
+        const int p=std::min(comp[SRE1::at(v)],comp[SRE1::at(-v)]);
         const int r=root[p];
         require(r>=1 && r<=n,"SRE1 SCC representative invalid");
         representative[v]=r;
-        inverted[v]=(comp[at(v)]!=comp[at(r)]);
+        inverted[v]=(comp[SRE1::at(v)]!=comp[SRE1::at(r)]);
         if(r!=v){++z.equivalences;z.opposite_equivalences+=inverted[v];}
         if(!root_index[r])root_index[r]=++initial;
         const int k=root_index[r];
