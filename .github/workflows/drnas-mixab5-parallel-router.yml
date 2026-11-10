@@ -1,0 +1,168 @@
+name: DRNAS MIXAB5 - 10 router arms parallel oneCPU source-locked pilot
+run-name: MIXAB5 6 seen original SHA x 10 arms x 2 reps 12s 120 E2E matrix
+on:
+  push:
+    branches: [experiment/drnas-mixab5-parallel-router-20261110]
+    paths:
+      - research/drnas_mixab5_parallel_router.py
+      - .github/workflows/drnas-mixab5-parallel-router.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-mixab5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  freeze:
+    name: Restore independent MIXAB4 original CNF and proof snapshots; freeze 10 arms
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact source, binaries and certifiers; no reselection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42816574288 -R Frane12/AndroidGameTest -n mixab4-reference-easy6-CMS17-Kissat4-LRAT -D .
+          test -s mre_mixab4/manifest.json
+          test -s mre_mixab3/manifest.json
+          test -s mre_mixab4/bin/drat-trim
+          test -s mre_mixab4/bin/lrat-check
+          test -s mre_equiv12/bin/cryptominisat5
+          test -s mre_gf2_s1/bin/gf2_exact
+          test -s built/bin/kissat_4_0_4
+          chmod +x mre_mixab4/bin/drat-trim mre_mixab4/bin/lrat-check
+          chmod +x mre_equiv12/bin/cryptominisat5 mre_gf2_s1/bin/gf2_exact built/bin/kissat_4_0_4 mre_x4/bin/native
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          ldd mre_equiv12/bin/cryptominisat5 | tee mixab5-cms-ldd.log
+          ! grep -q 'not found' mixab5-cms-ldd.log
+          python3 -m py_compile research/drnas_mixab5_parallel_router.py
+          python3 -u research/drnas_mixab5_parallel_router.py freeze | tee mixab5-freeze.log
+          grep -q '^MIXAB5_FROZEN ' mixab5-freeze.log
+          python3 -u research/drnas_mixab5_parallel_router.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixab5-immutable-seen6-cms-kissat-gf2-drat-lrat
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            mre_mixab5/manifest.json
+            mre_mixab4/manifest.json
+            mre_mixab4/cases/*.cnf
+            mre_mixab4/proofs/*.lrat
+            mre_mixab4/proofs/*.drat
+            mre_mixab4/bin/*
+            mre_mixab3/manifest.json
+            mre_search5/manifest.json
+            mre_search6/manifest.json
+            mre_equiv9/manifest.json
+            mre_equiv7/manifest.json
+            mre_equiv10medium/manifest.json
+            mre_equiv10m5/manifest.json
+            mre_x20/manifest.json
+            prior_x22/mre_x22/manifest.json
+            prior_equiv6/mre_equiv6/manifest.json
+            mre_gf2_s1/bin/gf2_exact
+            mre_equiv12/bin/cryptominisat5
+            mre_equiv12/lib/libcryptominisat5.so*
+            mre_x4/bin/native
+            built/bin/kissat_4_0_4
+            mre5/lib/libcryptominisat5.so.5.11
+  shard:
+    name: "MIXAB5 parallel ${{ matrix.arm }} / source shard ${{ matrix.shard }}"
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0, 1, 2]
+        arm:
+          - cms_plain
+          - kissat_plain
+          - combo_budget
+          - combo_budget_placebo
+          - router_vars
+          - router_bytes
+          - router_dense
+          - router_sparse
+          - router_clauses
+          - router_union
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixab5-immutable-seen6-cms-kissat-gf2-drat-lrat
+          path: .
+      - name: One logical CPU per variant, original CNF, separate runners
+        env:
+          ARM: ${{ matrix.arm }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_mixab4/bin/* mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          python3 -u research/drnas_mixab5_parallel_router.py verify
+          python3 -u research/drnas_mixab5_parallel_router.py shard --arm "$ARM" --shard "$SHARD" | tee "mre_mixab5/shard-$SHARD-$ARM.log"
+          grep -q "^MIXAB5_SHARD_PASS $SHARD $ARM 4$" "mre_mixab5/shard-$SHARD-$ARM.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixab5-result-${{ matrix.arm }}-s${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            mre_mixab5/shard-${{ matrix.shard }}-${{ matrix.arm }}.json
+            mre_mixab5/shard-${{ matrix.shard }}-${{ matrix.arm }}.log
+  audit:
+    name: Strict full matched 120 E2E PAR2 audit / SHA verified SAT and independent UNSAT
+    needs: [freeze, shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixab5-immutable-seen6-cms-kissat-gf2-drat-lrat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mixab5-result-*
+          merge-multiple: true
+          path: mre_mixab5
+      - name: Fail closed for missing or duplicate arms, SHA, proof or single CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical
+          export LD_LIBRARY_PATH="$PWD/mre_equiv12/lib:$PWD/mre5/lib"
+          chmod +x mre_mixab4/bin/* mre_gf2_s1/bin/gf2_exact mre_equiv12/bin/cryptominisat5 built/bin/kissat_4_0_4 mre_x4/bin/native
+          python3 -u research/drnas_mixab5_parallel_router.py verify
+          test "$(find mre_mixab5 -maxdepth 1 -name 'shard-*.json' | wc -l)" -eq 30
+          python3 -u research/drnas_mixab5_parallel_router.py audit | tee mre_mixab5/audit.log
+          grep -q '^MIXAB5_FINAL ' mre_mixab5/audit.log
+          grep '^MIXAB5_FINAL ' mre_mixab5/audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-MIXAB5-120-TEN-ARMS-PARALLEL-STRICT-PAR2-PILOT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_mixab5/manifest.json
+            mre_mixab5/report.json
+            mre_mixab5/audit.log
+            mre_mixab5/shard-*.json
