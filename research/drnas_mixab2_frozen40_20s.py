@@ -171,7 +171,7 @@ def backend(c,rep,name,seconds):
     return cms_trial(c,rep,seconds)
 
 def shape_gate(c):
-    clauses=c.get("clauses",c.get("original_source_signals",{}).get("clauses",0))
+    clauses=c.get("clauses",c.get("source_signals",c.get("original_source_signals",{})).get("clauses",0))
     need(clauses>0 and c["bytes"]>0,"source-only shape metadata unavailable")
     return clauses<=GATE_MAX_CLAUSES and c["bytes"]<=GATE_MAX_BYTES
 
