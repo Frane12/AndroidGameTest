@@ -190,4 +190,6 @@ if __name__=="__main__":
     elif a.action=="freeze":freeze()
     elif a.action=="verify":verify();print("GF2_S2_VERIFY_PASS",flush=True)
     elif a.action=="shard":engine.shard(a.shard)
-    elif a.action=="audit":engine.audit()
+    elif a.action=="audit":
+        engine.audit()
+        print("GF2_S2_FINAL "+json.dumps(read(ROOT/"report.json"),sort_keys=True),flush=True)
