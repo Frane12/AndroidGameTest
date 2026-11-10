@@ -188,6 +188,41 @@ class NativeCDCL {
     double cap_s_ = 10.0;
     bool resource_limit_ = false;
     Statistics stats_;
+#ifdef DRNAS_WATCH_DIAG
+    // Diagnostic counters only. The CDCL algorithm and watched-literal data
+    // structures are unchanged, so R3C and WATCH1 execute the same search.
+    struct WatchDiag {
+        uint64_t trail_lits=0, watchlist_nonempty=0, watchlist_entries=0, watchlist_peak=0;
+        uint64_t visits_original=0, visits_learned=0, binary_visits=0, long_visits=0;
+        uint64_t blocker_satisfied=0, candidate_scans=0, candidate_probes=0;
+        uint64_t watch_moves=0, scan_exhausted=0, unit_implications=0, clause_conflicts=0;
+        std::array<uint64_t,7> width_visits{};
+    } watch_diag_;
+public:
+    void print_watch_diag() const {
+        const auto& w=watch_diag_;
+        std::cout<<"DRNAS_WATCH1"
+            <<" trail_lits="<<w.trail_lits
+            <<" watchlist_nonempty="<<w.watchlist_nonempty
+            <<" watchlist_entries="<<w.watchlist_entries
+            <<" watchlist_peak="<<w.watchlist_peak
+            <<" visits_original="<<w.visits_original
+            <<" visits_learned="<<w.visits_learned
+            <<" binary_visits="<<w.binary_visits
+            <<" long_visits="<<w.long_visits
+            <<" blocker_satisfied="<<w.blocker_satisfied
+            <<" candidate_scans="<<w.candidate_scans
+            <<" candidate_probes="<<w.candidate_probes
+            <<" watch_moves="<<w.watch_moves
+            <<" scan_exhausted="<<w.scan_exhausted
+            <<" unit_implications="<<w.unit_implications
+            <<" clause_conflicts="<<w.clause_conflicts;
+        for(size_t i=0;i<w.width_visits.size();++i)
+            std::cout<<" width_bucket_"<<i<<"="<<w.width_visits[i];
+        std::cout<<"\n";
+    }
+private:
+#endif
 #ifdef DRNAS_PROFILE
     double profile_bcp_s_=0,profile_xor_s_=0,profile_analyze_s_=0,profile_select_s_=0,profile_update_s_=0,profile_clock_s_=0;
     uint64_t profile_samples_=0;
@@ -341,27 +376,61 @@ private:
             const int true_lit = trail_[propagation_head_++];
             ++stats_.propagations;
             auto& list = watches_[watch_index(-true_lit)];
+#ifdef DRNAS_WATCH_DIAG
+            ++watch_diag_.trail_lits;
+            if(!list.empty())++watch_diag_.watchlist_nonempty;
+            watch_diag_.watchlist_entries+=list.size();
+            watch_diag_.watchlist_peak=std::max<uint64_t>(watch_diag_.watchlist_peak,list.size());
+#endif
             size_t read = 0, write = 0;
             while (read < list.size()) {
                 const int cid = list[read++];
                 ++stats_.watch_visits;
                 auto& clause = clauses_[cid].lits;
                 require(clause.size() >= 2, "broken watch on unit clause");
+#ifdef DRNAS_WATCH_DIAG
+                if(clauses_[cid].learned) ++watch_diag_.visits_learned;
+                else ++watch_diag_.visits_original;
+                const size_t width=clause.size();
+                if(width==2) ++watch_diag_.binary_visits;
+                else ++watch_diag_.long_visits;
+                const size_t bucket=(width==2 ? 0 : width==3 ? 1 : width==4 ? 2 :
+                                    width<=8 ? 3 : width<=16 ? 4 : width<=32 ? 5 : 6);
+                ++watch_diag_.width_visits[bucket];
+#endif
                 if (clause[0] == -true_lit) std::swap(clause[0], clause[1]);
                 require(clause[1] == -true_lit, "watch invariant violated");
                 if (lit_value(clause[0]) == 1) {
+#ifdef DRNAS_WATCH_DIAG
+                    ++watch_diag_.blocker_satisfied;
+#endif
                     list[write++] = cid;
                     continue;
                 }
+#ifdef DRNAS_WATCH_DIAG
+                if(clause.size()>2) ++watch_diag_.candidate_scans;
+#endif
                 size_t candidate = clause.size();
                 for (size_t k = 2; k < clause.size(); ++k) {
+#ifdef DRNAS_WATCH_DIAG
+                    ++watch_diag_.candidate_probes;
+#endif
                     if (lit_value(clause[k]) != -1) { candidate = k; break; }
                 }
                 if (candidate != clause.size()) {
+#ifdef DRNAS_WATCH_DIAG
+                    ++watch_diag_.watch_moves;
+#endif
                     std::swap(clause[1], clause[candidate]);
                     watches_[watch_index(clause[1])].push_back(cid);
                     continue;
                 }
+#ifdef DRNAS_WATCH_DIAG
+                if(clause.size()>2) ++watch_diag_.scan_exhausted;
+                const int other_value=lit_value(clause[0]);
+                if(other_value==-1)++watch_diag_.clause_conflicts;
+                else if(other_value==0)++watch_diag_.unit_implications;
+#endif
                 list[write++] = cid;
                 if (lit_value(clause[0]) == -1 || !enqueue(clause[0], cid)) {
                     // The remaining watcher IDs must stay installed even when
