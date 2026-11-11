@@ -133,7 +133,7 @@ def main():
             for arm in ARMS:
                 result = run(source, arm, rep, cap)
                 rows.append(result)
-                print("ATLAS23_TRIAL " + json.dumps(result, sort_keys=True), flush=True)
+                print("ATLAS34_TRIAL " + json.dumps(result, sort_keys=True), flush=True)
                 if result["status"] != "UNKNOWN":
                     statuses.add(result["status"])
             if "SAT_VERIFIED" in statuses and "UNSAT_UNVERIFIED" in statuses:
@@ -144,7 +144,7 @@ def main():
     target = ROOT / args.cohort / f"result_{args.shard}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n")
-    print("ATLAS23_FINAL " + json.dumps(dict(cohort=args.cohort, trials=len(rows),
+    print("ATLAS34_FINAL " + json.dumps(dict(cohort=args.cohort, trials=len(rows),
           summary=data["summary"]), sort_keys=True), flush=True)
 
 if __name__ == "__main__":
