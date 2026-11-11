@@ -153,7 +153,9 @@ def run_arm(case, arm, rep, models, tmpdir, allowed):
                 "UNSAT_EXHAUSTIVE" if rc==20 else "UNKNOWN"),
                 e2e_s=round(e2e,7),
                 par2_s=round(e2e if solved else 2*CAP,7),
-                probe_s=round(probe_s,7),added_clauses=len(added),\n                conflicts=int(telemetry.get("conflicts","0")),\n                decisions=int(telemetry.get("decisions","0")),
+                probe_s=round(probe_s,7),added_clauses=len(added),
+                conflicts=int(telemetry.get("conflicts","0")),
+                decisions=int(telemetry.get("decisions","0")),
                 independent_lrat=False,one_cpu=True)
 
 
@@ -167,7 +169,9 @@ def summarize(rows):
                           median_ms=round(statistics.median(x["e2e_s"] for x in grp)*1000,4),
                           matched=sum(x["memory_match"] for x in grp),
                           activated=sum(x["action"]=="MI_XOR" for x in grp),
-                          new_clauses=sum(x["added_clauses"] for x in grp),\n                          conflicts=sum(x["conflicts"] for x in grp),\n                          decisions=sum(x["decisions"] for x in grp))
+                          new_clauses=sum(x["added_clauses"] for x in grp),
+                          conflicts=sum(x["conflicts"] for x in grp),
+                          decisions=sum(x["decisions"] for x in grp))
     return summary
 
 
@@ -262,7 +266,8 @@ def main():
             "train_formulas":len(train_cases),
             "recognized_signatures":len(frozen["seen"]),
             "positive_signatures":len(frozen["positive"]),
-            "training_observations":len([x for x in trials if x["arm"]=="MI_XOR"]),\n            "historic_training_formula_shas":len(frozen["training_shas"])
+            "training_observations":len([x for x in trials if x["arm"]=="MI_XOR"]),
+            "historic_training_formula_shas":len(frozen["training_shas"])
         }),flush=True)
         for i,case in enumerate(test_cases):
             models=list(oracle(case["clauses"],N))
