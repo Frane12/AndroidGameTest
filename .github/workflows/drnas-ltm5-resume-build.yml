@@ -1,0 +1,96 @@
+name: DRNAS LTM5 RESUME - isolated native build and benchmark
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/drnas-ltm5-resume-build.yml'
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'smoke_only = verify/compile; smoke_and_benchmark = 48 matched one-CPU E2E trials'
+        required: true
+        default: smoke_and_benchmark
+        type: choice
+        options:
+          - smoke_and_benchmark
+          - smoke_only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-ltm5-resume-single-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native_ltm5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    steps:
+      - name: Checkout frozen LTM5 source, independent of old queued runs
+        uses: actions/checkout@v4
+        with:
+          ref: '06c665585168f3058b1b1bd5b124b70e2636fa7a'
+          persist-credentials: false
+      - name: Verify exactly which code is tested
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "06c665585168f3058b1b1bd5b124b70e2636fa7a"
+          echo "Pinned source SHA: 06c665585168f3058b1b1bd5b124b70e2636fa7a" >> "$GITHUB_STEP_SUMMARY"
+          echo "Original queued runs remain untouched; no APK build is requested." >> "$GITHUB_STEP_SUMMARY"
+      - name: LTM5 graph proof selftests, generators and native C++ compile
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python3 -m unittest discover -s mi_ltm5 -p 'test_*.py' -v
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm5
+          python3 - <<'PY'
+          import pathlib, subprocess, tempfile
+          from mi_ltm5.cdcl_bridge import write_derived
+          from mi_ltm5.xor_fixtures import xor_clauses
+          source = xor_clauses((1,2,3),0) + xor_clauses((2,3,4),1)
+          original = "p cnf 4 %d\n" % len(source) + "".join(
+              " ".join(map(str, c)) + " 0\n" for c in source)
+          with tempfile.TemporaryDirectory() as tmp:
+              base = pathlib.Path(tmp) / "base.cnf"
+              derived = pathlib.Path(tmp) / "derived.cnf"
+              base.write_text(original)
+              stats = write_derived(base, derived)
+              assert stats["added"] == 2, stats
+              assert base.read_text() == original
+              for arm, formula in (("BASE", base), ("LTM5", derived)):
+                  cmd = ["mre_atlas23/bin/drnas_ltm5", str(formula), "--mode",
+                         "A36_75", "--time", "3", "--seed", "1", "--policy", "1.0,0.85"]
+                  out = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                  print("LTM5_NATIVE_TOY", arm, "exit", out.returncode, flush=True)
+                  assert out.returncode == 10, (arm, out.returncode, out.stdout[-500:], out.stderr[-500:])
+          PY
+          echo 'LTM5_NATIVE_SMOKE_PASS' >> "$GITHUB_STEP_SUMMARY"
+      - name: Benchmark 48 matched native original-CNF trials (one CPU per arm)
+        if: ${{ github.event_name == 'push' || inputs.scope == 'smoke_and_benchmark' }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" python3 -u mi_ltm5/native_benchmark.py | tee bench.log
+          grep '^LTM5_NATIVE_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^LTM5_NATIVE_AUDIT_PASS ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload small audit artifacts only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LTM5-resume-native-audit
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            bench.log
+            ltm5_native_results/results.json
