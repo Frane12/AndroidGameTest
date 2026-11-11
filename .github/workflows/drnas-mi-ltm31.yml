@@ -1,0 +1,60 @@
+name: DRNAS MI-LTM3.1 delayed XOR after native preflight
+run-name: LTM3.1 96 hard SAT x 2 reps x staged delayed XOR chain 2s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-mi-ltm31-delayed-20261111]
+    paths:
+      - "mi_ltm31/**"
+      - ".github/workflows/drnas-mi-ltm31.yml"
+  workflow_dispatch:
+concurrency:
+  group: mi-ltm31-\${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  delayed-intervention:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test proof provenance and delayed holdout
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s mi_ltm3 -p 'test_*.py' -v
+          python3 -m unittest discover -s mi_ltm31 -p 'test_*.py' -v
+      - name: Build native DRNAS CDCL
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - name: Canary 4 SHA x 2 reps x 3 arms
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm31/delayed.py --smoke --generation "\${{ github.run_number }}" | tee MI_LTM31_SMOKE.log
+          grep '^MI_LTM31_FINAL ' MI_LTM31_SMOKE.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Full 96 SHA x 2 reps x 3 arms one logical CPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm31/delayed.py --generation "\${{ github.run_number }}" | tee MI_LTM31.log
+          grep '^MI_LTM31_FINAL ' MI_LTM31.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload paired JSON audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MI-LTM31-DELAYED-96HARD-2s
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            MI_LTM31_FINAL.json
+            MI_LTM31.log
+            MI_LTM31_SMOKE.json
+            MI_LTM31_SMOKE.log
