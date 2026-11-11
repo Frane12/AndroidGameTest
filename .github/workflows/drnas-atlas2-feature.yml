@@ -1,0 +1,78 @@
+name: DRNAS ATLAS2 real source-fixed software feature models
+run-name: ATLAS2 FEATURE 4 real source-frozen software CNFs 5 arms oneCPU
+on:
+  push:
+    branches: [experiment/drnas-atlas2-structured-batch-20261111]
+    paths:
+      - research/drnas_atlas1_generate.py
+      - research/drnas_atlas1.cpp
+      - research/drnas_atlas2.cpp
+      - research/drnas_atlas2_generate_structured.py
+      - research/drnas_atlas2_bench.py
+      - research/drnas_atlas2_feature_bench.py
+      - research/drnas_atlas2_smoke.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-atlas2-feature.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas2_feature_bench.py research/drnas_atlas1_generate.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas2_features/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_atlas2_features/kissat-src
+          git -C mre_atlas2_features/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_atlas2_features/kissat-src && ./configure && make -j2)
+          install -m 755 mre_atlas2_features/kissat-src/build/kissat mre_atlas2_features/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_atlas2_features/bin/cadical
+      - name: Generate frozen 2 to 4-input NPN catalog and recipes
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas1_generate.py --out mre_atlas2_features/atlas1_table.hpp
+      - name: Build standalone ATLAS1 and ATLAS2 for real HWMCC CNFs
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -I mre_atlas2_features research/drnas_atlas2.cpp -o mre_atlas2_features/bin/drnas_atlas2
+          g++ -std=c++17 -O2 -I mre_atlas2_features research/drnas_atlas1.cpp -o mre_atlas2_features/bin/drnas_atlas1
+          mre_atlas2_features/bin/drnas_atlas2 --atlas-selftest
+          g++ -std=c++17 -O2 research/drnas_native_core_r3c.cpp -o mre_atlas2_features/bin/selftest
+          mre_atlas2_features/bin/selftest --selftest
+      - name: Original software feature CNF SHA model-checked SAT E2E PAR2
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas2_feature_bench.py | tee mre_atlas2_features/benchmark.log
+          grep '^ATLAS2_FEATURE_FINAL ' mre_atlas2_features/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ATLAS2-FEATURE-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlas2_features/audit.json
+            mre_atlas2_features/source.json
+            mre_atlas2_features/*.cnf
+            mre_atlas2_features/*.log
+            mre_atlas2_features/route_decision.json
+
+
+
