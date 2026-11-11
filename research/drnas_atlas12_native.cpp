@@ -242,7 +242,7 @@ int main(int argc,char**argv){
   int status=0;
   drnas::NativeCDCL solver(work.vars);
   if(c_arm){
-   solver.atlas12_enable_c(trial_seed,mode!="C_RANDOM");
+   solver.atlas12_enable_c(trial_seed,mode!="C_RANDOM",mode=="C4_LBD"||mode=="C4_LBD_GAUSS");
   }
   if(!gauss.conflict){
    solver.add_cnf(work);
