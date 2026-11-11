@@ -7,6 +7,27 @@ from collections import defaultdict
 from drnas_atlas26_php import prove_php
 
 def prove_php_subset(clauses):
+    # Compute sound consequences from explicit unit clauses on original CNF.
+    # This is logically equivalent to the native gate's bounded UP; the
+    # mathematical PHP structure is independently reconstructed below.
+    units={}
+    for _ in range(3):
+        changed=False
+        for clause in clauses:
+            if any(units.get(abs(v))==(v>0) for v in clause):continue
+            remaining=[v for v in clause if abs(v) not in units]
+            if len(remaining)==0:return None
+            if len(remaining)==1:
+                lit=remaining[0]
+                var=abs(lit)
+                if var in units and units[var]!=(lit>0):return None
+                if var not in units:units[var]=(lit>0);changed=True
+        if not changed:break
+    simplified=[]
+    for clause in clauses:
+        if any(units.get(abs(v))==(v>0) for v in clause):continue
+        simplified.append([v for v in clause if abs(v) not in units])
+    clauses=simplified
     neg=[c for c in clauses if len(c)==2 and all(v<0 for v in c)]
     groups_by_width=defaultdict(list)
     for c in clauses:
