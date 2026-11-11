@@ -1,0 +1,150 @@
+name: DRNAS emergency queue cleanup
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run = inspect; cancel = regular cancel; force = force-cancel after a failed cancel attempt"
+        type: choice
+        required: true
+        default: cancel
+        options:
+          - dry-run
+          - cancel
+          - force
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: drnas-emergency-queue-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Cancel only verified queued LTM5/APK runs without runners
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLEANUP_MODE: ${{ inputs.mode }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          mode = os.environ["CLEANUP_MODE"]
+          if repo != "Frane12/AndroidGameTest":
+              raise SystemExit("Repository safety check failed")
+          if mode not in ("dry-run", "cancel", "force"):
+              raise SystemExit("Invalid cleanup mode")
+
+          allowed_names = {
+              "DRNAS LTM5 certified graph into native CDCL",
+              "Build Zvjezdana Macka APK",
+          }
+          branch_prefix = "experiment/drnas-ltm5-"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": "Bearer " + token,
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "drnas-queue-cleanup",
+          }
+
+          def api(path, method="GET"):
+              req = Request("https://api.github.com" + path, headers=headers, method=method)
+              try:
+                  with urlopen(req, timeout=25) as response:
+                      data = response.read()
+                      return response.status, json.loads(data) if data else {}
+              except HTTPError as error:
+                  return error.code, {"error": error.read().decode("utf-8", "replace")[:500]}
+
+          def get(path):
+              status, data = api(path)
+              if status != 200:
+                  raise RuntimeError(f"GET {path}: HTTP {status}, {data}")
+              return data
+
+          def is_target(run):
+              return (
+                  run.get("status") == "queued"
+                  and run.get("conclusion") is None
+                  and str(run.get("head_branch") or "").startswith(branch_prefix)
+                  and run.get("name") in allowed_names
+              )
+
+          def has_no_runner(run_id):
+              jobs = get(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100")
+              if jobs.get("total_count", 0) > len(jobs.get("jobs", [])):
+                  return False
+              for job in jobs.get("jobs", []):
+                  if job.get("runner_id") is not None or job.get("runner_name"):
+                      return False
+                  if job.get("status") == "in_progress" or job.get("steps"):
+                      return False
+              return True
+
+          candidates = []
+          for page in range(1, 9):
+              response = get(f"/repos/{repo}/actions/runs?status=queued&per_page=100&page={page}")
+              runs = response.get("workflow_runs", [])
+              for run in runs:
+                  if is_target(run):
+                      candidates.append(run["id"])
+              if len(runs) < 100:
+                  break
+
+          rows = [f"### DRNAS queue cleanup — {mode}", ""]
+          rows.append(f"Queued LTM5/APK candidates: {len(candidates)}")
+          accepted = 0
+          eligible = 0
+          skipped = 0
+          errors = 0
+          attempted = []
+          for run_id in candidates:
+              # Re-check run state and job runner assignment just before cancellation.
+              run = get(f"/repos/{repo}/actions/runs/{run_id}")
+              if not is_target(run) or not has_no_runner(run_id):
+                  skipped += 1
+                  rows.append(f"- {run_id}: skipped (state changed, or runner already assigned)")
+                  continue
+              eligible += 1
+              if mode == "dry-run":
+                  rows.append(f"- {run_id}: eligible; no action")
+                  continue
+              endpoint = "force-cancel" if mode == "force" else "cancel"
+              status, data = api(f"/repos/{repo}/actions/runs/{run_id}/{endpoint}", "POST")
+              attempted.append(run_id)
+              if status == 202:
+                  accepted += 1
+                  rows.append(f"- {run_id}: HTTP 202 cancellation accepted")
+              else:
+                  errors += 1
+                  rows.append(f"- {run_id}: HTTP {status} cancellation failed ({data})")
+              time.sleep(0.2)
+
+          rows.append("")
+          rows.append(f"Eligible: {eligible}; requests accepted: {accepted}; skipped: {skipped}; errors: {errors}.")
+          if attempted:
+              time.sleep(5)
+              states = {}
+              for run_id in attempted:
+                  status, run = api(f"/repos/{repo}/actions/runs/{run_id}")
+                  states[str(run_id)] = run.get("status", f"HTTP {status}")
+              rows.append("Post-request statuses (may lag): " + json.dumps(states, sort_keys=True))
+          rows.append("Only queued runs on experiment/drnas-ltm5-* were targeted; no completed results or main jobs were touched.")
+          report = "\n".join(rows)
+          print(report, flush=True)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write(report + "\n")
+          if errors:
+              raise SystemExit(1)
+          PY
