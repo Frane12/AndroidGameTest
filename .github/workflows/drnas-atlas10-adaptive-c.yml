@@ -1,0 +1,123 @@
+name: DRNAS ATLAS10 native persistent table and Gaussian GF2 proof-first E2E
+run-name: ATLAS10 native A TABLE GF2_CORE GAUSS TABLE_GAUSS 100 SHA holdout 2rep 15s 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas10-adaptive-c-20261111]
+    paths:
+      - research/drnas_atlas10_native.cpp
+      - research/drnas_atlas10_c_patch.py
+      - research/drnas_atlas9_export_table.py
+      - research/drnas_atlas10_benchmark.py
+      - research/atlas8_reduction_table.jsonl
+      - .github/workflows/drnas-atlas10-adaptive-c.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate native C feedback engine and proof-verified persistent table
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas10_c_patch.py
+      - name: Generate original native atlas and proof-verified persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas10/bin
+          python3 -m py_compile research/drnas_atlas9_export_table.py research/drnas_atlas10_c_patch.py research/drnas_atlas10_benchmark.py
+          python3 research/drnas_atlas10_c_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas10/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas10/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas10 research/drnas_atlas10_native.cpp -o mre_atlas10/bin/drnas_atlas10
+          mre_atlas10/bin/drnas_atlas10 --selftest
+      - name: Canary two previously unseen CNFs with all five arms
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas10_benchmark.py --shard 0 --smoke | tee mre_atlas10/smoke.log
+          grep '^ATLAS10_FINAL ' mre_atlas10/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS10-smoke
+          path: |
+            mre_atlas10/smoke.log
+            mre_atlas10/audit_0.json
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 47
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build standalone native solver, original-source GF2 Gaussian and persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas10/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlas10/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas10/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas10 research/drnas_atlas10_native.cpp -o mre_atlas10/bin/drnas_atlas10
+          mre_atlas10/bin/drnas_atlas10 --selftest
+      - name: Frozen original CNF paired full native E2E 15s single CPU shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas10_benchmark.py --shard ${{ matrix.shard }} | tee mre_atlas10/shard_${{ matrix.shard }}.log
+          grep '^ATLAS10_FINAL ' mre_atlas10/shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS10-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas10/audit_${{ matrix.shard }}.json
+            mre_atlas10/shard_${{ matrix.shard }}.log
+            mre_atlas10/frozen_manifest.json
+  aggregate:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS10-shard-*
+          merge-multiple: true
+          path: collected
+      - name: Audit all ten source-paired shard results and total PAR2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,json,collections,pathlib
+          files=glob.glob("collected/audit_*.json")
+          assert len(files)==10,("missing shard",files)
+          audits=[json.load(open(p)) for p in files]
+          assert sorted(a["summary"]["shard"] for a in audits)==list(range(10))
+          manifest={a["manifest"]["cases"][0]["sha256"] for a in audits}
+          assert len(manifest)==1,"manifest differs across shards"
+          arms=("A","TABLE_GATE","GAUSS_GATE","C_RANDOM","C_ADAPT","C_ADAPT_GAUSS")
+          total={}
+          for arm in arms:
+            group=[a["summary"]["arms"][arm] for a in audits]
+            total[arm]={key:round(sum(x[key] for x in group),6) if key=="PAR2_s" else sum(x[key] for x in group) for key in group[0]}
+            assert total[arm]["trials"]==200
+          output=dict(shards=10,original_holdout=100,reps=2,total_trials=1000,arms=total)
+          pathlib.Path("ATLAS10_TOTAL.json").write_text(json.dumps(output,indent=2))
+          print("ATLAS10_TOTAL "+json.dumps(output,sort_keys=True))
+          with open(__import__('os').environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("## ATLAS10 native original-CNF E2E PAR2\n\n")
+            f.write("| Arm | Verified solved /200 | PAR2 s | Table literals saved | Gauss units |\n|---|---:|---:|---:|---:|\n")
+            for arm in arms:
+              x=total[arm]
+              f.write(f'| {arm} | {x["solved"]} | {x["PAR2_s"]:.6f} | {x["table_literals_saved"]} | {x["gauss_units"]} |\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS10-TOTAL-all-100-original-CNF-PAR2
+          path: ATLAS10_TOTAL.json
