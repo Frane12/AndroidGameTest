@@ -1,0 +1,73 @@
+name: DRNAS MI-LTM4 relational reasoning trajectories
+run-name: LTM4 proof-safe motif tests + native smoke + frozen holdout diagnostics
+on:
+  push:
+    branches: [experiment/drnas-mi-ltm4-trajectories-20261111]
+    paths:
+      - "mi_ltm4/**"
+      - ".github/workflows/drnas-mi-ltm4.yml"
+  workflow_dispatch:
+concurrency:
+  group: mi-ltm4-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  ltm4-trajectory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore training-only long-term motif memory
+        uses: actions/cache/restore@v4
+        with:
+          path: mi_ltm4/training.sqlite
+          key: mi-ltm4-train-${{ github.run_id }}
+          restore-keys: |
+            mi-ltm4-train-
+      - name: Unit tests - sources, renamed motifs, multi-step provenance and holdout
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s mi_ltm4 -p 'test_*.py' -v
+      - name: Build native pinned DRNAS CDCL for ungated control
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - name: Native real E2E smoke - 12 training 12 heldout source CNFs
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm4/diagnose.py --smoke --paired --generation "${{ github.run_number }}" | tee MI_LTM4_SMOKE.log
+          grep '^MI_LTM4_FINAL ' MI_LTM4_SMOKE.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Full offline motif transfer diagnostic - 384 original CNFs
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm4/diagnose.py --generation "${{ github.run_number }}" | tee MI_LTM4.log
+          grep '^MI_LTM4_FINAL ' MI_LTM4.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist ONLY training data for the next CI generation
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: mi_ltm4/training.sqlite
+          key: mi-ltm4-train-${{ github.run_id }}
+      - name: Export evidence (not giant solver proofs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MI-LTM4-TRAJECTORY-AUDIT
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            MI_LTM4_SMOKE.json
+            MI_LTM4_FINAL.json
+            MI_LTM4_SMOKE.log
+            MI_LTM4.log
+            mi_ltm4/training.sqlite
