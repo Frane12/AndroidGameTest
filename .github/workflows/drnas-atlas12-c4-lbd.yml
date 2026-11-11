@@ -1,0 +1,128 @@
+name: DRNAS ATLAS12 C4 learned-clause LBD adaptive CDCL 30s
+run-name: ATLAS12 C4 A GAUSS_GATE C_RANDOM C3_ADAPT C4_LBD C4_LBD_GAUSS 40 SHA 2seeds 30s 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas12-c3-adaptive-20261111]
+    paths:
+      - research/drnas_atlas12_native.cpp
+      - research/drnas_atlas12_c4_patch.py
+      - research/drnas_atlas9_export_table.py
+      - research/drnas_atlas12_benchmark.py
+      - research/drnas_atlas12_generator.py
+      - research/atlas8_reduction_table.jsonl
+      - .github/workflows/drnas-atlas12-c4-lbd.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate native C feedback engine and proof-verified persistent table
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas12_generator.py
+          python3 research/drnas_atlas12_c4_patch.py
+      - name: Generate original native atlas and proof-verified persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas12/bin
+          python3 -m py_compile research/drnas_atlas9_export_table.py research/drnas_atlas12_c4_patch.py research/drnas_atlas12_benchmark.py
+          python3 research/drnas_atlas12_generator.py
+          python3 research/drnas_atlas12_c4_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas12/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas12/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas12 research/drnas_atlas12_native.cpp -o mre_atlas12/bin/drnas_atlas12
+          mre_atlas12/bin/drnas_atlas12 --selftest
+      - name: Canary two previously unseen CNFs with all five arms
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas12_benchmark.py --shard 0 --smoke | tee mre_atlas12/smoke.log
+          grep '^ATLAS12_FINAL ' mre_atlas12/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS12-smoke
+          path: |
+            mre_atlas12/smoke.log
+            mre_atlas12/audit_0.json
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build standalone native solver, original-source GF2 Gaussian and persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas12/bin
+          python3 research/drnas_atlas12_generator.py
+          python3 research/drnas_atlas12_c4_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas12/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas12/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas12 research/drnas_atlas12_native.cpp -o mre_atlas12/bin/drnas_atlas12
+          mre_atlas12/bin/drnas_atlas12 --selftest
+      - name: Frozen original CNF paired full native E2E 30s single CPU shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas12_benchmark.py --shard ${{ matrix.shard }} | tee mre_atlas12/shard_${{ matrix.shard }}.log
+          grep '^ATLAS12_FINAL ' mre_atlas12/shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS12-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas12/audit_${{ matrix.shard }}.json
+            mre_atlas12/shard_${{ matrix.shard }}.log
+            mre_atlas12/frozen_manifest.json
+  aggregate:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS12-shard-*
+          merge-multiple: true
+          path: collected
+      - name: Audit all ten source-paired seeded shard results and total PAR2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,json,collections,pathlib
+          files=glob.glob("collected/audit_*.json")
+          assert len(files)==10,("missing shard",files)
+          audits=[json.load(open(p)) for p in files]
+          assert sorted(a["summary"]["shard"] for a in audits)==list(range(10))
+          manifest={a["manifest"]["cases"][0]["sha256"] for a in audits}
+          assert len(manifest)==1,"manifest differs across shards"
+          arms=("A","GAUSS_GATE","C_RANDOM","C3_ADAPT","C4_LBD","C4_LBD_GAUSS")
+          total={}
+          for arm in arms:
+            group=[a["summary"]["arms"][arm] for a in audits]
+            total[arm]={key:round(sum(x[key] for x in group),6) if key=="PAR2_s" else sum(x[key] for x in group) for key in group[0]}
+            assert total[arm]["trials"]==80
+          output=dict(shards=10,original_holdout=40,reps=2,total_trials=480,arms=total)
+          pathlib.Path("ATLAS12_TOTAL.json").write_text(json.dumps(output,indent=2))
+          print("ATLAS12_TOTAL "+json.dumps(output,sort_keys=True))
+          with open(__import__('os').environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("## ATLAS12 native original-CNF E2E PAR2\n\n")
+            f.write("| Arm | Verified solved /80 | PAR2 s | Table literals saved | Gauss units |\n|---|---:|---:|---:|---:|\n")
+            for arm in arms:
+              x=total[arm]
+              f.write(f'| {arm} | {x["solved"]} | {x["PAR2_s"]:.6f} | {x["table_literals_saved"]} | {x["gauss_units"]} |\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS12-TOTAL-40-fresh-CNF-2seed-30s-PAR2
+          path: ATLAS12_TOTAL.json
