@@ -1,0 +1,54 @@
+name: DRNAS MAP2 47 real SAT source fallback
+run-name: MAP2-REAL47 original SATLIB 47 x2 A live fallback Kissat CaDiCaL 20s 1CPU
+on:
+  push:
+    branches: [experiment/drnas-map2-47-real-fallback-20261111]
+    paths:
+      - research/drnas_atlasmap2_real47.py
+      - .github/workflows/drnas-atlasmap2-real47.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native and reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+          mkdir -p mre_atlasmap2/bin mre_map2_real47/bin
+          python3 -m py_compile research/drnas_atlasmap2_real47.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest
+          git clone -q https://github.com/arminbiere/kissat.git mre_map2_real47/kissat-src
+          git -C mre_map2_real47/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_map2_real47/kissat-src && ./configure && make -j2)
+          install -m 755 mre_map2_real47/kissat-src/build/kissat mre_map2_real47/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_map2_real47/bin/cadical
+      - name: Run original 47 SATLIB source-only selected paired E2E
+        env:
+          MAP2_REAL47_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlasmap2_real47.py | tee mre_map2_real47/benchmark.log
+          grep '^MAP2_REAL47_FINAL ' mre_map2_real47/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MAP2-REAL47-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_map2_real47/audit.json
+            mre_map2_real47/sources.json
+            mre_map2_real47/benchmark.log
