@@ -79,9 +79,9 @@ needle='mode=="V24_LIVE"||mode=="V24_LIVE_GAUSS"'
 assert src.count(needle)>=2
 src=src.replace(needle,needle+'||mode=="V25_B"||mode=="V25_C"')
 # Structural selection uses only the ORIGINAL formula, not labels or outcome.
-anchor='  if(mode=="V24_LIVE"||mode=="V24_LIVE_GAUSS")solver.atlas24_enable_live(trial_seed);'
+anchor='  if(mode=="V24_LIVE"||mode=="V24_LIVE_GAUSS"||mode=="V25_B"||mode=="V25_C")solver.atlas24_enable_live(trial_seed);'
 assert src.count(anchor)==1
-src=src.replace(anchor,anchor+'''
+src=src.replace(anchor,anchor.replace('||mode=="V25_B"||mode=="V25_C"','')+'''
   if(mode=="V25_B"||mode=="V25_C"){
     uint64_t bin=0,ternary=0,longer=0;
     for(const auto&cl:orig.clauses){
