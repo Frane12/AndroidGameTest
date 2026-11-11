@@ -226,9 +226,9 @@ int main(int argc,char**argv){
   atlas12::TableStats tab;
   atlas12::Gauss gauss;
   const bool use_table=mode=="TABLE_GATE"||mode=="TABLE_GAUSS";
-  const bool use_gauss=mode=="GAUSS_GATE"||mode=="TABLE_GAUSS"||mode=="C3_ADAPT_GAUSS";
+  const bool use_gauss=mode=="GAUSS_GATE"||mode=="TABLE_GAUSS"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD_GAUSS";
   const bool use_gf2=mode=="GF2_CORE"||use_gauss;
-  const bool c_arm=mode=="C_RANDOM"||mode=="C3_ADAPT"||mode=="C3_ADAPT_GAUSS";
+  const bool c_arm=mode=="C_RANDOM"||mode=="C3_ADAPT"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS";
   if(use_table){
    size_t short_clauses=0;for(auto&c:orig.clauses)if(c.size()>=2&&c.size()<=4)++short_clauses;
    if(short_clauses>=40)work=atlas12::table_reduce(work,tab,0.003);
