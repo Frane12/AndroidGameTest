@@ -91,7 +91,7 @@ for rep in range(REPEATS):
   row=run(arm,rep);rows.append(row)
   print("MICRO_TRIAL "+json.dumps(row,sort_keys=True),flush=True)
 summary={arm:dict(solved=sum(r["status"]=="SAT" for r in rows if r["arm"]==arm),
- PAR2_s=round(sum(r["PAR2_s"] for r in rows if r["arm"]==arm),6),trials=REPEATS) for arm in ("drnas","drnas_a","drnas_trace","kissat","cadical")}
+ PAR2_s=round(sum(r["PAR2_s"] for r in rows if r["arm"]==arm),6),trials=REPEATS) for arm in ("drnas","drnas_a","drnas_d","drnas_trace","kissat","cadical")}
 audit=dict(protocol="ARL1E-8-FRESH-SATLIB-SOURCE-SHA-ONECPU-3REPS-EXACT-GATE",source=src,cap_s=CAP,rows=rows,summary=summary,oneCPU=True)
 (OUT/"audit.json").write_text(json.dumps(audit,indent=2,sort_keys=True))
 print("MICRO_FINAL "+json.dumps(dict(family=FAMILY,rank=RANK,sha256=sha,summary=summary),sort_keys=True),flush=True)
