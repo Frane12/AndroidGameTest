@@ -106,7 +106,7 @@ static vector<int> ancestors(const CNF& c,const Probe& p,vector<int> seeds,bool 
   vector<int> out;for(int v=1;v<=c.vars;++v)if(seen[v])out.push_back(v);
   return out;
 }
-struct Report {int probes=0,failed=0,forced=0,unknown=0,graph_checks=0;uint64_t scans=0;};
+struct Report {int probes=0,failed=0,forced=0,unknown=0,graph_checks=0;uint64_t scans=0;vector<int> units;};
 static Report run(const CNF& c,int workers,int maxvars,int budget,bool test=false){
   Report result; vector<int> forced;
   // Fixed batch, read-only CNF, no shared assignments or solver trail.
@@ -144,6 +144,7 @@ static Report run(const CNF& c,int workers,int maxvars,int budget,bool test=fals
     Probe check=propagate(c,-lit,budget);
     if(!check.conflict)throw runtime_error("failed literal not reproducible");
   }
+  result.units=forced;
   if(test&&result.forced==0)throw runtime_error("expected forced literal absent");
   return result;
 }
@@ -157,7 +158,7 @@ int main(int argc,char** argv){
         <<" reason_graph_checks="<<r.graph_checks<<"\n";
     return 0;
   }
-  if(argc<2||argc>5)throw runtime_error("usage: pcd1 CNF [workers=2] [vars=16] [scan_budget=200000]");
+  if(argc<2||argc>6)throw runtime_error("usage: pcd1 CNF [workers=2] [vars=16] [scan_budget=200000] [units_file]");
   CNF c=parse(argv[1]);
   int workers=argc>2?stoi(argv[2]):2,vars=argc>3?stoi(argv[3]):16;
   int budget=argc>4?stoi(argv[4]):200000;
@@ -165,6 +166,8 @@ int main(int argc,char** argv){
   auto a=chrono::steady_clock::now();
   auto r=run(c,workers,vars,budget);
   double ms=chrono::duration<double,milli>(chrono::steady_clock::now()-a).count();
+  if(argc==6){ofstream out(argv[5]);if(!out)throw runtime_error("cannot write units");
+    for(int lit:r.units)out<<lit<<" 0\n";}
   cout<<"PCD1_DIAGNOSTIC vars="<<c.vars<<" clauses="<<c.clauses.size()
       <<" threads="<<workers<<" probes="<<r.probes<<" failed_assumptions="<<r.failed
       <<" forced_candidates="<<r.forced<<" no_conflict_pairs="<<r.unknown
