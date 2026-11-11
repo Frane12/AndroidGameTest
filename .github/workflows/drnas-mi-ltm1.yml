@@ -1,26 +1,34 @@
-name: DRNAS MI-LTM1 native paired CNF benchmark
+name: DRNAS MI-LTM2 persistent training and holdout
 on:
   push:
     branches: [experiment/drnas-mi-ltm1-20261111]
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
-  mi-ltm1-native-paired:
+  mi-ltm2-train-and-evaluate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Validate source-proven XOR inference and small CNF diagnostics
+      - name: Restore prior training-only structural memory (best-effort)
+        uses: actions/cache/restore@v4
+        with:
+          path: mi_ltm1/history.sqlite
+          key: mi-ltm2-training-only-${{ github.run_id }}
+          restore-keys: |
+            mi-ltm2-training-only-
+      - name: Prove original-source XOR soundness on small CNFs
         run: |
           set -euo pipefail
           cd mi_ltm1
           python3 -m unittest discover -s . -p 'test_*.py' -v
           cd ..
           python3 mi_ltm1/bench_formulas.py
-      - name: Build original standalone ATLAS15 native solver
+      - name: Build standalone native ATLAS15 solver for paired controls
         run: |
           set -euo pipefail
           mkdir -p mre_atlas15/bin
@@ -31,19 +39,28 @@ jobs:
           python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
           g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
           mre_atlas15/bin/drnas_atlas15 --selftest
-      - name: Paired native CDCL with original CNF oracle and true E2E
+      - name: Run 320 CNFs train (192) and SHA-disjoint holdout (128)
         run: |
           set -euo pipefail
-          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm1/native_paired.py | tee MI_LTM1_NATIVE_PAIRED.log
-          grep '^MI_LTM1_NATIVE_FINAL ' MI_LTM1_NATIVE_PAIRED.log >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload full auditable paired results
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm1/memory_experiment.py | tee MI_LTM2.log
+          grep '^MI_LTM2_LEARNING ' MI_LTM2.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^MI_LTM2_FINAL ' MI_LTM2.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Save training-only memory for future runs
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: mi_ltm1/history.sqlite
+          key: mi-ltm2-training-only-${{ github.run_id }}
+      - name: Publish frozen memory and complete training/diagnostic audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MI-LTM1-32CNF-2REPS-native-paired
-          retention-days: 30
+          name: MI-LTM2-320CNF-TRAIN192-HOLDOUT128
+          retention-days: 90
           if-no-files-found: warn
           path: |
-            MI_LTM1_NATIVE_PAIRED.json
-            MI_LTM1_NATIVE_PAIRED.log
+            MI_LTM2_TRAIN_HOLDOUT.json
+            MI_LTM2.log
+            mi_ltm1/policy_frozen.json
+            mi_ltm1/history.sqlite
             mi_ltm1_benchmark.json
