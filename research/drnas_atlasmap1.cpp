@@ -4,6 +4,7 @@
 #define DRNAS_ATLASX_AS_LIBRARY
 #include "drnas_atlasx.cpp"
 #undef DRNAS_ATLASX_AS_LIBRARY
+#include <cstdio>
 #include <sstream>
 #include <tuple>
 
