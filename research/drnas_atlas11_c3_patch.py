@@ -75,7 +75,7 @@ private:
 ''' +anchor)
 needle="                const int v = pick_branch_variable();"
 assert src.count(needle)==1
-src=src.replace(needle,"                const int v = atlas11_c_enabled_ ? atlas11_pick_branch_variable() : pick_branch_variable();\n                if(atlas11_c_enabled_ && v)atlas11_feedback(v);")
+src=src.replace(needle,"                if(atlas11_c_enabled_ && atlas11_last_decision_var_)atlas11_feedback(atlas11_last_decision_var_);\n                const int v = atlas11_c_enabled_ ? atlas11_pick_branch_variable() : pick_branch_variable();\n                if(atlas11_c_enabled_ && v)atlas11_last_decision_var_=v;")
 # CDCL phases are optionally flipped as exploratory decisions, never as forced facts.
 needle2="                require(enqueue(phases_[v] >= 0 ? v : -v, -1),"
 assert src.count(needle2)==1
