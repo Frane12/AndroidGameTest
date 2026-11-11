@@ -56,7 +56,7 @@ def main():
         assert previous=={s["sha256"] for s in manifest},"stage3 source replay drift"
     conn.executemany("INSERT INTO cohort VALUES(?,?,?,?,?,?,?,?,?)",[
         (a.stage,s["sha256"],s["category"],s["origin"],s["entry"],
-         s["index"],s["vars"],s["clauses_count"],int(a.stage==3)) for s in manifest])
+         s["index"],s["vars"],s["clauses_count"],int(s["novelty"]=="REPLAY_ATLAS18")) for s in manifest])
     conn.executemany("INSERT INTO trial VALUES(?,?,?,?,?,?,?,?,?,?)",[
         (a.stage,r["source_sha"],r["rep"],r["arm"],r["status"],r["E2E_s"],
          r["PAR2_verified_s"],r["PAR2_reported_s"],r["policy"],
