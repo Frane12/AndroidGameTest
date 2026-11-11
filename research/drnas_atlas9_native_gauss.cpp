@@ -1,8 +1,8 @@
 // ATLAS9: native DRNAS CDCL with ATLAS8 persistent exact-block reductions,
 // original-source-certified GF(2), bounded Gaussian RREF and short CNF reasons.
 // No proprietary/third-party SAT backend. Main branch untouched.
-#define main drnas_atlas3_embedded_main
-#include "drnas_atlas3.cpp"
+#define main drnas_atlas9_embedded_core_main
+#include "drnas_native_core_r3c.cpp"
 #undef main
 #include "atlas8_rules.hpp"
 #include <sstream>
