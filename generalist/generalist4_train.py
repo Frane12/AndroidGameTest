@@ -4,6 +4,7 @@ No holdout sources are visited; policy and input SHA audit are frozen.
 """
 import json,sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,"research")
 from drnas_atlas40_benchmark import source_set
 from generalist.generalist3 import fingerprint,learn,BASE
