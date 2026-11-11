@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MAP2 3000 deterministic distinct mixed CNFs; 30 shards x 100 source SHA.
+"""MAP2 3000 deterministic distinct mixed CNFs; 60 shards x 50 source SHA.
 Strict source-disjoint 1500 train vs 1500 frozen evaluation. Original model
 checks, one CPU per arm, PAR2, source SHA; no synthetic speedup claims.
 """
@@ -8,8 +8,8 @@ sys.path.insert(0,"research")
 import drnas_atlasmap2_learn as L
 
 SHARD=int(os.environ.get("MAP2_3K_SHARD","0"))
-assert 0<=SHARD<30
-CAP=8.0
+assert 0<=SHARD<60
+CAP=20.0
 OUT=pathlib.Path("mre_atlasmap2_3k")
 OUT.mkdir(exist_ok=True)
 BIN="mre_atlasmap2/bin/drnas_atlasmap2"
@@ -44,16 +44,16 @@ def formula(index):
     return data
 
 def save_checkpoint():
-    payload={"experiment":"MAP2-3K-30shards-100each-8s-1CPU",
+    payload={"experiment":"MAP2-3K-60shards-50each-20s-1CPU",
       "shard":SHARD,"count":len(ROWS)//3,
-      "train_or_holdout":"train" if SHARD<15 else "holdout",
+      "train_or_holdout":"train" if SHARD<30 else "holdout",
       "summary":summary,"rows":ROWS,
       "note":"constructed planted-SAT controls, not official unseen SAT competition",
       "UNSAT_independent_LRAT":False}
     (OUT/"audit.json").write_text(json.dumps(payload,indent=2,sort_keys=True))
 
-for local in range(100):
-    index=SHARD*100+local
+for local in range(50):
+    index=SHARD*50+local
     data=formula(index)
     sha=hashlib.sha256(data.encode()).hexdigest()
     if sha in seen:raise RuntimeError("duplicate formula SHA")
@@ -79,9 +79,9 @@ for local in range(100):
     if (local+1)%10==0:
         save_checkpoint()
         print("MAP2_3K_PROGRESS "+json.dumps({
-          "shard":SHARD,"done":local+1,"of":100,
+          "shard":SHARD,"done":local+1,"of":50,
           "summary":summary},sort_keys=True),flush=True)
 save_checkpoint()
-print("MAP2_3K_FINAL "+json.dumps({"shard":SHARD,"count":100,
+print("MAP2_3K_FINAL "+json.dumps({"shard":SHARD,"count":50,
       "cohort":"train" if SHARD<15 else "holdout",
       "summary":summary},sort_keys=True),flush=True)
