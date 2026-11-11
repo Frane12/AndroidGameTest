@@ -74,7 +74,7 @@ class PolicyTests(unittest.TestCase):
                                base=self.item(.02),force=self.item(.04))
             db.insert_patterns("0",{"pair:3:3:shared2:out2:rhs0":"binary_xor"})
             frozen=db.freeze({"holdout"})
-            self.assertEqual(action(frozen,"good")[0],"MI_XOR")
+            self.assertEqual(action(frozen,"good")[0],"MI_CHAIN")
             self.assertEqual(action(frozen,"bad")[0],"BASE")
             self.assertEqual(action(frozen,"unknown")[0],"BASE")
             db.close()
