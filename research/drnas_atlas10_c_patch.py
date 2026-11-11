@@ -11,6 +11,7 @@ assert src.count(anchor)==1
 src=src.replace(anchor,'''    // ATLAS10-C: deliberately explore non-maximal CDCL branching variables.
     // All assignments are still ordinary CDCL decisions, not forced implications.
     bool atlas10_c_enabled_ = false;
+    bool atlas10_learning_ = true;
     uint64_t atlas10_rng_ = 0x9e3779b97f4a7c15ULL;
     uint64_t atlas10_explored_ = 0,atlas10_penalized_ = 0,atlas10_exploited_ = 0;
     uint64_t atlas10_last_conflicts_ = 0;
@@ -23,7 +24,7 @@ src=src.replace(anchor,'''    // ATLAS10-C: deliberately explore non-maximal CDC
         return atlas10_rng_ * 2685821657736338717ULL;
     }
     void atlas10_feedback(int variable) {
-        if(!atlas10_c_enabled_ || variable<1 || variable>n_)return;
+        if(!atlas10_c_enabled_ || !atlas10_learning_ || variable<1 || variable>n_)return;
         if(atlas10_penalty_.empty())atlas10_penalty_.assign(size_t(n_)+1,0.0);
         // Feedback from actual CDCL conflicts since previous decision.
         const uint64_t delta=stats_.conflicts-atlas10_last_conflicts_;
@@ -45,7 +46,7 @@ src=src.replace(anchor,'''    // ATLAS10-C: deliberately explore non-maximal CDC
                 const size_t pos=size_t(atlas10_next()%window);
                 const int v=heap_[pos];
                 if(values_[v])continue;
-                const double candidate=activity_[v]-(atlas10_penalty_.empty()?0:atlas10_penalty_[size_t(v)])+
+                const double candidate=activity_[v]-(atlas10_learning_&&!atlas10_penalty_.empty()?atlas10_penalty_[size_t(v)]:0)+
                     double(atlas10_next()%1000)/1000.0;
                 if(candidate>score){score=candidate;best=pos;}
             }
@@ -58,7 +59,8 @@ src=src.replace(anchor,'''    // ATLAS10-C: deliberately explore non-maximal CDC
         return pick_branch_variable();
     }
 public:
-    void atlas10_enable_c(uint64_t seed) {
+    void atlas10_enable_c(uint64_t seed,bool learning=true) {
+        atlas10_learning_=learning;
         atlas10_c_enabled_=true;
         atlas10_rng_=seed?seed:0x9e3779b97f4a7c15ULL;
         atlas10_penalty_.assign(size_t(n_)+1,0.0);
