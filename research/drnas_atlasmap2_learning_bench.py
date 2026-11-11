@@ -21,23 +21,23 @@ OUT=Path("mre_atlasmap2_learning")
 OUT.mkdir(exist_ok=True)
 BIN=Path("mre_atlasmap2/bin/drnas_atlasmap2").resolve()
 MEM=OUT/"train_memory.json"
-CAP=2
+CAP=8
 REPS=3
 SEED=20261111
 
 def formula(index):
     rng=random.Random(SEED+index*997)
-    n=24
+    n=96
     truth={v:bool(rng.getrandbits(1)) for v in range(1,n+1)}
     clauses=[]
-    # Seven chained certified parity relations on the ORIGINAL variables.
-    for x in range(1,9):
+    # Thirty-one chained certified parity relations on the ORIGINAL variables.
+    for x in range(1,32):
         y=x+1
         rhs=int(truth[x]^truth[y])
         if rhs==0:clauses.extend(([-x,y],[x,-y]))
         else:clauses.extend(([x,y],[-x,-y]))
     # Couple parity variables to other variables with planted 3-CNF.
-    for _ in range(90):
+    for _ in range(360):
         variables=rng.sample(range(1,n+1),3)
         clause=[v if rng.getrandbits(1) else -v for v in variables]
         if not any(truth[abs(l)]==(l>0) for l in clause):
@@ -87,7 +87,7 @@ def main():
              str(path),"--binary",str(BIN),"--memory",str(MEM),
              "--phase","train","--cap",str(CAP),
              "--report",str(OUT/(path.stem+"_train.json"))]
-        subprocess.run(cmd,check=True,capture_output=True,text=True,timeout=20)
+        subprocess.run(cmd,check=True,capture_output=True,text=True,timeout=40)
         record=json.loads((OUT/(path.stem+"_train.json")).read_text())
         assert record["updated"] and record["sha256"]==sha
         assert record["attempts"]["A"]["status"]=="SAT",record
