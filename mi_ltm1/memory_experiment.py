@@ -20,6 +20,7 @@ from pathlib import Path
 
 from bench_formulas import dimacs, oracle, satisfies, xor_cnf
 from memory import Memory, signature
+import relational_memory as relational
 from native_paired import BIN, implied_cnf, parse_model, solve
 from probe import probe_cnf
 
@@ -244,6 +245,7 @@ def main():
     # May restore previous trained history from Actions cache; never insert
     # a holdout record, including after evaluation.
     db=Memory(DB)
+    relational.init(db.db)
     trials=[]
     from tempfile import TemporaryDirectory
     with TemporaryDirectory() as tmp:
@@ -257,6 +259,9 @@ def main():
             if (i+1)%48==0:
                 print("MI_LTM2_TRAIN_PROGRESS",i+1,"/",len(train_cases),flush=True)
         learn(db,trials)
+        # Store source-proven *structural* XOR placeholders, never clauses.
+        for train_case in train_cases:
+            relational.remember(db.db,train_case["sha"],train_case["raw"])
         frozen=freeze_policy(db,train_cases,test_cases)
         # Write frozen JSON BEFORE any holdout trial is executed.
         policy_path=ROOT/"policy_frozen.json"
@@ -267,6 +272,13 @@ def main():
         assert readonly.readonly
         loaded=json.loads(policy_path.read_text())
         assert loaded==frozen
+        for holdout_case in test_cases:
+            relational.forbidden_sha_check(readonly.db,holdout_case["sha"])
+        template_catalog=relational.trained_catalog(
+            readonly.db,excluded_sha=(x["sha"] for x in test_cases))
+        relational_report=relational.diagnose_holdout(
+            test_cases,template_catalog)
+        print("MI_LTM2_TEMPLATES",json.dumps(relational_report,sort_keys=True),flush=True)
         print("MI_LTM2_LEARNING",json.dumps({
             "train_formulas":len(train_cases),
             "recognized_signatures":len(frozen["seen"]),
@@ -298,7 +310,8 @@ def main():
                 structural_matches_unique=len(match_unique),
                 trained_signatures=len(frozen["seen"]),
                 activated_signatures=len(frozen["positive"]),
-                summary=summary,training_policy=frozen,trial_records=trials,
+                summary=summary,training_policy=frozen,
+                relational_diagnostics=relational_report,trial_records=trials,
                 limitations=("Coarse signature collisions are possible; positive"
                 " training results do not certify future speedup. Tiny 12-var"
                 " formulas can be dominated by Python/process startup costs."))
@@ -307,6 +320,8 @@ def main():
         "summary":summary,"matched_holdout_formulas":len(match_unique),
         "trained_signatures":len(frozen["seen"]),
         "positive_signatures":len(frozen["positive"]),
+        "relational_recognized_holdout":relational_report["holdout_recognized"],
+        "relational_template_types":relational_report["training_template_types"],
         "train":len(train_cases),"holdout":len(test_cases)
     },sort_keys=True),flush=True)
 
