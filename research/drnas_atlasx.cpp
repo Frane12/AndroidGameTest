@@ -144,13 +144,27 @@ static CNF preprocess(const CNF& original,Metrics& met,double cap) {
     if(support.size()==clause.size() && support.size()<=4)
       by_support[support].push_back(int(id));
   }
+  // L0 cheap source-only guard: with no repeated exact support, L1 cannot
+  // apply, and L2 cannot imply/expand any pair under our current rules.
+  // This avoids the mask creation and pair scan on random 3-SAT controls.
+  bool any_composite=false;
+  for(const auto& item:by_support)
+    if(item.second.size()>=2){any_composite=true;break;}
+  if(!any_composite) {
+    met.decision="sleep";met.reason="L0_no_composite_support";
+    met.preprocess_s=seconds();return out;
+  }
   std::vector<Module> modules;modules.reserve(std::min<size_t>(by_support.size(),200));
-  for(const auto& item:by_support) {
-    if(seconds()>budget || modules.size()>=160)break;
-    Module m;m.vars=item.first;m.ids=item.second;
-    for(int id:m.ids)m.literals+=int(original.clauses[id].size());
-    m.mask=local_mask(original,m);
-    modules.push_back(std::move(m));
+  // Make the useful multi-clause groups visible even under the 160-module cap.
+  for(int pass=0;pass<2;++pass) {
+    for(const auto& item:by_support) {
+      if((item.second.size()>=2)!=(pass==0))continue;
+      if(seconds()>budget || modules.size()>=160)break;
+      Module m;m.vars=item.first;m.ids=item.second;
+      for(int id:m.ids)m.literals+=int(original.clauses[id].size());
+      m.mask=local_mask(original,m);
+      modules.push_back(std::move(m));
+    }
   }
   met.l0_modules=modules.size();
   met.mask_bytes=2*modules.size();
@@ -174,6 +188,7 @@ static CNF preprocess(const CNF& original,Metrics& met,double cap) {
     for(size_t j=i+1;j<modules.size();++j) {
       if(seconds()>budget || met.l2_pairs>=400){limit_hit=true;break;}
       const auto& a=modules[i];const auto& b=modules[j];
+      if(a.ids.size()==1 && b.ids.size()==1)continue;
       std::vector<int> common;
       std::set_union(a.vars.begin(),a.vars.end(),b.vars.begin(),b.vars.end(),
                      std::back_inserter(common));
