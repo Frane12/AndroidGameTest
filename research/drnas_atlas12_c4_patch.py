@@ -12,6 +12,7 @@ src=src.replace(anchor,'''    // ATLAS12-C: deliberately explore non-maximal CDC
     // All assignments are still ordinary CDCL decisions, not forced implications.
     bool atlas12_c_enabled_ = false;
     bool atlas12_learning_ = true;
+    bool atlas12_lbd_enabled_ = false;
     uint64_t atlas12_rng_ = 0x9e3779b97f4a7c15ULL;
     uint64_t atlas12_explored_ = 0,atlas12_penalized_ = 0,atlas12_exploited_ = 0;
     uint64_t atlas12_last_conflicts_ = 0;
@@ -19,7 +20,7 @@ src=src.replace(anchor,'''    // ATLAS12-C: deliberately explore non-maximal CDC
     uint64_t atlas12_good_lbd_=0,atlas12_bad_lbd_=0;
     std::vector<double> atlas12_quality_;
     void atlas12_clause_feedback(const std::vector<int>& clause) {
-        if(!atlas12_c_enabled_||!atlas12_learning_)return;
+        if(!atlas12_c_enabled_||!atlas12_learning_||!atlas12_lbd_enabled_)return;
         std::vector<int> levels;
         for(int lit:clause){int lev=levels_[std::abs(lit)];if(std::find(levels.begin(),levels.end(),lev)==levels.end())levels.push_back(lev);}
         const int lbd=int(levels.size());
@@ -65,7 +66,7 @@ src=src.replace(anchor,'''    // ATLAS12-C: deliberately explore non-maximal CDC
                 if(values_[v])continue;
                 const double normalized_activity=activity_[v]/std::max(1e-12,activity_[heap_[0]]);
                 const double penalty=atlas12_learning_&&!atlas12_penalty_.empty()?atlas12_penalty_[size_t(v)]:0.0;
-                const double quality=atlas12_learning_&&!atlas12_quality_.empty()?atlas12_quality_[size_t(v)]:0.0;
+                const double quality=atlas12_lbd_enabled_&&!atlas12_quality_.empty()?atlas12_quality_[size_t(v)]:0.0;
                 const double candidate=normalized_activity-0.40*penalty+0.85*quality+0.1*double(atlas12_next()%1000)/1000.0;
                 if(candidate>score){score=candidate;best=pos;}
             }
@@ -78,7 +79,8 @@ src=src.replace(anchor,'''    // ATLAS12-C: deliberately explore non-maximal CDC
         return pick_branch_variable();
     }
 public:
-    void atlas12_enable_c(uint64_t seed,bool learning=true) {
+    void atlas12_enable_c(uint64_t seed,bool learning=true,bool lbd=false) {
+        atlas12_lbd_enabled_=lbd;
         atlas12_learning_=learning;
         atlas12_c_enabled_=true;
         atlas12_rng_=seed?seed:0x9e3779b97f4a7c15ULL;
