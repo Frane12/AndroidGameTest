@@ -44,8 +44,10 @@ def sources(cohort):
 def run(source,arm,rep,cap):
     if not arm.startswith(("V24_","V25_")):
         old=Old.run(source,arm,rep,cap)
-        old["telemetry"].update(atlas25_live=0,atlas25_active=0,
-            atlas25_on=0,atlas25_off=0,atlas25_windows=0)
+        old["telemetry"].update(atlas24_live=0,atlas24_active=0,
+            atlas24_on=0,atlas24_off=0,atlas24_windows=0,
+            atlas25_b=0,atlas25_c=0,atlas25_initial_c7=0,
+            atlas25_early_switches=0,atlas25_early_windows=0)
         return old
     p=pathlib.Path(source["path"])
     assert hashlib.sha256(p.read_bytes()).hexdigest()==source["sha256"]
@@ -75,10 +77,13 @@ def run(source,arm,rep,cap):
             metrics=dict(x.split("=",1) for x in l.split()[1:] if "=" in x)
     keys=("conflicts","decisions","propagations","watch_visits",
         "atlas15_deleted","atlas15_minimized","atlas16_compactions",
-        "atlas16_maxrss_kb","atlas25_live","atlas25_active",
-        "atlas25_on","atlas25_off","atlas25_windows")
+        "atlas16_maxrss_kb","atlas24_live","atlas24_active",
+        "atlas24_on","atlas24_off","atlas24_windows",
+        "atlas25_b","atlas25_c","atlas25_initial_c7",
+        "atlas25_early_switches","atlas25_early_windows")
     telemetry={k:int(float(metrics.get(k,0))) for k in keys}
-    if rc in (10,20) and telemetry["atlas25_live"]!=1:
+    if rc in (10,20) and (telemetry["atlas24_live"]!=1 if arm.startswith("V24_") else
+                         telemetry["atlas25_b"]!=1 or telemetry["atlas25_c"]!=int(arm=="V25_C")):
         raise AssertionError("Adaptive mode NOT enabled: "+arm)
     return dict(sha256=source["sha256"],family=source["family"],
         index=source["index"],cohort=source["cohort"],arm=arm,rep=rep,
@@ -100,9 +105,11 @@ def summarize(rows):
           E2E_s=round(sum(x["E2E_s"] for x in rr),6),
           conflicts=sum(x["telemetry"].get("conflicts",0) for x in rr),
           watch_visits=sum(x["telemetry"].get("watch_visits",0) for x in rr),
-          on=sum(x["telemetry"].get("atlas25_on",0) for x in rr),
-          off=sum(x["telemetry"].get("atlas25_off",0) for x in rr),
-          windows=sum(x["telemetry"].get("atlas25_windows",0) for x in rr))
+          on=sum(x["telemetry"].get("atlas24_on",0) for x in rr),
+          off=sum(x["telemetry"].get("atlas24_off",0) for x in rr),
+          windows=sum(x["telemetry"].get("atlas24_windows",0) for x in rr),
+          initial_c7=sum(x["telemetry"].get("atlas25_initial_c7",0) for x in rr),
+          early_switches=sum(x["telemetry"].get("atlas25_early_switches",0) for x in rr))
     return ans
 
 def main():
