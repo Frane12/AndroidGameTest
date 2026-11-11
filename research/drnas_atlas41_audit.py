@@ -2,7 +2,7 @@
 """ATLAS41 audit for one isolated decision-tree branch. Strict original SHA pairs."""
 import json, pathlib, collections
 ROOT=pathlib.Path("audits")
-ARMS=("A36_75","A39_PROTECT","A40_TREE","KISSAT")
+ARMS=("A36_75","A39_PROTECT","A41_GUARD","A41_DECAY","KISSAT")
 expected={"regression":10,"extension":6,"hard":10}
 rows=[];global_sha=set()
 for cohort,count in expected.items():
@@ -28,7 +28,7 @@ for r in rows:
     pairs[k][r["arm"]]=r
     assert r["status"]!="SAT_VERIFIED" or r["original_SAT_witness_verified"]
     assert not r["independent_UNSAT_proof_verified"]
-    if r["arm"]=="A40_TREE" and r["status"]!="UNKNOWN":
+    if r["arm"]=="A41_GUARD" and r["status"]!="UNKNOWN":
         assert r["telemetry"]["atlas39_mode"]==3
         assert r["telemetry"]["atlas36_quota_pct"]==75
 assert len(pairs)==52
