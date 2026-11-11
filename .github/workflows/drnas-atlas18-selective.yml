@@ -1,0 +1,154 @@
+name: DRNAS ATLAS18 selective GF2 holdout
+run-name: ATLAS18 smoke then 20 unseen SHA x 6 arms x 2 reps E2E 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas18-gf2-selective-proof-20261111]
+    paths:
+      - research/drnas_atlas18_selective.py
+      - research/drnas_atlas18_merge.py
+      - .github/workflows/drnas-atlas18-selective.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-atlas18-selective-20261111
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate unchanged ATLAS16 C6 solver, verify and pin controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas18_selective.py research/drnas_atlas18_merge.py
+          python3 research/drnas_atlas_selective_gf2.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          mkdir -p mre_atlas15/bin mre_atlas18/bin
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          g++ -std=c++17 -O2 -I mre_atlas16 -I mre_atlas15 mre_atlas16/native.cpp -o mre_atlas18/bin/drnas_atlas16
+          mre_atlas18/bin/drnas_atlas16 --selftest
+          python3 research/drnas_atlas15_train.py
+      - name: Compile pinned reference Kissat
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas18-kissat
+          git -C /tmp/atlas18-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas18-kissat && ./configure && make -j2)
+          cp /tmp/atlas18-kissat/build/kissat mre_atlas18/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS18-PINNED-BIN
+          retention-days: 14
+          path: |
+            mre_atlas18/bin/drnas_atlas16
+            mre_atlas18/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS18-PINNED-POLICY
+          retention-days: 14
+          path: |
+            ATLAS15_POLICY.txt
+            ATLAS15_TRAINING.json
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-PINNED-BIN
+          path: mre_atlas18/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-PINNED-POLICY
+          path: training
+      - name: Source-pinned SATLIB and GF2-UNSAT proof preflight
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas18/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas18_selective.py --mode smoke --shard 0 | tee mre_atlas18/smoke.log
+          grep -q '^ATLAS18_FINAL ' mre_atlas18/smoke.log
+          grep '^ATLAS18_FINAL ' mre_atlas18/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS18-SMOKE
+          retention-days: 30
+          path: |
+            mre_atlas18/audit_smoke_h0.json
+            mre_atlas18/events_smoke_h0.jsonl
+            mre_atlas18/smoke.log
+  blind:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-PINNED-BIN
+          path: mre_atlas18/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-PINNED-POLICY
+          path: training
+      - name: SHA-paired oneCPU prospective blind shard
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas18/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas18_selective.py --mode blind --shard ${{ matrix.shard }} | tee mre_atlas18/blind_${{ matrix.shard }}.log
+          grep -q '^ATLAS18_FINAL ' mre_atlas18/blind_${{ matrix.shard }}.log
+          grep '^ATLAS18_FINAL ' mre_atlas18/blind_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS18-BLIND-${{ matrix.shard }}
+          retention-days: 45
+          path: |
+            mre_atlas18/audit_blind_h${{ matrix.shard }}.json
+            mre_atlas18/events_blind_h${{ matrix.shard }}.jsonl
+            mre_atlas18/blind_${{ matrix.shard }}.log
+  merge:
+    needs: blind
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS18-BLIND-*
+          merge-multiple: true
+          path: audits
+      - name: Verify 20 original SHA, 240 trials, parity proof and SQLite audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_atlas18_merge.py | tee merge.log
+          grep -q '^ATLAS18_MERGED ' merge.log
+          grep '^ATLAS18_MERGED ' merge.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS18-MERGED-AUDIT-SQL
+          retention-days: 90
+          path: |
+            mre_atlas18/ATLAS18_EVENTS.sqlite
+            mre_atlas18/ATLAS18_BLIND_FINAL.json
+            merge.log
