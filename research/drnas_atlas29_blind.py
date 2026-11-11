@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ATLAS27 end-to-end conservative PHP theorem gate + strongest ATLAS25 DRNAS V23 baseline.
+"""ATLAS29 prospective end-to-end conservative PHP theorem gate + strongest ATLAS25 DRNAS V23 baseline.
 Gate emits theorem-backed UNSAT only on exact checked subformula; otherwise calls native V23.
 No claim of LRAT certification. One CPU, frozen source SHA and paired repetitions.
 """
