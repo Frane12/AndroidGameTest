@@ -58,7 +58,7 @@ def run(p,sha,arm,rep):
              decisions=int(float(metrics.get("decisions",0))),
              watch_visits=int(float(metrics.get("watch_visits",0))),
              maxrss_kb=int(float(metrics.get("atlas16_maxrss_kb",0))))
-corpus=W.source_corpus(limit=4)
+corpus=W.source_corpus(limit=4, families=FAMILIES)
 rows=[]
 for family in FAMILIES:
  for index in (0,1,2,3):
