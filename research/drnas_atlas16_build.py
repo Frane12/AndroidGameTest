@@ -43,7 +43,7 @@ one("    void atlas15_reduce_db(){",
         for(auto kv:atlas15_lbd_){
             require(kv.first>=0 && size_t(kv.first)<before &&
                     remap[size_t(kv.first)]>=0,"LBD index maps to deleted clause");
-            migrated[remap[size_t(kv.first])]]=kv.second;
+            migrated[remap[size_t(kv.first)]]=kv.second;
         }
         atlas15_lbd_.swap(migrated);
         const size_t old_capacity=clauses_.capacity();
