@@ -15,7 +15,7 @@ using drnas::Clock;
 struct Result{
  int vars=0,clauses=0,unit=0,binary=0,ternary=0,longer=0;
  int pairs=0,pivots=0,taut=0,derived=0,accepted=0;
- int gate_hits=0,gate_scanned=0;
+ int gate_hits=0,gate_scanned=0,npn_class=-1,saved_literals=0;
  std::string decision="none",reason="none",method="none";
  double scan_s=0,probe_s=0;
 };
@@ -96,7 +96,7 @@ static CNF first_look(const CNF& f,Result& r,double cap,Clock::time_point start)
  if(r.scan_s>0.001){r.decision="fallback";r.reason="index_budget";return out;}
  const auto t1=Clock::now();
  const double budget=std::min(0.00075,cap*0.001);
- int best_score=0,best_class=-1;
+ int best_score=0,best_class=-1,best_saved=0;
  std::vector<int> best_ids;std::vector<std::vector<int>> best_recipe;
  for(const auto& it:by_support){
   if(std::chrono::duration<double>(Clock::now()-t1).count()>budget)break;
@@ -141,7 +141,7 @@ static CNF first_look(const CNF& f,Result& r,double cap,Clock::time_point start)
   const int score=8*(int(module.size())-int(candidate.clauses.size()))+saved;
   if(score>best_score){
    best_score=score;best_ids=std::move(module);
-   best_recipe=candidate.clauses;best_class=candidate.cls;
+   best_recipe=candidate.clauses;best_class=candidate.cls;best_saved=saved;
   }
  }
  r.probe_s=std::chrono::duration<double>(Clock::now()-t1).count();
@@ -154,7 +154,7 @@ static CNF first_look(const CNF& f,Result& r,double cap,Clock::time_point start)
  for(size_t i=0;i<f.clauses.size();++i)if(!drop[i])out.clauses.push_back(f.clauses[i]);
  for(const auto& c:best_recipe)out.clauses.push_back(c);
  r.accepted=int(best_recipe.size());r.pivots=int(best_ids.size());
- r.derived=best_score;r.gate_hits=best_class;
+ r.derived=1;r.npn_class=best_class;r.saved_literals=best_saved;
  r.decision="commit";r.reason="truth_table_proven_equivalence";
  return out;
 }
@@ -162,6 +162,23 @@ static CNF first_look(const CNF& f,Result& r,double cap,Clock::time_point start)
 }
 int main(int argc,char**argv) {
  try{
+  if(argc==2 && std::string(argv[1])=="--atlas-selftest"){
+   for(int k=2;k<=4;++k){
+    std::vector<int> support;for(int v=1;v<=k;++v)support.push_back(v);
+    const unsigned functions=1u<<(1u<<k);
+    for(unsigned truth=0;truth<functions;++truth){
+     const auto rule=arl1::atlas_recipe(k,truth,support);
+     for(unsigned bits=0;bits<(1u<<k);++bits){
+      bool sat=true;
+      for(const auto& clause:rule.clauses)
+       if(!arl1::clause_holds(clause,support,int(bits))){sat=false;break;}
+      drnas::require(sat==bool((truth>>bits)&1u),"atlas generated recipe mismatch");
+     }
+    }
+    std::cout<<"ATLAS1_EXHAUSTIVE_PASS k="<<k<<" functions="<<functions<<"\n";
+   }
+   return 0;
+  }
   if(argc!=6||std::string(argv[2])!="--mode"||std::string(argv[4])!="--time"){
    std::cerr<<"usage: atlas1 FILE --mode A|ATLAS1 --time SECONDS\n";return 2;
   }
@@ -186,7 +203,7 @@ int main(int argc,char**argv) {
            <<" final_clauses="<<working.clauses.size()
            <<" unit="<<p.unit<<" binary="<<p.binary<<" ternary="<<p.ternary
            <<" gate_hits="<<p.gate_hits<<" gate_scanned="<<p.gate_scanned<<" pairs="<<p.pairs<<" pivots="<<p.pivots<<" derived="<<p.derived
-           <<" method="<<p.method<<" removed="<<p.pivots<<" added="<<p.accepted<<" accepted="<<p.accepted<<" decision="<<p.decision<<" reason="<<p.reason
+           <<" method="<<p.method<<" npn_class="<<p.npn_class<<" saved_literals="<<p.saved_literals<<" removed="<<p.pivots<<" added="<<p.accepted<<" accepted="<<p.accepted<<" decision="<<p.decision<<" reason="<<p.reason
            <<" conflicts="<<st.conflicts<<" decisions="<<st.decisions
            <<" propagations="<<st.propagations<<" watch_visits="<<st.watch_visits
            <<" learned="<<st.learned_clauses
