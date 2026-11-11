@@ -67,7 +67,8 @@ one("                atlas24_on_conflict();",
 """                atlas24_on_conflict();
                 atlas25_progress_on_conflict();""")
 one("    bool atlas24_live()const{return atlas24_live_;}",
-"""    bool atlas25_b()const{return atlas25_b_;}
+"""    void atlas25_configure(bool c7,uint64_t seed,bool progress){atlas25_enable_structure(c7,seed,progress);}
+    bool atlas25_b()const{return atlas25_b_;}
     bool atlas25_c()const{return atlas25_c_;}
     bool atlas25_initial_c7()const{return atlas25_initial_c7_;}
     uint64_t atlas25_early_switches()const{return atlas25_early_switches_;}
@@ -94,7 +95,7 @@ src=src.replace(anchor,anchor+'''
     // Binary-rich and larger constraint graphs favor early C7 hypothesis.
     const bool choose_c7=orig.vars>=150 && count>=500 &&
        (bin*100>=35*count || (orig.vars>=250 && ternary*100>=75*count));
-    solver.atlas25_enable_structure(choose_c7,trial_seed,mode=="V25_C");
+    solver.atlas25_configure(choose_c7,trial_seed,mode=="V25_C");
   }''',1)
 anchor='           <<" SAT_original_verified="<<int(status==10)'
 assert src.count(anchor)==1
