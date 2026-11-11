@@ -81,11 +81,8 @@ def build(family,cohort):
         return out
 
     def exactly_one(size):
-        group=[newvar(j==rng.randrange(size)) for j in range(size)]
-        # The previous line might select a different hot index per element.
-        # Reset to a single chosen hot index BEFORE writing any clauses.
         hot=rng.randrange(size)
-        for j,v in enumerate(group):values[v]=(j==hot)
+        group=[newvar(j==hot) for j in range(size)]
         add(group)
         for i in range(size):
             for j in range(i+1,size):add([-group[i],-group[j]])
@@ -123,7 +120,6 @@ def build(family,cohort):
         for z in range(3):
             if z!=j and rng.randrange(2):lits[z]=-lits[z]
         add(lits)
-    assert all(all(values[abs(l)]==(l>0) for l in c)==False for c in []) # sanity
     assert all(any(values[abs(l)]==(l>0) for l in c) for c in clauses)
     text="p cnf %d %d\n"%(next_var,len(clauses))
     text+="".join(" ".join(map(str,c))+" 0\n" for c in clauses)
