@@ -74,8 +74,8 @@ def selftest():
     a=parity_cnf((1,2,3),0)
     assert extract_exact_xors(a)==[((1,2,3),0)]
     assert screen(a+a,min_rows=1)["rank"]==1
-    b=parity_cnf((1,2,3),1)
-    assert screen(a+b,min_rows=1)["contradiction"]
+    inconsistent=(parity_cnf((1,2),0)+parity_cnf((2,3),0)+parity_cnf((1,3),1))
+    assert screen(inconsistent,min_rows=1)["contradiction"]
     assert screen([[1,2,3],[-1,2,3]],min_rows=1)["gate"]=="off"
     r=random.Random(20261111)
     for _ in range(240):
