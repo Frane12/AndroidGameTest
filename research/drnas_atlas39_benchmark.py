@@ -11,7 +11,7 @@ sys.path.insert(0, "research")
 import drnas_atlas_wide500 as W
 import drnas_atlas21_official as Verify
 
-ARMS = ("V23_C7_STABLE", "A36_75", "A37_ROUTE", "KISSAT")
+ARMS = ("V23_C7_STABLE", "A36_75", "A39_SHADOW", "A39_PROTECT", "KISSAT")
 ROOT = pathlib.Path("mre_atlas39")
 BIN = pathlib.Path("mre_atlas23/bin")
 REGRESSION_INDEX = (0, 1)
@@ -99,9 +99,9 @@ def run(source, mode, rep, cap):
                 "ATLAS39 mode did not activate",mode,telem)
             assert telem["atlas23_stable_phase"] == 1, (
                 "ATLAS39 should retain C7 stable phase",mode)
-    if rc in (10,20) and mode=="A37_ROUTE":
-        assert telem["atlas39_route"]==1, ("route not activated",telem)
-        assert telem["atlas39_route_75"]+telem["atlas39_route_100"]==telem["atlas36_attempts"], ("route count mismatch",telem)
+    if rc in (10,20) and mode in ("A39_SHADOW","A39_PROTECT"):
+        assert telem["atlas39_mode"]==(1 if mode=="A39_SHADOW" else 2), ("utility mode not activated",mode,telem)
+        assert telem["atlas23_stable_phase"]==1, "stable phase must be active"
     return dict(sha256=source["sha256"], family=source["family"],
         index=source["index"], cohort=source["cohort"], arm=mode, rep=rep,
         status=status, original_SAT_witness_verified=sat,
