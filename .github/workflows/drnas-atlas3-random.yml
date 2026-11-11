@@ -1,0 +1,76 @@
+name: DRNAS ATLAS3 prospective source-locked random-3SAT abstention
+run-name: ATLAS3 eight SATLIB SHA ranks16/17 A ATLAS2 gate12 gate32 oneCPU
+on:
+  push:
+    branches: [experiment/drnas-atlas3-cost-gate-20261111]
+    paths:
+      - research/drnas_atlas3.cpp
+      - research/drnas_atlas3_smoke.py
+      - research/drnas_atlas3_random_bench.py
+      - research/drnas_atlas2.cpp
+
+      - research/drnas_atlas1_generate.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-atlas3-random.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas3_random_bench.py research/drnas_atlas1_generate.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas3_random/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_atlas3_random/kissat-src
+          git -C mre_atlas3_random/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_atlas3_random/kissat-src && ./configure && make -j2)
+          install -m 755 mre_atlas3_random/kissat-src/build/kissat mre_atlas3_random/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_atlas3_random/bin/cadical
+      - name: Generate frozen 2 to 4-input NPN catalog and recipes
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas1_generate.py --out mre_atlas3_random/atlas1_table.hpp
+      - name: Compile ATLAS3 and pristine ATLAS2; exact selftests and gate controls
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -I mre_atlas3_random research/drnas_atlas3.cpp -o mre_atlas3_random/bin/drnas_atlas3
+          g++ -std=c++17 -O2 -I mre_atlas3_random research/drnas_atlas2.cpp -o mre_atlas3_random/bin/drnas_atlas2
+          mre_atlas3_random/bin/drnas_atlas3 --atlas-selftest
+      - name: Prospective original SATLIB SHA ranks 16 17 strict PAR2 model verification
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas3_random_bench.py | tee mre_atlas3_random/benchmark.log
+          grep '^MICRO_FINAL ' mre_atlas3_random/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ATLAS3-RANDOM-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlas3_random/audit.json
+            mre_atlas3_random/source.json
+            mre_atlas3_random/*.cnf
+            mre_atlas3_random/*.log
+            mre_atlas3_random/route_atlas3.json
+            mre_atlas3_random/route_strict.json
+
+
+
