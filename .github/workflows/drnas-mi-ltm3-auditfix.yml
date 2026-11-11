@@ -1,0 +1,82 @@
+name: DRNAS MI-LTM3 relational audit v2
+run-name: MI-LTM3 REL2 384 SHA BASE PAIRWISE CLOSURE GATE 2reps 1CPU 3s
+on:
+  push:
+    branches: [experiment/drnas-mi-ltm3-relational-audit-20261111]
+    paths:
+      - "mi_ltm3/**"
+      - ".github/workflows/drnas-mi-ltm3-auditfix.yml"
+  workflow_dispatch:
+concurrency:
+  group: mi-ltm3-rel2-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  mi-ltm3-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore rolling training memory (never holdout)
+        uses: actions/cache/restore@v4
+        with:
+          path: mi_ltm3/training_relational.sqlite
+          key: mi-ltm3-rel2-strict-train-only-${{ github.run_id }}
+          restore-keys: |
+            mi-ltm3-rel2-strict-train-only-
+      - name: Validate generator, source proofs, frozen memory, XOR inference
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s mi_ltm1 -p 'test_*.py' -v
+          python3 -m unittest discover -s mi_ltm3 -p 'test_*.py' -v
+      - name: Build pinned native DRNAS CDCL standalone engine
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - name: Source-certified multi-family canary (12 CNFs)
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm3/experiment.py --smoke --training-generation "${{ github.run_number }}" | tee MI_LTM3_SMOKE.log
+          grep '^MI_LTM3_FINAL ' MI_LTM3_SMOKE.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Persistent 192 train plus frozen 192 holdout (384 original CNFs)
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm3/experiment.py --training-generation "${{ github.run_number }}" | tee MI_LTM3.log
+          grep '^MI_LTM3_LEARNING ' MI_LTM3.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^MI_LTM3_FINAL ' MI_LTM3.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Independently recheck retained originals, certificates and PAR2
+        run: python3 -u mi_ltm3/audit_artifacts.py
+      - name: Persist ONLY training memory for next run
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: mi_ltm3/training_relational.sqlite
+          key: mi-ltm3-rel2-strict-train-only-${{ github.run_id }}
+      - name: Export complete paired trial and proof audit, no giant proofs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MI-LTM3-REL2-384CNF-BASE-PAIRWISE-CLOSURE-GATE-3s
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            MI_LTM3_FINAL.json
+            MI_LTM3_AUDIT.json
+            MI_LTM3.log
+            MI_LTM3_SMOKE.json
+            MI_LTM3_SMOKE.log
+            mi_ltm3/policy_frozen.json
+            mi_ltm3/training_relational.sqlite
+            mi_ltm3/sources/*.cnf
+            mi_ltm3/certificates/*.json
+

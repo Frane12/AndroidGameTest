@@ -51,8 +51,8 @@ class TrainingMemory:
     def insert_pair(self, *, sha, rep, generation, family, key, base, force):
         if self.readonly:
             raise PermissionError("Holdout has read-only memory")
-        if not (base["verified"] and force["verified"]):
-            raise ValueError("Unverified result cannot be used for training")
+        if not (base.get("trial_audited") and force.get("trial_audited")):
+            raise ValueError("Unaudited trial cannot be used for training")
         with self.db:
             self.db.execute(
                 "INSERT OR REPLACE INTO pairs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -124,7 +124,7 @@ class TrainingMemory:
         patterns={key:dict(kind=value["kind"],
                            training_formulas=len(value["formulas"]))
                   for key,value in sorted(pattern_index.items())}
-        policy=dict(version="MI-LTM3-v1",train_formula_count=len(seen_shas),
+        policy=dict(version="MI-LTM3-relational-audit-v2",train_formula_count=len(seen_shas),
                     feature_classes=classes,positive_classes=positives,
                     known_patterns=patterns,
                     thresholds=dict(min_cases=min_cases,
@@ -147,3 +147,4 @@ def action(policy,key):
     if key in policy["feature_classes"]:
         return "BASE","negative_or_insufficient_evidence"
     return "BASE","unseen_structure"
+

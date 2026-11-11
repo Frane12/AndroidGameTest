@@ -60,7 +60,7 @@ class PolicyTests(unittest.TestCase):
     @staticmethod
     def item(t,solved=True,conflicts=10):
         return dict(par2_s=t,solved=solved,
-                    verified=True,conflicts=conflicts,probe_s=.0005)
+                    verified=solved,trial_audited=True,conflicts=conflicts,probe_s=.0005)
 
     def test_positive_gate_and_negative_gate(self):
         with tempfile.TemporaryDirectory() as td:
@@ -96,3 +96,4 @@ class PolicyTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+

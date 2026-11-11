@@ -1,14 +1,15 @@
 """MI-LTM3 actual one-CPU native CDCL training and frozen holdout benchmark.
 
-Training-only SQLite is carried across GitHub runs. Each run adds 192 fresh
+Training-only versioned SQLite is carried across GitHub runs. Each run adds 192 fresh
 training CNFs; holdout's 192 source SHAs remain frozen, and are NEVER written
-to either training table. BASE vs MI_FORCED vs LTM_GATE is measured end-to-end
+to either training table. BASE / PAIRWISE / MI_FORCED closure / LTM_GATE are measured end-to-end
 including gating, probing, conversion to CNF and native CDCL subprocess.
 """
 import argparse
 import hashlib
 import json
 import os
+import resource
 import statistics
 import sys
 import time
@@ -18,7 +19,9 @@ from tempfile import TemporaryDirectory
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"mi_ltm1"))
-from native_paired import BIN, implied_cnf, parse_model, solve
+from native_paired import BIN, implied_cnf, parse_model
+from runtime import solve_deadline as solve
+from relational_probe import probe_relations
 from probe import probe_cnf
 from relational_memory import extract_patterns
 from design import (FAMILIES,cohort,digest_manifest,dimacs,opportunity_key,
@@ -69,15 +72,26 @@ def independently_audit_inferences(clauses,report):
 
 
 def run_arm(case,arm,rep,policy,tmp):
-    assert arm in ("BASE","MI_FORCED","LTM_GATE")
+    assert arm in ("BASE","PAIRWISE","MI_FORCED","LTM_GATE")
     start=time.perf_counter()
+    feature_computed=False
     if arm=="LTM_GATE":
-        key=opportunity_key(case["clauses"],case["n"])
-        active,reason=action(policy,key)
+        if not policy["positive_classes"]:
+            # No feature can select an intervention: no scan is needed.
+            # Precomputed key is used ONLY for offline matching diagnostics.
+            key=case["feature_key"]
+            active,reason="BASE","empty_policy_fast_fallback"
+        else:
+            key=opportunity_key(case["clauses"],case["n"])
+            feature_computed=True
+            active,reason=action(policy,key)
     else:
         key=case["feature_key"]
-        active="MI_XOR" if arm=="MI_FORCED" else "BASE"
-        reason="forced_probe" if arm=="MI_FORCED" else "control"
+        active="MI_XOR" if arm in ("PAIRWISE","MI_FORCED") else "BASE"
+        reason="pairwise_control" if arm=="PAIRWISE" else "forced_relational_probe" if arm=="MI_FORCED" else "control"
+    gate_s=time.perf_counter()-start
+    relation_stats={}
+    inference_report=None
     added=[]
     detected_rows=0
     consequences=0
@@ -85,10 +99,13 @@ def run_arm(case,arm,rep,policy,tmp):
     aborted=False
     if active=="MI_XOR":
         before=time.perf_counter()
-        report=probe_cnf(case["raw"],max_clauses=10000,
+        probe_function=probe_cnf if arm=="PAIRWISE" else probe_relations
+        report=probe_function(case["raw"],max_clauses=10000,
                          max_rows=96,max_width=3)
         if report["status"]=="diagnostic_only":
             independently_audit_inferences(case["clauses"],report)
+            relation_stats=report.get("relational_closure",{})
+            inference_report=report
             detected_rows=len(report["xor_equations"])
             consequences=len(report["consequences"])
             ordered=sorted(report["consequences"],
@@ -112,11 +129,13 @@ def run_arm(case,arm,rep,policy,tmp):
             added=[]
             aborted=True
             reason="probe_budget_abstain"
+    write_started=time.perf_counter()
     work=case["clauses"]+added
     path=tmp/("ltm3_%s_%s_%d.cnf" % (case["family"],arm,rep))
     path.write_text(dimacs(case["n"],work))
     seed=int.from_bytes(hashlib.sha256(
         ("%s/%d" % (case["sha"],rep)).encode()).digest()[:8],"big")
+    write_s=time.perf_counter()-write_started
     remaining=CAP_S-(time.perf_counter()-start)
     if remaining>.005:
         rc,stdout,child_s=solve(path,seed,remaining)
@@ -125,6 +144,8 @@ def run_arm(case,arm,rep,policy,tmp):
         aborted=True
         reason="total_budget_exceeded"
     e2e=time.perf_counter()-start
+    within_budget=e2e<=CAP_S
+    verify_started=time.perf_counter()
     expected=case["expect"]
     if rc not in (0,10,20):
         raise AssertionError(("Unexpected native process result",rc,case["sha"]))
@@ -145,22 +166,49 @@ def run_arm(case,arm,rep,policy,tmp):
         status="UNSAT_SOURCE_GF2_VERIFIED"
     else:
         status="UNKNOWN"
+    verification_s=time.perf_counter()-verify_started
+    candidate_status=status
+    if not within_budget:
+        status="UNKNOWN"
+        reason="total_budget_exceeded"
     telemetry={}
     for line in stdout.splitlines():
         if line.startswith("ATLAS13_TRIAL "):
             telemetry=dict(part.split("=",1) for part in line.split()[1:]
                            if "=" in part)
     solved=status in ("SAT_ORIGINAL_VERIFIED","UNSAT_SOURCE_GF2_VERIFIED")
+    # Persist small independently checkable evidence AFTER the measured solve.
+    # Offline evidence I/O does not influence routing or inference.
+    evidence=dict(original_sha256=case["sha"],arm=arm,rep=rep,
+                  status=candidate_status,within_budget=within_budget)
+    if inference_report is not None:
+        evidence["equations"]=inference_report["xor_equations"]
+        evidence["consequences"]=inference_report["consequences"]
+    if rc==10:
+        evidence["model"]=parse_model(stdout)
+    elif rc==20:
+        evidence["unsat_check"]="rederive complete original-source XOR rows and GF2 contradiction"
+    encoded=json.dumps(evidence,sort_keys=True,separators=(",",":"))
+    certificate_sha=hashlib.sha256(encoded.encode()).hexdigest()
+    certdir=OUT/"certificates";certdir.mkdir(parents=True,exist_ok=True)
+    (certdir/(certificate_sha+".json")).write_text(encoded+"\n")
     return dict(family=case["family"],case=case["case"],
                 generation=case["generation"],split=case["split"],
                 sha256=case["sha"],variables=case["n"],
                 source_clauses=len(case["clauses"]),rep=rep,arm=arm,
                 action=active,reason=reason,feature_key=key,
+                feature_computed=feature_computed,certificate_sha256=certificate_sha,
                 matched=bool(policy and key in policy["feature_classes"]),
-                status=status,solved=solved,verified=True,
+                status=status,candidate_status=candidate_status,solved=solved,
+                verified=solved,trial_audited=True,
+                within_budget=within_budget,deadline_exceeded=not within_budget,
                 independent_LRAT=False,original_source_checked=True,
                 e2e_s=round(e2e,7),
                 par2_s=round(e2e if solved else 2*CAP_S,7),
+                gate_s=round(gate_s,7),write_s=round(write_s,7),
+                native_s=round(child_s,7),verification_s=round(verification_s,7),
+                verified_e2e_s=round(e2e+verification_s,7),
+                relation_stats=relation_stats,
                 probe_s=round(probe_s,7),probe_aborted=aborted,
                 detected_xor_rows=detected_rows,
                 derived_consequences=consequences,
@@ -188,7 +236,13 @@ def summary(items):
                          activated=sum(x["action"]=="MI_XOR" for x in rows),
                          matched=sum(x["matched"] for x in rows),
                          added_clauses=sum(x["added_clauses"] for x in rows),
-                         probes_abstained=sum(x["probe_aborted"] for x in rows))
+                         probes_abstained=sum(x["probe_aborted"] for x in rows),
+                         deadline_exceeded=sum(x["deadline_exceeded"] for x in rows),
+                         effective_injections=sum(bool(x["added_clauses"]) for x in rows),
+                         closure_depth2plus=sum(x["relation_stats"].get("max_depth",0)>=2 for x in rows),
+                         gate_s=round(sum(x["gate_s"] for x in rows),6),
+                         probe_s=round(sum(x["probe_s"] for x in rows),6),
+                         verification_s=round(sum(x["verification_s"] for x in rows),6))
     return result
 
 
@@ -215,7 +269,11 @@ def train(memory,case,results):
         memory.insert_pair(sha=case["sha"],rep=rep,
                            generation=case["generation"],family=case["family"],
                            key=case["feature_key"],base=base,force=force)
-    memory.insert_patterns(case["sha"],extract_patterns(case["raw"]))
+    patterns=extract_patterns(case["raw"])
+    for row in results:
+        if row["arm"]=="MI_FORCED":
+            patterns.update(row["relation_stats"].get("patterns",{}))
+    memory.insert_patterns(case["sha"],patterns)
 
 
 def diagnose_templates(cases,policy):
@@ -224,6 +282,9 @@ def diagnose_templates(cases,policy):
     hits=Counter()
     for case in cases:
         patterns=extract_patterns(case["raw"])
+        closure=probe_relations(case["raw"])
+        independently_audit_inferences(case["clauses"],closure)
+        patterns.update(closure.get("relational_closure",{}).get("patterns",{}))
         match={k:v for k,v in patterns.items() if
                k in catalogue and catalogue[k]["kind"]==v}
         entry=details.setdefault(case["family"],dict(
@@ -251,6 +312,8 @@ def main():
     args=parser.parse_args()
     if args.training_generation<1:
         raise ValueError("Training generation must be positive")
+    if hasattr(os,"sched_getaffinity") and len(os.sched_getaffinity(0))!=1:
+        raise RuntimeError("Benchmark requires exactly one logical CPU; use taskset")
     if not BIN.exists():
         raise FileNotFoundError("Missing native standalone ATLAS15 binary")
     cases=cohort(training_generation=args.training_generation)
@@ -266,7 +329,10 @@ def main():
                      for f in FAMILIES]
         holdout_cases=[next(x for x in holdout_cases if x["family"]==f)
                        for f in FAMILIES]
-    dbfile=OUT/("training_smoke.sqlite" if smoke else "training.sqlite")
+    dbfile=OUT/("training_relational_smoke.sqlite" if smoke else "training_relational.sqlite")
+    source_dir=OUT/"sources";source_dir.mkdir(parents=True,exist_ok=True)
+    for case in train_cases+holdout_cases:
+        (source_dir/(case["sha"]+".cnf")).write_text(case["raw"])
     mem=TrainingMemory(dbfile)
     output=[]
     with TemporaryDirectory() as temporary:
@@ -275,8 +341,8 @@ def main():
             case["feature_key"]=opportunity_key(case["clauses"],case["n"])
             rows=[]
             for rep in range(REPS):
-                order=("BASE","MI_FORCED") if rep%2==0 else (
-                    "MI_FORCED","BASE")
+                order=("BASE","PAIRWISE","MI_FORCED") if rep%2==0 else (
+                    "MI_FORCED","PAIRWISE","BASE")
                 for arm in order:
                     trial=run_arm(case,arm,rep,None,tmp)
                     rows.append(trial)
@@ -306,8 +372,8 @@ def main():
         for count,case in enumerate(holdout_cases,1):
             case["feature_key"]=opportunity_key(case["clauses"],case["n"])
             for rep in range(REPS):
-                arms=("BASE","LTM_GATE","MI_FORCED") if rep%2==0 else (
-                    "MI_FORCED","LTM_GATE","BASE")
+                arms=("BASE","PAIRWISE","LTM_GATE","MI_FORCED") if rep%2==0 else (
+                    "MI_FORCED","LTM_GATE","PAIRWISE","BASE")
                 for arm in arms:
                     output.append(run_arm(case,arm,rep,frozen,tmp))
             if count%24==0 or count==len(holdout_cases):
@@ -324,8 +390,16 @@ def main():
     totals=dict(train=summary(train_trials),holdout=summary(holdout_trials),
                 holdout_by_family=by_family,
                 paired_forced=paired_wins(holdout_trials,"BASE","MI_FORCED"),
+                paired_relations=paired_wins(holdout_trials,"PAIRWISE","MI_FORCED"),
                 paired_gated=paired_wins(holdout_trials,"BASE","LTM_GATE"))
-    report=dict(project="DRNAS MI-LTM3",version=1,
+    report=dict(project="DRNAS MI-LTM3",version="relational-audit-v2",
+                commit=os.getenv("GITHUB_SHA","local-uncommitted"),
+                github_run_id=os.getenv("GITHUB_RUN_ID"),
+                memory=dict(native_address_space_limit_bytes=2*1024**3,
+                            native_peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+                            harness_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                            scope="Linux peak across all trials, not per arm"),
+                timing_protocol="strict-E2E-v2; separate verification cost",
                 training_generation=args.training_generation,
                 smoke=smoke,formula_manifest_sha=digest,
                 manifest=manifest if not smoke else [],
@@ -349,8 +423,11 @@ def main():
     report_file.write_text(json.dumps(report,indent=2,sort_keys=True))
     print("MI_LTM3_FINAL",json.dumps({
         "train":totals["train"],"holdout":totals["holdout"],
+        "commit":report["commit"],"github_run_id":report["github_run_id"],
+        "memory":report["memory"],
         "paired_forced":totals["paired_forced"],
         "paired_gated":totals["paired_gated"],
+        "paired_relations":totals["paired_relations"],
         "templates":templates,"policy_sha256":frozen["sha256"],
         "positive_classes":len(frozen["positive_classes"]),
         "historical_training_shas":frozen["train_formula_count"],
@@ -360,3 +437,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
