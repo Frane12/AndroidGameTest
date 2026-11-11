@@ -271,4 +271,4 @@ for arm in ARMS:
       "rewritten":sum(x.get("equivalent_variables_rewritten",0) for x in rr),
       "clauses_saved":sum(x.get("clauses_before",0)-x.get("clauses_after",0) for x in rr)}
 (OUT/f"block4_kissat_audit_{SHARD}.json").write_text(json.dumps({"rows":rows,"summary":summary},indent=2))
-print("ATLAS_BLOCK4_FINAL "+json.dumps({"shard":SHARD,"summary":summary},sort_keys=True),flush=True)
+print("ATLAS_BLOCK4_KISSAT_FINAL "+json.dumps({"shard":SHARD,"summary":summary},sort_keys=True),flush=True)
