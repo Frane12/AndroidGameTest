@@ -1,5 +1,5 @@
 // ATLAS28 native C++ theorem gate (prospective paired test). Exact CNF subformula check, fallback to native solver.
-// Theorem certificate is NOT LRAT. No family names, SHA or source labels used.
+// Theorem certificate is NOT LRAT. No family names, SHA or source labels used; conservative structural gate.
 #include <algorithm>
 #include <chrono>
 #include <fstream>
