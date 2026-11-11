@@ -20,7 +20,7 @@ class BridgeTests(unittest.TestCase):
 
  def test_derived_cnf_equisatisfiable_and_source_unchanged(self):
   source=xor((1,2,3),0)+xor((2,3,4),1)
-  original=("p cnf 4 %d\\n"%len(source)+"".join(" ".join(map(str,c))+" 0\\n" for c in source))
+  original=("p cnf 4 %d\n"%len(source)+"".join(" ".join(map(str,c))+" 0\n" for c in source))
   with TemporaryDirectory() as folder:
    inp=Path(folder)/"original.cnf"
    out=Path(folder)/"reduced.cnf"
