@@ -158,19 +158,24 @@ def aggregate(data,sig):
     speed=[s["A"]["E2E_s"]/max(1e-9,s["LIVE"]["E2E_s"]) for s in valid]
     speed.sort()
     median=speed[len(speed)//2] if speed else 0
+    savings=sorted(s["A"]["E2E_s"]-s["LIVE"]["E2E_s"] for s in valid)
+    median_saved=savings[len(savings)//2] if savings else 0
     regress=sum(s["LIVE"]["E2E_s"]>s["A"]["E2E_s"]*1.15 for s in valid)
     causal=sum(s["LIVE"]["live_implications"]>0 for s in valid)
     decisions=sum(s["LIVE"]["decisions"]<s["A"]["decisions"] for s in valid)
     # Conservative activation: three independent positive source CNFs,
     # median >10% faster, no severe regression, and actual live work.
-    activate=(len(valid)>=3 and median>=1.10 and regress==0 and causal>=3)
+    activate=(len(valid)>=3 and median>=1.10 and median_saved>=0.005 and
+              regress==0 and causal>=3)
     return {"distinct_source_sha":len(samples),"verified_pairs":len(valid),
-            "median_A_over_LIVE":round(median,5),"regressions_over_15pct":regress,
+            "median_A_over_LIVE":round(median,5),
+            "median_absolute_saved_s":round(median_saved,6),
+            "regressions_over_15pct":regress,
             "cases_with_live_implications":causal,
             "cases_with_fewer_decisions":decisions,
             "selected":"LIVE" if activate else "A",
             "method":"paired-original-CNF-E2E-PAR2-with-causal-live-reasons",
-            "why":("at_least_3_independent_verified_source_SHA_and_median_10pct_E2E_gain_no_15pct_regression"
+            "why":("at_least_3_independent_verified_source_SHA_median_10pct_and_5ms_E2E_gain_no_15pct_regression"
                    if activate else
                    "insufficient_independent_verified_causal_speed_evidence_or_regression")}
 
