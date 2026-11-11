@@ -1,0 +1,48 @@
+name: DRNAS ATLAS BLOCK4 exact SCC and randomized equivalent B
+run-name: ATLAS-BLOCK4 42 real SATLIB x 3 reps x A BLOCK2 B_RANDOM 5s 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas-block4-20261111]
+    paths:
+      - research/drnas_atlas_block4.py
+      - .github/workflows/drnas-atlas-block4.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native DRNAS and selftest
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlasmap2/bin
+          python3 -m py_compile research/drnas_atlas_block4.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest
+      - name: One-CPU matched original CNF versus BLOCK4 versus randomized equivalent B
+        env:
+          BLOCK4_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p mre_map2_real47
+          taskset -c "$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas_block4.py | tee mre_map2_real47/block4.log
+          grep '^ATLAS_BLOCK4_FINAL ' mre_map2_real47/block4.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS-BLOCK4-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_map2_real47/block4_audit_*.json
+            mre_map2_real47/block4.log
+            mre_map2_real47/sources.json
