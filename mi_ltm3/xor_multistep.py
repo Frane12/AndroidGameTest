@@ -38,7 +38,8 @@ def closure(source_equations, *, max_rows=96, max_steps=25000,
     basis = {}
     results = {}
     operations = 0
-    truncated = len(source_equations) > max_rows
+    input_limited = len(source_equations) > max_rows
+    truncated = False
     deadline = t0 + budget_s
 
     def record(row):
@@ -105,7 +106,7 @@ def closure(source_equations, *, max_rows=96, max_steps=25000,
         "consequences": list(results.values()),
         "source_rows": min(len(source_equations), max_rows),
         "elimination_ops": operations,
-        "truncated": truncated,
+        "truncated": truncated or input_limited,
         "elapsed_s": time.perf_counter() - t0,
     }
 
