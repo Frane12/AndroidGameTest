@@ -163,6 +163,7 @@ static CNF adaptive(const CNF& f,Result& r,double cap,Clock::time_point start){
   return out;
  }
  if(ternaries>=2){
+  r.unit=r.binary=r.ternary=r.longer=0;
   CNF out=first_look(f,r,cap,start);
   r.method="ternary_exact_resolution";
   return out;
