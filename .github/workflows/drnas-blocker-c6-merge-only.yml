@@ -1,0 +1,63 @@
+name: DRNAS BLOCKER C6 audit-only recovery
+run-name: BLOCKER C6 merge existing 20 shard artifacts original run 42971898599 no benchmark rerun
+on:
+  push:
+    branches: [experiment/drnas-blocker-c6-cross-20261111]
+    paths: [.github/workflows/drnas-blocker-c6-merge-only.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  merge_only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Recover immutable 20 original shard artifacts from completed benchmark
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42971898599
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: C6-BLOCKER-SHARD-*
+          merge-multiple: true
+          path: combined_audits
+      - name: Obtain canonical historical SHA registries without changing current source
+        run: |
+          set -euo pipefail
+          mkdir -p mre_blocker_c6 research
+          git fetch --depth=1 origin experiment/drnas-atlas-ultrawide500-20261111
+          git show FETCH_HEAD:research/atlas_wide500_memory.json > research/atlas_wide500_memory.json
+          git fetch --depth=1 origin experiment/drnas-atlas-feedback-prospective-20261111
+          git show FETCH_HEAD:research/atlas_prospective_v1_summary.json > research/atlas_prospective_v1_summary.json
+          git fetch --depth=1 origin experiment/drnas-blocker-blind100-r3-20261111
+          git show FETCH_HEAD:research/drnas_blocker_blind100_r3_summary.json > research/drnas_blocker_blind100_r3_summary.json
+          test "$(find combined_audits -name 'audit_*.json' | wc -l)" -eq 20
+          echo "Cross-checked historical SHA registries are available."
+      - name: Merge 1500 already-completed paired trials and all independent DRAT outcomes
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_blocker_c6_cross.py --merge-dir combined_audits |
+            tee mre_blocker_c6/combined.log
+          grep '^BLOCKER_C6_MERGED ' mre_blocker_c6/combined.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish summary on experimental branch only
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/drnas_blocker_c6_cross_summary.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data(cdcl): recover verified 1500-trial BLOCKER x C6 audit [skip ci]"
+            git pull --rebase origin experiment/drnas-blocker-c6-cross-20261111
+            git push origin HEAD:experiment/drnas-blocker-c6-cross-20261111
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BLOCKER-C6-CROSS-RECOVERED-AGGREGATE
+          retention-days: 90
+          path: |
+            mre_blocker_c6/combined.log
+            research/drnas_blocker_c6_cross_summary.json
