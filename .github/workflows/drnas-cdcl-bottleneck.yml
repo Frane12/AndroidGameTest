@@ -1,0 +1,54 @@
+name: DRNAS CDCL bottleneck ablation
+run-name: CDCL diagnosis 7 frozen hard CNFs 2 reps A blocker fast-restart negative-phase trace 8s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-cdcl-bottleneck-20261111]
+    paths:
+      - research/drnas_cdcl_bottleneck.py
+      - research/drnas_native_core_r3c.cpp
+      - research/drnas_atlasmap2.cpp
+      - .github/workflows/drnas-cdcl-bottleneck.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build five native CDCL modes with identical diagnostic counters
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_cdcl_bottleneck.py
+          mkdir -p mre_atlasmap2 mre_cdcl_diag/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          flags="-std=c++17 -O2 -DDRNAS_PROFILE -DDRNAS_WATCH_DIAG -I mre_atlasmap2"
+          g++ $flags research/drnas_atlasmap2.cpp -o mre_cdcl_diag/bin/drnas_base
+          g++ $flags -DDRNAS_ONE2_BLOCKER research/drnas_atlasmap2.cpp -o mre_cdcl_diag/bin/drnas_blocker
+          g++ $flags -DDRNAS_DIAG_FIXED_RESTART research/drnas_atlasmap2.cpp -o mre_cdcl_diag/bin/drnas_fast100
+          g++ $flags -DDRNAS_DIAG_NEGATIVE_PHASE research/drnas_atlasmap2.cpp -o mre_cdcl_diag/bin/drnas_negphase
+          g++ $flags -DDRNAS_ATLAS_TRAIN_TRACE research/drnas_atlasmap2.cpp -o mre_cdcl_diag/bin/drnas_trace
+          for arm in base blocker fast100 negphase trace; do
+            mre_cdcl_diag/bin/drnas_$arm --atlasmap2-selftest
+          done
+      - name: Run 7 pinned formulas in three matched single-core shards
+        env:
+          CDCL_DIAG_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_cdcl_bottleneck.py |
+            tee mre_cdcl_diag/cdcl_diag_${{ matrix.shard }}.log
+          grep '^CDCL_DIAG_FINAL ' mre_cdcl_diag/cdcl_diag_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: CDCL-BOTTLENECK-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_cdcl_diag/cdcl_diag_audit_${{ matrix.shard }}.json
+            mre_cdcl_diag/cdcl_diag_${{ matrix.shard }}.log
