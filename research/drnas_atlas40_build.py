@@ -40,12 +40,14 @@ one("    uint64_t atlas39_reason_uses()const{return atlas39_reason_uses_;}",
 p.write_text(s)
 p=Path("mre_atlas23/native.cpp")
 s=p.read_text()
+# Patch the exact control block BEFORE expanding generic dispatch predicates.
+# Otherwise a broad textual replace modifies the control-block anchor itself.
+anchor='    if(mode=="A39_SHADOW"||mode=="A39_PROTECT"){'
+assert s.count(anchor)==1,("ATLAS40 control activation anchor drift",s.count(anchor))
+s=s.replace(anchor,'    if(mode=="A39_SHADOW"||mode=="A39_PROTECT"||mode=="A40_YOUNG"||mode=="A40_MATURE"){',1)
 anchor='||mode=="A39_PROTECT"'
 assert s.count(anchor)>=2,(anchor,s.count(anchor))
 s=s.replace(anchor,anchor+'||mode=="A40_YOUNG"||mode=="A40_MATURE"')
-anchor='    if(mode=="A39_SHADOW"||mode=="A39_PROTECT"){'
-assert s.count(anchor)==1
-s=s.replace(anchor,'    if(mode=="A39_SHADOW"||mode=="A39_PROTECT"||mode=="A40_YOUNG"||mode=="A40_MATURE"){',1)
 anchor='solver.atlas39_enable(mode=="A39_SHADOW"?1:2);'
 assert s.count(anchor)==1
 s=s.replace(anchor,'solver.atlas39_enable(mode=="A39_SHADOW"?1:(mode=="A39_PROTECT"?2:(mode=="A40_YOUNG"?3:4)));',1)
