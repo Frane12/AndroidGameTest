@@ -24,6 +24,8 @@ from relational_memory import extract_patterns
 from design import (FAMILIES,cohort,digest_manifest,dimacs,opportunity_key,
                     satisfies,source_parity_unsat)
 from policy import TrainingMemory,action
+from strict_runner import run_strict
+from xor_multistep import closure, audit_provenance
 
 CAP_S=3.0
 REPS=2
@@ -69,29 +71,50 @@ def independently_audit_inferences(clauses,report):
 
 
 def run_arm(case,arm,rep,policy,tmp):
-    assert arm in ("BASE","MI_FORCED","LTM_GATE")
+    assert arm in ("BASE","MI_FORCED","MI_CHAIN","LTM_GATE")
     start=time.perf_counter()
     if arm=="LTM_GATE":
         key=opportunity_key(case["clauses"],case["n"])
         active,reason=action(policy,key)
     else:
         key=case["feature_key"]
-        active="MI_XOR" if arm=="MI_FORCED" else "BASE"
-        reason="forced_probe" if arm=="MI_FORCED" else "control"
+        active=("MI_CHAIN" if arm=="MI_CHAIN" else "MI_XOR" if arm=="MI_FORCED" else "BASE")
+        reason="forced_chain" if arm=="MI_CHAIN" else "forced_probe" if arm=="MI_FORCED" else "control"
     added=[]
     detected_rows=0
     consequences=0
     probe_s=0.0
     aborted=False
-    if active=="MI_XOR":
+    chain_ops=0
+    chain_truncated=False
+    chain_results=0
+    if active in ("MI_XOR","MI_CHAIN"):
         before=time.perf_counter()
         report=probe_cnf(case["raw"],max_clauses=10000,
                          max_rows=96,max_width=3)
         if report["status"]=="diagnostic_only":
             independently_audit_inferences(case["clauses"],report)
             detected_rows=len(report["xor_equations"])
-            consequences=len(report["consequences"])
-            ordered=sorted(report["consequences"],
+            candidates=list(report["consequences"])
+            if active=="MI_CHAIN" and detected_rows:
+                chain=closure(report["xor_equations"],max_rows=96,
+                              max_steps=12000,budget_s=.010)
+                chain_ops=chain["elimination_ops"]
+                chain_truncated=chain["truncated"]
+                for item in chain["consequences"]:
+                    if not audit_provenance(report["xor_equations"],item):
+                        raise AssertionError("Multi-step source provenance invalid")
+                chain_results=len(chain["consequences"])
+                keys={(tuple(x["variables"]),x["rhs"]) for x in candidates}
+                for item in chain["consequences"]:
+                    key=(tuple(item["variables"]),item["rhs"])
+                    if key not in keys:
+                        keys.add(key)
+                        candidates.append(item)
+            proof_report=dict(report,consequences=candidates)
+            independently_audit_inferences(case["clauses"],proof_report)
+            consequences=len(candidates)
+            ordered=sorted(candidates,
                            key=lambda c:({"conflict":0,"unit":1,
                                           "binary_xor":2}.get(c["kind"],3),
                                          len(c["variables"])))
@@ -119,12 +142,16 @@ def run_arm(case,arm,rep,policy,tmp):
         ("%s/%d" % (case["sha"],rep)).encode()).digest()[:8],"big")
     remaining=CAP_S-(time.perf_counter()-start)
     if remaining>.005:
-        rc,stdout,child_s=solve(path,seed,remaining)
+        rc,stdout,child_s,native_reason=run_strict(BIN,path,seed,remaining)
     else:
-        rc,stdout,child_s=0,"",0.0
+        rc,stdout,child_s,native_reason=0,"",0.0,"budget_exhausted"
         aborted=True
         reason="total_budget_exceeded"
     e2e=time.perf_counter()-start
+    if e2e>CAP_S:
+        rc,stdout=0,""
+        aborted=True
+        reason="total_budget_exceeded"
     expected=case["expect"]
     if rc not in (0,10,20):
         raise AssertionError(("Unexpected native process result",rc,case["sha"]))
@@ -162,6 +189,9 @@ def run_arm(case,arm,rep,policy,tmp):
                 e2e_s=round(e2e,7),
                 par2_s=round(e2e if solved else 2*CAP_S,7),
                 probe_s=round(probe_s,7),probe_aborted=aborted,
+                native_runner_reason=native_reason,
+                chain_ops=chain_ops,chain_truncated=chain_truncated,
+                chain_consequences=chain_results,
                 detected_xor_rows=detected_rows,
                 derived_consequences=consequences,
                 added_clauses=len(added),
@@ -185,10 +215,12 @@ def summary(items):
                              x["e2e_s"] for x in rows)*1000,4),
                          conflicts=sum(x["conflicts"] for x in rows),
                          decisions=sum(x["decisions"] for x in rows),
-                         activated=sum(x["action"]=="MI_XOR" for x in rows),
+                         activated=sum(x["action"] in ("MI_XOR","MI_CHAIN") for x in rows),
                          matched=sum(x["matched"] for x in rows),
                          added_clauses=sum(x["added_clauses"] for x in rows),
-                         probes_abstained=sum(x["probe_aborted"] for x in rows))
+                         probes_abstained=sum(x["probe_aborted"] for x in rows),
+                         chain_ops=sum(x["chain_ops"] for x in rows),
+                         chain_consequences=sum(x["chain_consequences"] for x in rows))
     return result
 
 
@@ -211,7 +243,7 @@ def train(memory,case,results):
     by={(r["rep"],r["arm"]):r for r in results}
     for rep in range(REPS):
         base=by[(rep,"BASE")]
-        force=by[(rep,"MI_FORCED")]
+        force=by[(rep,"MI_CHAIN")]
         memory.insert_pair(sha=case["sha"],rep=rep,
                            generation=case["generation"],family=case["family"],
                            key=case["feature_key"],base=base,force=force)
@@ -275,8 +307,8 @@ def main():
             case["feature_key"]=opportunity_key(case["clauses"],case["n"])
             rows=[]
             for rep in range(REPS):
-                order=("BASE","MI_FORCED") if rep%2==0 else (
-                    "MI_FORCED","BASE")
+                order=("BASE","MI_FORCED","MI_CHAIN") if rep%2==0 else (
+                    "MI_CHAIN","MI_FORCED","BASE")
                 for arm in order:
                     trial=run_arm(case,arm,rep,None,tmp)
                     rows.append(trial)
@@ -306,8 +338,8 @@ def main():
         for count,case in enumerate(holdout_cases,1):
             case["feature_key"]=opportunity_key(case["clauses"],case["n"])
             for rep in range(REPS):
-                arms=("BASE","LTM_GATE","MI_FORCED") if rep%2==0 else (
-                    "MI_FORCED","LTM_GATE","BASE")
+                arms=("BASE","LTM_GATE","MI_FORCED","MI_CHAIN") if rep%2==0 else (
+                    "MI_CHAIN","MI_FORCED","LTM_GATE","BASE")
                 for arm in arms:
                     output.append(run_arm(case,arm,rep,frozen,tmp))
             if count%24==0 or count==len(holdout_cases):
@@ -324,7 +356,8 @@ def main():
     totals=dict(train=summary(train_trials),holdout=summary(holdout_trials),
                 holdout_by_family=by_family,
                 paired_forced=paired_wins(holdout_trials,"BASE","MI_FORCED"),
-                paired_gated=paired_wins(holdout_trials,"BASE","LTM_GATE"))
+                paired_gated=paired_wins(holdout_trials,"BASE","LTM_GATE"),
+                paired_chain=paired_wins(holdout_trials,"BASE","MI_CHAIN"))
     report=dict(project="DRNAS MI-LTM3",version=1,
                 training_generation=args.training_generation,
                 smoke=smoke,formula_manifest_sha=digest,
@@ -351,6 +384,7 @@ def main():
         "train":totals["train"],"holdout":totals["holdout"],
         "paired_forced":totals["paired_forced"],
         "paired_gated":totals["paired_gated"],
+        "paired_chain":totals["paired_chain"],
         "templates":templates,"policy_sha256":frozen["sha256"],
         "positive_classes":len(frozen["positive_classes"]),
         "historical_training_shas":frozen["train_formula_count"],
