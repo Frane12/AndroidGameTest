@@ -211,11 +211,15 @@ static CNF preprocess(const CNF& original,Metrics& met,double cap) {
         for(int id:b.ids)c.replacement.push_back(original.clauses[id]);
         consider(original,best,std::move(c),a.literals+b.literals);
       }
+      if(best.saved>=8){limit_hit=true;break;} // a proof-checked useful rewrite exists
       if(!(am&~bm)||!(bm&~am))continue;
       // L2 extended recipe, only when the cheap mask join shows an
       // opportunity and original clause materialization is expensive.
       const int old_lits=a.literals+b.literals;
-      if(k!=5||a.ids.size()+b.ids.size()<4||
+      // S2 strict opportunity: do not materialize weak, single-link joins.
+      // Direct bitmask implication above is intentionally still allowed.
+      const int shared=int(a.vars.size()+b.vars.size()-common.size());
+      if(k!=5||shared<2||a.ids.size()+b.ids.size()<4||
          old_lits<14||met.l2_expansions>=6) {
         ++met.l2_skipped;continue;
       }
