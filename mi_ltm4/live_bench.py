@@ -163,7 +163,7 @@ def run(*,rep=0,smoke=True,generation=1):
                 frozen_memory_sha256=frozen["snapshot_sha256"],
                 holdout_formulas_recognized=holdout_recognized,
                 holdout_cross_pattern_matches=holdout_cross,
-                source_sha_disjoint=True,train_source_count=len(train_shas),
+                train_source_count=len(train_shas),
                 holdout_source_count=len(holdout_shas),
                 native_trace_motif_summary=support,
                 same_verified_statuses=sum(i["base_status"]==i["traced_status"]
