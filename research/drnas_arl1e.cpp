@@ -68,8 +68,8 @@ static CNF first_look(const CNF& f,Result& r,double overall_cap,Clock::time_poin
  };
  struct PairHash {
   size_t operator()(const PairKey& k) const {
-   uint64_t h=uint32_t(k.a+f.vars+1);
-   h=h*0x9e3779b185ebca87ULL+uint32_t(k.b+f.vars+1);
+   uint64_t h=uint32_t(k.a);
+   h=h*0x9e3779b185ebca87ULL+uint32_t(k.b);
    h=h*0xc2b2ae3d27d4eb4fULL+uint32_t(k.x);
    h^=h>>33;h*=0xff51afd7ed558ccdULL;h^=h>>33;
    return size_t(h);
