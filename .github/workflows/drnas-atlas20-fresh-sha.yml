@@ -1,0 +1,164 @@
+name: DRNAS ATLAS20 C7 adaptive vs fixed quarter deletion
+run-name: ATLAS20 75 entirely new generated SHA no SATLIB replay x 10 arms x 2 reps 8s 1CPU fixed Q4
+on:
+  push:
+    branches: [experiment/drnas-atlas20-q4-cadence-20261111]
+    paths:
+      - research/drnas_atlas20_build.py
+      - research/drnas_atlas20_benchmark.py
+      - research/drnas_atlas20_merge.py
+      - research/drnas_atlas20_schema.sql
+      - .github/workflows/drnas-atlas20-fresh-sha.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-atlas20-fixedquarter-20261111
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build frozen C6/C7 and isolated C9 Q4 fixed 1500/3000 cadence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas16_build.py research/drnas_atlas17_build.py research/drnas_atlas20_build.py research/drnas_atlas20_benchmark.py research/drnas_atlas20_merge.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas20_build.py
+          mkdir -p mre_atlas15/bin mre_atlas20/bin
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          g++ -std=c++17 -O2 -I mre_atlas20 -I mre_atlas15 mre_atlas20/native.cpp -o mre_atlas20/bin/drnas_atlas20
+          mre_atlas20/bin/drnas_atlas20 --selftest
+          python3 research/drnas_atlas15_train.py
+      - name: Compile pinned Kissat and install one-thread CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas20-kissat
+          git -C /tmp/atlas20-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas20-kissat && ./configure && make -j2)
+          cp /tmp/atlas20-kissat/build/kissat mre_atlas20/bin/kissat
+          mre_atlas20/bin/kissat --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS20-FROZEN-BINARIES
+          retention-days: 14
+          path: |
+            mre_atlas20/bin/drnas_atlas20
+            mre_atlas20/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS20-FROZEN-TRAINING
+          retention-days: 14
+          path: |
+            ATLAS15_TRAINING.json
+            ATLAS15_POLICY.txt
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS20-FROZEN-BINARIES
+          path: mre_atlas20/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS20-FROZEN-TRAINING
+          path: training
+      - name: Smoke 10 arms C7 adaptive against C9 fixed Q4 with original CNF verification
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas20/bin/drnas_atlas20 mre_atlas20/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas20_benchmark.py --stage 1 --shard 0 --smoke |
+            tee mre_atlas20/smoke.log
+          grep '^ATLAS20_FINAL ' mre_atlas20/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS20-SMOKE-LOG
+          path: |
+            mre_atlas20/smoke.log
+            mre_atlas20/audit_s1_h0.json
+  bench1:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS20-FROZEN-BINARIES
+          path: mre_atlas20/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS20-FROZEN-TRAINING
+          path: training
+      - name: ATLAS20 75-CNF 1CPU paired fixed-quarter shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas20/bin/drnas_atlas20 mre_atlas20/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas20_benchmark.py --stage 1 --shard ${{ matrix.shard }} |
+            tee mre_atlas20/pass1_shard_${{ matrix.shard }}.log
+          grep '^ATLAS20_FINAL ' mre_atlas20/pass1_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS20-PASS1-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas20/audit_s1_h${{ matrix.shard }}.json
+            mre_atlas20/events_s1_h${{ matrix.shard }}.jsonl
+            mre_atlas20/pass1_shard_${{ matrix.shard }}.log
+  merge1:
+    needs: bench1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS20-PASS1-SHARD-*
+          merge-multiple: true
+          path: audits
+      - name: Merge 75 fresh SHA with verified PAR2
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas20
+          python3 -u research/drnas_atlas20_merge.py --stage 1 --audit-dir audits |
+            tee mre_atlas20/pass1_merged.log
+          grep '^ATLAS20_MERGED ' mre_atlas20/pass1_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS20-SQL-PASS1
+          retention-days: 90
+          path: |
+            mre_atlas20/ATLAS20_LEARNING.sqlite
+            mre_atlas20/policy_next.json
+            mre_atlas20/ATLAS20_STAGE1_SUMMARY.json
+            mre_atlas20/pass1_merged.log
+
