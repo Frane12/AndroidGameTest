@@ -6,7 +6,27 @@ UNSAT from native CDCL is reported but never independently certified here.
 import hashlib,json,pathlib,subprocess,time,resource,sys
 sys.path.insert(0,"research")
 from drnas_atlas13_generator import build
-from drnas_atlas21_official import model_ok
+def model_ok(path, output):
+ model={}
+ for line in output.splitlines():
+  if line.startswith("v ") or line.startswith("v\t"):
+   for token in line[1:].split():
+    lit=int(token)
+    if lit==0:continue
+    if abs(lit) in model and model[abs(lit)]!=(lit>0):return False
+    model[abs(lit)]=lit>0
+ if not model:return False
+ pending=[]
+ with open(path,errors="replace") as fp:
+  for line in fp:
+   if line.startswith(("c","p","%")):continue
+   for tok in line.split():
+    lit=int(tok)
+    if lit:pending.append(lit)
+    else:
+     if not any(model.get(abs(v))==(v>0) for v in pending):return False
+     pending=[]
+ return not pending
 ROOT=pathlib.Path("pcd3_results");ROOT.mkdir(exist_ok=True)
 CATS=("random3_sat","random3_unsat","xor_dense_sat","xor_dense_unsat",
       "graph3color_sat","graph3color_unsat","pigeonhole_unsat","pigeonhole_sat",
