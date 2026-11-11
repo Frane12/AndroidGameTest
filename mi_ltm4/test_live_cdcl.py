@@ -39,6 +39,21 @@ MICRO_EVENT seq=4 kind=learn from=1 backjump=0 width=2 clause=7,2
         second=parse_native_log(b)["episodes"][0]
         self.assertEqual(first["key"],second["key"])
 
+    def test_directed_reason_shape_invariant_to_clause_identifiers(self):
+        first = """REDUCE2_NODE conflict=1 cid=8 learned=0 clause=7,4
+REDUCE2_NODE conflict=1 cid=5 learned=1 clause=-7,-4
+REDUCE2_EDGE conflict=1 from=8 to=5 var=4
+MICRO_EVENT seq=1 kind=conflict cid=8 level=2 number=1
+MICRO_EVENT seq=2 kind=learn from=2 backjump=0 width=2 clause=7,4
+"""
+        second = first.replace("cid=8","cid=80").replace(
+            "cid=5","cid=50").replace("from=8 to=5","from=80 to=50")
+        a=parse_native_log(first)["episodes"][0]
+        b=parse_native_log(second)["episodes"][0]
+        self.assertEqual(a["key"],b["key"])
+        self.assertEqual(a["features"]["reason_graph_shape"],
+                         b["features"]["reason_graph_shape"])
+
     def test_incomplete_conflict_no_false_learning(self):
         report=parse_native_log("MICRO_EVENT seq=1 kind=conflict cid=0 level=0 number=1")
         self.assertEqual(report["episodes"],[])
