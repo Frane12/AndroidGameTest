@@ -49,7 +49,7 @@ def independently_verify_core(clauses,indices):
  return not support and parity==1
 def process(arm,path,n,clauses,seed,cap=CAP,policy=None):
  cmd=[str(pathlib.Path("mre_atlas15/bin/drnas_atlas15").resolve()),
-      str(path.resolve()),"--mode",arm,"--time",str(cap),"--seed",str(seed)]+(["--policy",policy or (pathlib.Path("training/ATLAS15_POLICY.txt").read_text().strip() if pathlib.Path("training/ATLAS15_POLICY.txt").exists() else "1.0,0.85")] if arm.startswith("C5_WARM") else [])
+      str(path.resolve()),"--mode",arm,"--time",str(cap),"--seed",str(seed)]+(["--policy",policy or (pathlib.Path("training/ATLAS15_POLICY.txt").read_text().strip() if pathlib.Path("training/ATLAS15_POLICY.txt").exists() else "1.0,0.85")] if arm.startswith("C5_") else [])
  def limit():
   resource.setrlimit(resource.RLIMIT_CPU,(cap+1,cap+2))
   resource.setrlimit(resource.RLIMIT_AS,(2*1024**3,2*1024**3))
