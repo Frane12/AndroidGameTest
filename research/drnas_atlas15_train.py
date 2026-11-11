@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic source-disjoint training policy. No holdout labels or results are read."""
-import hashlib,json,pathlib,resource,subprocess,time
+import hashlib,json,pathlib,resource,subprocess,time,os,urllib.request,io,zipfile
 from importlib.machinery import SourceFileLoader
 g=SourceFileLoader("gen","research/drnas_atlas13_generator.py").load_module()
 rows=[]
@@ -28,7 +28,29 @@ by={a:sum(r["wall_s"] for r in rows if r["arm"]==a) for a in ("C_RANDOM","C4_LBD
 ratio=by["C_RANDOM"]/max(by["C4_LBD"],1e-9)
 explore=1.30 if ratio>1.10 else (0.75 if ratio<0.90 else 1.0)
 quality=1.20 if ratio>1.10 else (0.40 if ratio<0.90 else 0.85)
-out=dict(version=1,train_sha_count=16,train_index_range=[40,43],holdout_index_range=[64,69],source_disjoint=True,explore=explore,quality=quality,ratio=ratio,rows=rows)
+previous=None
+try:
+ token=os.environ.get("GH_TOKEN","")
+ if token:
+  repo=os.environ.get("GITHUB_REPOSITORY","Frane12/AndroidGameTest")
+  def get(url):
+   request=urllib.request.Request(url,headers={"Authorization":"Bearer "+token,"Accept":"application/vnd.github+json","User-Agent":"DRNAS-policy"})
+   with urllib.request.urlopen(request,timeout=20) as response:return response.read()
+  runs=json.loads(get("https://api.github.com/repos/"+repo+"/actions/workflows/drnas-atlas15-warmstart-paired.yml/runs?per_page=30"))["workflow_runs"]
+  for run in runs:
+   if run["status"]!="completed" or run["conclusion"]!="success":continue
+   arts=json.loads(get("https://api.github.com/repos/"+repo+"/actions/runs/"+str(run["id"])+"/artifacts?per_page=100"))["artifacts"]
+   match=next((a for a in arts if a["name"]=="ATLAS15-TRAINING" and not a["expired"]),None)
+   if not match:continue
+   with zipfile.ZipFile(io.BytesIO(get(match["archive_download_url"]))) as archive:
+    old=json.loads(archive.read("ATLAS15_TRAINING.json"))
+   if old.get("source_disjoint") and old.get("train_index_range")==[40,43]:
+    explore=max(0.25,min(2.0,0.5*explore+0.5*float(old["explore"])))
+    quality=max(0.0,min(2.0,0.5*quality+0.5*float(old["quality"])))
+    previous=run["id"]
+   break
+except Exception as exc:print("ATLAS15_PRIOR_WARNING",str(exc),flush=True)
+out=dict(version=1,previous_training_run=previous,train_sha_count=16,train_index_range=[40,43],holdout_index_range=[64,69],source_disjoint=True,explore=explore,quality=quality,ratio=ratio,rows=rows)
 pathlib.Path("ATLAS15_TRAINING.json").write_text(json.dumps(out,indent=2))
 pathlib.Path("ATLAS15_POLICY.txt").write_text(f"{explore},{quality}")
 print("ATLAS15_TRAINED_POLICY "+json.dumps({k:v for k,v in out.items() if k!="rows"},sort_keys=True),flush=True)
