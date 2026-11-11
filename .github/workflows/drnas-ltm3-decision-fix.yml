@@ -1,0 +1,77 @@
+name: DRNAS LTM3 decision hook and persistence audit
+run-name: LTM3 FIX 384 CNF 2 reps oneCPU source-verified + native decision causality
+on:
+  push:
+    branches: [experiment/drnas-ltm3-decision-fix-20261111]
+    paths:
+      - 'mi_ltm3/**'
+      - '.github/workflows/drnas-ltm3-decision-fix.yml'
+  workflow_dispatch:
+concurrency:
+  group: ltm3-decision-fix-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  paired-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            mi_ltm3/training.sqlite
+            mi_ltm3/native_training.sqlite
+          key: ltm3-decision-v1-${{ github.run_id }}
+          restore-keys: ltm3-decision-v1-
+      - name: Build pinned reference and isolated native decision hook
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin mre_ltm3/bin
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          python3 mi_ltm3/native_patch.py
+          g++ -std=c++17 -O2 -I mre_ltm3 -I mre_atlas15 mre_ltm3/native.cpp -o mre_ltm3/bin/drnas_ltm3
+          mre_atlas15/bin/drnas_atlas15 --selftest
+          mre_ltm3/bin/drnas_ltm3 --selftest
+      - name: Source proof, frozen memory, routing and actual native decisions
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s mi_ltm1 -p 'test_*.py' -v
+          python3 -m unittest discover -s mi_ltm3 -p 'test_*.py' -v
+      - name: Fixed XOR gate paired benchmark
+        run: |
+          set -euo pipefail
+          CPU=$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)
+          taskset -c "$CPU" python3 -u mi_ltm3/experiment.py --training-generation "${{ github.run_number }}" | tee MI_LTM3.log
+          grep '^MI_LTM3_FINAL ' MI_LTM3.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Native branching and frozen learned gate paired benchmark
+        run: |
+          set -euo pipefail
+          CPU=$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)
+          taskset -c "$CPU" python3 -u mi_ltm3/native_decisions.py --generation "${{ github.run_number }}" | tee MI_LTM3_NATIVE.log
+          grep '^LTM3_NATIVE_' MI_LTM3_NATIVE.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: |
+            mi_ltm3/training.sqlite
+            mi_ltm3/native_training.sqlite
+          key: ltm3-decision-v1-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LTM3-decision-fix-paired-audit
+          retention-days: 30
+          path: |
+            MI_LTM3*.json
+            MI_LTM3*.log
+            mi_ltm3/policy_frozen.json
+            mi_ltm3/training.sqlite
+            mi_ltm3/native_training.sqlite

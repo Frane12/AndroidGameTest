@@ -71,7 +71,9 @@ class TrainingMemory:
                 [(sha,key,kind) for key,kind in patterns.items()])
 
     def freeze(self, forbidden_holdout_shas, *, min_cases=8,
-               min_win_fraction=.7, min_gain_s=.0015):
+               min_win_fraction=.7, min_gain_s=.0015, candidate_action="MI_CHAIN"):
+        if candidate_action not in ("MI_CHAIN", "LTM_NATIVE"):
+            raise ValueError("Unsupported candidate action")
         forbidden=set(forbidden_holdout_shas)
         seen_shas=set()
         aggregates=defaultdict(lambda:defaultdict(list))
@@ -120,7 +122,7 @@ class TrainingMemory:
             classes[key]=entry
             if (regressions==0 and wins/len(by_sha)>=min_win_fraction and
                     median>=min_gain_s and mean>=min_gain_s):
-                positives[key]=dict(entry,decision="MI_CHAIN")
+                positives[key]=dict(entry,decision=candidate_action)
         patterns={key:dict(kind=value["kind"],
                            training_formulas=len(value["formulas"]))
                   for key,value in sorted(pattern_index.items())}
@@ -143,7 +145,7 @@ class TrainingMemory:
 def action(policy,key):
     """No optimistic default: unproven classes always fall back to BASE."""
     if key in policy["positive_classes"]:
-        return "MI_CHAIN","positive_evidence"
+        return policy["positive_classes"][key]["decision"],"positive_evidence"
     if key in policy["feature_classes"]:
         return "BASE","negative_or_insufficient_evidence"
     return "BASE","unseen_structure"

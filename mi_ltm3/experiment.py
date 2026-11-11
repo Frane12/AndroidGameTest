@@ -71,15 +71,20 @@ def independently_audit_inferences(clauses,report):
 
 
 def run_arm(case,arm,rep,policy,tmp):
-    assert arm in ("BASE","MI_FORCED","MI_CHAIN","LTM_GATE")
+    assert arm in ("BASE","MI_FORCED","MI_CHAIN","LTM_GATE","LTM_NATIVE","LTM_NATIVE_GATE")
     start=time.perf_counter()
-    if arm=="LTM_GATE":
-        key=opportunity_key(case["clauses"],case["n"])
-        active,reason=action(policy,key)
+    if arm in ("LTM_GATE","LTM_NATIVE_GATE"):
+        if not policy["positive_classes"]:
+            # An empty policy cannot select an intervention. Do not scan CNF.
+            key=case["feature_key"]  # offline reporting only
+            active,reason="BASE","empty_policy_fast_abstain"
+        else:
+            key=opportunity_key(case["clauses"],case["n"])
+            active,reason=action(policy,key)
     else:
         key=case["feature_key"]
-        active=("MI_CHAIN" if arm=="MI_CHAIN" else "MI_XOR" if arm=="MI_FORCED" else "BASE")
-        reason="forced_chain" if arm=="MI_CHAIN" else "forced_probe" if arm=="MI_FORCED" else "control"
+        active=("LTM_NATIVE" if arm=="LTM_NATIVE" else "MI_CHAIN" if arm=="MI_CHAIN" else "MI_XOR" if arm=="MI_FORCED" else "BASE")
+        reason="forced_native_diagnostic" if arm=="LTM_NATIVE" else "forced_chain" if arm=="MI_CHAIN" else "forced_probe" if arm=="MI_FORCED" else "control"
     added=[]
     detected_rows=0
     consequences=0
@@ -107,9 +112,9 @@ def run_arm(case,arm,rep,policy,tmp):
                 chain_results=len(chain["consequences"])
                 keys={(tuple(x["variables"]),x["rhs"]) for x in candidates}
                 for item in chain["consequences"]:
-                    key=(tuple(item["variables"]),item["rhs"])
-                    if key not in keys:
-                        keys.add(key)
+                    consequence_key=(tuple(item["variables"]),item["rhs"])
+                    if consequence_key not in keys:
+                        keys.add(consequence_key)
                         candidates.append(item)
             proof_report=dict(report,consequences=candidates)
             independently_audit_inferences(case["clauses"],proof_report)
@@ -142,7 +147,8 @@ def run_arm(case,arm,rep,policy,tmp):
         ("%s/%d" % (case["sha"],rep)).encode()).digest()[:8],"big")
     remaining=CAP_S-(time.perf_counter()-start)
     if remaining>.005:
-        rc,stdout,child_s,native_reason=run_strict(BIN,path,seed,remaining)
+        rc,stdout,child_s,native_reason=run_strict(
+            BIN,path,seed,remaining,mode="LTM_NATIVE" if active=="LTM_NATIVE" else "A")
     else:
         rc,stdout,child_s,native_reason=0,"",0.0,"budget_exhausted"
         aborted=True
@@ -198,6 +204,9 @@ def run_arm(case,arm,rep,policy,tmp):
                 added_clauses=len(added),
                 conflicts=int(telemetry.get("conflicts","0")),
                 decisions=int(telemetry.get("decisions","0")),
+                decision_hash=telemetry.get("ltm3_decision_hash"),
+                native_branch_checks=int(telemetry.get("ltm3_branch_checks","0")),
+                native_branch_overrides=int(telemetry.get("ltm3_branch_overrides","0")),
                 native_exit=rc,one_logical_cpu=True)
 
 
@@ -216,7 +225,9 @@ def summary(items):
                              x["e2e_s"] for x in rows)*1000,4),
                          conflicts=sum(x["conflicts"] for x in rows),
                          decisions=sum(x["decisions"] for x in rows),
-                         activated=sum(x["action"] in ("MI_XOR","MI_CHAIN") for x in rows),
+                         activated=sum(x["action"] in ("MI_XOR","MI_CHAIN","LTM_NATIVE") for x in rows),
+                         native_branch_checks=sum(x.get("native_branch_checks",0) for x in rows),
+                         native_branch_overrides=sum(x.get("native_branch_overrides",0) for x in rows),
                          matched=sum(x["matched"] for x in rows),
                          added_clauses=sum(x["added_clauses"] for x in rows),
                          probes_abstained=sum(x["probe_aborted"] for x in rows),

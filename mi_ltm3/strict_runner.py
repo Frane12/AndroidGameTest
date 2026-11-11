@@ -9,7 +9,9 @@ import subprocess
 import time
 
 
-def run_strict(binary, cnf_path, seed, remaining_s, *, mem_bytes=2*1024**3):
+def run_strict(binary, cnf_path, seed, remaining_s, *, mem_bytes=2*1024**3, mode="A"):
+    if mode not in ("A", "LTM_NATIVE"):
+        raise ValueError("Unsupported LTM3 native mode")
     if remaining_s <= 0:
         return 0, "", 0.0, "budget_exhausted"
     cpu_soft = max(1, int(math.ceil(remaining_s)) + 1)
@@ -19,7 +21,7 @@ def run_strict(binary, cnf_path, seed, remaining_s, *, mem_bytes=2*1024**3):
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_soft, cpu_hard))
         resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
 
-    argv = [str(binary), str(cnf_path), "--mode", "A", "--time",
+    argv = [str(binary), str(cnf_path), "--mode", mode, "--time",
             str(remaining_s), "--seed", str(seed)]
     start = time.perf_counter()
     try:
@@ -30,7 +32,8 @@ def run_strict(binary, cnf_path, seed, remaining_s, *, mem_bytes=2*1024**3):
         if elapsed > remaining_s:
             return 0, "", elapsed, "wall_budget_overrun"
         if completed.returncode not in (0,10,20):
-            return 0, "", elapsed, "native_exit_%s" % completed.returncode
+            raise RuntimeError("Native solver failed: exit %s: %s" %
+                               (completed.returncode, completed.stderr[-2000:]))
         return completed.returncode,completed.stdout,elapsed,"finished"
     except subprocess.TimeoutExpired:
         return 0, "", time.perf_counter()-start, "wall_timeout"
