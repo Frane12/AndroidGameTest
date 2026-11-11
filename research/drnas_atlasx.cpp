@@ -292,6 +292,7 @@ static int selftest() {
   return 0;
 }
 }
+#ifndef DRNAS_ATLASX_AS_LIBRARY
 int main(int argc,char** argv) {
   try {
     if(argc==2 && std::string(argv[1])=="--atlasx-selftest")
@@ -353,3 +354,5 @@ int main(int argc,char** argv) {
     std::cerr<<"ATLASX_ERROR "<<e.what()<<"\n";return 2;
   }
 }
+
+#endif // DRNAS_ATLASX_AS_LIBRARY
