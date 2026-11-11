@@ -110,3 +110,77 @@ Relevant background:
 - Armin Biere et al., "CNF Encoded Isomorphic and Optimized Miters from
   Hardware Model Checking Competition 2024 Models", Zenodo 2025,
   DOI:10.5281/zenodo.15207209.
+
+## Independent source-fixed public benchmark results — FINISHED
+
+### HWMCC 2024 hardware verification miters
+
+GitHub Actions:
+https://github.com/Frane12/AndroidGameTest/actions/runs/42935154065
+
+Four original CNFs: `analog_estimation_convergence_unsafe` (589 vars,
+1818 clauses), `93.c` (799 vars, 2551 clauses), `bin-suffix-5`
+(653 vars, 1826 clauses), and `benchmark04_conjunctive` (2385 vars,
+6968 clauses). Every solver returned backend **UNSAT** on all 8 trials per
+arm. **No independently checkable LRAT proof was produced by the native
+engine**; neither SAT correctness certification nor normal verified
+SAT/UNSAT score can be claimed. Hence the strict verified-only PAR2 is
+240.0 s and 0 certified solved for every arm, as designed.
+
+For *exploratory timing of backend-reported UNSAT only*, total raw E2E
+across 8 trials is:
+
+| Arm | Raw E2E sum (s) | UNSAT reported (not LRAT certified) |
+|---|---:|---:|
+| Kissat | 0.046956 | 8/8 |
+| CaDiCaL | 0.336499 | 8/8 |
+| DRNAS ATLAS2 | 0.464321 | 8/8 |
+| DRNAS A | 0.469359 | 8/8 |
+| DRNAS ATLAS1 | 0.523341 | 8/8 |
+
+ATLAS2 committed **one module saving one literal** in each of the first
+three HWMCC formulas, and **slept** on the fourth. All four original
+DRNAS and ATLAS2 variants had exactly equal conflict counts across each
+respective formula, so these rewrites did not change the CDCL trajectory
+measurably. Raw timing differences are tiny/noisy, and this table is
+**not independently verified SAT competition performance**.
+
+### Real software feature models (externally sourced SAT results)
+
+GitHub Actions:
+https://github.com/Frane12/AndroidGameTest/actions/runs/42935463180
+
+Source: `Tractables/cnfs/feature-models` pinned to immutable Git SHA
+`de4731f68e5a5bb6629269b3be1d19b44e812763`; **each compressed
+Git blob hash verified independently** before decompression. Four
+original independent software product-line configuration CNFs, 2
+matched repeats, 15 s cap, one CPU, original SAT model checked.
+
+| Original CNF | Variables | Clauses | ATLAS2 modules | Saved literals |
+|---|---:|---:|---:|---:|
+| AlHajjaji2019 | 176 | 280 | 1 | 3 |
+| Hierons2020 | 117 | 417 | 1 | 3 |
+| Lau2006 | 173 | 289 | 1 | 3 |
+| Mendonca2009-1204 | 267 | 690 | 1 | 2 |
+
+All arms achieved **8/8 SAT models independently verified on the
+original unmodified clauses**, with no unverified UNSAT or timeout.
+ATLAS2 removed one local module in each source. Aggregate PAR2:
+
+| Solver | SAT verified | Total PAR2 (s) |
+|---|---:|---:|
+| DRNAS ATLAS2 | 8/8 | **0.037066** |
+| Kissat | 8/8 | 0.038200 |
+| DRNAS ATLAS1 | 8/8 | 0.038189 |
+| DRNAS A | 8/8 | 0.038328 |
+| CaDiCaL | 8/8 | 0.042507 |
+
+ATLAS2 / DRNAS A is only **1.034x** on this tiny cohort (~1.3 ms
+absolute sum), far too small a margin to conclude reliable acceleration
+without more larger prospective, source-locked tests and repetition.
+A small source-compatible Boolean rewriting capability exists, but
+**no generalizable speedup has yet been shown**.
+
+The independent real-source feature-model data is much stronger
+evidence of practical applicability than the controlled structured
+generator, but not a claim of competitive solver superiority.
