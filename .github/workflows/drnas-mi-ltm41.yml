@@ -1,0 +1,57 @@
+name: DRNAS MI-LTM4.1 native CDCL relational trajectory audit
+run-name: LTM4.1 native passive trace 6 families x 2 source splits oneCPU
+on:
+  push:
+    branches: [experiment/drnas-mi-ltm4-trajectories-20261111]
+    paths:
+      - "mi_ltm4/**"
+      - ".github/workflows/drnas-mi-ltm41.yml"
+  workflow_dispatch:
+concurrency:
+  group: ltm41-native-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  native-live-observation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Unit tests - passive trace signatures and no false inference
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s mi_ltm4 -p 'test_*.py' -v
+      - name: Generate the pinned native DRNAS ATLAS15 CDCL core
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+      - name: Compile control and passive trace binaries from identical source
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          g++ -std=c++17 -O2 -DDRNAS_MICRO_TRACE -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15_trace
+          mre_atlas15/bin/drnas_atlas15 --selftest
+          mre_atlas15/bin/drnas_atlas15_trace --selftest
+      - name: Run paired source checks and mine actual native CDCL steps
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm4/live_bench.py | tee MI_LTM41_SMOKE.log
+          grep '^MI_LTM41_FINAL ' MI_LTM41_SMOKE.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload audit evidence (no enormous proof files)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MI-LTM41-PASSIVE-CDCL-TRACE
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            MI_LTM41_SMOKE.log
+            MI_LTM41_SMOKE.json
