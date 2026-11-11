@@ -884,7 +884,11 @@ public:
 #ifdef DRNAS_PROFILE
                 profile_update_s_+=profile_now()-p0;
 #endif
-                if (stats_.conflicts >= next_restart_ && level() > 0) {
+                if ((stats_.conflicts >= next_restart_
+#ifdef DRNAS_ARL4_RESTART
+                    || arl4_armed_
+#endif
+                    ) && level() > 0) {
                     cancel_to(0);
                     ++stats_.restarts;
 #ifdef DRNAS_ARL4_RESTART
