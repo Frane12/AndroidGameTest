@@ -1,26 +1,49 @@
-name: DRNAS MI-LTM1 CNF formula benchmark
+name: DRNAS MI-LTM1 native paired CNF benchmark
 on:
   push:
-    branches:
-      - experiment/drnas-mi-ltm1-20261111
+    branches: [experiment/drnas-mi-ltm1-20261111]
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  mi-ltm1-formulas:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  mi-ltm1-native-paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Unit tests and original-CNF soundness checks
+        with:
+          persist-credentials: false
+      - name: Validate source-proven XOR inference and small CNF diagnostics
         run: |
+          set -euo pipefail
           cd mi_ltm1
           python3 -m unittest discover -s . -p 'test_*.py' -v
-      - name: Run 32 original CNFs x 3 probe repeats with exhaustive oracle
-        run: |
+          cd ..
           python3 mi_ltm1/bench_formulas.py
-      - name: Publish results
+      - name: Build original standalone ATLAS15 native solver
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - name: Paired native CDCL with original CNF oracle and true E2E
+        run: |
+          set -euo pipefail
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u mi_ltm1/native_paired.py | tee MI_LTM1_NATIVE_PAIRED.log
+          grep '^MI_LTM1_NATIVE_FINAL ' MI_LTM1_NATIVE_PAIRED.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload full auditable paired results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mi-ltm1-formula-benchmark
-          path: mi_ltm1_benchmark.json
+          name: MI-LTM1-32CNF-2REPS-native-paired
+          retention-days: 30
           if-no-files-found: warn
+          path: |
+            MI_LTM1_NATIVE_PAIRED.json
+            MI_LTM1_NATIVE_PAIRED.log
+            mi_ltm1_benchmark.json
