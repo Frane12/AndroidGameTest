@@ -120,12 +120,12 @@ def main():
         fastest=min(ARMS,key=lambda ar:v[ar]["PAR2_reported_s"])
         if fastest in ("KISSAT","CMS"):
             reference_leaders[(v[fastest]["category"],fastest)]+=1
-    result=dict(stage=a.stage,source_count=len(manifest),families=20,
-        source_original_satlib_replay=25,source_fresh_generated=75,
-        trials=2000,repeats=2,one_cpu=True,
-        index_range=[95,104],
-        blind_first_seen=False,replay_nonblind=False,
-        mixed_cohort_warning="75 fresh generated; 25 original SATLIB replay from ATLAS18",
+    result=dict(stage=a.stage,source_count=len(manifest),families=15,
+        source_original_satlib_replay=0,source_fresh_generated=75,
+        trials=1500,repeats=2,one_cpu=True,
+        index_range=[120,124],
+        blind_first_seen=True,replay_nonblind=False,
+        mixed_cohort_warning="No original SATLIB CNFs; 75 new generated SHA only",
         per_origin=origin_summaries,
         claims="only SAT witness or independently checked original GF2 contradiction credited in verified PAR2",
         summary=roll,
