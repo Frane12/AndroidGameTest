@@ -1,0 +1,47 @@
+name: DRNAS MAP2 persistent causal learning frozen holdout
+run-name: MAP2-L 6 train SHA 6 disjoint holdout SHA 3 reps A shadow live PAR2
+on:
+  push:
+    branches: [experiment/drnas-atlasmap2-persistent-learning-20261111]
+    paths:
+      - research/drnas_atlasmap2_learn.py
+      - research/drnas_atlasmap2_learning_bench.py
+      - research/drnas_atlasmap2.cpp
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-atlasmap2-learn.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  learn_and_holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile exact native R3C + MAP2
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlasmap2_learn.py research/drnas_atlasmap2_learning_bench.py
+          mkdir -p mre_atlasmap2/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -Wall -Wextra -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest | tee mre_atlasmap2/selftest.log
+          python3 -u research/drnas_atlasmap2_smoke.py | tee mre_atlasmap2/smoke.log
+      - name: Run paired training and never-seen frozen evaluation
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlasmap2_learning_bench.py | tee mre_atlasmap2_learning/benchmark.log
+          grep '^ATLASMAP2_LEARN_FINAL ' mre_atlasmap2_learning/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MAP2-PERSISTENT-TRAIN-HOLDOUT-PAR2-AUDIT
+          retention-days: 45
+          path: |
+            mre_atlasmap2/selftest.log
+            mre_atlasmap2/smoke.log
+            mre_atlasmap2_learning/*.cnf
+            mre_atlasmap2_learning/*.json
+            mre_atlasmap2_learning/*.log
