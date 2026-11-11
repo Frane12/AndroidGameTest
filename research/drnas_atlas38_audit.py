@@ -6,7 +6,9 @@ import json,pathlib,collections
 ROOT=pathlib.Path("audits")
 rows=[];shas=set()
 for shard,num in ((0,2),(1,1)):
- p=ROOT/f"ATLAS38-{shard}"/"mre_atlas38"/"results"/f"shard_{shard}.json"
+ candidates=list((ROOT/f"ATLAS38-{shard}").rglob(f"shard_{shard}.json"))
+ assert len(candidates)==1,("artifact layout mismatch",shard,[str(x) for x in candidates])
+ p=candidates[0]
  d=json.loads(p.read_text())
  assert d["shard"]==shard and len(d["sources"])==num
  for source in d["sources"]:
