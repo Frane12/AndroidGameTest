@@ -1,0 +1,156 @@
+name: DRNAS ATLAS15 persisted adaptive warmstart 60s
+run-name: ATLAS15 C5 persistent A C_RANDOM C3 C4 C5 C5_GAUSS 24 SHA 2seeds 60s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-atlas15-persistent-memory-20261111]
+    paths:
+      - research/drnas_atlas15_train.py\n      - research/drnas_atlas15_warm_patch.py
+      - .github/workflows/drnas-atlas15-warmstart-paired.yml
+      - research/drnas_atlas15_native.cpp
+      - research/drnas_atlas15_warm_patch.py
+      - research/drnas_atlas9_export_table.py
+      - research/drnas_atlas15_benchmark.py
+      - research/drnas_atlas13_generator.py
+      - research/atlas8_reduction_table.jsonl
+      - .github/workflows/drnas-atlas13-c4-hard60.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate native C feedback engine and proof-verified persistent table
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+      - name: Generate original native atlas and proof-verified persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 -m py_compile research/drnas_atlas9_export_table.py research/drnas_atlas15_warm_patch.py research/drnas_atlas15_benchmark.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas13
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - name: Canary two previously unseen CNFs with all five arms
+        run: |
+          set -euo pipefail
+          ATLAS15_POLICY="$(cat training/ATLAS15_POLICY.txt)" taskset -c "$(taskset -pc $ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas15_benchmark.py --shard 0 --smoke | tee mre_atlas15/smoke.log
+          grep '^ATLAS15_FINAL ' mre_atlas15/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Train on disjoint 16 original CNFs and freeze policy
+        run: |
+          python3 research/drnas_atlas15_train.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS15-TRAINING
+          path: |
+            ATLAS15_TRAINING.json
+            ATLAS15_POLICY.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS15-smoke
+          path: |
+            mre_atlas15/smoke.log
+            mre_atlas15/audit_0.json
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build standalone native solver, original-source GF2 Gaussian and persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas13
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS15-TRAINING
+          path: training
+      - name: Frozen original CNF paired full native E2E 60s single CPU shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas15_benchmark.py --shard ${{ matrix.shard }} | tee mre_atlas15/shard_${{ matrix.shard }}.log
+          grep '^ATLAS15_FINAL ' mre_atlas15/shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS15-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas15/audit_${{ matrix.shard }}.json
+            mre_atlas15/shard_${{ matrix.shard }}.log
+            mre_atlas15/frozen_manifest.json
+  aggregate:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS15-shard-*
+          merge-multiple: true
+          path: collected
+      - name: Audit all ten source-paired seeded shard results and total PAR2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,json,collections,pathlib
+          files=glob.glob("collected/audit_*.json")
+          assert len(files)==10,("missing shard",files)
+          audits=[json.load(open(p)) for p in files]
+          assert sorted(a["summary"]["shard"] for a in audits)==list(range(10))
+          manifest={a["manifest"]["cases"][0]["sha256"] for a in audits}
+          assert len(manifest)==1,"manifest differs across shards"
+          arms=("A","C_RANDOM","C3_ADAPT","C4_LBD","C5_WARM","C5_WARM_GAUSS")
+          total={}
+          for arm in arms:
+            group=[a["summary"]["arms"][arm] for a in audits]
+            total[arm]={key:round(sum(x[key] for x in group),6) if key=="PAR2_s" else sum(x[key] for x in group) for key in group[0]}
+            assert total[arm]["trials"]==48
+          output=dict(shards=10,original_holdout=24,reps=2,total_trials=288,arms=total)
+          pathlib.Path("ATLAS15_TOTAL.json").write_text(json.dumps(output,indent=2))
+          print("ATLAS15_TOTAL "+json.dumps(output,sort_keys=True))
+          with open(__import__('os').environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("## ATLAS15 native original-CNF E2E PAR2\n\n")
+            f.write("| Arm | Verified solved /48 | PAR2 s | Table literals saved | Gauss units |\n|---|---:|---:|---:|---:|\n")
+            for arm in arms:
+              x=total[arm]
+              f.write(f'| {arm} | {x["solved"]} | {x["PAR2_s"]:.6f} | {x["table_literals_saved"]} | {x["gauss_units"]} |\n')
+          PY
+      - name: Persist cross-run SHA-keyed benchmark memory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 research/drnas_atlas14_memory.py --collected collected
+          cat ATLAS15_MEMORY_STATUS.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS15-MEMORY
+          retention-days: 90
+          path: |
+            ATLAS15_MEMORY.jsonl
+            ATLAS15_MEMORY_STATUS.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS15-TOTAL-24-hard-CNF-2seed-60s-PAR2
+          path: ATLAS15_TOTAL.json
