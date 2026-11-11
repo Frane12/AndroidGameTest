@@ -312,6 +312,7 @@ static int selftest() {
 }
 } // namespace atlasmap
 
+#ifndef DRNAS_ATLASMAP1_AS_LIBRARY
 int main(int argc,char** argv) {
   try {
     if(argc==2 && std::string(argv[1])=="--atlasmap-selftest")
@@ -385,3 +386,5 @@ int main(int argc,char** argv) {
     std::cerr<<"ATLASMAP1_ERROR "<<e.what()<<"\n";return 2;
   }
 }
+
+#endif // DRNAS_ATLASMAP1_AS_LIBRARY
