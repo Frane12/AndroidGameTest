@@ -120,7 +120,7 @@ class TrainingMemory:
             classes[key]=entry
             if (regressions==0 and wins/len(by_sha)>=min_win_fraction and
                     median>=min_gain_s and mean>=min_gain_s):
-                positives[key]=dict(entry,decision="MI_XOR")
+                positives[key]=dict(entry,decision="MI_CHAIN")
         patterns={key:dict(kind=value["kind"],
                            training_formulas=len(value["formulas"]))
                   for key,value in sorted(pattern_index.items())}
@@ -143,7 +143,7 @@ class TrainingMemory:
 def action(policy,key):
     """No optimistic default: unproven classes always fall back to BASE."""
     if key in policy["positive_classes"]:
-        return "MI_XOR","positive_evidence"
+        return "MI_CHAIN","positive_evidence"
     if key in policy["feature_classes"]:
         return "BASE","negative_or_insufficient_evidence"
     return "BASE","unseen_structure"
