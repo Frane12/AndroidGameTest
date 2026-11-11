@@ -93,7 +93,7 @@ assert s.count(anchor)==1
 fields=("quota_pct","attempts","schedule_skip","below48","examined","locked",
         "lbd","short","eligible","base_quota","effective_quota",
         "pressure_high","pressure_low")
-lines=''.join('           <<" atlas36_'+field+'="<<solver.atlas36_'+field+'()\\n' for field in fields)
+lines=''.join('           <<" atlas36_'+field+'="<<solver.atlas36_'+field+'()'+chr(10) for field in fields)
 s=s.replace(anchor,lines+anchor,1)
 for m in ("A36_90","A36_75"):
  assert s.count('mode=="'+m+'"')>=3
