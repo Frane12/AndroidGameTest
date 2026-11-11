@@ -35,7 +35,7 @@ static int lits(const Clauses& cs){int n=0;for(auto&c:cs)n+=int(c.size());return
 static CNF table_reduce(const CNF& src,TableStats&stats,double budget=0.012){
  const auto t0=Clock::now();
  std::map<Clauses,Clauses> lookup;
- for(auto rule:atlas10_data::load()){
+ for(auto rule:atlas9_data::load()){
   std::sort(rule.original.begin(),rule.original.end());
   if(rule.original.empty())continue;
   int k=0;for(auto&c:rule.original)for(int l:c)k=std::max(k,std::abs(l));
@@ -190,8 +190,8 @@ static CNF source_xor(int k,int parity){
  return f;
 }
 static void selftest(){
- auto rules=atlas10_data::load();
- drnas::require(int(rules.size())==atlas10_data::kRuleCount,"ATLAS10 table count");
+ auto rules=atlas9_data::load();
+ drnas::require(int(rules.size())==atlas9_data::kRuleCount,"ATLAS10 table count");
  for(auto&rule:rules){
   int k=0;for(auto&c:rule.original)for(int l:c)k=std::max(k,std::abs(l));
   drnas::require(equivalent(rule.original,rule.reduced,k),"invalid stored rule");
