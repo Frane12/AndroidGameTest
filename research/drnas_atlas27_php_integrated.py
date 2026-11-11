@@ -38,7 +38,8 @@ def main():
                 if arm=="V23_PHP":
                     cmd=[str(B.BIN/"drnas_php_native"),str(path),
                          str(B.BIN/"drnas_atlas23"),"--mode","V23_C7_STABLE",
-                         "--time",str(CAP),"--seed",str(rep+1)]
+                         "--time",str(CAP),"--seed",str(rep+1),
+                         "--policy","1.0,0.85"]
                     def limits():
                         resource.setrlimit(resource.RLIMIT_CPU,(CAP+4,CAP+5))
                         resource.setrlimit(resource.RLIMIT_AS,(3*1024**3,3*1024**3))
