@@ -1,0 +1,305 @@
+name: DRNAS ATLAS16 three-pass 1000-source mega benchmark
+run-name: ATLAS16 3 chained passes 500+500+500 cases 6 arms 2 reps oneCPU SQL memory
+on:
+  push:
+    branches: [experiment/drnas-atlas16-mega-keep-20261111]
+    paths:
+      - research/drnas_atlas16_build.py
+      - research/drnas_atlas16_benchmark.py
+      - research/drnas_atlas16_merge.py
+      - research/drnas_atlas16_schema.sql
+      - .github/workflows/drnas-atlas16-megabench.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-atlas16-mega-20261111
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated C6 retention, baseline CDCL and disjoint policy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas16_build.py research/drnas_atlas16_benchmark.py research/drnas_atlas16_merge.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          mkdir -p mre_atlas15/bin mre_atlas16/bin
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          g++ -std=c++17 -O2 -I mre_atlas16 -I mre_atlas15 mre_atlas16/native.cpp -o mre_atlas16/bin/drnas_atlas16
+          mre_atlas16/bin/drnas_atlas16 --selftest
+          python3 research/drnas_atlas15_train.py
+      - name: Compile pinned Kissat and install one-thread CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas16-kissat
+          git -C /tmp/atlas16-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas16-kissat && ./configure && make -j2)
+          cp /tmp/atlas16-kissat/build/kissat mre_atlas16/bin/kissat
+          mre_atlas16/bin/kissat --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-BINARIES
+          retention-days: 14
+          path: |
+            mre_atlas16/bin/drnas_atlas16
+            mre_atlas16/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-TRAINING
+          retention-days: 14
+          path: |
+            ATLAS15_TRAINING.json
+            ATLAS15_POLICY.txt
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-BINARIES
+          path: mre_atlas16/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-TRAINING
+          path: training
+      - name: Test native, reference, and memory smoke on unseen CNFs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas16/bin/drnas_atlas16 mre_atlas16/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas16_benchmark.py --stage 1 --shard 0 --smoke |
+            tee mre_atlas16/smoke.log
+          grep '^ATLAS16_FINAL ' mre_atlas16/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS16-SMOKE-LOG
+          path: |
+            mre_atlas16/smoke.log
+            mre_atlas16/audit_s1_h0.json
+  bench1:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-BINARIES
+          path: mre_atlas16/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-TRAINING
+          path: training
+      - name: Stage 1 oneCPU matched CNF shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas16/bin/drnas_atlas16 mre_atlas16/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas16_benchmark.py --stage 1 --shard ${{ matrix.shard }} |
+            tee mre_atlas16/pass1_shard_${{ matrix.shard }}.log
+          grep '^ATLAS16_FINAL ' mre_atlas16/pass1_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS16-PASS1-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas16/audit_s1_h${{ matrix.shard }}.json
+            mre_atlas16/events_s1_h${{ matrix.shard }}.jsonl
+            mre_atlas16/pass1_shard_${{ matrix.shard }}.log
+  merge1:
+    needs: bench1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS16-PASS1-SHARD-*
+          merge-multiple: true
+          path: audits
+      - name: Stage 1 SHA PAR2 SQL audit and next frozen policy
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas16
+          python3 -u research/drnas_atlas16_merge.py --stage 1 --audit-dir audits |
+            tee mre_atlas16/pass1_merged.log
+          grep '^ATLAS16_MERGED ' mre_atlas16/pass1_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS1
+          retention-days: 90
+          path: |
+            mre_atlas16/ATLAS16_LEARNING.sqlite
+            mre_atlas16/policy_next.json
+            mre_atlas16/ATLAS16_STAGE1_SUMMARY.json
+            mre_atlas16/pass1_merged.log
+
+  bench2:
+    needs: merge1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-BINARIES
+          path: mre_atlas16/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-TRAINING
+          path: training
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS1
+          path: prior
+      - name: Stage 2 oneCPU matched CNF shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas16/bin/drnas_atlas16 mre_atlas16/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas16_benchmark.py --stage 2 --shard ${{ matrix.shard }} |
+            tee mre_atlas16/pass2_shard_${{ matrix.shard }}.log
+          grep '^ATLAS16_FINAL ' mre_atlas16/pass2_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS16-PASS2-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas16/audit_s2_h${{ matrix.shard }}.json
+            mre_atlas16/events_s2_h${{ matrix.shard }}.jsonl
+            mre_atlas16/pass2_shard_${{ matrix.shard }}.log
+  merge2:
+    needs: bench2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS16-PASS2-SHARD-*
+          merge-multiple: true
+          path: audits
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS1
+          path: prior
+      - name: Stage 2 SHA PAR2 SQL audit and next frozen policy
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas16
+          python3 -u research/drnas_atlas16_merge.py --stage 2 --audit-dir audits --prior-db prior/ATLAS16_LEARNING.sqlite |
+            tee mre_atlas16/pass2_merged.log
+          grep '^ATLAS16_MERGED ' mre_atlas16/pass2_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS2
+          retention-days: 90
+          path: |
+            mre_atlas16/ATLAS16_LEARNING.sqlite
+            mre_atlas16/policy_next.json
+            mre_atlas16/ATLAS16_STAGE2_SUMMARY.json
+            mre_atlas16/pass2_merged.log
+
+  bench3:
+    needs: merge2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-BINARIES
+          path: mre_atlas16/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-FROZEN-TRAINING
+          path: training
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS2
+          path: prior
+      - name: Stage 3 oneCPU matched CNF shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas16/bin/drnas_atlas16 mre_atlas16/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas16_benchmark.py --stage 3 --shard ${{ matrix.shard }} |
+            tee mre_atlas16/pass3_shard_${{ matrix.shard }}.log
+          grep '^ATLAS16_FINAL ' mre_atlas16/pass3_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS16-PASS3-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas16/audit_s3_h${{ matrix.shard }}.json
+            mre_atlas16/events_s3_h${{ matrix.shard }}.jsonl
+            mre_atlas16/pass3_shard_${{ matrix.shard }}.log
+  merge3:
+    needs: bench3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS16-PASS3-SHARD-*
+          merge-multiple: true
+          path: audits
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS2
+          path: prior
+      - name: Stage 3 SHA PAR2 SQL audit and next frozen policy
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas16
+          python3 -u research/drnas_atlas16_merge.py --stage 3 --audit-dir audits --prior-db prior/ATLAS16_LEARNING.sqlite |
+            tee mre_atlas16/pass3_merged.log
+          grep '^ATLAS16_MERGED ' mre_atlas16/pass3_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS16-SQL-PASS3
+          retention-days: 90
+          path: |
+            mre_atlas16/ATLAS16_LEARNING.sqlite
+            mre_atlas16/policy_next.json
+            mre_atlas16/ATLAS16_STAGE3_SUMMARY.json
+            mre_atlas16/pass3_merged.log
