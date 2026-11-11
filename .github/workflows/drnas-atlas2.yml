@@ -1,0 +1,78 @@
+name: DRNAS ATLAS2 batch Boolean reductions on structured SAT circuits
+run-name: ATLAS2 8 SHA-frozen circuit gate XOR cardinality cohorts oneCPU
+on:
+  push:
+    branches: [experiment/drnas-atlas2-structured-batch-20261111]
+    paths:
+      - research/drnas_atlas1_generate.py
+      - research/drnas_atlas1.cpp
+      - research/drnas_atlas2.cpp
+      - research/drnas_atlas2_generate_structured.py
+      - research/drnas_atlas2_bench.py
+      - research/drnas_atlas2_smoke.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-atlas2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas2_bench.py research/drnas_atlas1_generate.py research/drnas_atlas2_generate_structured.py research/drnas_atlas2_smoke.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas2/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_atlas2/kissat-src
+          git -C mre_atlas2/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_atlas2/kissat-src && ./configure && make -j2)
+          install -m 755 mre_atlas2/kissat-src/build/kissat mre_atlas2/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_atlas2/bin/cadical
+      - name: Generate frozen 2 to 4-input NPN catalog and recipes
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas1_generate.py --out mre_atlas2/atlas1_table.hpp
+      - name: Build native ATLAS2 and baseline ATLAS1; exhaustive proof controls
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -I mre_atlas2 research/drnas_atlas2.cpp -o mre_atlas2/bin/drnas_atlas2
+          g++ -std=c++17 -O2 -I mre_atlas2 research/drnas_atlas1.cpp -o mre_atlas2/bin/drnas_atlas1
+          mre_atlas2/bin/drnas_atlas2 --atlas-selftest
+          g++ -std=c++17 -O2 research/drnas_native_core_r3c.cpp -o mre_atlas2/bin/selftest
+          mre_atlas2/bin/selftest --selftest
+          python3 research/drnas_atlas2_smoke.py
+      - name: Paired source-fixed structured SAT generated circuit E2E PAR2
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas2_bench.py | tee mre_atlas2/benchmark.log
+          grep '^ATLAS2_FINAL ' mre_atlas2/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ATLAS2-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlas2/audit.json
+            mre_atlas2/source.json
+            mre_atlas2/*.cnf
+            mre_atlas2/*.log
+            mre_atlas2/route_decision.json
+
+
+
