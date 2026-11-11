@@ -1,0 +1,170 @@
+name: DRNAS ATLAS23 three CDCL ablations
+run-name: ATLAS23 A_MIN C7_AGE C7_STABLE vs controls original SATLIB 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas23-21m-three-ablations-20261111]
+    paths:
+      - research/drnas_atlas23_build.py
+      - research/drnas_atlas23_benchmark.py
+      - .github/workflows/drnas-atlas23-three-ablations.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile preserved source generators
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas23_build.py research/drnas_atlas23_benchmark.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -std=c++17 -O2 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_atlas23
+          mre_atlas23/bin/drnas_atlas23 --selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas23-kissat
+          git -C /tmp/atlas23-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas23-kissat && ./configure && make -j2)
+          cp /tmp/atlas23-kissat/build/kissat mre_atlas23/bin/kissat
+          sha256sum mre_atlas23/bin/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS23-BIN
+          retention-days: 30
+          path: mre_atlas23/bin
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS23-BIN
+          path: mre_atlas23/bin
+      - name: Smoke all eight modes with original SAT witness check
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas23/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" \
+            python3 -u research/drnas_atlas23_benchmark.py --cohort smoke | tee smoke.log
+          grep '^ATLAS23_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS23-SMOKE
+          path: |
+            smoke.log
+            mre_atlas23/smoke/result.json
+  regression:
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS23-BIN
+          path: mre_atlas23/bin
+      - name: Reproduce ATLAS21M original SHA regressions, 10 formulas
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas23/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" \
+            python3 -u research/drnas_atlas23_benchmark.py --cohort regression | tee regression.log
+          grep '^ATLAS23_FINAL ' regression.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS23-REGRESSION
+          retention-days: 60
+          path: |
+            regression.log
+            mre_atlas23/regression/result.json
+  extension:
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS23-BIN
+          path: mre_atlas23/bin
+      - name: Six additional original SATLIB sources, nonblind globally
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas23/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" \
+            python3 -u research/drnas_atlas23_benchmark.py --cohort extension | tee extension.log
+          grep '^ATLAS23_FINAL ' extension.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS23-EXTENSION
+          retention-days: 60
+          path: |
+            extension.log
+            mre_atlas23/extension/result.json
+  audit:
+    needs: [regression, extension]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS23-REGRESSION
+          path: audits/regression
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS23-EXTENSION
+          path: audits/extension
+      - name: Verify disjoint SHA and print completed aggregates
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee audit.log
+          import json, pathlib
+          root=pathlib.Path("audits")
+          a=json.loads((root/"regression/mre_atlas23/regression/result.json").read_text())
+          b=json.loads((root/"extension/mre_atlas23/extension/result.json").read_text())
+          x={z["sha256"] for z in a["sources"]}
+          y={z["sha256"] for z in b["sources"]}
+          assert len(x)==10 and len(y)==6 and not x.intersection(y)
+          assert len(a["rows"])==160 and len(b["rows"])==96
+          assert all(r["independent_UNSAT_proof_verified"] is False for r in a["rows"]+b["rows"])
+          for cohort,data in (("regression",a),("extension",b)):
+              s=data["summary"]; baseline=s["A"]["PAR2_reported_s"]
+              ratios={arm:round(baseline/max(.000001,v["PAR2_reported_s"]),4)
+                      for arm,v in s.items()}
+              print("ATLAS23_AUDIT "+json.dumps(dict(cohort=cohort,
+                  sources=len(data["sources"]),trials=len(data["rows"]),
+                  A_over_each_PAR2_reported=ratios,summary=s),sort_keys=True))
+          print("ATLAS23_AUDIT_PASS SHA_disjoint_between_groups=true "
+                "SAT_original_verified=true UNSAT_independent=false")
+          PY
+          grep '^ATLAS23_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS23-FINAL-AUDIT
+          retention-days: 60
+          path: audit.log
