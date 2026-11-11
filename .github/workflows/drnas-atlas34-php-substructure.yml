@@ -1,0 +1,122 @@
+name: DRNAS ATLAS34 PHP integrated native V23
+run-name: ATLAS34 exact PHP subformula vs PHP33 V23 Kissat 416 paired
+on:
+  push:
+    branches: [experiment/drnas-atlas34-php-substructure-20261111]
+    paths:
+      - research/drnas_atlas34_regression.py
+      - research/drnas_atlas34_php_native.cpp
+      - research/drnas_atlas34_php_verify.py
+      - research/drnas_atlas34_selftest.py
+      - .github/workflows/drnas-atlas34-php-substructure.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen C++ generators and ATLAS25 live native engine
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas25_build.py research/drnas_atlas25_benchmark.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas24_build.py
+          python3 research/drnas_atlas25_build.py
+          mkdir -p mre_atlas25/bin
+          g++ -std=c++17 -O2 -I mre_atlas25 -I mre_atlas15 mre_atlas25/native.cpp -o mre_atlas25/bin/drnas_atlas25
+          mre_atlas25/bin/drnas_atlas25 --selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas25-kissat
+          git -C /tmp/atlas25-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas25-kissat && ./configure && make -j2)
+          cp /tmp/atlas25-kissat/build/kissat mre_atlas25/bin/kissat
+          python3 -m pip install --break-system-packages -q remotezip
+          g++ -O2 -std=c++17 -Wall -Wextra -o mre_atlas25/bin/drnas_php_native research/drnas_atlas33_php_native.cpp
+          g++ -O2 -std=c++17 -Wall -Wextra -o mre_atlas25/bin/drnas_php_native34 research/drnas_atlas34_php_native.cpp
+          python3 research/drnas_atlas34_selftest.py
+          sha256sum mre_atlas25/bin/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS25-BIN
+          retention-days: 30
+          path: mre_atlas25/bin
+  integrated:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS25-BIN
+          path: mre_atlas25/bin
+      - name: Paired E2E theorem gate vs V23 Kissat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas25/bin/*
+          test -x mre_atlas25/bin/drnas_php_native
+          test -x mre_atlas25/bin/drnas_php_native34
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas34_regression.py --shard ${{ matrix.shard }} | tee integrated.log
+          grep '^ATLAS34_FINAL ' integrated.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS34-INTEGRATED-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            integrated.log
+            mre_atlas34/results_*.json
+  audit:
+    needs: integrated
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS34-INTEGRATED-*
+          path: audits
+      - name: Audit complete SHA matched paired trials
+        run: |
+          python3 - <<'PY'
+          import json,pathlib
+          rows=[];seen=set()
+          for i in range(4):
+              p=pathlib.Path('audits')/f'ATLAS34-INTEGRATED-{i}'/'mre_atlas34'/f'results_{i}.json'
+              d=json.loads(p.read_text());assert d['shard']==i and len(d['rows'])==104
+              ss={r['sha256'] for r in d['rows']}
+              assert len(ss)==13 and not seen.intersection(ss)
+              seen|=ss;rows+=d['rows']
+          assert len(seen)==52 and len(rows)==416
+          summary={}
+          for arm in ('V23_C7_STABLE','V23_PHP','V23_PHP34','KISSAT'):
+              rr=[r for r in rows if r['arm']==arm]
+              assert len(rr)==104
+              summary[arm]=dict(par2_s=round(sum(r['PAR2_reported_s'] for r in rr),6),
+                  sat_verified=sum(r['status']=='SAT_VERIFIED' for r in rr),
+                  theorem_unsat=sum(r['status']=='UNSAT_THEOREM' for r in rr),
+                  unsat_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in rr),
+                  unknown=sum(r['status']=='UNKNOWN' for r in rr),
+                  detector_s=round(sum(r['detector_s'] for r in rr),6))
+          assert summary['V23_PHP34']['theorem_unsat']==24
+          assert all(r['status']!='UNSAT_THEOREM' for r in rows if r['family']!='pigeonhole_unsat')
+          assert summary['V23_PHP34']['sat_verified']==summary['KISSAT']['sat_verified']
+          print('ATLAS34_AUDIT '+json.dumps(dict(sha=52,trials=416,summary=summary),sort_keys=True))
+          print('ATLAS34_AUDIT_PASS original_SHA=true theorem_not_LRAT=true')
+          PY
