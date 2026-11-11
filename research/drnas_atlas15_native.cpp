@@ -216,7 +216,7 @@ int main(int argc,char**argv){
    std::cerr<<"usage: atlas13 FORMULA.cnf --mode A|TABLE_GATE|GF2_CORE|GAUSS_GATE|TABLE_GAUSS|C_RANDOM|C_ADAPT|C_ADAPT_GAUSS --time SECONDS --seed UINT64\n";return 2;
   }
   const std::string mode=argv[3];
-  drnas::require(mode=="A"||mode=="TABLE_GATE"||mode=="GF2_CORE"||mode=="GAUSS_GATE"||mode=="TABLE_GAUSS"||mode=="C_RANDOM"||mode=="C3_ADAPT"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS"||mode=="C4_LBD_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS"||mode=="C5_WARM"||mode=="C5_WARM_GAUSS","bad arm");
+  drnas::require(mode=="A"||mode=="TABLE_GATE"||mode=="GF2_CORE"||mode=="GAUSS_GATE"||mode=="TABLE_GAUSS"||mode=="C_RANDOM"||mode=="C3_ADAPT"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS"||mode=="C4_LBD_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS"||mode=="C5_WARM"||mode=="C5_WARM_GAUSS"||mode=="C5_CDCL"||mode=="C5_CDCL_GAUSS","bad arm");
   double cap=std::stod(argv[5]);
   drnas::require(cap>0&&cap<=120&&std::isfinite(cap),"bad cap");
   const uint64_t trial_seed=std::stoull(argv[7]);
@@ -226,9 +226,9 @@ int main(int argc,char**argv){
   atlas13::TableStats tab;
   atlas13::Gauss gauss;
   const bool use_table=mode=="TABLE_GATE"||mode=="TABLE_GAUSS";
-  const bool use_gauss=mode=="C5_WARM_GAUSS"||mode=="GAUSS_GATE"||mode=="TABLE_GAUSS"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD_GAUSS";
+  const bool use_gauss=mode=="C5_WARM_GAUSS"||mode=="C5_CDCL_GAUSS"||mode=="GAUSS_GATE"||mode=="TABLE_GAUSS"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD_GAUSS";
   const bool use_gf2=mode=="GF2_CORE"||use_gauss;
-  const bool c_arm=mode=="C5_WARM"||mode=="C5_WARM_GAUSS"||mode=="C_RANDOM"||mode=="C3_ADAPT"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS";
+  const bool c_arm=mode=="C5_CDCL"||mode=="C5_CDCL_GAUSS"||mode=="C5_WARM"||mode=="C5_WARM_GAUSS"||mode=="C_RANDOM"||mode=="C3_ADAPT"||mode=="C3_ADAPT_GAUSS"||mode=="C4_LBD"||mode=="C4_LBD_GAUSS";
   if(use_table){
    size_t short_clauses=0;for(auto&c:orig.clauses)if(c.size()>=2&&c.size()<=4)++short_clauses;
    if(short_clauses>=40)work=atlas13::table_reduce(work,tab,0.003);
@@ -242,13 +242,14 @@ int main(int argc,char**argv){
   int status=0;
   drnas::NativeCDCL solver(work.vars);
   if(c_arm){
-   solver.atlas13_enable_c(trial_seed,mode!="C_RANDOM",mode=="C4_LBD"||mode=="C4_LBD_GAUSS"||mode=="C5_WARM"||mode=="C5_WARM_GAUSS");
-   if(mode=="C5_WARM"||mode=="C5_WARM_GAUSS"){
+   solver.atlas13_enable_c(trial_seed,mode!="C_RANDOM",mode=="C4_LBD"||mode=="C4_LBD_GAUSS"||mode=="C5_WARM"||mode=="C5_WARM_GAUSS"||mode=="C5_CDCL"||mode=="C5_CDCL_GAUSS");
+   if(mode=="C5_WARM"||mode=="C5_WARM_GAUSS"||mode=="C5_CDCL"||mode=="C5_CDCL_GAUSS"){
     drnas::require(argc==10,"warm arm requires --policy exploration,quality");
     double explore=1.0,quality=0.85;char comma=0;
     std::istringstream policy(argv[9]);policy>>explore>>comma>>quality;
     drnas::require(bool(policy)&&comma==','&&std::isfinite(explore)&&std::isfinite(quality),"invalid policy");
     solver.atlas13_warmstart(explore,quality);
+    if(mode=="C5_CDCL"||mode=="C5_CDCL_GAUSS")solver.atlas15_enable_cdcl();
    }
   }
   if(!gauss.conflict){
@@ -273,6 +274,7 @@ int main(int argc,char**argv){
            <<" xor_implications="<<st.xor_implications<<" xor_conflicts="<<st.xor_conflicts
            <<" conflicts="<<st.conflicts<<" decisions="<<st.decisions
            <<" trial_seed="<<trial_seed<<" c_explorations="<<solver.atlas13_explorations()<<" c_penalties="<<solver.atlas13_penalties()<<" c_good_lbd="<<solver.atlas13_good_lbd()<<" c_bad_lbd="<<solver.atlas13_bad_lbd()
+           <<" atlas15_deleted="<<solver.atlas15_deleted()<<" atlas15_minimized="<<solver.atlas15_minimized()<<" atlas15_reductions="<<solver.atlas15_reductions()
            <<" SAT_original_verified="<<int(status==10)
            <<" UNSAT_independent_LRAT=0 oneCPU=1\n";
   if(gauss.conflict){

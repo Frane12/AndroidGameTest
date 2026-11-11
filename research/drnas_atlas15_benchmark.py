@@ -6,7 +6,7 @@ Training 40..63; holdout 64..69, source namespace new. No train/holdout leakage.
 import argparse,collections,hashlib,json,os,pathlib,resource,subprocess,time
 from importlib.machinery import SourceFileLoader
 gen=SourceFileLoader("atlas7_gen","research/drnas_atlas13_generator.py").load_module()
-ARMS=("A","C_RANDOM","C3_ADAPT","C4_LBD","C5_WARM","C5_WARM_GAUSS")
+ARMS=("A","C_RANDOM","C3_ADAPT","C4_LBD","C5_WARM","C5_WARM_GAUSS","C5_CDCL","C5_CDCL_GAUSS")
 CAP=60;REPS=2
 def dimacs(n,clauses):
  return ("p cnf %d %d\n"%(n,len(clauses))+
@@ -47,9 +47,9 @@ def independently_verify_core(clauses,indices):
  for i in indices:
   vs,rhs=rows[i];parity^=rhs;support.symmetric_difference_update(vs)
  return not support and parity==1
-def process(arm,path,n,clauses,seed,cap=CAP):
+def process(arm,path,n,clauses,seed,cap=CAP,policy=None):
  cmd=[str(pathlib.Path("mre_atlas15/bin/drnas_atlas15").resolve()),
-      str(path.resolve()),"--mode",arm,"--time",str(cap),"--seed",str(seed)]+(["--policy",os.environ.get("ATLAS15_POLICY","1.0,0.85")] if arm.startswith("C5_WARM") else [])
+      str(path.resolve()),"--mode",arm,"--time",str(cap),"--seed",str(seed)]+(["--policy",policy or (pathlib.Path("training/ATLAS15_POLICY.txt").read_text().strip() if pathlib.Path("training/ATLAS15_POLICY.txt").exists() else "1.0,0.85")] if arm.startswith("C5_WARM") else [])
  def limit():
   resource.setrlimit(resource.RLIMIT_CPU,(cap+1,cap+2))
   resource.setrlimit(resource.RLIMIT_AS,(2*1024**3,2*1024**3))
@@ -81,12 +81,13 @@ def process(arm,path,n,clauses,seed,cap=CAP):
   E2E_s=round(wall,6),telemetry={k:telemetry.get(k,"") for k in
  ("table_matched","table_modules","table_saved_literals","table_s","gauss_s",
  "gauss_rows","gauss_rank","gauss_units","gauss_binaries","gauss_conflict","c_explorations","c_penalties","c_good_lbd","c_bad_lbd",
- "xor_source_rows","xor_derived_rows","xor_implications","conflicts","decisions")})
+ "xor_source_rows","xor_derived_rows","xor_implications","conflicts","decisions","atlas15_deleted","atlas15_minimized","atlas15_reductions")})
 def main():
  ap=argparse.ArgumentParser()
  ap.add_argument("--shard",type=int,required=True)
  ap.add_argument("--shards",type=int,default=10)
  ap.add_argument("--smoke",action="store_true")
+ ap.add_argument("--replay",action="store_true")
  args=ap.parse_args()
  assert 0<=args.shard<args.shards
  dest=pathlib.Path("mre_atlas15");dest.mkdir(exist_ok=True)
@@ -107,6 +108,12 @@ def main():
  assert len({x["sha256"] for x in suite})==len(suite), "holdout SHA collision"
  print("ATLAS15_MANIFEST "+json.dumps(dict(shard=args.shard,shards=args.shards,cases=len(selected),
    full_suite=len(suite),manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),catalog_sha256=catalog_sha)),flush=True)
+ prior_index={}
+ if args.replay:
+  old=json.loads(pathlib.Path(f"firstpass/audit_{args.shard}.json").read_text())
+  assert old["manifest"]==manifest,"first pass manifest changed"
+  prior_index={(r["sha256"],r["rep"],r["arm"]):r for r in old["results"]}
+  assert prior_index,"first pass missing"
  results=[]
  for j,s in enumerate(selected):
   n,clauses,seed=gen.build(s["category"],s["index"])
@@ -117,8 +124,19 @@ def main():
    shift=(j+rep*2)%len(order);order=order[shift:]+order[:shift]
    for arm in order:
     trial_seed=int.from_bytes(hashlib.sha256(("ATLAS13|seed|%s|%d"%(s["sha256"],rep)).encode()).digest()[:8],"big")
-    result=process(arm,path,n,clauses,trial_seed)
-    item=dict(category=s["category"],index=s["index"],sha256=s["sha256"],rep=rep,seed=trial_seed,arm=arm,**result)
+    policy=None
+    if args.replay and arm.startswith("C5_"):
+     old=prior_index.get((s["sha256"],rep,"C5_CDCL"))
+     assert old is not None,"unpaired first pass"
+     pfile=pathlib.Path("training/ATLAS15_POLICY.txt")
+     explore,quality=map(float,(pfile.read_text().strip() if pfile.exists() else "1.0,0.85").split(","))
+     if old["status"] in ("SAT_VERIFIED","GF2_UNSAT_VERIFIED"):
+      explore*=.90;quality*=1.05
+     else:
+      explore*=1.12;quality*=.90
+     policy=f"{min(2,max(.25,explore)):.5f},{min(2,max(0,quality)):.5f}"
+    result=process(arm,path,n,clauses,trial_seed,cap=5 if args.smoke else CAP,policy=policy)
+    item=dict(category=s["category"],index=s["index"],sha256=s["sha256"],rep=rep,seed=trial_seed,arm=arm,pass_name="replay_learned" if args.replay else "first",applied_policy=policy or "",**result)
     results.append(item)
     print("ATLAS15_TRIAL "+json.dumps(item,sort_keys=True),flush=True)
   print("ATLAS15_PROGRESS "+json.dumps(dict(shard=args.shard,done=j+1,total=len(selected))),flush=True)
@@ -142,8 +160,11 @@ def main():
     c_explorations=sum(int(r["telemetry"]["c_explorations"] or 0) for r in sub),
     c_penalties=sum(int(r["telemetry"]["c_penalties"] or 0) for r in sub),
     c_good_lbd=sum(int(r["telemetry"]["c_good_lbd"] or 0) for r in sub),
-    c_bad_lbd=sum(int(r["telemetry"]["c_bad_lbd"] or 0) for r in sub))
- summary=dict(shard=args.shard,shards=args.shards,cases=len(selected),arms=byarm,
+    c_bad_lbd=sum(int(r["telemetry"]["c_bad_lbd"] or 0) for r in sub),
+    atlas15_deleted=sum(int(r["telemetry"]["atlas15_deleted"] or 0) for r in sub),
+    atlas15_minimized=sum(int(r["telemetry"]["atlas15_minimized"] or 0) for r in sub),
+    atlas15_reductions=sum(int(r["telemetry"]["atlas15_reductions"] or 0) for r in sub))
+ summary=dict(shard=args.shard,shards=args.shards,cases=len(selected),pass_name="replay_learned" if args.replay else "first",arms=byarm,
   source_SHA_locked=True,table_SHA_locked=catalog_sha,
   note="real native oneCPU wall end-to-end, no replay; UNSAT only credited with independently verified GF2 certificate")
  (dest/f"audit_{args.shard}.json").write_text(json.dumps(dict(manifest=manifest,summary=summary,results=results),indent=2))
