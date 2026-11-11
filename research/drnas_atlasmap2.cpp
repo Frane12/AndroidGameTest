@@ -133,15 +133,16 @@ int main(int argc,char** argv) {
         if(argc!=6 || std::string(argv[2])!="--mode" ||
            std::string(argv[4])!="--time") {
             std::cerr<<"usage: atlasmap2 FILE --mode "
-                     <<"A|ATLASX|MAP1|MAP2_LIVE|MAP2_SHADOW|MAP2_COMBO "
+                     <<"A|ATLASX|MAP1|MAP2_LIVE|MAP2_SHADOW|MAP2_COMBO|GF2_SELECTIVE "
                      <<"--time SECONDS\n";
             return 2;
         }
         const std::string mode=argv[3];
         const bool live=mode=="MAP2_LIVE" || mode=="MAP2_COMBO";
         const bool shadow=mode=="MAP2_SHADOW";
+        const bool gf2_selective=mode=="GF2_SELECTIVE";
         drnas::require(mode=="A"||mode=="ATLASX"||mode=="MAP1"||
-                       live||shadow,"ATLASMAP2 invalid mode");
+                       live||shadow||gf2_selective,"ATLASMAP2 invalid mode");
         const double cap=std::stod(argv[5]);
         drnas::require(std::isfinite(cap)&&cap>0&&cap<=3600,
                        "ATLASMAP2 invalid cap");
@@ -160,6 +161,15 @@ int main(int argc,char** argv) {
         solver.add_cnf(working);
         const auto map_start=drnas::Clock::now();
         if(live||shadow)solver.enable_atlasmap2_from_original(original,shadow);
+        size_t gf2_source_rows=0;
+        bool gf2_gate=false;
+        if(gf2_selective && original.clauses.size()<=25000 && original.vars<=20000) {
+            const auto exact=drnas::extract_source_xors(original);
+            gf2_source_rows=exact.size();
+            gf2_gate=gf2_source_rows>=2 &&
+                double(gf2_source_rows)/double(std::max<size_t>(1,original.clauses.size()))>=0.002;
+            if(gf2_gate)solver.enable_gf2_from_original(original);
+        }
         const double map_init_s=atlasmap2::elapsed(map_start);
         const double before=atlasmap2::elapsed(start);
         const int status=(before<cap)?solver.solve(cap-before):0;
@@ -181,6 +191,14 @@ int main(int argc,char** argv) {
             <<" working_clauses="<<working.clauses.size()
             <<" prep_kind="<<prep.kind
             <<" prep_saved_literals="<<prep.saved_literals
+            <<" gf2_gate="<<int(gf2_gate)
+            <<" gf2_screen_rows="<<gf2_source_rows
+            <<" gf2_active_rows="<<s.xor_source_rows
+            <<" gf2_derived_rows="<<s.xor_derived_rows
+            <<" gf2_implications="<<s.xor_implications
+            <<" gf2_reasons="<<s.xor_reasons
+            <<" gf2_conflicts="<<s.xor_conflicts
+            <<" gf2_checks="<<s.xor_checks
             <<" map2_source_pairs="<<s.map2_source_pairs
             <<" map2_groups="<<s.map2_groups
             <<" map2_group_variables="<<s.map2_group_variables
