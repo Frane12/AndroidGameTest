@@ -105,8 +105,48 @@ jobs:
             mre_atlas15/audit_${{ matrix.shard }}.json
             mre_atlas15/shard_${{ matrix.shard }}.log
             mre_atlas15/frozen_manifest.json
-  aggregate:
+  replay:
     needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build standalone native solver, original-source GF2 Gaussian and persistent table
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas15/bin
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          mre_atlas15/bin/drnas_atlas15 --selftest
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS15-TRAINING
+          path: training
+      - name: Repeat same frozen CNF benchmark sequentially with persisted training policy shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas15_benchmark.py --shard ${{ matrix.shard }} | tee mre_atlas15/shard_${{ matrix.shard }}.log
+          grep '^ATLAS15_FINAL ' mre_atlas15/shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS15-replay-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas15/audit_${{ matrix.shard }}.json
+            mre_atlas15/shard_${{ matrix.shard }}.log
+            mre_atlas15/frozen_manifest.json
+  aggregate:
+    needs: replay
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -141,6 +181,9 @@ jobs:
               x=total[arm]
               f.write(f'| {arm} | {x["solved"]} | {x["PAR2_s"]:.6f} | {x["table_literals_saved"]} | {x["gauss_units"]} |\n')
           PY
+      - name: Verify identical second-pass CNF manifest and record replay
+        run: |
+          echo "ATLAS15 replay executed after initial 10 shards; both runs use frozen source CNFs and training-only policy" >> "$GITHUB_STEP_SUMMARY"
       - name: Persist cross-run SHA-keyed benchmark memory
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
