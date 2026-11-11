@@ -160,6 +160,7 @@ static CNF first_look(const CNF& f,Result& r,double cap,Clock::time_point start)
 }
 
 }
+#ifndef DRNAS_ATLAS1_AS_LIBRARY
 int main(int argc,char**argv) {
  try{
   if(argc==2 && std::string(argv[1])=="--atlas-selftest"){
@@ -217,3 +218,5 @@ int main(int argc,char**argv) {
   return status==10?10:status==20?20:0;
  }catch(const std::exception& e){std::cerr<<"ATLAS1_ERROR "<<e.what()<<"\n";return 2;}
 }
+
+#endif // DRNAS_ATLAS1_AS_LIBRARY
