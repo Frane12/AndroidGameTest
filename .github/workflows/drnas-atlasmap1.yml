@@ -1,0 +1,95 @@
+name: DRNAS ATLAS-MAP1 structural shortcut memory native CDCL
+run-name: ATLASMAP1 source-certified DSU vs ATLASX native and references rank41
+on:
+  push:
+    branches: [experiment/drnas-atlasmap1-structural-shortcuts-20261111]
+    paths:
+      - research/drnas_atlasmap1.cpp
+      - research/drnas_atlasmap1_smoke.py
+      - research/drnas_atlasmap1_bench.py
+      - research/drnas_atlasx.cpp
+      - research/drnas_atlas1.cpp
+      - research/drnas_atlas1_generate.py
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-atlasmap1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build deterministic NPN atlas table
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas1_generate.py research/drnas_atlasmap1_smoke.py research/drnas_atlasmap1_bench.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap1/atlas1_table.hpp
+      - name: Compile native proof-safe atlas map and run exhaustive oracle
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlasmap1/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -I mre_atlasmap1 research/drnas_atlasmap1.cpp -o mre_atlasmap1/bin/drnas_atlasmap1
+          mre_atlasmap1/bin/drnas_atlasmap1 --atlasmap-selftest | tee mre_atlasmap1/selftest.log
+          python3 -u research/drnas_atlasmap1_smoke.py | tee mre_atlasmap1/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLASMAP1-CORRECTNESS
+          retention-days: 30
+          path: |
+            mre_atlasmap1/*.log
+            mre_atlasmap1/*.cnf
+            mre_atlasmap1/*.tsv
+  holdout:
+    needs: correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+          mkdir -p mre_atlasmap1/bin
+      - name: Compile pinned Kissat comparator
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_atlasmap1/kissat-src
+          git -C mre_atlasmap1/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_atlasmap1/kissat-src && ./configure && make -j2)
+          install -m 755 mre_atlasmap1/kissat-src/build/kissat mre_atlasmap1/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_atlasmap1/bin/cadical
+      - name: Compile atlas and our standalone native solver
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap1/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasmap1 research/drnas_atlasmap1.cpp -o mre_atlasmap1/bin/drnas_atlasmap1
+      - name: Prospective source-locked SHA rank41 matched PAR2 benchmark
+        env:
+          ATLASMAP1_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlasmap1_bench.py | tee mre_atlasmap1/benchmark.log
+          grep '^ATLASMAP1_FINAL ' mre_atlasmap1/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLASMAP1-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlasmap1/audit.json
+            mre_atlasmap1/source.json
+            mre_atlasmap1/*.cnf
+            mre_atlasmap1/*.log
+            mre_atlasmap1/route_decision.json
