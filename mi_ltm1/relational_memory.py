@@ -90,7 +90,7 @@ def diagnose_holdout(holdout_cases, training_catalog):
         matches = {k:v for k,v in observed.items() if
                    k in training_catalog and training_catalog[k]["kind"] == v}
         if matches:
-            seen.update(matches)
+            seen.update(matches.keys())
         fam = by_family.setdefault(row["family"],dict(
             formulas=0,recognized=0,source_patterns=0,matched_patterns=0))
         fam["formulas"] += 1
