@@ -1,8 +1,8 @@
 // DRNAS ATLAS-X: compressed local relations and demand-only 5/6-variable joins.
 // Experimental frontend for the independent DRNAS R3C CDCL core; no stable changes.
-#define main drnas_atlas1_embedded_main
+#define DRNAS_ATLAS1_AS_LIBRARY
 #include "drnas_atlas1.cpp"
-#undef main
+#undef DRNAS_ATLAS1_AS_LIBRARY
 #include <numeric>
 
 namespace atlasx {
@@ -289,10 +289,10 @@ int main(int argc,char** argv) {
     const double cap=std::stod(argv[5]);
     drnas::require(cap>0 && cap<=3600,"invalid time cap");
     const auto start=drnas::Clock::now();
-    const CNF original=drnas::read_dimacs(argv[1]);
+    const drnas::CNF original=drnas::read_dimacs(argv[1]);
     atlasx::Metrics xm;
     arl1::Result am;
-    CNF working=original;
+    drnas::CNF working=original;
     if(arm=="ATLAS1"){
       working=arl1::first_look(original,am,cap,start);
       xm.decision=am.decision;xm.reason=am.reason;
