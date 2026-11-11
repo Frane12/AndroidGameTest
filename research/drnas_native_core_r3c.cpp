@@ -174,6 +174,13 @@ struct Statistics {
     uint64_t arl3_width_sum=0,arl3_lbd_sum=0,arl3_short=0,arl3_stall_windows=0;
     uint64_t arl3_window_decisions=0,arl3_window_short=0;
 #endif
+#ifdef DRNAS_ARL4_RESTART
+    uint64_t arl4_adaptive_restarts=0,arl4_stall_windows=0;
+    uint64_t arl4_lbd_window_sum=0,arl4_width_window_sum=0,arl4_window_count=0;
+    uint64_t arl4_last_window_short=0,arl4_last_window_decisions=0;
+    uint64_t arl4_last_window_conflicts=0;
+#ifdef DRNAS_ARL3_DIAG
+#endif
 
 };
 class NativeCDCL {
@@ -195,6 +202,10 @@ class NativeCDCL {
     bool root_contradiction_ = false;
     double bump_ = 1.0, decay_ = 0.95;
     uint64_t next_restart_ = 100, restart_window_ = 100;
+#ifdef DRNAS_ARL4_RESTART
+    uint64_t arl4_last_lbd_=0,arl4_last_width_=0;
+    bool arl4_armed_=false;
+#endif
     Clock::time_point start_;
     double cap_s_ = 10.0;
     bool resource_limit_ = false;
@@ -804,6 +815,34 @@ public:
                 p0=profile_clock();
 #endif
                 auto [learned, target] = analyze(conflicting);
+#ifdef DRNAS_ARL4_RESTART
+                // Causal, bounded restart-only intervention: no clause deletion.
+                // Diagnose the previous 256 conflicts; arm one earlier restart
+                // only when learned LBD >= 8, width >= 12 and no short clauses.
+                // No repeated intervention until the next 256-conflict window.
+                {
+                    std::set<int> distinct;
+                    for(int lit:learned)distinct.insert(levels_[var(lit)]);
+                    stats_.arl4_lbd_window_sum+=distinct.size();
+                    stats_.arl4_width_window_sum+=learned.size();
+                    ++stats_.arl4_window_count;
+                    if(stats_.conflicts%256==0 && stats_.arl4_window_count>=256){
+                        const bool stalled=stats_.arl4_lbd_window_sum>=8*stats_.arl4_window_count
+                            && stats_.arl4_width_window_sum>=12*stats_.arl4_window_count
+                            && stats_.arl3_short==stats_.arl4_last_window_short
+                            && stats_.decisions-stats_.arl4_last_window_decisions>=128;
+                        if(stalled){
+                            ++stats_.arl4_stall_windows;
+                            arl4_armed_=true;
+                        } else arl4_armed_=false;
+                        stats_.arl4_last_window_short=stats_.arl3_short;
+                        stats_.arl4_last_window_decisions=stats_.decisions;
+                        stats_.arl4_lbd_window_sum=0;
+                        stats_.arl4_width_window_sum=0;
+                        stats_.arl4_window_count=0;
+                    }
+                }
+#endif
 #ifdef DRNAS_ARL3_DIAG
                 // Passive 1-UIP LBD/width and 256-conflict windows; no search change.
                 stats_.arl3_width_sum+=learned.size();
@@ -848,6 +887,15 @@ public:
                 if (stats_.conflicts >= next_restart_ && level() > 0) {
                     cancel_to(0);
                     ++stats_.restarts;
+#ifdef DRNAS_ARL4_RESTART
+                    if(arl4_armed_){
+                        ++stats_.arl4_adaptive_restarts;
+                        // Limit future restart interval to 128 conflicts;
+                        // no changes to 1-UIP, clause database or branching.
+                        restart_window_=128;
+                        arl4_armed_=false;
+                    } else
+#endif
                     restart_window_ = std::min<uint64_t>(restart_window_ * 3 / 2 + 1,
                                                           30000);
                     next_restart_ = stats_.conflicts + restart_window_;
