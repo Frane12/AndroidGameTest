@@ -1,0 +1,95 @@
+name: DRNAS ATLAS WIDE500 online CDCL training
+run-name: ATLAS WIDE500 20 families x 25 CNFs oneCPU bounded live CDCL + selective GF2
+on:
+  push:
+    branches: [experiment/drnas-atlas-ultrawide500-20261111]
+    paths:
+      - research/drnas_atlas_wide500.py
+      - research/drnas_native_core_r3c.cpp
+      - research/drnas_atlasmap2.cpp
+      - .github/workflows/drnas-atlas-wide500.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: atlas-wide500-frozen
+  cancel-in-progress: true
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native DRNAS and proof-gated GF2 selfchecks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas_wide500.py research/drnas_atlas_selective_gf2.py
+          python3 research/drnas_atlas_selective_gf2.py
+          mkdir -p mre_atlasmap2/bin mre_map2_real47
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -DDRNAS_ATLAS_TRAIN_TRACE -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest
+      - name: Live decision journal and paired training with frozen holdout
+        env:
+          ATLAS_WIDE_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas_wide500.py | tee mre_map2_real47/atlas_wide500_shard_${{ matrix.shard }}.log
+          grep '^ATLAS_WIDE500_FINAL ' mre_map2_real47/atlas_wide500_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS-WIDE500-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre_map2_real47/atlas_wide500_memory_shard_${{ matrix.shard }}.json
+            mre_map2_real47/atlas_wide500_results_shard_${{ matrix.shard }}.json
+            mre_map2_real47/atlas_wide500_events_shard_${{ matrix.shard }}.jsonl
+            mre_map2_real47/atlas_wide500_shard_${{ matrix.shard }}.log
+  merge:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS-WIDE500-SHARD-*
+          merge-multiple: true
+          path: wide500_artifacts
+      - name: Cross-shard holdout isolation and frozen memory merge
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas_wide500.py --merge-dir wide500_artifacts | tee atlas_wide500_merged.log
+          grep '^ATLAS_WIDE500_MERGED ' atlas_wide500_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist only validated training memory and aggregate report
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/atlas_wide500_memory.json research/atlas_wide500_summary.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data(atlas-wide500): validated 400 train 100 holdout [skip ci]"
+            for attempt in 1 2 3; do
+              git pull --rebase origin experiment/drnas-atlas-ultrawide500-20261111
+              if git push origin HEAD:experiment/drnas-atlas-ultrawide500-20261111; then exit 0; fi
+              sleep 3
+            done
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS-WIDE500-MERGED
+          retention-days: 60
+          path: |
+            research/atlas_wide500_memory.json
+            research/atlas_wide500_summary.json
+            atlas_wide500_merged.log
