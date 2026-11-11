@@ -141,6 +141,11 @@ def run_arm(case, arm, rep, models, tmpdir, allowed):
         assert len(model)==N and satisfies(case["clauses"],model),(
             "Invalid original CNF SAT witness",case["sha"])
     solved = rc==expected
+    telemetry = {}
+    for line in output.splitlines():
+        if line.startswith("ATLAS13_TRIAL "):
+            telemetry = dict(part.split("=",1) for part in line.split()[1:]
+                             if "=" in part)
     return dict(family=case["family"],case=case["case"],sha256=case["sha"],
                 split=case["split"],rep=rep,arm=arm,action=action,
                 signature=sig,memory_match=bool(memory_match),
@@ -148,7 +153,7 @@ def run_arm(case, arm, rep, models, tmpdir, allowed):
                 "UNSAT_EXHAUSTIVE" if rc==20 else "UNKNOWN"),
                 e2e_s=round(e2e,7),
                 par2_s=round(e2e if solved else 2*CAP,7),
-                probe_s=round(probe_s,7),added_clauses=len(added),
+                probe_s=round(probe_s,7),added_clauses=len(added),\n                conflicts=int(telemetry.get("conflicts","0")),\n                decisions=int(telemetry.get("decisions","0")),
                 independent_lrat=False,one_cpu=True)
 
 
@@ -162,7 +167,7 @@ def summarize(rows):
                           median_ms=round(statistics.median(x["e2e_s"] for x in grp)*1000,4),
                           matched=sum(x["memory_match"] for x in grp),
                           activated=sum(x["action"]=="MI_XOR" for x in grp),
-                          new_clauses=sum(x["added_clauses"] for x in grp))
+                          new_clauses=sum(x["added_clauses"] for x in grp),\n                          conflicts=sum(x["conflicts"] for x in grp),\n                          decisions=sum(x["decisions"] for x in grp))
     return summary
 
 
@@ -181,19 +186,29 @@ def learn(db, train):
                   cap_s=CAP,verified=True,probe_s=item["probe_s"])
 
 
-def freeze_policy(db, train_cases):
+def freeze_policy(db, train_cases, holdout_cases):
     # An exact-SHA holdout filter is defense-in-depth, in addition to split.
-    train_shas={x["sha"] for x in train_cases}
+    current_train_shas={x["sha"] for x in train_cases}
+    holdout_shas={x["sha"] for x in holdout_cases}
+    # Cache and artifacts contain training observations only. Across runs,
+    # permit historical TRAIN records, but never a current holdout SHA.
+    training_shas={row[0] for row in db.db.execute(
+        "SELECT DISTINCT formula_sha FROM observations "
+        "WHERE cohort LIKE 'training_rep_%' AND verified=1")
+        if row[0] not in holdout_shas}
+    assert current_train_shas <= training_shas
     seen={}
     positive={}
-    for sig in sorted({x["signature"] for x in train_cases}):
+    for sig, in db.db.execute(
+            "SELECT DISTINCT signature FROM observations "
+            "WHERE cohort LIKE 'training_rep_%' AND verified=1"):
         records=db.db.execute(
             "SELECT formula_sha,baseline_e2e,candidate_e2e,baseline_solved,"
             "candidate_solved,cap_s FROM observations "
             "WHERE signature=? AND verified=1 AND arm='MI_XOR'",(sig,)).fetchall()
         vals=defaultdict(list)
         for sha,bt,ct,bs,cs,cap in records:
-            if sha in train_shas:
+            if sha in training_shas:
                 vals[sha].append((bt if bs else 2*cap)-(ct if cs else 2*cap))
         if not vals:
             continue
@@ -206,7 +221,7 @@ def freeze_policy(db, train_cases):
         # examples, 70% wins, and >= 0.3ms *mean* improvement.
         if len(vals)>=8 and wins/len(vals)>=.7 and mean>=.0003:
             positive[sig]=dict(seen[sig],recommended="MI_XOR")
-    return dict(seen=seen,positive=positive,training_shas=sorted(train_shas),
+    return dict(seen=seen,positive=positive,training_shas=sorted(training_shas),
                 learning_rule="8 distinct SHA, >=70% paired wins, mean gain >=0.3ms")
 
 
@@ -233,7 +248,7 @@ def main():
             if (i+1)%48==0:
                 print("MI_LTM2_TRAIN_PROGRESS",i+1,"/",len(train_cases),flush=True)
         learn(db,trials)
-        frozen=freeze_policy(db,train_cases)
+        frozen=freeze_policy(db,train_cases,test_cases)
         # Write frozen JSON BEFORE any holdout trial is executed.
         policy_path=ROOT/"policy_frozen.json"
         policy_path.write_text(json.dumps(frozen,sort_keys=True,indent=2))
@@ -247,7 +262,7 @@ def main():
             "train_formulas":len(train_cases),
             "recognized_signatures":len(frozen["seen"]),
             "positive_signatures":len(frozen["positive"]),
-            "training_observations":len([x for x in trials if x["arm"]=="MI_XOR"])
+            "training_observations":len([x for x in trials if x["arm"]=="MI_XOR"]),\n            "historic_training_formula_shas":len(frozen["training_shas"])
         }),flush=True)
         for i,case in enumerate(test_cases):
             models=list(oracle(case["clauses"],N))
