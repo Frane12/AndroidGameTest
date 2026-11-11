@@ -1,0 +1,154 @@
+name: DRNAS CDCL BLOCKER x C6 KEEP crossed benchmark
+run-name: DRNAS BLOCKER x C6 100 new SHA 3 reps 5 arms DRAT proof 1CPU
+on:
+  push:
+    branches: [experiment/drnas-blocker-c6-cross-20261111]
+    paths:
+      - research/drnas_blocker_c6_cross.py
+      - .github/workflows/drnas-blocker-c6-cross.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-blocker-c6-cross-20261111
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze isolated native code and build matched two-flag binaries
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_blocker_c6_cross.py
+          mkdir -p mre_blocker_c6/bin mre_atlas16 mre_atlas15
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          g++ -std=c++17 -O2 -I mre_atlas16 -I mre_atlas15 mre_atlas16/native.cpp -o mre_blocker_c6/bin/drnas_atlas16
+          g++ -std=c++17 -O2 -DDRNAS_ONE2_BLOCKER -I mre_atlas16 -I mre_atlas15 mre_atlas16/native.cpp -o mre_blocker_c6/bin/drnas_atlas16_blocker
+          mre_blocker_c6/bin/drnas_atlas16 --selftest
+          mre_blocker_c6/bin/drnas_atlas16_blocker --selftest
+      - name: Build fixed Kissat and independent original-CNF DRAT checker
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/drnas-c6-kissat
+          git -C /tmp/drnas-c6-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/drnas-c6-kissat && ./configure && make -j2)
+          install -m 755 /tmp/drnas-c6-kissat/build/kissat mre_blocker_c6/bin/kissat
+          git clone -q https://github.com/marijnheule/drat-trim.git /tmp/drnas-c6-drat
+          git -C /tmp/drnas-c6-drat checkout --detach 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          make -C /tmp/drnas-c6-drat -j2
+          install -m 755 /tmp/drnas-c6-drat/drat-trim mre_blocker_c6/bin/drat-trim
+          mre_blocker_c6/bin/kissat --version
+          test -x mre_blocker_c6/bin/drat-trim
+      - uses: actions/upload-artifact@v4
+        with:
+          name: C6-BLOCKER-FROZEN-BINARIES
+          retention-days: 14
+          compression-level: 1
+          path: |
+            mre_blocker_c6/bin/drnas_atlas16
+            mre_blocker_c6/bin/drnas_atlas16_blocker
+            mre_blocker_c6/bin/kissat
+            mre_blocker_c6/bin/drat-trim
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: C6-BLOCKER-FROZEN-BINARIES
+          path: mre_blocker_c6/bin
+      - name: Check BLOCKER and C6 paths against SAT and independently DRAT verified UNSAT
+        env:
+          BLOCKER_C6_SHARD: "0"
+          BLOCKER_C6_SMOKE: "1"
+        run: |
+          set -euo pipefail
+          chmod +x mre_blocker_c6/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_blocker_c6_cross.py |
+            tee mre_blocker_c6/smoke.log
+          grep '^BLOCKER_C6_FINAL ' mre_blocker_c6/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: C6-BLOCKER-SMOKE
+          retention-days: 14
+          path: mre_blocker_c6/smoke.log
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: C6-BLOCKER-FROZEN-BINARIES
+          path: mre_blocker_c6/bin
+      - name: Run matched single-core five-arm E2E, independent DRAT certificate after timing
+        env:
+          BLOCKER_C6_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x mre_blocker_c6/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_blocker_c6_cross.py |
+            tee mre_blocker_c6/shard_${{ matrix.shard }}.log
+          grep '^BLOCKER_C6_FINAL ' mre_blocker_c6/shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: C6-BLOCKER-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre_blocker_c6/audit_${{ matrix.shard }}.json
+            mre_blocker_c6/shard_${{ matrix.shard }}.log
+  merge:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: C6-BLOCKER-SHARD-*
+          merge-multiple: true
+          path: combined_audits
+      - name: Frozen 100 SHA 20 families 1500 paired E2E + DRAT audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_blocker_c6_cross.py --merge-dir combined_audits |
+            tee mre_blocker_c6/combined.log
+          grep '^BLOCKER_C6_MERGED ' mre_blocker_c6/combined.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Save aggregate report only to experimental branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/drnas_blocker_c6_cross_summary.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data(cdcl): 100 fresh SHA blocked x C6 KEEP audit [skip ci]"
+            git pull --rebase origin experiment/drnas-blocker-c6-cross-20261111
+            git push origin HEAD:experiment/drnas-blocker-c6-cross-20261111
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: C6-BLOCKER-MERGED
+          retention-days: 90
+          path: |
+            mre_blocker_c6/combined.log
+            research/drnas_blocker_c6_cross_summary.json
