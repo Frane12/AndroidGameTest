@@ -1,0 +1,132 @@
+name: DRNAS ATLAS feedback2 prospective3
+run-name: ATLAS feedback2 trace then prospective3 100 fresh SHA x 6 arms x 2 oneCPU 5s
+on:
+  push:
+    branches: [experiment/drnas-atlas-feedback-prospective-20261111]
+    paths:
+      - research/drnas_native_core_r3c.cpp
+      - research/drnas_atlas_wide500.py
+      - research/drnas_atlas_prospective.py
+      - .github/workflows/drnas-atlas-feedback-prospective.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: atlas-prospective-feedback-v1
+  cancel-in-progress: true
+jobs:
+  build_smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native build, mathematical selftests, streaming outcome smoke
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas_wide500.py research/drnas_atlas_prospective.py
+          python3 research/drnas_atlas_selective_gf2.py
+          mkdir -p mre_atlasmap2/bin mre_map2_real47/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -DDRNAS_ATLAS_TRAIN_TRACE -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest
+          python3 -u research/drnas_atlas_prospective.py --smoke
+          grep -q 'DRNAS_CDCL_OUTCOME' mre_map2_real47/atlas_prospect_smoke_feedback.jsonl || {
+            echo "WARN: smoke had CDCL events but zero sampled backjump/retention outcomes"
+          }
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas-prospect-kissat
+          git -C /tmp/atlas-prospect-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas-prospect-kissat && ./configure && make -j2)
+          install -m 755 /tmp/atlas-prospect-kissat/build/kissat mre_map2_real47/bin/kissat
+          mre_map2_real47/bin/kissat --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS-PROSPECT-BINARIES
+          retention-days: 7
+          path: |
+            mre_atlasmap2/bin/drnas_atlasmap2
+            mre_map2_real47/bin/kissat
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS-FEEDBACK2-SMOKE
+          retention-days: 30
+          path: mre_map2_real47/atlas_prospect_smoke_feedback.jsonl
+  benchmark:
+    needs: build_smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS-PROSPECT-BINARIES
+          path: .
+      - name: Install single-thread CryptoMiniSat reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          test -x /usr/bin/cryptominisat5
+          chmod +x mre_atlasmap2/bin/drnas_atlasmap2 mre_map2_real47/bin/kissat
+          cryptominisat5 --version
+      - name: Run frozen policy vs DRNAS A GF2 MAP2 Kissat CMS on unseen sources
+        env:
+          ATLAS_PROSPECT_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas_prospective.py |
+            tee mre_map2_real47/atlas_prospect_shard_${{ matrix.shard }}.log
+          grep '^ATLAS_PROSPECT_FINAL ' mre_map2_real47/atlas_prospect_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS-PROSPECT-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre_map2_real47/atlas_prospect_audit_${{ matrix.shard }}.json
+            mre_map2_real47/atlas_prospect_manifest_${{ matrix.shard }}.json
+            mre_map2_real47/atlas_prospect_feedback_${{ matrix.shard }}.jsonl
+            mre_map2_real47/atlas_prospect_shard_${{ matrix.shard }}.log
+  merge:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS-PROSPECT-SHARD-*
+          merge-multiple: true
+          path: prospective_artifacts
+      - name: Verify frozen memory and merge PAR2 paired audits
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_atlas_prospective.py --merge-dir prospective_artifacts |
+            tee atlas_prospective_merged.log
+          grep '^ATLAS_PROSPECT_MERGED ' atlas_prospective_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish result only; do not mutate training memory
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/atlas_prospective_v1_summary.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data(atlas-prospective3): frozen unseen paired results [skip ci]"
+            git pull --rebase origin experiment/drnas-atlas-feedback-prospective-20261111
+            git push origin HEAD:experiment/drnas-atlas-feedback-prospective-20261111
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS-PROSPECT-MERGED
+          retention-days: 60
+          path: |
+            atlas_prospective_merged.log
+            research/atlas_prospective_v1_summary.json
