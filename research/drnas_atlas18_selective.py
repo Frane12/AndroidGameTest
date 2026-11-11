@@ -85,6 +85,8 @@ def selftest():
 def trial(source, arm, rep, policy):
     # Each solver runs on the same unchanged canonical original CNF and seed
     # as ATLAS16. Only the new arm chooses between existing native modes.
+    before_self = cpu_total(resource.getrusage(resource.RUSAGE_SELF))
+    before_child = cpu_total(resource.getrusage(resource.RUSAGE_CHILDREN))
     gate = dict(gate="not_applicable", reason="control", rows=0)
     actual = arm
     gate_s = 0.0
@@ -95,8 +97,6 @@ def trial(source, arm, rep, policy):
         gate_s = time.monotonic() - start_gate
         actual = "C6_KEEP_GAUSS" if gate["gate"] == "shadow" else "C6_KEEP"
     gate = dict(gate, dispatch=actual)
-    before_self = cpu_total(resource.getrusage(resource.RUSAGE_SELF))
-    before_child = cpu_total(resource.getrusage(resource.RUSAGE_CHILDREN))
     old_cap = B.CAP
     try:
         # Screened arm has its predispatch cost deducted from the time cap.
@@ -106,17 +106,23 @@ def trial(source, arm, rep, policy):
         B.CAP = old_cap
     after_self = cpu_total(resource.getrusage(resource.RUSAGE_SELF))
     after_child = cpu_total(resource.getrusage(resource.RUSAGE_CHILDREN))
-    cpu_s = max(0.0, after_child-before_child + after_self-before_self + gate_s)
+    cpu_s = max(0.0, after_child-before_child + after_self-before_self)
     r["arm"] = arm
     r["dispatch"] = actual
     r["gauss_gate"] = gate
     r["gate_wall_s"] = round(gate_s, 7)
     r["CPU_s"] = round(cpu_s, 6)
     r["E2E_s"] = round(r["E2E_s"]+gate_s, 6)
+    # Always charge the exact original 2*CAP penalty, including for a
+    # screened arm whose subprocess received a slightly shorter budget.
     if r["status"] in ("SAT_VERIFIED", "GF2_UNSAT_VERIFIED"):
         r["PAR2_verified_s"] = r["E2E_s"]
+    else:
+        r["PAR2_verified_s"] = 2*CAP
     if r["status"] != "UNKNOWN":
         r["PAR2_reported_s"] = r["E2E_s"]
+    else:
+        r["PAR2_reported_s"] = 2*CAP
     if r["status"] == "GF2_UNSAT_VERIFIED":
         # A second GF(2) elimination checks unsatisfiability over rows
         # reconstructed only from ORIGINAL CNF clauses, not solver claims.
