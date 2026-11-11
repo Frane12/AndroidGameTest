@@ -87,6 +87,12 @@ def run_solver(source,arm,rep,policy):
     except subprocess.TimeoutExpired:
         rc,out,err=124,"","timeout"
     dt=round(time.monotonic()-start,6)
+    # CryptoMiniSat --maxtime sends SIGTERM at its own time limit. On
+    # POSIX this can surface as +15 (shell-style) or -15 (Python signal).
+    # Only normalize a near-cap termination: an early SIGTERM remains a
+    # genuine error, never a solved SAT/UNSAT result.
+    if arm=="CMS" and rc in (15,-15) and dt>=CAP-0.5:
+        rc=124
     if rc not in (0,10,20,124,-9,-24,-25):
         raise RuntimeError(f"Crash {arm} {source['sha256']} rc={rc} stderr={err[-800:]}")
     stats={}
