@@ -1,0 +1,164 @@
+name: DRNAS ATLAS18 retention factorial 2x2 blind SHA
+run-name: ATLAS18 100 unseen SHA x 10 arms x 2 reps 8s oneCPU cadence quota factorial
+on:
+  push:
+    branches: [experiment/drnas-atlas18-retention-factorial-20261111]
+    paths:
+      - research/drnas_atlas18_build.py
+      - research/drnas_atlas18_benchmark.py
+      - research/drnas_atlas18_merge.py
+      - research/drnas_atlas18_schema.sql
+      - .github/workflows/drnas-atlas18-retention-factorial.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-atlas18-factorial-20261111
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated C8 2x2 deletion schedule quota from frozen ATLAS16/17
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas16_build.py research/drnas_atlas17_build.py research/drnas_atlas18_build.py research/drnas_atlas18_benchmark.py research/drnas_atlas18_merge.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas18_build.py
+          mkdir -p mre_atlas15/bin mre_atlas18/bin
+          g++ -std=c++17 -O2 -I mre_atlas15 research/drnas_atlas15_native.cpp -o mre_atlas15/bin/drnas_atlas15
+          g++ -std=c++17 -O2 -I mre_atlas18 -I mre_atlas15 mre_atlas18/native.cpp -o mre_atlas18/bin/drnas_atlas18
+          mre_atlas18/bin/drnas_atlas18 --selftest
+          python3 research/drnas_atlas15_train.py
+      - name: Compile pinned Kissat and install one-thread CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas18-kissat
+          git -C /tmp/atlas18-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas18-kissat && ./configure && make -j2)
+          cp /tmp/atlas18-kissat/build/kissat mre_atlas18/bin/kissat
+          mre_atlas18/bin/kissat --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS18-FROZEN-BINARIES
+          retention-days: 14
+          path: |
+            mre_atlas18/bin/drnas_atlas18
+            mre_atlas18/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS18-FROZEN-TRAINING
+          retention-days: 14
+          path: |
+            ATLAS15_TRAINING.json
+            ATLAS15_POLICY.txt
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-FROZEN-BINARIES
+          path: mre_atlas18/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-FROZEN-TRAINING
+          path: training
+      - name: Smoke all 10 arms: 2x2 BCP cadence quota with frozen C6/C7 controls
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas18/bin/drnas_atlas18 mre_atlas18/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas18_benchmark.py --stage 1 --shard 0 --smoke |
+            tee mre_atlas18/smoke.log
+          grep '^ATLAS18_FINAL ' mre_atlas18/smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS18-SMOKE-LOG
+          path: |
+            mre_atlas18/smoke.log
+            mre_atlas18/audit_s1_h0.json
+  bench1:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-FROZEN-BINARIES
+          path: mre_atlas18/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS18-FROZEN-TRAINING
+          path: training
+      - name: Stage 1 prospective 100-CNF 2x2 oneCPU matched shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x mre_atlas18/bin/drnas_atlas18 mre_atlas18/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas18_benchmark.py --stage 1 --shard ${{ matrix.shard }} |
+            tee mre_atlas18/pass1_shard_${{ matrix.shard }}.log
+          grep '^ATLAS18_FINAL ' mre_atlas18/pass1_shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS18-PASS1-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            mre_atlas18/audit_s1_h${{ matrix.shard }}.json
+            mre_atlas18/events_s1_h${{ matrix.shard }}.jsonl
+            mre_atlas18/pass1_shard_${{ matrix.shard }}.log
+  merge1:
+    needs: bench1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS18-PASS1-SHARD-*
+          merge-multiple: true
+          path: audits
+      - name: Merge 100 SHA, 2000 trial verified PAR2 cadence/quota factorial SQL
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlas18
+          python3 -u research/drnas_atlas18_merge.py --stage 1 --audit-dir audits |
+            tee mre_atlas18/pass1_merged.log
+          grep '^ATLAS18_MERGED ' mre_atlas18/pass1_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS18-SQL-PASS1
+          retention-days: 90
+          path: |
+            mre_atlas18/ATLAS18_LEARNING.sqlite
+            mre_atlas18/policy_next.json
+            mre_atlas18/ATLAS18_STAGE1_SUMMARY.json
+            mre_atlas18/pass1_merged.log
+
