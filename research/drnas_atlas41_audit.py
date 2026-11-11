@@ -28,8 +28,8 @@ for r in rows:
     pairs[k][r["arm"]]=r
     assert r["status"]!="SAT_VERIFIED" or r["original_SAT_witness_verified"]
     assert not r["independent_UNSAT_proof_verified"]
-    if r["arm"]=="A41_GUARD" and r["status"]!="UNKNOWN":
-        assert r["telemetry"]["atlas39_mode"]==3
+    if r["arm"] in ("A41_GUARD","A41_DECAY") and r["status"]!="UNKNOWN":
+        assert r["telemetry"]["atlas39_mode"]==(3 if r["arm"]=="A41_GUARD" else 4)
         assert r["telemetry"]["atlas36_quota_pct"]==75
 assert len(pairs)==52
 assert all(set(d)==set(ARMS) for d in pairs.values())
