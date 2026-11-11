@@ -14,6 +14,7 @@ src=src.replace(anchor,'''    // ATLAS10-C: deliberately explore non-maximal CDC
     uint64_t atlas10_rng_ = 0x9e3779b97f4a7c15ULL;
     uint64_t atlas10_explored_ = 0,atlas10_penalized_ = 0,atlas10_exploited_ = 0;
     uint64_t atlas10_last_conflicts_ = 0;
+    int atlas10_last_decision_var_ = 0;
     std::vector<double> atlas10_penalty_;
     uint64_t atlas10_next() {
         atlas10_rng_ ^= atlas10_rng_ >> 12;
