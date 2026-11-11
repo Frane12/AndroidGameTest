@@ -179,7 +179,6 @@ struct Statistics {
     uint64_t arl4_lbd_window_sum=0,arl4_width_window_sum=0,arl4_window_count=0;
     uint64_t arl4_last_window_short=0,arl4_last_window_decisions=0;
     uint64_t arl4_last_window_conflicts=0;
-#ifdef DRNAS_ARL3_DIAG
 #endif
 
 };
