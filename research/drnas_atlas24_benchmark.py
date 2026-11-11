@@ -113,6 +113,11 @@ def main():
     cap=3 if args.cohort=="smoke" else 10 if cohort=="regression" else 12 if cohort=="extension" else 8
     ss=sources(cohort)
     if args.cohort=="smoke": ss=ss[:1]
+    # Frozen ATLAS23 benchmark runner names its native executable drnas_atlas23.
+    # Keep that runner unchanged; both reference and adaptive arms call the
+    # same compiled ATLAS24 binary under their respective --mode flags.
+    legacy=BIN/"drnas_atlas23"
+    if not legacy.exists():legacy.symlink_to("drnas_atlas24")
     rows=[]
     print("ATLAS24_MANIFEST "+json.dumps(dict(cohort=args.cohort,
       arms=list(ARMS),sources=len(ss),cap_s=cap,
