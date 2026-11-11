@@ -170,6 +170,10 @@ struct Statistics {
     uint64_t xor_conflicts=0, xor_reasons=0, xor_budget_off=0;
     uint64_t xor_events_enqueued=0, xor_events_processed=0;
     uint64_t heap_pops=0, heap_pushes=0, heap_bumps=0, heap_removals=0;
+#ifdef DRNAS_ARL3_DIAG
+    uint64_t arl3_width_sum=0,arl3_lbd_sum=0,arl3_short=0,arl3_stall_windows=0;
+    uint64_t arl3_window_decisions=0,arl3_window_short=0;
+#endif
 
 };
 class NativeCDCL {
@@ -800,6 +804,21 @@ public:
                 p0=profile_clock();
 #endif
                 auto [learned, target] = analyze(conflicting);
+#ifdef DRNAS_ARL3_DIAG
+                // Passive 1-UIP LBD/width and 256-conflict windows; no search change.
+                stats_.arl3_width_sum+=learned.size();
+                std::set<int> levels_seen;
+                for(int lit:learned)levels_seen.insert(levels_[var(lit)]);
+                stats_.arl3_lbd_sum+=levels_seen.size();
+                if(learned.size()<=2)++stats_.arl3_short;
+                if(stats_.conflicts%256==0){
+                    const uint64_t short_delta=stats_.arl3_short-stats_.arl3_window_short;
+                    const uint64_t dec_delta=stats_.decisions-stats_.arl3_window_decisions;
+                    if(short_delta==0 && dec_delta>=128)++stats_.arl3_stall_windows;
+                    stats_.arl3_window_decisions=stats_.decisions;
+                    stats_.arl3_window_short=stats_.arl3_short;
+                }
+#endif
 #ifdef DRNAS_PROGRESS1
                 progress_emit(level(),target,learned);
 #endif
