@@ -1,0 +1,114 @@
+name: DRNAS BLOCKER BLIND100 R3 validation
+run-name: BLOCKER blind 100 unseen SHA x 3 repeats A BLOCKER Kissat 8s oneCPU 900
+on:
+  push:
+    branches: [experiment/drnas-blocker-blind100-r3-20261111]
+    paths:
+      - research/drnas_blocker_blind100_r3.py
+      - .github/workflows/drnas-blocker-blind100-r3.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: drnas-blocker-blind100-r3
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze no-profile no-trace native binaries and pinned Kissat
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_blocker_blind100_r3.py research/drnas_atlas_wide500.py
+          mkdir -p mre_atlasmap2 mre_blocker_blind100/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_blocker_blind100/bin/drnas_base
+          g++ -std=c++17 -O2 -DDRNAS_ONE2_BLOCKER -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_blocker_blind100/bin/drnas_blocker
+          mre_blocker_blind100/bin/drnas_base --atlasmap2-selftest
+          mre_blocker_blind100/bin/drnas_blocker --atlasmap2-selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/drnas-blind100-kissat
+          git -C /tmp/drnas-blind100-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/drnas-blind100-kissat && ./configure && make -j2)
+          install -m 755 /tmp/drnas-blind100-kissat/build/kissat mre_blocker_blind100/bin/kissat
+          mre_blocker_blind100/bin/kissat --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BLOCKER-BLIND100-BINARIES
+          retention-days: 7
+          path: |
+            mre_blocker_blind100/bin/drnas_base
+            mre_blocker_blind100/bin/drnas_blocker
+            mre_blocker_blind100/bin/kissat
+  benchmark:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: BLOCKER-BLIND100-BINARIES
+          path: .
+      - name: Source SHA checks and native benchmark 3x on one CPU
+        env:
+          BLOCKER_BLIND_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          chmod +x mre_blocker_blind100/bin/drnas_base mre_blocker_blind100/bin/drnas_blocker mre_blocker_blind100/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_blocker_blind100_r3.py |
+            tee mre_blocker_blind100/shard_${{ matrix.shard }}.log
+          grep '^BLOCKER_BLIND100_FINAL ' mre_blocker_blind100/shard_${{ matrix.shard }}.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BLOCKER-BLIND100-SHARD-${{ matrix.shard }}
+          retention-days: 30
+          compression-level: 6
+          path: |
+            mre_blocker_blind100/manifest_${{ matrix.shard }}.json
+            mre_blocker_blind100/audit_${{ matrix.shard }}.json
+            mre_blocker_blind100/shard_${{ matrix.shard }}.log
+  merge:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: BLOCKER-BLIND100-SHARD-*
+          merge-multiple: true
+          path: blocker_blind100_artifacts
+      - name: 900 matched trials, 100 SHA and category-independent PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_blocker_blind100_r3.py --merge-dir blocker_blind100_artifacts |
+            tee blocker_blind100_merged.log
+          grep '^BLOCKER_BLIND100_MERGED ' blocker_blind100_merged.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist audit-only result to experimental branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/drnas_blocker_blind100_r3_summary.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data(blocker): blind100 R3 matched audit [skip ci]"
+            git pull --rebase origin experiment/drnas-blocker-blind100-r3-20261111
+            git push origin HEAD:experiment/drnas-blocker-blind100-r3-20261111
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BLOCKER-BLIND100-MERGED
+          retention-days: 60
+          path: |
+            research/drnas_blocker_blind100_r3_summary.json
+            blocker_blind100_merged.log
