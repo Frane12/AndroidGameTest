@@ -21,7 +21,7 @@ The JSON `--memory` journal contains one record **per distinct original source S
 
 **Evaluate:** `--phase eval` loads the existing journal and chooses `A` or `LIVE` from *frozen training data*. It **does not modify the memory file**, and the evaluation SHA is never added to the training samples.
 
-A signature activates LIVE only if **at least three distinct original SHA** in that signature have verified SAT outcomes, genuine source-entailed CDCL reasons, **median A/LIVE E2E speed ratio at least 1.10**, and **no >15% regressions** among usable training samples. Otherwise the conservative choice is A. This gate is a preliminary heuristic, not a statistical significance test or guaranteed performance gain. The program records each decision and explanation.
+A signature activates LIVE only if **at least three distinct original SHA** in that signature have verified SAT outcomes, genuine source-entailed CDCL reasons, **median A/LIVE E2E speed ratio at least 1.10**, **median absolute E2E saving at least 5 ms** (avoids interpreting microsecond-scale timing noise as progress), and **no >15% regressions** among usable training samples. Otherwise the conservative choice is A. This gate is a preliminary heuristic, not a statistical significance test or guaranteed performance gain. The program records each decision and explanation.
 
 ### Usage
 
@@ -43,7 +43,7 @@ python3 research/drnas_atlasmap2_learn.py unseen.cnf \
   --report experiments/holdout_report.json
 ```
 
-Use a persistent `--memory` path across **successive training invocations**; the file is atomically rewritten and retained between local runs. A GitHub Actions runner is ephemeral: the CI job uploads the memory and reports as an artifact, **not** as an automatically writable shared database. For a truly cross-workflow persistent learner, restore a versioned training-only memory artifact or keep the memory in a controlled data branch; never silently mix holdout outcomes into it.
+Use a persistent `--memory` path across **successive training invocations**; the file is atomically rewritten and retained between local runs. A GitHub Actions runner is ephemeral: the CI job uploads the memory and reports as an artifact. A separate **rolling training memory** is restored and saved through versioned GitHub Actions cache keys, with one newly generated SHA-distinct source formula added per successful workflow run. Cache restoration is best-effort (e.g. eviction or concurrent workflows can reset/fork history), so preserve artifact snapshots and never silently mix holdout outcomes into it.
 
 ## Meaningful benchmark
 
