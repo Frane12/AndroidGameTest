@@ -20,7 +20,7 @@ def prime_cnf(t,k):
   for vs in itertools.combinations(range(1,k+1),size):
    for signs in itertools.product((-1,1),repeat=size):
     clause=tuple(v*s for v,s in zip(vs,signs))
-    if all(t[b] or any(bool((b>>(abs(x)-1))&1)==(x>0) for x in clause) for b in range(1<<k)):
+    if all((not t[b]) or any(bool((b>>(abs(x)-1))&1)==(x>0) for x in clause) for b in range(1<<k)):
      # This is an implicate: every satisfying assignment satisfies it.
      result.append(clause)
   # Exhaust all clause sizes: stopping early can lose required implicates.
@@ -35,8 +35,9 @@ def normalize(clauses):
  vs=sorted({abs(l) for c in clauses for l in c})
  if not 2<=len(vs)<=4:return None
  mp={v:i+1 for i,v in enumerate(vs)}
- cc=tuple(sorted(set(canon((mp[abs(l)] if l>0 else -mp[abs(l)]) for l in c) for c in clauses)))
- if None in cc:return None
+ normalized=[canon((mp[abs(l)] if l>0 else -mp[abs(l)]) for l in c) for c in clauses]
+ if any(c is None for c in normalized):return None
+ cc=tuple(sorted(set(normalized)))
  return len(vs),cc
 def discover(n,clauses,limit=240):
  # Exact local blocks: only include clauses whose support is inside the chosen
@@ -63,16 +64,46 @@ def discover(n,clauses,limit=240):
    found[key]=dict(id=key,vars=k,original=[list(c) for c in local],
      reduced=[list(c) for c in new],old_literals=old_lit,new_literals=new_lit,
      saved_literals=old_lit-new_lit,verified_assignments=1<<k,
-     proof="exhaustive truth-table equivalence",applications_observed=1)
+     proof="exhaustive truth-table equivalence",applications_observed=0,observed_sources=[])
  return found
 def merge(existing,new):
- result=dict(existing)
+ # Idempotent across repeated CI runs: count distinct source CNF hashes.
+ result={k:dict(v) for k,v in existing.items()}
  for k,v in new.items():
   if k in result:
    assert result[k]["reduced"]==v["reduced"] and result[k]["original"]==v["original"]
-   result[k]["applications_observed"]+=v["applications_observed"]
-  else:result[k]=v
+   sources=set(result[k].get("observed_sources",[]))|set(v.get("observed_sources",[]))
+   result[k]["observed_sources"]=sorted(sources)
+   result[k]["applications_observed"]=len(sources)
+  else:
+   result[k]=dict(v)
+   sources=set(v.get("observed_sources",[]))
+   result[k]["observed_sources"]=sorted(sources)
+   result[k]["applications_observed"]=len(sources)
  return result
+def verify_record(v):
+ k=int(v["vars"])
+ old=tuple(tuple(c) for c in v["original"])
+ new=tuple(tuple(c) for c in v["reduced"])
+ assert 2<=k<=4
+ assert hashlib.sha256(json.dumps([k,old],sort_keys=True).encode()).hexdigest()==v["id"]
+ assert truth(old,k)==truth(new,k),(v["id"],"record truth mismatch")
+ assert literals(new)<literals(old),(v["id"],"non-reduction")
+ assert v["saved_literals"]==literals(old)-literals(new)
+ assert v["observed_sources"]==sorted(set(v["observed_sources"]))
+ assert v["applications_observed"]==len(v["observed_sources"])
+def selftest():
+ # Every possible truth table through three variables; sampled four-variable tables.
+ rng=random.Random(17011)
+ count=0
+ for k in (2,3,4):
+  samples=list(range(1<<(1<<k))) if k<4 else [0,(1<<(1<<k))-1]+[rng.randrange(1<<(1<<k)) for _ in range(384)]
+  for mask in samples:
+   t=tuple(bool((mask>>b)&1) for b in range(1<<k))
+   reduced=prime_cnf(t,k)
+   assert truth(reduced,k)==t,(k,mask,"prime implicates not equivalent")
+   count+=1
+ print("ATLAS8_SELFTEST_PASS "+json.dumps(dict(tables=count,kind="exhaustive k2/k3 + randomized k4")),flush=True)
 def read(path):
  if not path.exists():return {}
  return {v["id"]:v for line in path.read_text().splitlines() if line.strip() for v in [json.loads(line)]}
@@ -84,17 +115,26 @@ def run():
  gen=SourceFileLoader("atlas7","research/drnas_atlas7_hardmixed300.py").load_module()
  p=argparse.ArgumentParser();p.add_argument("--train",type=int,default=200);p.add_argument("--catalog",default=str(CATALOG));args=p.parse_args()
  assert 1<=args.train<=200
+ selftest()
  cases=[(c,i) for c in gen.CATEGORIES for i in range(20)]
  random.Random(20261111).shuffle(cases)
  base=read(pathlib.Path(args.catalog));seen={};hits=collections.Counter()
  for j,(c,i) in enumerate(cases[:args.train],1):
   n,clauses,seed=gen.build(c,i)
   got=discover(n,clauses)
-  for v in got.values():hits[c]+=1
+  source_sha=hashlib.sha256(gen.dimacs(n,clauses)).hexdigest()
+  for v in got.values():
+   v['observed_sources']=[source_sha]
+   v['applications_observed']=1
+   verify_record(v)
+   hits[c]+=1
   seen=merge(seen,got)
   if j%25==0:print("ATLAS8_DISCOVERY "+json.dumps(dict(done=j,patterns=len(seen),hits=dict(hits))),flush=True)
  merged=merge(base,seen)
+ for v in merged.values():verify_record(v)
  save(pathlib.Path(args.catalog),merged)
+ reloaded=read(pathlib.Path(args.catalog))
+ assert reloaded==merged,'persist/reload mismatch'
  summary=dict(training=args.train,previous=len(base),discovered=len(seen),persistent_total=len(merged),
    source="ATLAS7 training partition only",holdout_accessed=False,
    equivalence="exhaustive local 2-4 variable truth tables",
