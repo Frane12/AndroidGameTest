@@ -108,7 +108,8 @@ def catalog():
 def run_arm(case, arm, rep, models, tmpdir, allowed):
     assert arm in ("BASE","MI_XOR","LTM_GATE")
     start = time.perf_counter()
-    sig = case["signature"]
+    # Charge structural fingerprint computation to LTM_GATE per-case E2E.
+    sig = signature(case["clauses"]) if arm=="LTM_GATE" else case["signature"]
     memory_match = allowed is not None and sig in allowed["seen"]
     action = "BASE"
     if arm=="MI_XOR":
