@@ -75,9 +75,9 @@ def run(source, mode, rep, cap):
     for line in output.splitlines():
         if line.startswith("ATLAS13_TRIAL "):
             metrics = dict(a.split("=", 1) for a in line.split()[1:] if "=" in a)
-    keys = ("atlas40_mode","atlas40_reason_uses","atlas40_reuses","atlas40_scored",
-            "atlas40_recent","atlas40_changed_rank","atlas40_reduction_events",
-            "atlas40_compaction_remaps","atlas40_metadata_bytes", "atlas36_quota_pct", "atlas36_attempts", "atlas36_schedule_skip",
+    keys = ("atlas39_mode","atlas39_reason_uses","atlas39_reuses","atlas39_scored",
+            "atlas39_recent","atlas39_changed_rank","atlas39_reduction_events",
+            "atlas39_compaction_remaps","atlas39_metadata_bytes", "atlas36_quota_pct", "atlas36_attempts", "atlas36_schedule_skip",
             "atlas36_below48", "atlas36_examined", "atlas36_locked",
             "atlas36_lbd", "atlas36_short", "atlas36_eligible",
             "atlas36_base_quota", "atlas36_effective_quota",
@@ -100,7 +100,7 @@ def run(source, mode, rep, cap):
             assert telem["atlas23_stable_phase"] == 1, (
                 "ATLAS40 should retain C7 stable phase",mode)
     if rc in (10,20) and mode in ("A39_PROTECT","A40_TREE"):
-        assert telem["atlas40_mode"]==2, ("utility mode not activated",mode,telem)
+        assert telem["atlas39_mode"]==2, ("utility mode not activated",mode,telem)
         assert telem["atlas23_stable_phase"]==1, "stable phase must be active"
     return dict(sha256=source["sha256"], family=source["family"],
         index=source["index"], cohort=source["cohort"], arm=mode, rep=rep,
@@ -136,14 +136,14 @@ def summarize(rows, cap):
             effective_quota=sum(r["telemetry"]["atlas36_effective_quota"] for r in subset),
             pressure_high=sum(r["telemetry"]["atlas36_pressure_high"] for r in subset),
             pressure_low=sum(r["telemetry"]["atlas36_pressure_low"] for r in subset),
-            utility_reason_uses=sum(r["telemetry"]["atlas40_reason_uses"] for r in subset),
-            utility_reuses=sum(r["telemetry"]["atlas40_reuses"] for r in subset),
-            utility_scored=sum(r["telemetry"]["atlas40_scored"] for r in subset),
-            utility_recent=sum(r["telemetry"]["atlas40_recent"] for r in subset),
-            utility_changed_rank=sum(r["telemetry"]["atlas40_changed_rank"] for r in subset),
-            utility_reduction_events=sum(r["telemetry"]["atlas40_reduction_events"] for r in subset),
-            utility_compaction_remaps=sum(r["telemetry"]["atlas40_compaction_remaps"] for r in subset),
-            utility_peak_metadata_bytes=max((r["telemetry"]["atlas40_metadata_bytes"] for r in subset),default=0))
+            utility_reason_uses=sum(r["telemetry"]["atlas39_reason_uses"] for r in subset),
+            utility_reuses=sum(r["telemetry"]["atlas39_reuses"] for r in subset),
+            utility_scored=sum(r["telemetry"]["atlas39_scored"] for r in subset),
+            utility_recent=sum(r["telemetry"]["atlas39_recent"] for r in subset),
+            utility_changed_rank=sum(r["telemetry"]["atlas39_changed_rank"] for r in subset),
+            utility_reduction_events=sum(r["telemetry"]["atlas39_reduction_events"] for r in subset),
+            utility_compaction_remaps=sum(r["telemetry"]["atlas39_compaction_remaps"] for r in subset),
+            utility_peak_metadata_bytes=max((r["telemetry"]["atlas39_metadata_bytes"] for r in subset),default=0))
     return results
 
 def main():
