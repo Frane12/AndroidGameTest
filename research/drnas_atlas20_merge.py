@@ -18,7 +18,7 @@ def main():
     assert all(s["stage"]==a.stage for s in shards)
     manifest=[s for shard in shards for s in shard["source_manifest"]]
     rows=[r for shard in shards for r in shard["rows"]]
-    assert len(manifest)==75 and len({s["sha256"] for s in manifest})==100
+    assert len(manifest)==75 and len({s["sha256"] for s in manifest})==75
     assert len(rows)==1500 and len({(r["source_sha"],r["rep"],r["arm"]) for r in rows})==1500
     expected={(s["sha256"],rep,arm) for s in manifest for rep in range(2) for arm in ARMS}
     assert expected=={(r["source_sha"],r["rep"],r["arm"]) for r in rows}
@@ -27,7 +27,7 @@ def main():
     assert sum(s["novelty"]=="REPLAY_ATLAS18" for s in manifest)==0
     assert sum(s["novelty"]=="FRESH" for s in manifest)==75
     assert all(s["origin"]=="generated-fresh" for s in manifest)
-    assert len(set(s["sha256"] for s in manifest))==100
+    assert len(set(s["sha256"] for s in manifest))==75
     # Every SAT solver may report uncertified UNSAT but no solver can contradict
     # a verified SAT witness on the same SHA and seed.
     grouped=collections.defaultdict(dict)
