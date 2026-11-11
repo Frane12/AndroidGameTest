@@ -1,0 +1,43 @@
+name: DRNAS ATLAS4 persistent learning similar source CNFs
+run-name: ATLAS4 8 train then 8 unseen same-family Pett2021 3 repeats oneCPU E2E
+on:
+  push:
+    branches: [experiment/drnas-atlas4-persistent-learning-20261111]
+    paths:
+      - research/drnas_atlas4_learning_bench.py
+      - research/drnas_atlas3.cpp
+      - research/drnas_atlas1_generate.py
+      - .github/workflows/drnas-atlas4-learning.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  learning:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax, native compiler
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas4_learning_bench.py
+          mkdir -p mre_atlas4/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlas4/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlas4 research/drnas_atlas3.cpp -o mre_atlas4/bin/drnas_atlas3
+          mre_atlas4/bin/drnas_atlas3 --atlas-selftest
+      - name: Frozen source-sha similar-family training and blind holdout
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas4_learning_bench.py | tee mre_atlas4/benchmark.log
+          grep '^ATLAS4_FINAL ' mre_atlas4/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ATLAS4-TRAIN-HOLDOUT-LEARNING-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlas4/learned_model.json
+            mre_atlas4/audit.json
+            mre_atlas4/benchmark.log
