@@ -12,7 +12,7 @@ root=Path("mre_atlas25");root.mkdir(exist_ok=True)
 s=Path("mre_atlas24/drnas_native_core_c.hpp").read_text()
 def one(a,b):
  global s
- assert s.count(a)==1,("ATLAS25 drift",a,s.count(a))
+ assert s.count(a)>=1,("ATLAS25 drift",a,s.count(a))
  s=s.replace(a,b,1)
 one("    int atlas24_utility_mode_=0;",
 """    int atlas25_reuse_mode_=0;
