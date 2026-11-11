@@ -100,7 +100,7 @@ def run(source, mode, rep, cap):
             assert telem["atlas23_stable_phase"] == 1, (
                 "ATLAS40 should retain C7 stable phase",mode)
     if rc in (10,20) and mode in ("A39_PROTECT","A40_TREE"):
-        assert telem["atlas39_mode"]==2, ("utility mode not activated",mode,telem)
+        assert telem["atlas39_mode"]==(3 if mode=="A40_TREE" else 2), ("utility mode not activated",mode,telem)
         assert telem["atlas23_stable_phase"]==1, "stable phase must be active"
     return dict(sha256=source["sha256"], family=source["family"],
         index=source["index"], cohort=source["cohort"], arm=mode, rep=rep,
