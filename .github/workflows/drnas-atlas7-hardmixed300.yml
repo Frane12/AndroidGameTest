@@ -1,0 +1,45 @@
+name: DRNAS ATLAS7 300-category persistent learning curve
+run-name: ATLAS7 300 mixed SAT-UNSAT graph XOR pigeonhole CNFs 200 train 100 holdout 15s cap oneCPU
+on:
+  push:
+    branches: [experiment/drnas-atlas7-learning300-15s-20261111]
+    paths:
+      - research/drnas_atlas7_hardmixed300.py
+      - research/drnas_atlas3.cpp
+      - research/drnas_atlas1_generate.py
+      - .github/workflows/drnas-atlas7-learning300.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  learning300:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile native atlas solver and exhaustive Boolean table checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas7_hardmixed300.py
+          mkdir -p mre_atlas7/bin
+          python3 research/drnas_atlas1_generate.py --out mre_atlas7/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlas7 research/drnas_atlas3.cpp -o mre_atlas7/bin/drnas_atlas3
+          mre_atlas7/bin/drnas_atlas3 --atlas-selftest
+      - name: 300 SAT source-locked generated CNFs 15s cap two repeats train then fixed blind holdout
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas7_hardmixed300.py | tee mre_atlas7/benchmark.log
+          grep '^ATLAS7_CURVE ' mre_atlas7/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^ATLAS7_FINAL ' mre_atlas7/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ATLAS7-300-CNF-LEARNING-CURVE-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlas7/frozen_manifest.json
+            mre_atlas7/memory_*.json
+            mre_atlas7/audit.json
+            mre_atlas7/benchmark.log
