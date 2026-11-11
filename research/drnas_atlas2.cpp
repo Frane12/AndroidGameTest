@@ -226,7 +226,7 @@ int main(int argc,char**argv) {
   const drnas::CNF original=drnas::read_dimacs(argv[1]);
   arl1::Result p;
   drnas::CNF working=(arm=="ATLAS2")?arl1::first_look(original,p,cap,start):original;
-  else {p.decision="baseline";p.reason="baseline_no_scan";}
+  if(arm=="A"){p.decision="baseline";p.reason="baseline_no_scan";}
   drnas::NativeCDCL solver(working.vars);
   solver.add_cnf(working);
   const double elapsed=std::chrono::duration<double>(drnas::Clock::now()-start).count();
