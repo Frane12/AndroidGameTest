@@ -204,6 +204,34 @@ class NativeCDCL {
 #ifdef DRNAS_ATLAS_TRAIN_TRACE
     // Bounded, flush-on-event telemetry, diagnostic only. No heuristic changes.
     uint64_t atlas_trace_written_=0;
+    struct AtlasDecision {
+        uint64_t id=0, conflicts_at_start=0, learned_at_start=0;
+        int literal=0;
+    };
+    std::vector<AtlasDecision> atlas_active_;
+    uint64_t atlas_outcomes_written_=0;
+    size_t atlas_last_learned_width_=0;
+    const char* atlas_cancel_kind_="conflict_backjump";
+    // A recorded backjump is NOT a label of an incorrect decision.
+    void atlas_outcome(const AtlasDecision& d,const char* outcome,int depth,int target) {
+        if(atlas_outcomes_written_>=160 ||
+           (d.id>24 && d.id%64!=0))return;
+        ++atlas_outcomes_written_;
+        std::cout<<"DRNAS_CDCL_OUTCOME kind="<<outcome
+                 <<" decision_id="<<d.id<<" literal="<<d.literal
+                 <<" depth="<<depth<<" backjump_target="<<target
+                 <<" conflicts_since="<<(stats_.conflicts-d.conflicts_at_start)
+                 <<" learned_since="<<(stats_.learned_clauses-d.learned_at_start)
+                 <<" learned_clause_width="<<atlas_last_learned_width_
+                 <<" conflicts_total="<<stats_.conflicts
+                 <<" learned_total="<<stats_.learned_clauses
+                 <<"\n"<<std::flush;
+    }
+    void atlas_finish(const char* outcome) {
+        const int lev=int(atlas_active_.size());
+        for(size_t j=0;j<atlas_active_.size();++j)
+            atlas_outcome(atlas_active_[j],outcome,int(j+1),lev);
+    }
     void atlas_trace(const char* kind,int literal=0,int jump=-1) {
         const uint64_t count=stats_.decisions+stats_.conflicts;
         if(atlas_trace_written_>=256 || (count>32 && count%64!=0))return;
@@ -704,6 +732,15 @@ private:
     void cancel_to(int target_level) {
         if (level() <= target_level) return;
         require(target_level >= 0, "negative backtrack level");
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+        require(int(atlas_active_.size())==level(),
+                "ATLAS decision provenance stack out of sync");
+        for(int j=level()-1;j>=target_level;--j)
+            atlas_outcome(atlas_active_[size_t(j)],atlas_cancel_kind_,
+                          j+1,target_level);
+        atlas_active_.resize(size_t(target_level));
+        atlas_cancel_kind_="conflict_backjump";
+#endif
         const size_t target = decision_marks_[target_level];
         for (size_t i = trail_.size(); i > target; --i) {
             const int v = var(trail_[i - 1]);
@@ -955,7 +992,12 @@ public:
         if (root_contradiction_) return 20;
         heap_initialize();
         while (true) {
-            if (timed_out()) return 0;
+            if (timed_out()) {
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                atlas_finish("timeout_censored");
+#endif
+                return 0;
+            }
             if (clauses_.size() > 1500000 || stats_.learned_clauses > 500000) {
                 resource_limit_ = true;
                 return 0;
@@ -1014,6 +1056,10 @@ public:
                 p0=profile_clock();
 #endif
                 auto [learned, target] = analyze(conflicting);
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                atlas_last_learned_width_=learned.size();
+                atlas_cancel_kind_="conflict_backjump";
+#endif
 #ifdef DRNAS_PROGRESS1
                 progress_emit(level(),target,learned);
 #endif
@@ -1044,6 +1090,9 @@ public:
                 profile_update_s_+=profile_now()-p0;
 #endif
                 if (stats_.conflicts >= next_restart_ && level() > 0) {
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                    atlas_cancel_kind_="restart_abandoned";
+#endif
                     cancel_to(0);
                     ++stats_.restarts;
 #ifdef DRNAS_ATLASMAP2
@@ -1066,7 +1115,12 @@ public:
 #ifdef DRNAS_PROFILE
                 profile_select_s_+=profile_now()-p0;
 #endif
-                if (!v) return 10;
+                if (!v) {
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                    atlas_finish("sat_retained");
+#endif
+                    return 10;
+                }
                 ++stats_.decisions;
 #ifdef DRNAS_MICRO_TRACE
                 micro_log("kind=decision variable="+std::to_string(v)+
@@ -1075,6 +1129,11 @@ public:
                 decision_marks_.push_back(trail_.size());
                 require(enqueue(phases_[v] >= 0 ? v : -v, -1),
                         "selected decision variable was already assigned");
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                atlas_active_.push_back({stats_.decisions,stats_.conflicts,
+                                          stats_.learned_clauses,
+                                          phases_[v]>=0?v:-v});
+#endif
 #ifdef DRNAS_ATLAS_TRAIN_TRACE
                 atlas_trace("decision",phases_[v]>=0?v:-v);
 #endif
