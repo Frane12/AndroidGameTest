@@ -94,13 +94,14 @@ src=Path("mre_atlas26/native.cpp").read_text()
 needle='mode=="C26_REUSE6K_GF2"'
 assert src.count(needle)>=2,("mode dispatch drift",src.count(needle))
 # At each matching native CDCL selection, add the two experimental arms.
-src=src.replace('mode=="C26_REUSE3K"',
-                'mode=="C26_REUSE3K"||mode=="C27_GATE3K"||mode=="C27_GATE6K"')
 anchor='    if(mode=="C26_REUSE3K")solver.atlas26_enable(1);'
 assert src.count(anchor)==1
 src=src.replace(anchor,anchor+'''
     if(mode=="C27_GATE3K")solver.atlas26_enable(3);
     if(mode=="C27_GATE6K")solver.atlas26_enable(4);''',1)
+src=src.replace('mode=="C26_REUSE3K"',
+                'mode=="C26_REUSE3K"||mode=="C27_GATE3K"||mode=="C27_GATE6K"')
+
 # Standalone GF2 is evaluated as the distinct unchanged C26_GF2 control,
 # so neither conditional arm may gain a free UNSAT proof advantage.
 anchor='           <<" SAT_original_verified="<<int(status==10)'
