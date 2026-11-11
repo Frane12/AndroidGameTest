@@ -17,6 +17,10 @@ one("    int pick_branch_variable() {", r'''
     int atlas15_last_lbd_=4;
     double atlas15_short_lbd_=4.0,atlas15_long_lbd_=4.0;
     std::map<int,int> atlas15_lbd_;
+    std::map<int,uint64_t> atlas15_born_;
+    uint64_t atlas15_last_reduce_=0;
+    uint64_t atlas15_live_learned_=0;
+    uint64_t atlas15_peak_live_=0;
     int atlas15_compute_lbd(const std::vector<int>&cl) const {
         std::set<int> levels;
         for(int lit:cl)if(levels_[var(lit)]>0)levels.insert(levels_[var(lit)]);
@@ -58,12 +62,18 @@ one("    int pick_branch_variable() {", r'''
     void atlas15_onlearn(int cid){
         if(!atlas15_enabled_)return;
         atlas15_lbd_[cid]=atlas15_last_lbd_;
+        atlas15_born_[cid]=stats_.conflicts;
+        ++atlas15_live_learned_;
+        atlas15_peak_live_=std::max(atlas15_peak_live_,atlas15_live_learned_);
         atlas13_prior_explore_=std::max(.25,std::min(2.0,
           atlas13_prior_explore_*(atlas15_short_lbd_>atlas15_long_lbd_?1.0008:.9996)));
     }
     void atlas15_reduce_db(){
         if(!atlas15_enabled_)return;
+        if(stats_.conflicts<atlas15_last_reduce_+10000)return;
+        atlas15_last_reduce_=stats_.conflicts;
         ++atlas15_reductions_;
+        if(atlas15_live_learned_<20000)return;
         std::vector<uint8_t> locked(clauses_.size(),0);
         for(int v=1;v<=n_;++v)
             if(values_[v] && reasons_[v]>=0 && reasons_[v]<int(locked.size()))
@@ -71,31 +81,37 @@ one("    int pick_branch_variable() {", r'''
         std::vector<std::pair<int,int>> candidates;
         for(const auto&kv:atlas15_lbd_){
             int cid=kv.first;
-            if(locked[size_t(cid)]||kv.second<=3||
-               clauses_[size_t(cid)].lits.size()<=2)continue;
             const auto&c=clauses_[size_t(cid)].lits;
+            auto born=atlas15_born_.find(cid);
+            if(locked[size_t(cid)]||kv.second<=5||c.size()<=3||
+               born==atlas15_born_.end()||
+               stats_.conflicts-born->second<20000)continue;
             candidates.push_back({kv.second*100+int(std::min<size_t>(c.size(),99)),cid});
         }
-        if(candidates.size()<24)return;
+        if(candidates.size()<1000)return;
         std::sort(candidates.begin(),candidates.end(),std::greater<std::pair<int,int>>());
-        for(size_t i=0;i<candidates.size()/2;++i){
+        const size_t quota=std::min(candidates.size()/4,
+            std::min<size_t>(atlas15_live_learned_/10,atlas15_live_learned_-20000));
+        for(size_t i=0;i<quota;++i){
             int cid=candidates[i].second;
             auto&c=clauses_[size_t(cid)].lits;
             const int wa=watch_index(c[0]),wb=watch_index(c[1]);
 #ifdef DRNAS_ONE2_BLOCKER
             for(int w:{wa,wb}){
-                auto&a=watches_[size_t(w)];
-                a.erase(std::remove_if(a.begin(),a.end(),[cid](const WatchEntry&e){
-                    return e.cid==cid;}),a.end());
+                auto&watch=watches_[size_t(w)];
+                watch.erase(std::remove_if(watch.begin(),watch.end(),[cid](const WatchEntry&e){
+                    return e.cid==cid;}),watch.end());
             }
 #else
             for(int w:{wa,wb}){
-                auto&a=watches_[size_t(w)];
-                a.erase(std::remove(a.begin(),a.end(),cid),a.end());
+                auto&watch=watches_[size_t(w)];
+                watch.erase(std::remove(watch.begin(),watch.end(),cid),watch.end());
             }
 #endif
             std::vector<int>().swap(c);
             atlas15_lbd_.erase(cid);
+            atlas15_born_.erase(cid);
+            --atlas15_live_learned_;
             ++atlas15_deleted_;
         }
     }
@@ -109,6 +125,8 @@ public:
     uint64_t atlas15_deleted()const{return atlas15_deleted_;}
     uint64_t atlas15_minimized()const{return atlas15_minimized_;}
     uint64_t atlas15_reductions()const{return atlas15_reductions_;}
+    uint64_t atlas15_live_learned()const{return atlas15_live_learned_;}
+    uint64_t atlas15_peak_live()const{return atlas15_peak_live_;}
 private:
     int pick_branch_variable() {''')
 one("                atlas13_clause_feedback(learned);",
@@ -116,12 +134,12 @@ one("                atlas13_clause_feedback(learned);",
 one("                ++stats_.learned_clauses;\n                require(enqueue(assertion, cid),",
     "                ++stats_.learned_clauses;\n                atlas15_onlearn(cid);\n                require(enqueue(assertion, cid),")
 one("                if (stats_.conflicts >= next_restart_ && level() > 0) {",
-    "                if(atlas15_enabled_ && stats_.conflicts%500==0)atlas15_reduce_db();\n                if(level()>0 && (atlas15_enabled_?atlas15_restart_due():stats_.conflicts>=next_restart_)) {")
+    "                if(atlas15_enabled_ && stats_.conflicts%10000==0)atlas15_reduce_db();\n                if(level()>0 && (atlas15_enabled_?atlas15_restart_due():stats_.conflicts>=next_restart_)) {")
 one("                    ++stats_.restarts;\n                    restart_window_ =",
     "                    ++stats_.restarts;\n                    if(atlas15_enabled_)atlas15_last_restart_=stats_.conflicts;\n                    restart_window_ =")
 one("                if(atlas13_c_enabled_ && (atlas13_next()%1000)<100)phases_[v]=-phases_[v];",
     "                if(atlas13_c_enabled_ && (atlas13_next()%1000)<(atlas15_enabled_?(atlas15_short_lbd_>atlas15_long_lbd_?140:40):100))phases_[v]=-phases_[v];")
 one("            if (clauses_.size() > 1500000 || stats_.learned_clauses > 500000) {",
-    "            if (clauses_.size()-atlas15_deleted_ > 1500000 || stats_.learned_clauses-atlas15_deleted_ > 500000) {")
+    "            if (clauses_.size()-atlas15_deleted_ > 1500000 || atlas15_live_learned_ > 500000) {")
 p.write_text(s)
 print("ATLAS15_CDCL_PATCH_PASS",len(s))
