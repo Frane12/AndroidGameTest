@@ -56,7 +56,6 @@ one("""    uint64_t atlas17_low_cycles()const{return atlas17_low_cycles_;}""",
 (root/"drnas_native_core_c.hpp").write_text(s)
 src=Path("mre_atlas19/native.cpp").read_text()
 for old,new in [
- ('mode=="C6_KEEP_GAUSS"','mode=="C6_KEEP_GAUSS"||mode=="C23_RECENT"||mode=="C23_QUOTA"'),
  ('mode=="C6_KEEP"','mode=="C6_KEEP"||mode=="C23_RECENT"||mode=="C23_QUOTA"')]:
  assert src.count(old)>=2
  src=src.replace(old,new)
