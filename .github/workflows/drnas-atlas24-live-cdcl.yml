@@ -1,10 +1,10 @@
-name: DRNAS ATLAS26 pigeonhole theorem test
-run-name: ATLAS26 pigeonhole theorem vs Kissat A with SAT controls 216 trials
+name: DRNAS ATLAS27 PHP integrated native V23
+run-name: ATLAS27 PHP gate V23 fallback vs V23 and Kissat 216 paired
 on:
   push:
-    branches: [experiment/drnas-atlas26-pigeonhole-proof-20261111]
+    branches: [experiment/drnas-atlas27-php-integrated-20261111]
     paths:
-      - research/drnas_atlas26_php.py
+      - research/drnas_atlas27_php_integrated.py
       - .github/workflows/drnas-atlas24-live-cdcl.yml
   workflow_dispatch:
 permissions:
@@ -44,7 +44,7 @@ jobs:
           name: ATLAS25-BIN
           retention-days: 30
           path: mre_atlas25/bin
-  php:
+  integrated:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 55
@@ -58,52 +58,55 @@ jobs:
         with:
           name: ATLAS25-BIN
           path: mre_atlas25/bin
-      - name: Exact pigeonhole structural theorem and negative controls
+      - name: Paired E2E theorem gate vs V23 Kissat
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -qq -y cryptominisat
           python3 -m pip install --break-system-packages -q remotezip
           chmod +x mre_atlas25/bin/*
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas26_php.py --shard ${{ matrix.shard }} | tee php.log
-          grep '^ATLAS26_FINAL ' php.log >> "$GITHUB_STEP_SUMMARY"
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas27_php_integrated.py --shard ${{ matrix.shard }} | tee integrated.log
+          grep '^ATLAS27_FINAL ' integrated.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ATLAS26-PHP-${{ matrix.shard }}
+          name: ATLAS27-INTEGRATED-${{ matrix.shard }}
           retention-days: 60
           path: |
-            php.log
-            mre_atlas26/php/results_*.json
+            integrated.log
+            mre_atlas27/results_*.json
   audit:
-    needs: php
+    needs: integrated
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: ATLAS26-PHP-*
+          pattern: ATLAS27-INTEGRATED-*
           path: audits
-      - name: Aggregate SHA and validate controls
+      - name: Audit complete SHA matched paired trials
         run: |
           python3 - <<'PY'
           import json,pathlib
           rows=[];seen=set()
           for i in range(4):
-              p=pathlib.Path('audits')/f'ATLAS26-PHP-{i}'/'mre_atlas26'/'php'/f'results_{i}.json'
+              p=pathlib.Path('audits')/f'ATLAS27-INTEGRATED-{i}'/'mre_atlas27'/f'results_{i}.json'
               d=json.loads(p.read_text());assert d['shard']==i and len(d['rows'])==54
               ss={r['sha256'] for r in d['rows']}
               assert len(ss)==9 and not seen.intersection(ss)
               seen|=ss;rows+=d['rows']
           assert len(seen)==36 and len(rows)==216
-          arms=sorted({r['arm'] for r in rows});summary={}
-          for arm in arms:
+          summary={}
+          for arm in ('V23_C7_STABLE','V23_PHP','KISSAT'):
               rr=[r for r in rows if r['arm']==arm]
+              assert len(rr)==72
               summary[arm]=dict(par2_s=round(sum(r['PAR2_reported_s'] for r in rr),6),
-                  trials=len(rr),sat=sum(r['status']=='SAT_VERIFIED' for r in rr),
-                  theorem=sum(r['status']=='UNSAT_THEOREM' for r in rr),
-                  unknown=sum(r['status']=='UNKNOWN' for r in rr))
-          assert summary['PHP_THEOREM']['theorem']==24
+                  sat_verified=sum(r['status']=='SAT_VERIFIED' for r in rr),
+                  theorem_unsat=sum(r['status']=='UNSAT_THEOREM' for r in rr),
+                  unsat_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in rr),
+                  unknown=sum(r['status']=='UNKNOWN' for r in rr),
+                  detector_s=round(sum(r['detector_s'] for r in rr),6))
+          assert summary['V23_PHP']['theorem_unsat']==24
           assert all(r['status']!='UNSAT_THEOREM' for r in rows if r['family']!='pigeonhole_unsat')
-          print('ATLAS26_AUDIT '+json.dumps(dict(sha=36,trials=216,summary=summary),sort_keys=True))
-          print('ATLAS26_AUDIT_PASS theorem_not_LRAT=true negative_controls=true')
+          print('ATLAS27_AUDIT '+json.dumps(dict(sha=36,trials=216,summary=summary),sort_keys=True))
+          print('ATLAS27_AUDIT_PASS original_SHA=true theorem_not_LRAT=true')
           PY
