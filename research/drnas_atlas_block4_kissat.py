@@ -238,7 +238,8 @@ for source in sources:
                 path=OUT/f"block2_{source['id']}_{rep}_{arm}.cnf"
                 write_cnf(path,n,cls)
             if arm=="KISSAT":
-                p=subprocess.run(["mre_map2_real47/bin/kissat",str(original_path.resolve())],capture_output=True,text=True,timeout=CAP+2)
+                try:p=subprocess.run(["mre_map2_real47/bin/kissat",str(original_path.resolve())],capture_output=True,text=True,timeout=CAP+2)
+                except subprocess.TimeoutExpired:p=subprocess.CompletedProcess([],0,"","")
                 status={10:"SAT",20:"UNSAT"}.get(p.returncode,"UNKNOWN")
                 vals={}
                 for line in p.stdout.splitlines():
