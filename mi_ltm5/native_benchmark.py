@@ -8,7 +8,21 @@ import hashlib,json,pathlib,resource,subprocess,time,sys
 sys.path.insert(0,str(pathlib.Path.cwd()))
 sys.path.insert(0,"research")
 import drnas_atlas_wide500 as W
-import drnas_atlas21_official as Verify
+def original_model_ok(path,output):
+ """Verify a SAT witness against *original* DIMACS, not derived clauses."""
+ assignment={}
+ for line in output.splitlines():
+  if not (line.startswith("v ") or line.startswith("v\\t")):continue
+  for token in line[1:].split():
+   lit=int(token)
+   if not lit:continue
+   var=abs(lit)
+   if var in assignment and assignment[var]!=(lit>0):return False
+   assignment[var]=lit>0
+ if not assignment:return False
+ n,clauses=W.parse_original(path.read_bytes())
+ if any(var>n for var in assignment):return False
+ return all(any(assignment.get(abs(lit))==(lit>0) for lit in c) for c in clauses)
 from mi_ltm5.cdcl_bridge import write_derived
 ROOT=pathlib.Path("ltm5_native_results");ROOT.mkdir(exist_ok=True)
 CAP=8.0
@@ -32,7 +46,7 @@ def run(p,sha,arm,rep):
   rc,out=p0.returncode,p0.stdout
  except subprocess.TimeoutExpired:rc,out=124,""
  if rc not in (10,20,124):raise RuntimeError(("native failed",rc,out[-200:]))
- if rc==10 and not Verify.model_ok(p,out):raise RuntimeError("INVALID ORIGINAL SAT WITNESS")
+ if rc==10 and not original_model_ok(p,out):raise RuntimeError("INVALID ORIGINAL SAT WITNESS")
  status="SAT_VERIFIED" if rc==10 else "UNSAT_UNVERIFIED" if rc==20 else "UNKNOWN"
  metrics={}
  for line in out.splitlines():
