@@ -1,0 +1,94 @@
+name: DRNAS ATLASX compressed relations lazy extended exact joins
+run-name: ATLASX rank24 A ATLAS1 ATLASX Kissat CaDiCaL oneCPU 4x3
+on:
+  push:
+    branches: [experiment/drnas-atlasx-lazy-extended-20261111]
+    paths:
+      - research/drnas_atlasx.cpp
+      - research/drnas_atlasx_smoke.py
+      - research/drnas_atlasx_bench.py
+      - research/drnas_atlas1_generate.py
+      - research/drnas_atlas1.cpp
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-atlasx.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate compact precomputed atlas
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas1_generate.py research/drnas_atlasx_smoke.py research/drnas_atlasx_bench.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlasx/atlas1_table.hpp
+      - name: Build native standalone solver and verify exact transformations
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlasx/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -I mre_atlasx research/drnas_atlasx.cpp -o mre_atlasx/bin/drnas_atlasx
+          mre_atlasx/bin/drnas_atlasx --atlasx-selftest | tee mre_atlasx/selftest.log
+          python3 -u research/drnas_atlasx_smoke.py | tee mre_atlasx/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLASX-CORRECTNESS-CONTROLS
+          retention-days: 30
+          path: |
+            mre_atlasx/selftest.log
+            mre_atlasx/smoke.log
+            mre_atlasx/*.cnf
+  holdout:
+    needs: correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+          mkdir -p mre_atlasx/bin
+      - name: Build pinned Kissat reference
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_atlasx/kissat-src
+          git -C mre_atlasx/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_atlasx/kissat-src && ./configure && make -j2)
+          install -m 755 mre_atlasx/kissat-src/build/kissat mre_atlasx/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_atlasx/bin/cadical
+      - name: Build DRNAS with generated exact NPN atlas
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas1_generate.py --out mre_atlasx/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasx research/drnas_atlasx.cpp -o mre_atlasx/bin/drnas_atlasx
+      - name: Original-CNF rank24 prospective SHA and PAR2 benchmark
+        env:
+          ATLASX_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlasx_bench.py | tee mre_atlasx/benchmark.log
+          grep '^ATLASX_FINAL ' mre_atlasx/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLASX-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlasx/audit.json
+            mre_atlasx/source.json
+            mre_atlasx/*.cnf
+            mre_atlasx/*.log
+            mre_atlasx/route_decision.json
