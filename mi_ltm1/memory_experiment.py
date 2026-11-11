@@ -90,11 +90,16 @@ def catalog():
     seen = set()
     for family in FAMILIES:
         for i in range(PER_FAMILY):
-            clauses = make_case(family, i)
-            raw = dimacs(clauses, N)
-            sha = hashlib.sha256(raw.encode()).hexdigest()
-            if sha in seen:
-                raise AssertionError("Repeated original CNF SHA")
+            retry = 0
+            while True:
+                clauses = make_case(family, i + retry * 100000)
+                raw = dimacs(clauses, N)
+                sha = hashlib.sha256(raw.encode()).hexdigest()
+                if sha not in seen:
+                    break
+                retry += 1
+                if retry > 100:
+                    raise AssertionError("CNF generation collision budget")
             seen.add(sha)
             split = "train" if i < TRAIN_PER_FAMILY else "holdout"
             rows.append(dict(family=family,case=i,split=split,
