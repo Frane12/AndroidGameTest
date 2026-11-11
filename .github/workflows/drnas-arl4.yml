@@ -1,0 +1,74 @@
+name: DRNAS ARL4 four hard SATLIB originals 30s
+run-name: ARL4 four 30s original SHA ARL3 ARL2 ARL4 Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-arl4-restart-lbd-20261111]
+    paths:
+      - research/drnas_arl4_bench.py
+      - research/drnas_arl1b.cpp
+      - research/drnas_arl3.cpp
+      - research/drnas_native_core_r3c.cpp
+      - research/drnas_arl4.cpp
+
+      - research/drnas_native_core_r3c.cpp
+      - .github/workflows/drnas-arl4.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler and reference solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_arl4_bench.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+      - name: Build pinned Kissat
+        run: |
+          set -euo pipefail
+          mkdir -p mre_arl4/bin
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_arl4/kissat-src
+          git -C mre_arl4/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_arl4/kissat-src && ./configure && make -j2)
+          install -m 755 mre_arl4/kissat-src/build/kissat mre_arl4/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_arl4/bin/cadical
+      - name: Build original DRNAS and 500-event tracer
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 research/drnas_arl4.cpp -o mre_arl4/bin/drnas_arl4
+          g++ -std=c++17 -O2 research/drnas_arl3.cpp -o mre_arl4/bin/drnas_arl3
+          g++ -std=c++17 -O2 research/drnas_arl2.cpp -o mre_arl4/bin/drnas_arl2
+          
+          g++ -std=c++17 -O2 research/drnas_native_core_r3c.cpp -o mre_arl4/bin/selftest
+          mre_arl4/bin/selftest --selftest
+      - name: Run SHA-locked formula with native trace and references
+        env:
+          MICRO_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_arl4_bench.py | tee mre_arl4/benchmark.log
+          grep '^MICRO_FINAL ' mre_arl4/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-ARL4-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_arl4/audit.json
+            mre_arl4/source.json
+            mre_arl4/*.cnf
+            mre_arl4/*.log
+            mre_arl4/route_decision.json
+
+
+
