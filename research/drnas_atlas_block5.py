@@ -6,6 +6,7 @@ import hashlib,io,json,os,pathlib,resource,subprocess,tarfile,time,urllib.reques
 import sys
 sys.path.insert(0,"research")
 import drnas_atlasmap2_learn as L
+import drnas_atlas_selective_gf2 as GF2
 
 OUT=pathlib.Path("mre_map2_real47");OUT.mkdir(exist_ok=True)
 META=json.loads(pathlib.Path("research/drnas-sat-v7-4/frozen_real_medium.json").read_text())
@@ -240,7 +241,8 @@ def confidence(group,arm):
     return p,1.96*(p*(1-p)/(w+l+3))**0.5
 def run(source,phase):
     path,n,clauses,cohort=prepare(source)
-    key=key_for(source,n,clauses,cohort)
+    gf2=GF2.screen(clauses)
+    key=key_for(source,n,clauses,cohort)+"|gf2_"+gf2["gate"]
     group=memory["groups"].setdefault(key,{})
     choices=("BLOCK2","B_RANDOM")
     for rep in range(2):
@@ -265,6 +267,8 @@ def run(source,phase):
             elapsed=time.monotonic()-start
             row={"id":source["id"],"source_sha256":source["source_sha256"],"phase":phase,
                  "cohort":cohort,"key":key,"rep":rep,"arm":arm,"status":status,
+                 "gf2_gate":gf2["gate"],"gf2_rows":gf2["rows"],"gf2_rank":gf2["rank"],
+                 "gf2_contradiction_shadow":gf2["contradiction"],
                  "SAT_original_verified":verified,"E2E_s":round(elapsed,6),
                  "PAR2_s":round(elapsed if verified else 2*CAP,6),
                  "decisions":decisions,"conflicts":conflicts,**details}
