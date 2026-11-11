@@ -23,7 +23,7 @@ def prime_cnf(t,k):
     if all(t[b] or any(bool((b>>(abs(x)-1))&1)==(x>0) for x in clause) for b in range(1<<k)):
      # This is an implicate: every satisfying assignment satisfies it.
      result.append(clause)
-  if len(result)>80:break
+  # Exhaust all clause sizes: stopping early can lose required implicates.
  primes=[c for c in result if not any(set(d)<set(c) for d in result)]
  # greedy exact truth-preserving removal from all prime implicates
  current=list(primes)
@@ -56,7 +56,7 @@ def discover(n,clauses,limit=240):
    t=truth(local,k)
    if not any(t) or all(t):continue
    new=prime_cnf(t,k)
-   if truth(new,k)!=t:raise AssertionError("truth mismatch")
+   if truth(new,k)!=t:raise AssertionError("truth mismatch: reject and stop")
    old_lit=literals(local);new_lit=literals(new)
    if new_lit>=old_lit:continue
    key=hashlib.sha256(json.dumps([k,local],sort_keys=True).encode()).hexdigest()
