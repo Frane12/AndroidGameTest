@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"mi_ltm1"))
+sys.path.insert(0,str(ROOT/"mi_ltm3"))
 from native_paired import BIN,parse_model,implied_cnf
 from probe import probe_cnf
 from design import dimacs,satisfies,opportunity_key
