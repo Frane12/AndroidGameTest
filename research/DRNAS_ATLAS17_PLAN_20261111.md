@@ -14,11 +14,14 @@ This experiment changes **only an experimental branch**, not main or ATLAS16 con
 ## Hypothesis and frozen intervention
 BCP watches can become expensive when weak learned clauses accumulate.
 C7_ADAPT starts with *exactly* C6_KEEP's CDCL correctness and proof rules.
-At 1,500-conflict intervals, measure the **delta watch visits per delta propagated
-literal**. This is a lightweight workload proxy, not CPU timing.
+At actual 1,500-conflict intervals in C7, measure the **delta watch visits
+per delta propagated literal**. This is a lightweight workload proxy, not CPU timing.
 - High pressure: ratio >8:1. Delete top **1/4** eligible weak learned clauses.
 - Low pressure: evaluate only at 3,000-conflict multiples and delete **1/16**.
-- Control C6 still deletes **1/8** at each 1,500-conflict interval.
+- Control C6 still deletes **1/8**, but its legacy outer 10,000-conflict
+  trigger and inner 1,500-conflict guard coincide only every **30,000**
+  conflicts. C7 explicitly repairs the sampling schedule **only for C7**;
+  C5/C6 remain byte-identical behavioral controls.
 - Preserve all locked reasons, LBD <7, and short clauses. Retain safe remapping
   of reasons, watches and learned LBD when compacting.
 - This is a selection and memory-management experiment only, never an
