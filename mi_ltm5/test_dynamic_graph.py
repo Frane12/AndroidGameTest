@@ -2,9 +2,7 @@ import unittest
 from dynamic_graph import GraphTrajectory,combine,restrict,audit
 
 
-def xor(v,rhs):
-    return [tuple(-x if mask&(1<<i) else x for i,x in enumerate(v))
-            for mask in range(1<<len(v)) if mask.bit_count()%2 != rhs]
+from mi_ltm5.xor_fixtures import xor_clauses as xor
 
 
 class DynamicGraphTests(unittest.TestCase):

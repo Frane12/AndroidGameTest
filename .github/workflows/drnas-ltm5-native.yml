@@ -1,7 +1,7 @@
 name: DRNAS LTM5 certified graph into native CDCL
 on:
   push:
-    branches: [experiment/drnas-ltm5-native-cdcl-20261111]
+    branches: ['experiment/drnas-ltm5-*']
     paths:
       - mi_ltm5/**
       - mi_ltm4/graph_shadow.py
@@ -9,10 +9,14 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Keep currently running benchmark; replace only an older *pending* duplicate.
+concurrency:
+  group: drnas-ltm5-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  smoke:
+  native:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 85
     steps:
       - uses: actions/checkout@v4
       - name: Proof and rollback selftests then native compile
@@ -34,9 +38,7 @@ jobs:
           python3 - <<'PY'
           import pathlib,subprocess,tempfile
           from mi_ltm5.cdcl_bridge import write_derived
-          def xor(v,rhs):
-              return [tuple(-x if mask>>i&1 else x for i,x in enumerate(v))
-                      for mask in range(1<<len(v)) if mask.bit_count()%2!=rhs]
+          from mi_ltm5.xor_fixtures import xor_clauses as xor
           source=xor((1,2,3),0)+xor((2,3,4),1)
           original=("p cnf 4 %d\n"%len(source)+"".join(" ".join(map(str,c))+" 0\n" for c in source))
           with tempfile.TemporaryDirectory() as tmp:
@@ -54,27 +56,11 @@ jobs:
                   assert result.returncode==10,(name,result.returncode,result.stderr[-500:],result.stdout[-500:])
           PY
           echo 'LTM5_NATIVE_SMOKE_PASS' >> "$GITHUB_STEP_SUMMARY"
-  benchmark:
-    needs: smoke
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build native and compare 48 one-CPU E2E trials
+      # Same runner and compiled binary as the successful smoke: no duplicate
+      # checkout, code generation or native C++ compilation.
+      - name: Benchmark 48 original-CNF paired one-CPU E2E trials
         run: |
           set -euo pipefail
-          python3 research/drnas_atlas13_generator.py
-          python3 research/drnas_atlas15_warm_patch.py
-          python3 research/drnas_atlas15_cdcl_patch.py
-          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
-          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
-          python3 research/drnas_atlas16_build.py
-          python3 research/drnas_atlas17_build.py
-          python3 research/drnas_atlas19_build.py
-          python3 research/drnas_atlas23_build.py
-          python3 research/drnas_atlas36_build.py
-          mkdir -p mre_atlas23/bin
-          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm5
           taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u mi_ltm5/native_benchmark.py | tee bench.log
           grep '^LTM5_NATIVE_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

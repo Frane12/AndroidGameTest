@@ -48,9 +48,14 @@ def parse_original(data):
     if pending or len(clauses)!=declared:raise ValueError("CNF parse mismatch")
     return n,clauses
 
-def source_corpus(limit=25):
+def source_corpus(limit=25, families=None):
+    # Restrict expensive pinned SATLIB downloads when a benchmark needs a subset.
+    # Default stays identical for existing WIDE500 callers.
+    selected=SOURCES if families is None else tuple(families)
+    if not selected or len(set(selected))!=len(selected) or any(f not in SOURCES for f in selected):
+        raise ValueError('unknown or duplicate SATLIB family')
     result={}
-    for family in SOURCES:
+    for family in selected:
         entry=next(a for a in META["archives"] if a["set"]==family)
         with urllib.request.urlopen(entry["url"],timeout=90) as r:archive=r.read()
         if hashlib.sha256(archive).hexdigest()!=entry["archive_sha256"]:

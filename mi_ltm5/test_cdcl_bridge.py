@@ -3,9 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from itertools import product
 from mi_ltm5.cdcl_bridge import derived_clauses, write_derived
-def xor(v,rhs):
- return [tuple(-x if mask>>i&1 else x for i,x in enumerate(v))
-         for mask in range(1<<len(v)) if mask.bit_count()%2!=rhs]
+from mi_ltm5.xor_fixtures import xor_clauses as xor
 class BridgeTests(unittest.TestCase):
  def test_provenance_and_derived_binary(self):
   a,st=derived_clauses(xor((1,2,3),0)+xor((2,3,4),1))
@@ -17,6 +15,13 @@ class BridgeTests(unittest.TestCase):
  def test_no_fake_global_unit(self):
   a,st=derived_clauses(xor((1,2,3),0))
   self.assertEqual(a,[])
+ def test_no_duplicate_derived_clauses(self):
+  left=xor((1,2,3),0)
+  right=xor((2,3,4),1)
+  derived,stats=derived_clauses(left+left+right+right)
+  self.assertEqual(len(derived),len(set(derived)))
+  self.assertEqual(set(derived),{(-4,-1),(1,4)})
+  self.assertEqual(stats["added"],2)
 
  def test_derived_cnf_equisatisfiable_and_source_unchanged(self):
   source=xor((1,2,3),0)+xor((2,3,4),1)
