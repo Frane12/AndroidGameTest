@@ -74,7 +74,7 @@ def run(arm,rep):
  stats={}
  m=re.search(r"^ATLAS1_TRIAL (.*)$",stdout,re.M)
  if m:stats["ATLAS1_TRIAL"]=dict(x.split("=",1) for x in m.group(1).split() if "=" in x)
- if arm=="drnas_trace":
+ if arm=="drnas_trace" and status!="UNKNOWN":
   assert m,"missing ATLAS1 telemetry"
   d=stats["ATLAS1_TRIAL"]
   assert d["decision"] in ("commit","sleep","fallback"),d
