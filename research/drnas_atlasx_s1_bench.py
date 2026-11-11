@@ -95,7 +95,7 @@ def gen_redundant(seed):
   # clauses are then redundant but do not duplicate any clause.
   clauses += [[a,b,c],[a,b,-c],[a,b,d,e],[a,b,-d,-e]]
  for _ in range(22):
-  a,b,c=(5*rng.sample(range(g),3)[i]+1 for i in range(3))
+  a,b,c=(5*group+1 for group in rng.sample(range(g),3))
   clauses+=xor3(a,b,c,int(truth[a])^int(truth[b])^int(truth[c]))
  return n,clauses,truth
 def gen_gates(seed):
