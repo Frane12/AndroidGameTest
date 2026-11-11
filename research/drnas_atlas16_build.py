@@ -56,6 +56,7 @@ one("    void atlas15_reduce_db(){",
             atlas16_reclaimed_capacity_bytes_+=(old_capacity-clauses_.capacity())*sizeof(drnas::Clause);
     }
     void atlas16_reduce_db(){
+        if(stats_.conflicts%1500!=0)return;
         ++atlas15_reductions_;
         std::vector<uint8_t> locked(clauses_.size(),0);
         for(int v=1;v<=n_;++v)
@@ -119,8 +120,6 @@ one("    void atlas15_enable_cdcl(){atlas15_enabled_=true;}",
         for(const auto&w:watches_)bytes+=w.capacity()*sizeof(w.front());
         return bytes;
     }""")
-one("if(atlas15_enabled_ && stats_.conflicts%500==0)atlas15_reduce_db();",
-    "if(atlas15_enabled_ && stats_.conflicts%(atlas16_keep_?1500:500)==0)atlas15_reduce_db();")
 one("clauses_.size()-atlas15_deleted_ > 1500000",
     "(atlas16_keep_?clauses_.size():clauses_.size()-atlas15_deleted_) > 1500000")
 # Include type_traits for the container element type when rebuilding watch lists.
