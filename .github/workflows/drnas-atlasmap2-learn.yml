@@ -35,6 +35,25 @@ jobs:
           mkdir -p mre_atlasmap2_learning
           taskset -c "$(taskset -pc $ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlasmap2_learning_bench.py | tee mre_atlasmap2_learning/benchmark.log
           grep '^ATLASMAP2_LEARN_FINAL ' mre_atlasmap2_learning/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore rolling MAP2 training journal from prior successful run
+        id: rolling-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: mre_atlasmap2_learning/rolling_memory.json
+          key: map2-rolling-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            map2-rolling-${{ github.ref_name }}-
+      - name: Train one new source SHA and record explanation across workflow runs
+        run: |
+          set -euo pipefail
+          python3 -c 'import sys; sys.path.insert(0,"research"); import drnas_atlasmap2_learning_bench as b; p,sha=b.formula(1000+int(sys.argv[1])); print("ATLASMAP2_ROLLING_SOURCE",sha,p)' "${{ github.run_number }}"
+          python3 -u research/drnas_atlasmap2_learn.py "mre_atlasmap2_learning/mixed_$((1000+${{ github.run_number }})).cnf" --binary mre_atlasmap2/bin/drnas_atlasmap2 --memory mre_atlasmap2_learning/rolling_memory.json --phase train --cap 2 --report mre_atlasmap2_learning/rolling_report.json | tee mre_atlasmap2_learning/rolling.log
+          python3 -c 'import json; p="mre_atlasmap2_learning/rolling_memory.json"; d=json.load(open(p)); print("ATLASMAP2_ROLLING_SAMPLES",len(d["samples"]))' >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist rolling MAP2 training journal for next workflow run
+        uses: actions/cache/save@v4
+        with:
+          path: mre_atlasmap2_learning/rolling_memory.json
+          key: map2-rolling-${{ github.ref_name }}-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
