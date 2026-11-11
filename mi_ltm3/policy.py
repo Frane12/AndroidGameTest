@@ -51,8 +51,8 @@ class TrainingMemory:
     def insert_pair(self, *, sha, rep, generation, family, key, base, force):
         if self.readonly:
             raise PermissionError("Holdout has read-only memory")
-        if not (base["verified"] and force["verified"]):
-            raise ValueError("Unverified result cannot be used for training")
+        if not (base.get("trial_audited") and force.get("trial_audited")):
+            raise ValueError("Unaudited trial cannot enter training")
         with self.db:
             self.db.execute(
                 "INSERT OR REPLACE INTO pairs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
