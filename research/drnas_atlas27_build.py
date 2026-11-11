@@ -99,8 +99,8 @@ assert src.count(anchor)==1
 src=src.replace(anchor,anchor+'''
     if(mode=="C27_GATE3K")solver.atlas26_enable(3);
     if(mode=="C27_GATE6K")solver.atlas26_enable(4);''',1)
-src=src.replace('mode=="C26_REUSE3K"',
-                'mode=="C26_REUSE3K"||mode=="C27_GATE3K"||mode=="C27_GATE6K"')
+src=src.replace('||mode=="C26_REUSE3K"',
+                '||mode=="C26_REUSE3K"||mode=="C27_GATE3K"||mode=="C27_GATE6K"')
 
 # Standalone GF2 is evaluated as the distinct unchanged C26_GF2 control,
 # so neither conditional arm may gain a free UNSAT proof advantage.
