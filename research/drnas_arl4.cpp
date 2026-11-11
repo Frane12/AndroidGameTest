@@ -1,5 +1,5 @@
 #define DRNAS_ARL4_RESTART
-#define DRNAS_ARL4_DIAG
+#define DRNAS_ARL3_DIAG
 // ARL1-B opportunity indexed first look, one bounded probe, immediate decision.
 // Native original DRNAS CDCL; isolated experiment, no third-party backend.
 // Only exact binary resolvents from two ORIGINAL ternary clauses are appended.
