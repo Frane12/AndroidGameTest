@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
+sys.path.insert(0,str(ROOT/"mi_ltm1"))  # legacy native_paired absolute imports
 from mi_ltm3.design import FAMILIES,make_case,satisfies,source_parity_unsat
 from mi_ltm1.native_paired import parse_model
 from mi_ltm4.live_cdcl import parse_native_log,aggregate_by_formula
