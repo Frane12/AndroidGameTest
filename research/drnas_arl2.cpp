@@ -146,7 +146,7 @@ static CNF adaptive(const CNF& f,Result& r,double cap,Clock::time_point start){
    const int a=c[0],b=c[1];
    for(const auto [x,y]:{std::pair<int,int>{a,b},{b,a}}){
     ++r.pairs;
-    if(seen[y].count(-x)){
+    if(seen[-x].count(y)){
      ++r.gate_hits;
      if(emitted.insert(y).second){
       out.clauses.push_back({y});++r.accepted;
