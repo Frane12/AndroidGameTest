@@ -37,7 +37,7 @@ Kissat (verified-PAR2) vs BLOCKER: **2.3659× better**; 9 Kissat UNSAT claims re
 - `flat200-479`: all 15/15 SAT verified; A 0.486 s, BLOCKER **0.345 s**, C6 0.484 s, combo 0.372 s.
 
 ### Memory and search
-- Across all attempts, native peak estimated clause storage: A **13.79 MiB decimal**, BLOCKER **20.56 MB**, C6_KEEP **12.03 MB**, combo **18.37 MB**; maxima come from different source attempts and are not paired memory differences.
+- Across all attempts, native peak estimated clause storage: A **13.79 MB**, BLOCKER **20.56 MB**, C6_KEEP **12.03 MB**, combo **18.37 MB**; maxima come from different source attempts and are not paired memory differences.
 - `ru_maxrss` returned approximately 40,360 KiB maximum on all native variants and cannot discriminate memory substantially at this sampling resolution.
 - C6_KEEP deleted **125,755** learned clauses with **29** compactions. Combo deleted **278,485** with **55** compactions, despite *worse* performance. Native BLOCKER A mode does not enable C6 deletion.
 - Conflicts: A 1,782,453; BLOCKER 2,479,651; C6 1,678,356; combo 2,367,008. More conflicts does not imply faster solving; outcome counts and E2E/verified PAR2 are primary.
