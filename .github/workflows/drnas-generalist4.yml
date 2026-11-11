@@ -1,0 +1,107 @@
+name: DRNAS GENERALIST4 prospective learned native policy
+run-name: GENERALIST4 frozen train then unseen SATLIB 100 trials 60s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-generalist1-category-router-20261111]
+    paths:
+      - .github/workflows/drnas-generalist4.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43048240072
+          github-token: ${{ github.token }}
+          pattern: GENERALIST2-*
+          path: audits
+      - name: Train frozen policy from audited original SHA CNFs
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 -u generalist/generalist4_train.py | tee train.log
+          grep '^GENERALIST4_TRAIN ' train.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GENERALIST4-POLICY
+          retention-days: 60
+          path: |
+            generalist4_policy.json
+            train.log
+  benchmark:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: GENERALIST4-POLICY
+      - name: Build native A36 A39 A40 and pinned Kissat
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_atlas37_build.py
+          python3 research/drnas_atlas39_build.py
+          python3 research/drnas_atlas40_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_atlas40
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/generalist4-kissat
+          git -C /tmp/generalist4-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/generalist4-kissat && ./configure && make -j2)
+          cp /tmp/generalist4-kissat/build/kissat mre_atlas23/bin/kissat
+      - name: Run unseen original SATLIB E2E matched and counterfactual tests
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u generalist/generalist4_benchmark.py --shard ${{ matrix.shard }} | tee bench.log
+          grep '^GENERALIST4_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GENERALIST4-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            bench.log
+            mre_generalist4/results_*.json
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: GENERALIST4-*
+          path: audits
+      - name: Independent SHA and per-family PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -u generalist/generalist4_audit.py | tee audit.log
+          grep '^GENERALIST4_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GENERALIST4-AUDIT
+          retention-days: 60
+          path: |
+            audit.log
+            generalist4_audit.json
