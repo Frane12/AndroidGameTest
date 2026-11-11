@@ -1,0 +1,76 @@
+name: DRNAS GENERALIST2 hard cohort benchmark
+run-name: GENERALIST2 ATLAS40 hard originals 208 matched 1CPU
+on:
+  push:
+    branches: [experiment/drnas-generalist1-category-router-20261111]
+    paths: [.github/workflows/drnas-generalist2-hard.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [regression, extension, hard]
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native DRNAS and frozen Kissat, run matched hard cohort
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_atlas37_build.py
+          python3 research/drnas_atlas39_build.py
+          python3 research/drnas_atlas40_build.py
+          python3 -m py_compile research/drnas_atlas40_benchmark.py research/drnas_atlas40_audit.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_atlas40
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/generalist2-kissat
+          git -C /tmp/generalist2-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/generalist2-kissat && ./configure && make -j2)
+          cp /tmp/generalist2-kissat/build/kissat mre_atlas23/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas40_benchmark.py --cohort ${{ matrix.cohort }} --shard ${{ matrix.shard }} | tee bench.log
+          grep '^ATLAS40_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GENERALIST2-${{ matrix.cohort }}-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            bench.log
+            mre_atlas40/*/result_*.json
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: GENERALIST2-*
+          path: audits
+      - name: SHA matched E2E and per cohort PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_atlas40_audit.py | tee audit.log
+          grep '^ATLAS40_COHORT_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^ATLAS40_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GENERALIST2-AUDIT
+          retention-days: 30
+          path: audit.log
