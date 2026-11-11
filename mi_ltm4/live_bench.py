@@ -166,8 +166,11 @@ def run(*,rep=0,smoke=True,generation=1):
                 train_source_count=len(train_shas),
                 holdout_source_count=len(holdout_shas),
                 native_trace_motif_summary=support,
-                same_verified_statuses=sum(i["base_status"]==i["traced_status"]
-                                            for i in items),
+                same_native_statuses=sum(i["base_status"]==i["traced_status"]
+                                         for i in items),
+                both_verified_matching_statuses=sum(
+                    i["base_status"]==i["traced_status"] and
+                    i["base_status"]!="UNKNOWN" for i in items),
                 formulas=len(items),by_family=by_family,
                 note="Trace is passive. Does not change CDCL and never learns from holdout.",
                 performance_warning=("Trace build adds stderr overhead. BASE vs TRACE "
@@ -187,7 +190,8 @@ def run(*,rep=0,smoke=True,generation=1):
         "native_motifs":support["unique_native_motifs"],
         "trace_episodes":sum(len(i["trace"]["episodes"]) for i in items),
         "reason_graphs":sum(i["trace_reason_graph_episodes"] for i in items),
-        "matching_native_status":report["same_verified_statuses"],
+        "matching_native_status":report["same_native_statuses"],
+        "both_verified_matching_statuses":report["both_verified_matching_statuses"],
         "historical_training_sources":report["historical_training_sources"],
         "historical_native_motifs":report["historical_native_motifs"],
         "holdout_formulas_recognized":holdout_recognized,
