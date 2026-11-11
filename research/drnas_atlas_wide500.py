@@ -48,7 +48,7 @@ def parse_original(data):
     if pending or len(clauses)!=declared:raise ValueError("CNF parse mismatch")
     return n,clauses
 
-def source_corpus():
+def source_corpus(limit=25):
     result={}
     for family in SOURCES:
         entry=next(a for a in META["archives"] if a["set"]==family)
@@ -59,9 +59,9 @@ def source_corpus():
             members=sorted((m for m in tar.getmembers()
                if m.isfile() and m.name.lower().endswith(".cnf")),
                key=lambda m:hashlib.sha256((family+"|"+m.name).encode()).hexdigest())
-            if len(members)<25:raise RuntimeError("SATLIB category too small: "+family)
+            if len(members)<limit:raise RuntimeError("SATLIB category too small: "+family)
             selection=[]
-            for entry_ in members[:25]:
+            for entry_ in members[:limit]:
                 original=tar.extractfile(entry_).read()
                 n,clauses=parse_original(original)
                 data=canonical(n,clauses)
@@ -198,6 +198,8 @@ def episode(binary,source,arm,journal):
     select=selectors.DefaultSelector()
     select.register(proc.stdout,selectors.EVENT_READ)
     buffer=b""; finished=False; output_lines=[];events=0
+    outcomes={"conflict_backjump":0,"restart_abandoned":0,
+              "sat_retained":0,"timeout_censored":0}
     deadline=start+CAP+1.2
     while time.monotonic()<deadline:
         waiting=select.select(timeout=0.12)
@@ -209,9 +211,13 @@ def episode(binary,source,arm,journal):
             while b"\n" in buffer:
                 line,buffer=buffer.split(b"\n",1)
                 line=line.decode("ascii","replace")
-                if line.startswith("DRNAS_CDCL_EVENT "):
+                if line.startswith("DRNAS_CDCL_EVENT ") or line.startswith("DRNAS_CDCL_OUTCOME "):
                     parts=dict(x.split("=",1) for x in line.split()[1:] if "=" in x)
+                    kind="outcome" if line.startswith("DRNAS_CDCL_OUTCOME ") else "event"
+                    if kind=="outcome" and parts.get("kind") in outcomes:
+                        outcomes[parts["kind"]]+=1
                     journal.write(json.dumps(dict(phase=source["phase"],sha256=source["sha256"],
+                        record_type=kind,
                         category=source["category"],arm=arm,elapsed_s=round(time.monotonic()-start,6),
                         telemetry=parts),sort_keys=True)+"\n")
                     journal.flush()
@@ -241,6 +247,7 @@ def episode(binary,source,arm,journal):
     return {"arm":arm,"status":status,"SAT_original_verified":bool(valid),
         "UNSAT_independent_LRAT":False,"E2E_s":seconds,
         "PAR2_s":seconds if valid else 2*CAP,"CDCL_events_written":events,
+        "CDCL_feedback":outcomes,
         "decisions":int(stats.get("decisions","0")),
         "conflicts":int(stats.get("conflicts","0")),
         "learned":int(stats.get("learned","0")),
@@ -281,7 +288,9 @@ def summarize(rows):
             s=[r for r in rows if r["phase"]==phase and r["arm"]==arm]
             answer[phase+"_"+arm]={"trials":len(s),"SAT_original_verified":sum(r["SAT_original_verified"] for r in s),
                 "PAR2_s":round(sum(r["PAR2_s"] for r in s),6),
-                "CDCL_events_written":sum(r["CDCL_events_written"] for r in s)}
+                "CDCL_events_written":sum(r["CDCL_events_written"] for r in s),
+                "CDCL_backjump_samples":sum(r["CDCL_feedback"]["conflict_backjump"] for r in s),
+                "CDCL_restart_samples":sum(r["CDCL_feedback"]["restart_abandoned"] for r in s)}
     return answer
 
 def run_shard():
