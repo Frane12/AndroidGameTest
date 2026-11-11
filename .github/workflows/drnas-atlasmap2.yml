@@ -1,0 +1,95 @@
+name: DRNAS ATLAS-MAP2 live source-certified CDCL relations
+run-name: ATLASMAP2 R3C native trail live shadow combo SATLIB4 x2 6s oneCPU
+on:
+  push:
+    branches: [experiment/drnas-atlasmap2-live-relations-20261111]
+    paths:
+      - research/drnas_atlasmap2.cpp
+      - research/drnas_atlasmap2_smoke.py
+      - research/drnas_atlasmap2_bench.py
+      - research/drnas_atlasmap1.cpp
+      - research/drnas_native_core_r3c.cpp
+      - research/drnas_atlasx.cpp
+      - research/drnas_atlas1.cpp
+      - research/drnas_atlas1_generate.py
+      - .github/workflows/drnas-atlasmap2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate source-frozen small Boolean atlas
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlasmap2/bin
+          python3 -m py_compile research/drnas_atlasmap2_smoke.py research/drnas_atlasmap2_bench.py research/drnas_atlas1_generate.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+      - name: Compile native C++ and prove small correctness
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest | tee mre_atlasmap2/selftest.log
+          python3 -u research/drnas_atlasmap2_smoke.py | tee mre_atlasmap2/smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLASMAP2-CORRECTNESS-ORIGINAL-CNF
+          retention-days: 30
+          path: |
+            mre_atlasmap2/selftest.log
+            mre_atlasmap2/smoke.log
+            mre_atlasmap2/*.cnf
+  benchmark:
+    needs: correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install C++ compiler and reference CaDiCaL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cadical
+          mkdir -p mre_atlasmap2/bin
+      - name: Compile pinned Kissat comparator
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arminbiere/kissat.git mre_atlasmap2/kissat-src
+          git -C mre_atlasmap2/kissat-src checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd mre_atlasmap2/kissat-src && ./configure && make -j2)
+          install -m 755 mre_atlasmap2/kissat-src/build/kissat mre_atlasmap2/bin/kissat
+          install -m 755 "$(command -v cadical)" mre_atlasmap2/bin/cadical
+      - name: Build own native R3C plus ATLAS-MAP2
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+      - name: Source-locked original and separately labeled synthetic-mixed E2E
+        env:
+          ATLASMAP2_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlasmap2_bench.py | tee mre_atlasmap2/benchmark.log
+          grep '^ATLASMAP2_FINAL ' mre_atlasmap2/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLASMAP2-SHARD-${{ matrix.shard }}-ORIGINAL-AND-MIXED-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlasmap2/audit.json
+            mre_atlasmap2/source.json
+            mre_atlasmap2/*.cnf
+            mre_atlasmap2/*.log
