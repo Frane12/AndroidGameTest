@@ -184,13 +184,17 @@ static CNF preprocess(const CNF& original,Metrics& met,double cap) {
       // Removing an implied module is exact and needs no decompression.
       if(!(am&~bm)) {
         ++met.l2_implications;
-        Candidate c;c.ids=b.ids;c.vars=common;c.kind="L2_MASK_SUBSUMPTION";
-        consider(original,best,std::move(c),b.literals);
+        Candidate c;c.ids=a.ids;c.ids.insert(c.ids.end(),b.ids.begin(),b.ids.end());
+        c.vars=common;c.kind="L2_MASK_SUBSUMPTION";
+        for(int id:a.ids)c.replacement.push_back(original.clauses[id]);
+        consider(original,best,std::move(c),a.literals+b.literals);
       }
       if(!(bm&~am)) {
         ++met.l2_implications;
-        Candidate c;c.ids=a.ids;c.vars=common;c.kind="L2_MASK_SUBSUMPTION";
-        consider(original,best,std::move(c),a.literals);
+        Candidate c;c.ids=a.ids;c.ids.insert(c.ids.end(),b.ids.begin(),b.ids.end());
+        c.vars=common;c.kind="L2_MASK_SUBSUMPTION";
+        for(int id:b.ids)c.replacement.push_back(original.clauses[id]);
+        consider(original,best,std::move(c),a.literals+b.literals);
       }
       if(!(am&~bm)||!(bm&~am))continue;
       // L2 extended recipe, only when the cheap mask join shows an
@@ -263,7 +267,7 @@ static int selftest() {
   }
   // Deterministic L2 redundancy positive control, 5-variable union.
   CNF f;f.vars=16;
-  f.clauses={{1,2,3},{1,2,-3},{1,2,4,5}};
+  f.clauses={{1,2,3},{1,2,-3},{1,2,4,5},{1,2,-4,5}};
   Metrics m;CNF g=preprocess(f,m,10);
   drnas::require(m.decision=="commit" && m.kind=="L2_MASK_SUBSUMPTION",
                  "ATLASX L2 redundancy control failed");
