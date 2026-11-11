@@ -215,7 +215,7 @@ for arm in ARMS:
    subset_clauses=sum(int(x["native"].get("subset_module_clauses","0")) for x in selected if x["native"]),
    saved_literals=sum(int(x["native"].get("saved_literals","0")) for x in selected if x["native"]),
    preprocess_s=round(sum(float(x["native"].get("preprocess_s","0")) for x in selected if x["native"]),8))
-report=dict(protocol="ATLASX-S1-FROZEN-4-EXTERNAL-4-PLANTED-5ARMS-3REPS-8S-ONECPU",
+report=dict(protocol="ATLASX-S3-NEW-SOURCES-4-EXTERNAL-4-PLANTED-5ARMS-3REPS-8S-ONECPU",
  source=src,reps=REPS,oneCPU=True,cap_s=CAP,
  separate_external_from_planted=True,rows=rows,summary=summary)
 (ROOT/"audit.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
