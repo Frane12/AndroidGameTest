@@ -169,6 +169,12 @@ struct Statistics {
     uint64_t xor_implications=0, xor_derived_implications=0;
     uint64_t xor_conflicts=0, xor_reasons=0, xor_budget_off=0;
     uint64_t xor_events_enqueued=0, xor_events_processed=0;
+#ifdef DRNAS_ATLASMAP2
+    uint64_t map2_source_pairs=0,map2_groups=0,map2_group_variables=0;
+    uint64_t map2_events=0,map2_checks=0,map2_proposals=0,map2_implications=0;
+    uint64_t map2_reasons=0,map2_conflicts=0,map2_shadow_opportunities=0;
+    uint64_t map2_budget_off=0,map2_restarts=0;
+#endif
     uint64_t heap_pops=0, heap_pushes=0, heap_bumps=0, heap_removals=0;
 
 };
@@ -304,6 +310,93 @@ private:
     bool gf2_enabled_=false, gf2_budget_exhausted_=false;
     static constexpr uint64_t kGF2MaxChecks = 500000;
 
+#ifdef DRNAS_ATLASMAP2
+    // Certified parity-equivalence groups on ORIGINAL CNF; the group
+    // link (member XOR pivot) is entailed by a chain of complete XOR-2
+    // source encodings. No learned/guessed relation enters this table.
+    struct Map2Group {
+        std::vector<int> vars, flip_to_root;
+    };
+    std::vector<Map2Group> map2_groups_;
+    std::vector<int> map2_group_for_var_,map2_pending_;
+    std::vector<uint8_t> map2_dirty_;
+    size_t map2_head_=0;
+    bool map2_enabled_=false,map2_shadow_=false,map2_budget_off_=false;
+    static constexpr uint64_t kMap2MaxChecks=250000;
+    void map2_schedule(int id) {
+        if(id<0 || map2_dirty_[size_t(id)])return;
+        map2_dirty_[size_t(id)]=1;
+        map2_pending_.push_back(id);
+        ++stats_.map2_events;
+    }
+    // Return -1 no action, -2 timeout, -3 new assignment, or the
+    // permanent source-entailed conflict-clause ID (>=0).
+    int map2_propagate() {
+        if(!map2_enabled_ || map2_budget_off_)return -1;
+        while(map2_head_<map2_pending_.size()) {
+            if((stats_.map2_checks&1023u)==0 && timed_out())return -2;
+            if(stats_.map2_checks>=kMap2MaxChecks) {
+                map2_budget_off_=true;
+                map2_pending_.clear();map2_dirty_.clear();map2_head_=0;
+                ++stats_.map2_budget_off;return -1;
+            }
+            const int id=map2_pending_[map2_head_++];
+            map2_dirty_[size_t(id)]=0;
+            const auto& g=map2_groups_[size_t(id)];
+            ++stats_.map2_checks;
+            int pivot=-1;
+            // Choose the earliest decision-level anchor, guaranteeing the
+            // derived binary reason does not rely on later assignments.
+            for(size_t j=0;j<g.vars.size();++j) {
+                if(!values_[g.vars[j]])continue;
+                if(pivot<0 || levels_[g.vars[j]]<levels_[g.vars[size_t(pivot)]])
+                    pivot=int(j);
+            }
+            if(pivot<0)continue;
+            const int x=g.vars[size_t(pivot)];
+            const bool base=values_[x]>0;
+            for(size_t j=0;j<g.vars.size();++j) {
+                if(int(j)==pivot)continue;
+                const int y=g.vars[j];
+                const bool wanted=base ^ bool(g.flip_to_root[size_t(pivot)] ^
+                                                g.flip_to_root[j]);
+                if(!values_[y]) {
+                    ++stats_.map2_proposals;
+                    if(map2_shadow_) {
+                        ++stats_.map2_shadow_opportunities;
+                        continue;
+                    }
+                    const int implied=wanted?y:-y;
+                    const int antecedent=base?-x:x;
+                    const int cid=int(clauses_.size());
+                    // (NOT current x assignment OR implied y) follows
+                    // by XOR cancellation along certified original edges.
+                    clauses_.push_back({{implied,antecedent},true});
+                    attach(cid);
+                    require(enqueue(implied,cid),"ATLASMAP2 entailed enqueue failed");
+                    ++stats_.map2_implications;++stats_.map2_reasons;
+                    return -3;
+                }
+                if((values_[y]>0)!=wanted) {
+                    ++stats_.map2_proposals;
+                    if(map2_shadow_) {
+                        ++stats_.map2_shadow_opportunities;
+                        continue;
+                    }
+                    const int cid=int(clauses_.size());
+                    const int neg_y=(values_[y]>0)?-y:y;
+                    clauses_.push_back({{base?-x:x,neg_y},true});
+                    attach(cid);
+                    ++stats_.map2_conflicts;++stats_.map2_reasons;
+                    return cid;
+                }
+            }
+        }
+        map2_pending_.clear();map2_head_=0;
+        return -1;
+    }
+#endif
+
     static int var(int lit) { return std::abs(lit); }
     static int watch_index(int lit) {
         return 2 * (std::abs(lit) - 1) + (lit < 0 ? 1 : 0);
@@ -400,6 +493,10 @@ private:
         heap_remove(v);
         if(gf2_enabled_&&!gf2_budget_exhausted_)
             for(int row:xor_incidence_[v])schedule_xor(row);
+#ifdef DRNAS_ATLASMAP2
+        if(map2_enabled_&&!map2_budget_off_)
+            map2_schedule(map2_group_for_var_[size_t(v)]);
+#endif
         return true;
     }
     void attach(int index) {
@@ -751,6 +848,88 @@ public:
         // Seed all rows once: covers root units assigned before GF2 setup.
         for(size_t i=0;i<xor_rows_.size();++i)schedule_xor(int(i));
     }
+
+#ifdef DRNAS_ATLASMAP2
+    void enable_atlasmap2_from_original(const CNF& original,bool shadow=false) {
+        require(original.vars==n_,"ATLASMAP2 source dimension mismatch");
+        require(trail_.empty()||level()==0,"ATLASMAP2 must initialize at root");
+        map2_shadow_=shadow;
+        if(original.clauses.size()>120000 || n_>200000)return;
+        size_t binary_count=0;
+        for(const auto& c:original.clauses)if(c.size()==2 && ++binary_count>=4)break;
+        if(binary_count<4)return;
+        // Existing source detector demands BOTH complete parity CNF clauses,
+        // including their exact polarities, before accepting an XOR-2 row.
+        const auto source=extract_source_xors(original);
+        std::vector<int> parent(size_t(n_)+1),rank(size_t(n_)+1,0),
+                         flip(size_t(n_)+1,0);
+        for(int i=0;i<=n_;++i)parent[size_t(i)]=i;
+        auto find=[&](int v)->std::pair<int,int> {
+            int root=v,p=0;
+            while(parent[size_t(root)]!=root) {
+                p^=flip[size_t(root)];root=parent[size_t(root)];
+            }
+            int cur=v,acc=0;
+            while(parent[size_t(cur)]!=cur) {
+                const int old_parent=parent[size_t(cur)];
+                const int old_flip=flip[size_t(cur)];
+                parent[size_t(cur)]=root;
+                flip[size_t(cur)]=p^acc;
+                acc^=old_flip;cur=old_parent;
+            }
+            return {root,p};
+        };
+        for(const auto& row:source) {
+            if(row.vars.size()!=2)continue;
+            ++stats_.map2_source_pairs;
+            auto a=find(row.vars[0]),b=find(row.vars[1]);
+            const int root_diff=a.second^b.second^row.rhs;
+            if(a.first==b.first) {
+                // A contradictory parity cycle may prove UNSAT, but this
+                // prototype has no original-CNF LRAT: safely abstain.
+                if(root_diff) {
+                    stats_.map2_groups=0;map2_groups_.clear();
+                    return;
+                }
+                continue;
+            }
+            if(rank[size_t(a.first)]<rank[size_t(b.first)])
+                std::swap(a,b);
+            parent[size_t(b.first)]=a.first;
+            flip[size_t(b.first)]=root_diff;
+            if(rank[size_t(a.first)]==rank[size_t(b.first)])
+                ++rank[size_t(a.first)];
+        }
+        std::map<int,std::vector<std::pair<int,int>>> connected;
+        for(int v=1;v<=n_;++v) {
+            if(parent[size_t(v)]==v && rank[size_t(v)]==0)continue;
+            auto r=find(v);
+            connected[r.first].push_back({v,r.second});
+        }
+        map2_group_for_var_.assign(size_t(n_)+1,-1);
+        size_t total=0;
+        for(const auto& entry:connected) {
+            const auto& members=entry.second;
+            if(members.size()<3 || members.size()>32)continue;
+            if(map2_groups_.size()>=128 || total+members.size()>2048)break;
+            const int gid=int(map2_groups_.size());
+            Map2Group group;
+            for(const auto& item:members) {
+                group.vars.push_back(item.first);
+                group.flip_to_root.push_back(item.second);
+                map2_group_for_var_[size_t(item.first)]=gid;
+            }
+            total+=members.size();
+            map2_groups_.push_back(std::move(group));
+        }
+        stats_.map2_groups=map2_groups_.size();
+        stats_.map2_group_variables=total;
+        if(map2_groups_.empty())return;
+        map2_dirty_.assign(map2_groups_.size(),0);
+        map2_enabled_=true;
+        for(size_t i=0;i<map2_groups_.size();++i)map2_schedule(int(i));
+    }
+#endif
     int solve(double time_limit_s) {
         require(std::isfinite(time_limit_s) && time_limit_s > 0,
                 "positive time limit required");
@@ -767,11 +946,26 @@ public:
 #ifdef DRNAS_PROFILE
             double p0=profile_clock();
 #endif
-            int conflicting = propagate();
+            int conflicting = -1;
+#ifdef DRNAS_ATLASMAP2
+            if(map2_enabled_) {
+                conflicting=map2_propagate();
+                if(conflicting==-2)return 0;
+                if(conflicting==-3)continue;
+            }
+#endif
+            if(conflicting==-1)conflicting = propagate();
 #ifdef DRNAS_PROFILE
             profile_bcp_s_+=profile_now()-p0;
 #endif
             if (conflicting == -2) return 0;
+#ifdef DRNAS_ATLASMAP2
+            if(conflicting==-1 && map2_enabled_) {
+                conflicting=map2_propagate();
+                if(conflicting==-2)return 0;
+                if(conflicting==-3)continue;
+            }
+#endif
             if (conflicting == -1) {
 #ifdef DRNAS_PROFILE
                 p0=profile_clock();
@@ -829,6 +1023,14 @@ public:
                 if (stats_.conflicts >= next_restart_ && level() > 0) {
                     cancel_to(0);
                     ++stats_.restarts;
+#ifdef DRNAS_ATLASMAP2
+                    if(map2_enabled_) {
+                        ++stats_.map2_restarts;
+                        // Revisit active source groups following a restart.
+                        for(size_t j=0;j<map2_groups_.size();++j)
+                            map2_schedule(int(j));
+                    }
+#endif
                     restart_window_ = std::min<uint64_t>(restart_window_ * 3 / 2 + 1,
                                                           30000);
                     next_restart_ = stats_.conflicts + restart_window_;
