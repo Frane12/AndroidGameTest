@@ -1,0 +1,130 @@
+name: DRNAS manual run restart or delete
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "inspect = no changes; restart = GitHub rerun; delete = permanently remove run"
+        required: true
+        type: choice
+        default: inspect
+        options:
+          - inspect
+          - restart
+          - delete
+      run_id:
+        description: "Exact GitHub Actions run ID (first queued LTM5 = 43095292436)"
+        required: true
+        type: string
+        default: '43095292436'
+      confirm_delete:
+        description: "Required for delete only. This permanently removes a run and logs."
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: drnas-manual-run-control
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Inspect and optionally restart or delete ONE LTM5 queue run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          MODE: ${{ inputs.mode }}
+          CONFIRM_DELETE: ${{ inputs.confirm_delete }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          raw_run_id = os.environ['RUN_ID'].strip()
+          mode = os.environ['MODE']
+          confirmation = os.environ['CONFIRM_DELETE'].lower() == 'true'
+          if repo != 'Frane12/AndroidGameTest':
+              raise SystemExit('Wrong repository; no action taken.')
+          if not raw_run_id.isdecimal() or not (0 < int(raw_run_id) < 10**15):
+              raise SystemExit('Run ID must be a positive integer.')
+          if mode not in ('inspect', 'restart', 'delete'):
+              raise SystemExit('Unknown mode.')
+          run_id = int(raw_run_id)
+          headers = {
+              'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'drnas-manual-run-control',
+          }
+          base = f'https://api.github.com/repos/{repo}/actions/runs/{run_id}'
+          def request(url, method='GET'):
+              req = urllib.request.Request(url, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      body = response.read().decode('utf-8', 'replace')
+                      return response.status, (json.loads(body) if body else {})
+              except urllib.error.HTTPError as error:
+                  return error.code, {'message': error.read().decode('utf-8', 'replace')[:1000]}
+
+          status, run = request(base)
+          if status != 200:
+              raise SystemExit(f'Cannot inspect run {run_id}: HTTP {status}, {run}')
+          name = run.get('name', '')
+          branch = run.get('head_branch') or ''
+          if not branch.startswith('experiment/drnas-ltm5-') or name not in (
+                  'DRNAS LTM5 certified graph into native CDCL',
+                  'Build Zvjezdana Macka APK'):
+              raise SystemExit('Safety stop: target must be an original queued LTM5/APK run from an experiment/drnas-ltm5-* branch.')
+
+          lines = [
+              '### DRNAS manual run control',
+              f'- Run ID: {run_id}',
+              f'- Workflow: {name}',
+              f'- Branch containing the queue: {branch}',
+              f'- Source commit SHA: {run.get("head_sha")}',
+              f'- Current state: {run.get("status")}, conclusion: {run.get("conclusion")}',
+              f'- Requested operation: {mode}',
+              f'- Original run: {run.get("html_url")}',
+          ]
+          if mode == 'inspect':
+              lines.append('- No changes performed.')
+          elif mode == 'restart':
+              if run.get('status') != 'completed':
+                  lines.append('- WARNING: GitHub normally rejects re-running an unfinished queued run. Attempting only this one ID.')
+              response_status, data = request(base + '/rerun', 'POST')
+              lines.append(f'- REST POST /rerun response: HTTP {response_status}, details: {data}')
+              if response_status != 201:
+                  lines.append('- Restart NOT accepted by GitHub. No new attempt was confirmed.')
+          else:
+              if not confirmation:
+                  raise SystemExit('Delete refused: check confirm_delete to explicitly authorize deleting ONE run.')
+              created = dt.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
+              eligible_age = dt.datetime.now(dt.timezone.utc) - created >= dt.timedelta(days=14)
+              if run.get('status') != 'completed' and not eligible_age:
+                  lines.append('- WARNING: GitHub normally allows deletion only after completion or after 14 days. Attempting only this one ID.')
+              response_status, data = request(base, 'DELETE')
+              lines.append(f'- REST DELETE response: HTTP {response_status}, details: {data}')
+              if response_status != 204:
+                  lines.append('- Deletion NOT accepted by GitHub. Historical run remains.')
+
+          report = '\n'.join(lines) + '\n'
+          print(report, flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write(report)
+          if mode == 'restart' and response_status != 201:
+              raise SystemExit('GitHub rejected rerun; see exact HTTP result above.')
+          if mode == 'delete' and response_status != 204:
+              raise SystemExit('GitHub rejected deletion; see exact HTTP result above.')
+          PY
