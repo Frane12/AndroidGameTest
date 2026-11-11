@@ -6,13 +6,13 @@ Compare frozen original inputs using the identical native solver with and withou
 """
 import hashlib,io,json,os,pathlib,re,resource,subprocess,tarfile,time,urllib.request
 OUT=pathlib.Path("mre_arl2");OUT.mkdir(exist_ok=True)
-SHARD=int(os.environ.get("MICRO_SHARD","0"));assert 0<=SHARD<4
+SHARD=int(os.environ.get("MICRO_SHARD","0"));assert 0<=SHARD<6
 # Prospective source-only selection; no solver-time based choice.
-FAMILIES=("uf150-645","uf175-753","uf200-860","uf200-860")
-COUNTS=((150,645),(175,753),(200,860),(200,860))
+FAMILIES=("uf150-645","uf175-753","uf200-860","uf200-860","uf250-1065","uf250-1065")
+COUNTS=((150,645),(175,753),(200,860),(200,860),(250,1065),(250,1065))
 FAMILY=FAMILIES[SHARD]
 VARS,CLAUSES=COUNTS[SHARD]
-RANK=8+(SHARD==3)
+RANK=8+(SHARD in (3,5))
 URL="https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/"+FAMILY+".tar.gz"
 CAP=30;REPEATS=2
 with urllib.request.urlopen(URL,timeout=90) as rsp:archive=rsp.read(20_000_000)
