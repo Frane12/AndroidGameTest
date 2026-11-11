@@ -64,8 +64,8 @@ def cases():
         yield ("xor_unsat", i, 8,
                xor_cnf([1, 2, 3], 0) + xor_cnf([1, 2, 3], 1))
     for i in range(4):
-        # Source contains a valid forced assignment from two XOR equations.
-        yield ("xor_unit", i, 8,
+        # Three XOR equations with inconsistent parity; detect a possible conflict.
+        yield ("xor_cycle_unsat", i, 8,
                xor_cnf([1, 2], i % 2) + xor_cnf([2, 3], 0) +
                xor_cnf([1, 3], 1 - (i % 2)))
 
