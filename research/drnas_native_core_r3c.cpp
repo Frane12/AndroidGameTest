@@ -201,6 +201,23 @@ class NativeCDCL {
     double cap_s_ = 10.0;
     bool resource_limit_ = false;
     Statistics stats_;
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+    // Bounded, flush-on-event telemetry, diagnostic only. No heuristic changes.
+    uint64_t atlas_trace_written_=0;
+    void atlas_trace(const char* kind,int literal=0,int jump=-1) {
+        const uint64_t count=stats_.decisions+stats_.conflicts;
+        if(atlas_trace_written_>=256 || (count>32 && count%64!=0))return;
+        ++atlas_trace_written_;
+        std::cout<<"DRNAS_CDCL_EVENT kind="<<kind
+                 <<" decisions="<<stats_.decisions
+                 <<" conflicts="<<stats_.conflicts
+                 <<" learned="<<stats_.learned_clauses
+                 <<" level="<<level()
+                 <<" trail="<<trail_.size()
+                 <<" literal="<<literal
+                 <<" jump="<<jump<<"\n"<<std::flush;
+    }
+#endif
 #ifdef DRNAS_PROGRESS1
     // Passive cycle-level telemetry; does not change assignments or heuristics.
     uint64_t progress_last_prop_=0,progress_last_watch_=0,progress_last_decisions_=0;
@@ -979,6 +996,9 @@ public:
             }
             if (conflicting >= 0) {
                 ++stats_.conflicts;
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                atlas_trace("conflict");
+#endif
 #ifdef DRNAS_MICRO_TRACE
                 micro_reason_graph(conflicting);
                 micro_log("kind=conflict cid="+std::to_string(conflicting)+
@@ -1016,6 +1036,9 @@ public:
                 attach(cid);
                 ++stats_.learned_clauses;
                 require(enqueue(assertion, cid), "learned 1-UIP clause not asserting");
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                atlas_trace("learn",assertion,target);
+#endif
                 bump_ /= decay_;
 #ifdef DRNAS_PROFILE
                 profile_update_s_+=profile_now()-p0;
@@ -1052,6 +1075,9 @@ public:
                 decision_marks_.push_back(trail_.size());
                 require(enqueue(phases_[v] >= 0 ? v : -v, -1),
                         "selected decision variable was already assigned");
+#ifdef DRNAS_ATLAS_TRAIN_TRACE
+                atlas_trace("decision",phases_[v]>=0?v:-v);
+#endif
             }
         }
     }
