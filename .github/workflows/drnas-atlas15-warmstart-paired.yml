@@ -48,7 +48,7 @@ jobs:
       - name: Canary two previously unseen CNFs with all five arms
         run: |
           set -euo pipefail
-          taskset -c "$(taskset -pc $ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" python3 -u research/drnas_atlas15_benchmark.py --shard 0 --smoke | tee mre_atlas15/smoke.log
+          taskset -c "$(awk '/Cpus_allowed_list:/ {split($2,a,/[,-]/); print a[1]}' /proc/self/status)" python3 -u research/drnas_atlas15_benchmark.py --shard 0 --smoke | tee mre_atlas15/smoke.log
           grep '^ATLAS15_FINAL ' mre_atlas15/smoke.log >> "$GITHUB_STEP_SUMMARY"
       - name: Train on disjoint 16 original CNFs and freeze policy
         env:
@@ -162,51 +162,59 @@ jobs:
         with:
           pattern: ATLAS15-shard-*
           merge-multiple: true
-          path: collected
-      - name: Audit all ten source-paired seeded shard results and total PAR2
+          path: first
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS15-replay-*
+          merge-multiple: true
+          path: replay
+      - name: Audit both consecutive passes, SHA and PAR2
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import glob,json,collections,pathlib
-          files=glob.glob("collected/audit_*.json")
-          assert len(files)==10,("missing shard",files)
-          audits=[json.load(open(p)) for p in files]
-          assert sorted(a["summary"]["shard"] for a in audits)==list(range(10))
-          manifest={a["manifest"]["cases"][0]["sha256"] for a in audits}
-          assert len(manifest)==1,"manifest differs across shards"
-          arms=("A","C_RANDOM","C3_ADAPT","C4_LBD","C5_WARM","C5_WARM_GAUSS")
-          total={}
-          for arm in arms:
-            group=[a["summary"]["arms"][arm] for a in audits]
-            total[arm]={key:round(sum(x[key] for x in group),6) if key=="PAR2_s" else sum(x[key] for x in group) for key in group[0]}
-            assert total[arm]["trials"]==48
-          output=dict(shards=10,original_holdout=24,reps=2,total_trials=288,arms=total)
-          pathlib.Path("ATLAS15_TOTAL.json").write_text(json.dumps(output,indent=2))
-          print("ATLAS15_TOTAL "+json.dumps(output,sort_keys=True))
-          with open(__import__('os').environ["GITHUB_STEP_SUMMARY"],"a") as f:
-            f.write("## ATLAS15 native original-CNF E2E PAR2\n\n")
-            f.write("| Arm | Verified solved /48 | PAR2 s | Table literals saved | Gauss units |\n|---|---:|---:|---:|---:|\n")
-            for arm in arms:
-              x=total[arm]
-              f.write(f'| {arm} | {x["solved"]} | {x["PAR2_s"]:.6f} | {x["table_literals_saved"]} | {x["gauss_units"]} |\n')
+          import glob,json,pathlib,os
+          arms=("A","C_RANDOM","C3_ADAPT","C4_LBD","C5_WARM","C5_WARM_GAUSS","C5_CDCL","C5_CDCL_GAUSS")
+          def load(dirname):
+              paths=glob.glob(dirname+"/audit_*.json")
+              assert len(paths)==10,("not 10 shards",dirname,paths)
+              items=[json.load(open(p)) for p in paths]
+              assert sorted(a["summary"]["shard"] for a in items)==list(range(10))
+              return items
+          first=load("first");second=load("replay")
+          def total(items):
+              out={}
+              for arm in arms:
+                  group=[a["summary"]["arms"][arm] for a in items]
+                  assert sum(x["trials"] for x in group)==48,(arm,group)
+                  out[arm]={k:round(sum(float(x[k]) for x in group),6)
+                           for k in ("PAR2_s","E2E_s","solved","SAT_verified","GF2_UNSAT_verified",
+                                     "timeouts","trials","atlas15_deleted","atlas15_minimized","atlas15_reductions")}
+              return out
+          for i in range(10):
+              assert first[i]["manifest"]==second[i]["manifest"],"manifest drift"
+              assert first[i]["summary"]["pass_name"]=="first"
+              assert second[i]["summary"]["pass_name"]=="replay_learned"
+              for arm in arms:
+                  a=[(r["sha256"],r["rep"],r["seed"]) for r in first[i]["results"] if r["arm"]==arm]
+                  b=[(r["sha256"],r["rep"],r["seed"]) for r in second[i]["results"] if r["arm"]==arm]
+                  assert a==b,("pair drift",i,arm)
+          output={"source_holdout_sha":24,"repeats_per_pass":2,"solver_arms":8,
+                  "sequential_passes":2,"first":total(first),"replay":total(second),
+                  "replay_nonblind":True,
+                  "note":"Second pass adapts C5 warmstart policy from first-pass SHA-keyed outcome; it is NOT a fresh blind test."}
+          pathlib.Path("ATLAS15_TWO_PASSES.json").write_text(json.dumps(output,indent=2))
+          print("ATLAS15_TWO_PASSES "+json.dumps(output,sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("## ATLAS15 two consecutive one-CPU passes\n\n")
+              f.write("First is held-out, second is nonblind SHA-keyed adapted replay. Each arm has 48 matched trials per pass.\n\n")
+              f.write("| Arm | First solved /48 | First PAR2 s | Second solved /48 | Second PAR2 s | Deleted | Minimized |\n")
+              f.write("|---|---:|---:|---:|---:|---:|---:|\n")
+              for arm in arms:
+                  a,b=output["first"][arm],output["replay"][arm]
+                  f.write(f'| {arm} | {a["solved"]:.0f} | {a["PAR2_s"]:.2f} | {b["solved"]:.0f} | {b["PAR2_s"]:.2f} | {b["atlas15_deleted"]:.0f} | {b["atlas15_minimized"]:.0f} |\n')
           PY
-      - name: Verify identical second-pass CNF manifest and record replay
-        run: |
-          echo "ATLAS15 replay executed after initial 10 shards; both runs use frozen source CNFs and training-only policy" >> "$GITHUB_STEP_SUMMARY"
-      - name: Persist cross-run SHA-keyed benchmark memory
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 research/drnas_atlas14_memory.py --collected collected
-          cat ATLAS15_MEMORY_STATUS.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: ATLAS15-MEMORY
+          name: ATLAS15-TWO-PASSES-24SHA-8ARMS-60s
           retention-days: 90
-          path: |
-            ATLAS15_MEMORY.jsonl
-            ATLAS15_MEMORY_STATUS.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ATLAS15-TOTAL-24-hard-CNF-2seed-60s-PAR2
-          path: ATLAS15_TOTAL.json
+          path: ATLAS15_TWO_PASSES.json
