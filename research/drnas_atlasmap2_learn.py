@@ -220,7 +220,7 @@ def main():
                   "decision_delta_A_minus_LIVE":attempts["A"]["decisions"]-attempts["LIVE"]["decisions"],
                   "conflict_delta_A_minus_LIVE":attempts["A"]["conflicts"]-attempts["LIVE"]["conflicts"],
                   "caution":"positive live implication counts are not proof of faster search; all claims require paired original E2E"}
-                }}
+                }
             data["signatures"][sig]=aggregate(data,sig)
             save(a.memory,data)
             result={"phase":"train","sha256":sha,"duplicate":False,
