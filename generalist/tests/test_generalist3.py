@@ -8,7 +8,7 @@ class TestGeneralist3(unittest.TestCase):
  def test_fingerprint_and_no_name_leakage(self):
   with tempfile.TemporaryDirectory() as t:
    a=Path(t)/"crypto.cnf"; b=Path(t)/"random.cnf"
-   a.write_text("c anything\\np cnf 3 3\\n1 -2 0\\n-1 3 0\\n2 3 0\\n")
+   a.write_text("c anything\np cnf 3 3\n1 -2 0\n-1 3 0\n2 3 0\n")
    b.write_bytes(a.read_bytes())
    self.assertEqual(fingerprint(a),fingerprint(b))
  def test_safe_fallback_and_learning(self):
