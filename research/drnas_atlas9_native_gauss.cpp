@@ -73,9 +73,9 @@ static CNF table_reduce(const CNF& src,TableStats&stats,double budget=0.012){
    std::vector<int> norm;
    bool taut=false;
    for(int l:c)norm.push_back(l>0?remap.at(std::abs(l)):-remap.at(std::abs(l)));
-   std::sort(norm.begin(),norm.end());
+   std::sort(norm.begin(),norm.end(),[](int a,int b){return std::abs(a)!=std::abs(b)?std::abs(a)<std::abs(b):a>b;});
    norm.erase(std::unique(norm.begin(),norm.end()),norm.end());
-   for(int l:norm)if(std::binary_search(norm.begin(),norm.end(),-l)){taut=true;break;}
+   for(int l:norm)if(std::find(norm.begin(),norm.end(),-l)!=norm.end()){taut=true;break;}
    if(taut){old.clear();break;}
    old.push_back(std::move(norm));
   }
@@ -204,7 +204,7 @@ static void selftest(){
  drnas::require(s.size()==2&&g.conflict&&g.core_indices.size()==2,
                 "Gaussian XOR contradiction proof smoke test");
  CNF c=source_xor(3,0);
- auto tab=table_reduce(c,*new TableStats());
+ TableStats ts;auto tab=table_reduce(c,ts);
  (void)tab;
  std::cout<<"ATLAS9_SELFTEST_PASS rules="<<rules.size()<<" XOR_unsat_core="<<g.core_indices.size()<<"\n";
 }
