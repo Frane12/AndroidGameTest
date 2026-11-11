@@ -40,6 +40,8 @@ def fingerprint(path):
                     pending.append(val)
                 else:
                     lengths[len(pending)]+=1
+                    if len(pending)==1: unit+=1
+                    if len(pending)==2: binary+=1
                     clauses+=1
                     for lit in set(map(abs,pending)): freq[lit]+=1
                     pending=[]
