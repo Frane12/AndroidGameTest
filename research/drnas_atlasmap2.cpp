@@ -180,6 +180,12 @@ int main(int argc,char** argv) {
                            "ATLASMAP2 original SAT witness invalid");
         }
         const auto& s=solver.statistics();
+#ifdef DRNAS_PROFILE
+        solver.print_profile();
+#endif
+#ifdef DRNAS_WATCH_DIAG
+        solver.print_watch_diag();
+#endif
         const double e2e=atlasmap2::elapsed(start);
         std::cout<<std::fixed<<std::setprecision(8)
             <<"ATLASMAP2_TRIAL arm="<<mode
@@ -216,6 +222,9 @@ int main(int argc,char** argv) {
             <<" propagations="<<s.propagations
             <<" watch_visits="<<s.watch_visits
             <<" learned="<<s.learned_clauses
+            <<" restarts="<<s.restarts
+            <<" heap_bumps="<<s.heap_bumps
+            <<" heap_pushes="<<s.heap_pushes
             <<" SAT_original_verified="<<int(status==10)
             <<" UNSAT_independent_LRAT=0 oneCPU=1\n";
         if(status==10) {
