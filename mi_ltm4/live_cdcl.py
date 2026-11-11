@@ -29,6 +29,40 @@ def bucket(n):
         "4-7" if n < 8 else "8-15" if n < 16 else "16+")
 
 
+def reason_graph_signature(nodes, edges):
+    """Directed bounded WL-type reason graph signature without clause IDs.
+
+    Original/learned node type and clause-width bucket are preserved. This
+    is a similarity signature, NOT an isomorphism test or proof certificate.
+    """
+    if not nodes:
+        return "not_captured"
+    labels = {cid: str(int(flag))+":"+bucket(width)
+              for cid,(flag,width) in nodes.items()}
+    present = set(labels)
+    incoming = defaultdict(list)
+    outgoing = defaultdict(list)
+    for source,target in edges:
+        if source in present and target in present:
+            outgoing[source].append(target)
+            incoming[target].append(source)
+    for _ in range(3):
+        refined = {}
+        for node in labels:
+            descriptor = (labels[node],
+                          tuple(sorted(labels[n] for n in outgoing[node])),
+                          tuple(sorted(labels[n] for n in incoming[node])))
+            refined[node]=hashlib.sha256(
+                json.dumps(descriptor,separators=(",",":")).encode()
+            ).hexdigest()[:16]
+        labels = refined
+    signature = (tuple(sorted(labels.values())),
+                 tuple(sorted((labels[a],labels[b]) for a,b in edges
+                              if a in present and b in present)))
+    return hashlib.sha256(json.dumps(
+        signature,separators=(",",":")).encode()).hexdigest()[:20]
+
+
 def _motif(data):
     # The learner NEVER sees literal IDs, SHA, clause IDs or SAT outcome.
     fields = {
@@ -42,6 +76,7 @@ def _motif(data):
         "reason_original": bucket(data["original_nodes"]),
         "reason_learned": bucket(data["learned_nodes"]),
         "reason_edges": bucket(data["reason_edges"]),
+        "reason_graph_shape": data.get("reason_graph_shape", "not_captured"),
     }
     payload = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     return "cdcl4:" + hashlib.sha256(payload.encode()).hexdigest()[:24], fields
@@ -140,7 +175,9 @@ def parse_native_log(stderr, *, max_episodes=MAX_EPISODES):
                     jump=jump,
                     original_nodes=counts[0],
                     learned_nodes=counts[1],
-                    reason_edges=len(graph["edges"]))
+                    reason_edges=len(graph["edges"]),
+                    reason_graph_shape=reason_graph_signature(
+                        graph["nodes"],graph["edges"]))
                 key,features = _motif(candidate)
                 episodes.append({
                     "key":key, "features":features,
