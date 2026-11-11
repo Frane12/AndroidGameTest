@@ -21,6 +21,7 @@ struct Candidate {
 };
 struct Metrics {
   size_t l0_modules=0, mask_bytes=0, l1_checks=0, l2_pairs=0;
+  size_t subset_modules=0, subset_module_clauses=0;
   size_t l2_implications=0, l2_expansions=0, l2_skipped=0;
   int saved_literals=0, removed=0, added=0, npn=-1;
   double preprocess_s=0;
@@ -144,27 +145,57 @@ static CNF preprocess(const CNF& original,Metrics& met,double cap) {
     if(support.size()==clause.size() && support.size()<=4)
       by_support[support].push_back(int(id));
   }
-  // L0 cheap source-only guard: with no repeated exact support, L1 cannot
-  // apply, and L2 cannot imply/expand any pair under our current rules.
-  // This avoids the mask creation and pair scan on random 3-SAT controls.
-  bool any_composite=false;
+  // S3: source-only module closure. Each root support includes all ORIGINAL
+  // clauses on proper nonempty subsets, not merely identical support sets.
+  // E.g. one 3-literal and two 2-literal AND-gate clauses form a module.
+  // The complete selected conjunction is rechecked on all 2^k assignments.
+  std::vector<Module> modules;
+  modules.reserve(160);
+  bool has_subset=false;
+  for(const auto& root:by_support) {
+    const auto& vars=root.first;
+    const int k=int(vars.size());
+    if(k<2||k>4)continue;
+    for(unsigned mask=1;mask+1<(1u<<k);++mask) {
+      std::vector<int> sub;sub.reserve(k);
+      for(int j=0;j<k;++j)if(mask&(1u<<j))sub.push_back(vars[j]);
+      if(by_support.find(sub)!=by_support.end()){has_subset=true;break;}
+    }
+    if(has_subset)break;
+  }
+  bool repeated=false;
   for(const auto& item:by_support)
-    if(item.second.size()>=2){any_composite=true;break;}
-  if(!any_composite) {
-    met.decision="sleep";met.reason="L0_no_composite_support";
+    if(item.first.size()>=2 && item.second.size()>=2){repeated=true;break;}
+  if(!has_subset && !repeated) {
+    met.decision="sleep";met.reason="L0_no_subset_or_composite";
     met.preprocess_s=seconds();return out;
   }
-  std::vector<Module> modules;modules.reserve(std::min<size_t>(by_support.size(),200));
-  // Make the useful multi-clause groups visible even under the 160-module cap.
-  for(int pass=0;pass<2;++pass) {
-    for(const auto& item:by_support) {
-      if((item.second.size()>=2)!=(pass==0))continue;
-      if(seconds()>budget || modules.size()>=160)break;
-      Module m;m.vars=item.first;m.ids=item.second;
-      for(int id:m.ids)m.literals+=int(original.clauses[id].size());
-      m.mask=local_mask(original,m);
-      modules.push_back(std::move(m));
+  // Favor highly supported modules; avoid spending the finite scan on
+  // unrelated singletons and limit mask materialization to useful closures.
+  for(const auto& root:by_support) {
+    if(seconds()>budget || modules.size()>=160)break;
+    Module m;m.vars=root.first;
+    const int k=int(m.vars.size());
+    if(k<2||k>4)continue;
+    bool used_proper_subset=false;
+    for(unsigned mask=1;mask<(1u<<k);++mask) {
+      std::vector<int> sub;sub.reserve(k);
+      for(int j=0;j<k;++j)if(mask&(1u<<j))sub.push_back(m.vars[j]);
+      auto it=by_support.find(sub);
+      if(it!=by_support.end()) {
+        m.ids.insert(m.ids.end(),it->second.begin(),it->second.end());
+        if(mask+1<(1u<<k))used_proper_subset=true;
+      }
     }
+    if(m.ids.size()<2||m.ids.size()>16)continue;
+    // Distinct clause indices are uniquely keyed by exact support.
+    std::sort(m.ids.begin(),m.ids.end());
+    drnas::require(std::adjacent_find(m.ids.begin(),m.ids.end())==m.ids.end(),
+                   "ATLASX S3 duplicate clause index");
+    for(int id:m.ids)m.literals+=int(original.clauses[id].size());
+    m.mask=local_mask(original,m);
+    if(used_proper_subset){++met.subset_modules;met.subset_module_clauses+=m.ids.size();}
+    modules.push_back(std::move(m));
   }
   met.l0_modules=modules.size();
   met.mask_bytes=2*modules.size();
@@ -188,7 +219,14 @@ static CNF preprocess(const CNF& original,Metrics& met,double cap) {
     for(size_t j=i+1;j<modules.size();++j) {
       if(seconds()>budget || met.l2_pairs>=400){limit_hit=true;break;}
       const auto& a=modules[i];const auto& b=modules[j];
+      // S3 modules may share source clauses through subset closure. Never
+      // pair such overlapping modules: double-counting could corrupt removal.
       if(a.ids.size()==1 && b.ids.size()==1)continue;
+      bool share_clause=false;
+      for(int ai:a.ids)if(std::binary_search(b.ids.begin(),b.ids.end(),ai)) {
+        share_clause=true;break;
+      }
+      if(share_clause)continue;
       std::vector<int> common;
       std::set_union(a.vars.begin(),a.vars.end(),b.vars.begin(),b.vars.end(),
                      std::back_inserter(common));
@@ -333,7 +371,10 @@ int main(int argc,char** argv) {
       <<" e2e_s="<<e2e<<" preprocess_s="<<xm.preprocess_s
       <<" original_clauses="<<original.clauses.size()
       <<" final_clauses="<<working.clauses.size()
-      <<" l0_modules="<<xm.l0_modules<<" compressed_bytes="<<xm.mask_bytes
+      <<" l0_modules="<<xm.l0_modules
+      <<" subset_modules="<<xm.subset_modules
+      <<" subset_module_clauses="<<xm.subset_module_clauses
+      <<" compressed_bytes="<<xm.mask_bytes
       <<" l1_checks="<<xm.l1_checks<<" l2_pairs="<<xm.l2_pairs
       <<" l2_implications="<<xm.l2_implications
       <<" l2_expansions="<<xm.l2_expansions
