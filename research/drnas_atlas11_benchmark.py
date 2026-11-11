@@ -116,7 +116,7 @@ def main():
    order=list(ARMS)
    shift=(j+rep*2)%len(order);order=order[shift:]+order[:shift]
    for arm in order:
-    trial_seed=int.from_bytes(hashlib.sha256(f"ATLAS11|seed|{s[\'sha256\']}|{rep}".encode()).digest()[:8],"big")
+    trial_seed=int.from_bytes(hashlib.sha256(("ATLAS11|seed|%s|%d"%(s["sha256"],rep)).encode()).digest()[:8],"big")
     result=process(arm,path,n,clauses,trial_seed)
     item=dict(category=s["category"],index=s["index"],sha256=s["sha256"],rep=rep,seed=trial_seed,arm=arm,**result)
     results.append(item)
