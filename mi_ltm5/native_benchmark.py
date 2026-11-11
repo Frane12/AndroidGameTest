@@ -5,6 +5,7 @@ One logical CPU, same source SHA, E2E includes Python graph preparation.
 Original SAT witness verification; UNSAT never independently certified.
 """
 import hashlib,json,pathlib,resource,subprocess,time,sys
+sys.path.insert(0,str(pathlib.Path.cwd()))
 sys.path.insert(0,"research")
 import drnas_atlas_wide500 as W
 import drnas_atlas21_official as Verify
