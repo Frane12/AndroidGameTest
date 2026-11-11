@@ -1,0 +1,199 @@
+name: DRNAS ATLAS24 online adaptive CDCL
+run-name: ATLAS24 single native A-C7 pressure gate plus GF2 vs references 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas24-live-cdcl-20261111]
+    paths:
+      - research/drnas_atlas24_build.py
+      - research/drnas_atlas24_benchmark.py
+      - .github/workflows/drnas-atlas24-live-cdcl.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen C++ generators and ATLAS24 live native engine
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas24_build.py research/drnas_atlas24_benchmark.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas24_build.py
+          mkdir -p mre_atlas24/bin
+          g++ -std=c++17 -O2 -I mre_atlas24 -I mre_atlas15 mre_atlas24/native.cpp -o mre_atlas24/bin/drnas_atlas24
+          mre_atlas24/bin/drnas_atlas24 --selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas24-kissat
+          git -C /tmp/atlas24-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas24-kissat && ./configure && make -j2)
+          cp /tmp/atlas24-kissat/build/kissat mre_atlas24/bin/kissat
+          sha256sum mre_atlas24/bin/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS24-BIN
+          retention-days: 30
+          path: mre_atlas24/bin
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-BIN
+          path: mre_atlas24/bin
+      - name: Native mode activation and source SAT witness smoke
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas24/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas24_benchmark.py --cohort smoke | tee smoke.log
+          grep '^ATLAS24_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS24-SMOKE
+          retention-days: 30
+          path: |
+            smoke.log
+            mre_atlas24/smoke/results.json
+  regression:
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-BIN
+          path: mre_atlas24/bin
+      - name: regression matched original CNFs 10s E2E single CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas24/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas24_benchmark.py --cohort regression | tee regression.log
+          grep '^ATLAS24_FINAL ' regression.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS24-REGRESSION
+          retention-days: 60
+          path: |
+            regression.log
+            mre_atlas24/regression/results.json
+  extension:
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-BIN
+          path: mre_atlas24/bin
+      - name: extension matched original CNFs 12s E2E single CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas24/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas24_benchmark.py --cohort extension | tee extension.log
+          grep '^ATLAS24_FINAL ' extension.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS24-EXTENSION
+          retention-days: 60
+          path: |
+            extension.log
+            mre_atlas24/extension/results.json
+  fresh:
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-BIN
+          path: mre_atlas24/bin
+      - name: fresh matched original CNFs 8s E2E single CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          chmod +x mre_atlas24/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas24_benchmark.py --cohort fresh | tee fresh.log
+          grep '^ATLAS24_FINAL ' fresh.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS24-FRESH
+          retention-days: 60
+          path: |
+            fresh.log
+            mre_atlas24/fresh/results.json
+  audit:
+    needs: [regression, extension, fresh]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-REGRESSION
+          path: audits/regression
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-EXTENSION
+          path: audits/extension
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS24-FRESH
+          path: audits/fresh
+      - name: Check disjoint SHA and publish all cohorts separately
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee audit.log
+          import json,pathlib
+          root=pathlib.Path('audits')
+          sets=[]
+          for cohort,count,cap in [('regression',10,10),('extension',6,12),('fresh',16,8)]:
+              d=json.loads((root/cohort/'mre_atlas24'/cohort/'results.json').read_text())
+              assert d['cap_s']==cap and len(d['sources'])==count
+              assert len(d['rows'])==count*2*7
+              shas={s['sha256'] for s in d['sources']}
+              assert len(shas)==count and all(not shas.intersection(z) for z in sets)
+              sets.append(shas)
+              assert all(not r['independent_UNSAT_proof_verified'] for r in d['rows'])
+              assert all(r['status']!='SAT_VERIFIED' or r['original_SAT_witness_verified'] for r in d['rows'])
+              summary=d['summary']; base=summary['A']['PAR2_reported_s']
+              ratios={a:round(base/max(v['PAR2_reported_s'],.000001),4) for a,v in summary.items()}
+              print('ATLAS24_AUDIT '+json.dumps(dict(cohort=cohort,sources=count,trials=len(d['rows']),
+                A_over_arm_reported_PAR2=ratios,summary=summary),sort_keys=True),flush=True)
+          print('ATLAS24_AUDIT_PASS disjoint_cohorts=true single_process=true UNSAT_independent=false')
+          PY
+          grep '^ATLAS24_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS24-FINAL-AUDIT
+          retention-days: 60
+          path: audit.log
