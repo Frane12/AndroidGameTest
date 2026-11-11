@@ -70,6 +70,10 @@ def sources(cohort,shard,shards):
     return cases
 
 def run(source,arm,rep,cap):
+    # Frozen ATLAS26 runner expects drnas_atlas26; point only its executable
+    # name at this experiment's native binary, preserving all solver modes.
+    legacy=BIN/"drnas_atlas26"
+    if not legacy.exists():legacy.symlink_to("drnas_atlas27")
     x=A26.run(source,arm,rep,cap)
     if arm.startswith("C27_") and x["status"]!="UNKNOWN":
         t=x["telemetry"]
