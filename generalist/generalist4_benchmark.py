@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Prospective SHA disjoint native generalist test against all constituent arms."""
 import argparse,hashlib,json,sys,pathlib
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,"research")
 from drnas_atlas40_benchmark import run,BIN
 from drnas_atlas_wide500 import SOURCES,source_corpus,canonical
