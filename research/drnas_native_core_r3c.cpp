@@ -843,7 +843,12 @@ private:
 
 public:
     explicit NativeCDCL(int n) : n_(n), watches_(size_t(n) * 2),
-          values_(n + 1, 0), phases_(n + 1, 1),
+          values_(n + 1, 0),
+#ifdef DRNAS_DIAG_NEGATIVE_PHASE
+          phases_(n + 1, -1),
+#else
+          phases_(n + 1, 1),
+#endif
           levels_(n + 1, 0), reasons_(n + 1, -1),
           activity_(n + 1, 0),heap_position_(n+1,-1) {
         require(n >= 0 && n <= 1000000, "invalid SAT variable count");
@@ -1103,8 +1108,12 @@ public:
                             map2_schedule(int(j));
                     }
 #endif
+#ifdef DRNAS_DIAG_FIXED_RESTART
+                    restart_window_=100;
+#else
                     restart_window_ = std::min<uint64_t>(restart_window_ * 3 / 2 + 1,
                                                           30000);
+#endif
                     next_restart_ = stats_.conflicts + restart_window_;
                 }
             } else {
