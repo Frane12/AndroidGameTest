@@ -1,0 +1,47 @@
+name: DRNAS MAP2 3000 mixed CNF 20s oneCPU
+run-name: MAP2-3K 3000 source SHA 60x50 A shadow live 20s cap PAR2
+on:
+  push:
+    branches: [experiment/drnas-atlasmap2-persistent-learning-20261111]
+    paths:
+      - research/drnas_atlasmap2_3000_bench.py
+      - .github/workflows/drnas-atlasmap2-3000.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile DRNAS native MAP2
+        run: |
+          set -euo pipefail
+          mkdir -p mre_atlasmap2/bin mre_atlasmap2_3k
+          python3 -m py_compile research/drnas_atlasmap2_3000_bench.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlasmap2/atlas1_table.hpp
+          g++ -std=c++17 -O2 -I mre_atlasmap2 research/drnas_atlasmap2.cpp -o mre_atlasmap2/bin/drnas_atlasmap2
+          mre_atlasmap2/bin/drnas_atlasmap2 --atlasmap2-selftest
+      - name: Fifty matched source formulas 20s each A SHADOW LIVE
+        env:
+          MAP2_3K_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlasmap2_3000_bench.py | tee mre_atlasmap2_3k/benchmark.log
+          grep '^MAP2_3K_FINAL ' mre_atlasmap2_3k/benchmark.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MAP2-3K-SHARD-${{ matrix.shard }}-AUDIT
+          retention-days: 30
+          path: |
+            mre_atlasmap2_3k/audit.json
+            mre_atlasmap2_3k/benchmark.log
