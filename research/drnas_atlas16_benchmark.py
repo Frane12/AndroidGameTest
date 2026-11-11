@@ -37,11 +37,19 @@ def source_set(stage,shard,smoke=False):
                   clauses_count=len(clauses),sha256=sha,entry=entry,
                   origin=origin,clauses=clauses))
     assert len(dataset)==25 and len({s["sha256"] for s in dataset})==25
-    old=json.loads(pathlib.Path("research/atlas_wide500_memory.json").read_text())
-    previous=json.loads(pathlib.Path("research/atlas_prospective_v1_summary.json").read_text())
-    blockers=json.loads(pathlib.Path("research/drnas_blocker_blind100_r3_summary.json").read_text()) if pathlib.Path("research/drnas_blocker_blind100_r3_summary.json").exists() else {}
-    forbidden=set(old["train_samples"])|set(previous["source_sha"])|set(blockers.get("source_sha256",[]))
-    assert not forbidden.intersection(x["sha256"] for x in dataset),"known source overlap"
+    # Historical cohorts use indices 0..34 under this pinned generator:
+    # training 0..19, prospective 20..29, BLOCKER blind100 30..34.
+    # SHA-check any historical audit files that happen to be present.
+    assert start>=35 and min(c["index"] for c in dataset)>=35
+    forbidden=set()
+    for name,key in (("research/atlas_wide500_memory.json","train_samples"),
+                     ("research/atlas_prospective_v1_summary.json","source_sha"),
+                     ("research/drnas_blocker_blind100_r3_summary.json","source_sha256")):
+        p=pathlib.Path(name)
+        if p.is_file():
+            old=json.loads(p.read_text())
+            forbidden.update(old.get(key,[]))
+    assert not forbidden.intersection(x["sha256"] for x in dataset),"historical source overlap"
     return dataset[:2] if smoke else dataset
 
 def verified_model(output,n,clauses):
