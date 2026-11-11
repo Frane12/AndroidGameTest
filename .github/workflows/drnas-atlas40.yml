@@ -4,6 +4,7 @@ on:
   push:
     branches: [experiment/drnas-atlas40-utility-age-gate-20261111]
     paths:
+      - research/drnas_atlas40_native_smoke.py
       - research/drnas_atlas40_build.py
       - research/drnas_atlas40_benchmark.py
       - research/drnas_atlas40_audit.py
@@ -15,22 +16,13 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Compile and isolated smoke on one CPU
+      - name: Build DRNAS native without network dependencies
         run: |
           set -euo pipefail
-          python3 -m pip install --break-system-packages -q remotezip
-          # Ubuntu 24.04 CLI package is 'cryptominisat', not 'cryptominisat5'.
-          # Mirrors occasionally fail DNS: bounded retries, fail before benchmark.
-          for attempt in 1 2 3; do
-            if sudo apt-get update -qq && sudo apt-get install -y -qq cryptominisat; then break; fi
-            if [ "$attempt" = 3 ]; then echo 'CMS_INSTALL_FAILED'; exit 1; fi
-            sleep 6
-          done
-          command -v cryptominisat5
-          cryptominisat5 --version | head -n 2
+          python3 -m py_compile research/drnas_atlas40_build.py research/drnas_atlas40_native_smoke.py
           python3 research/drnas_atlas13_generator.py
           python3 research/drnas_atlas15_warm_patch.py
           python3 research/drnas_atlas15_cdcl_patch.py
@@ -46,12 +38,8 @@ jobs:
           python3 research/drnas_atlas40_build.py
           mkdir -p mre_atlas23/bin
           g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_atlas40
-          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas40-kissat
-          git -C /tmp/atlas40-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
-          (cd /tmp/atlas40-kissat && ./configure && make -j2 >/dev/null)
-          cp /tmp/atlas40-kissat/build/kissat mre_atlas23/bin/kissat
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas40_benchmark.py --cohort smoke --shard 0 | tee smoke.log
-          grep '^ATLAS40_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas40_native_smoke.py | tee smoke.log
+          grep '^ATLAS40_NATIVE_SMOKE_PASS ' smoke.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
