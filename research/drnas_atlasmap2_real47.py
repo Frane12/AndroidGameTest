@@ -44,6 +44,41 @@ def normalize(raw):
     data=(f"p cnf {n} {len(clauses)}\n"+
           "".join(" ".join(map(str,c))+" 0\n" for c in clauses)).encode()
     return data,n,clauses
+def atlas_extended_screen(n,clauses):
+    """Binary implication graph, exact SCC equivalences, candidate blocks.
+    Diagnostic only: no new CNF clauses or unverified substitutions.
+    """
+    edges={};binary=0
+    for c in clauses:
+        if len(c)!=2 or abs(c[0])==abs(c[1]):continue
+        a,b=c;edges.setdefault(-a,set()).add(b);edges.setdefault(-b,set()).add(a)
+        binary+=1
+    nodes=set(edges)
+    for vs in edges.values():nodes.update(vs)
+    sys.setrecursionlimit(max(sys.getrecursionlimit(),4*n+100))
+    index=0;stack=[];on=set();ids={};low={};components=[]
+    def visit(v):
+        nonlocal index
+        ids[v]=index;low[v]=index;index+=1;stack.append(v);on.add(v)
+        for w in edges.get(v,()):
+            if w not in ids:visit(w);low[v]=min(low[v],low[w])
+            elif w in on:low[v]=min(low[v],ids[w])
+        if low[v]==ids[v]:
+            comp=[]
+            while True:
+                w=stack.pop();on.remove(w);comp.append(w)
+                if w==v:break
+            components.append(comp)
+    for v in sorted(nodes):
+        if v not in ids:visit(v)
+    roots={v:i for i,c in enumerate(components) for v in c}
+    return {"binary_implications":2*binary,
+      "equivalent_literal_pairs":sum(len(c)*(len(c)-1)//2 for c in components),
+      "contradictory_scc":any(roots.get(v)==roots.get(-v) for v in range(1,n+1)
+                              if v in roots and -v in roots),
+      "small_block_candidates":sum(2<=len(c)<=4 for c in clauses),
+      "mode":"screen_only_no_new_clauses"}
+
 sources=[]
 for family,count in SETS:
     entry=next(x for x in META["archives"] if x["set"]==family)
@@ -74,10 +109,12 @@ for source in sources:
     path.write_bytes(source["data"])
     _,n,clauses=L.read_cnf(path)
     feat=L.features(n,clauses)
+    extended=atlas_extended_screen(n,clauses)
     # No result-dependent routing. Small/easy, no parity group, and
     # contradictory source cycles go straight to own native DRNAS.
     eligible=(n>=64 and len(clauses)>=250 and
-              feat["eligible_groups"]>0 and not feat["contradictory_cycle"])
+              feat["eligible_groups"]>0 and not feat["contradictory_cycle"] and
+              not extended["contradictory_scc"])
     for rep in range(REPS):
         for arm in ARMS:
             mode=("LIVE" if eligible else "A") if arm=="FALLBACK" else arm
@@ -108,7 +145,7 @@ for source in sources:
             result.update({"id":source["id"],"family":source["family"],
                 "source_sha256":source["source_sha256"],"rep":rep,
                 "arm":arm,"effective_mode":mode,"fallback":arm=="FALLBACK" and not eligible,
-                "structural_features":feat})
+                "structural_features":feat,"atlas_extended_screen":extended})
             rows.append(result)
             print("MAP2_REAL47_TRIAL "+json.dumps(result,sort_keys=True),flush=True)
 summary={}
