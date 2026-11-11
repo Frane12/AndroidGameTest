@@ -322,6 +322,36 @@ static int selftest() {
       drnas::require(eval(f)==eval(updated),"ATLASX randomized truth mismatch");
     }
   }
+  // S3: a canonical Tseitin AND gate uses one ternary and two binary
+  // clauses. All three must be found under their shared 3-var root support.
+  CNF and_gate;and_gate.vars=16;
+  and_gate.clauses={{-1,-2,3},{1,-3},{2,-3}};
+  Metrics gm;const CNF gtested=preprocess(and_gate,gm,10);
+  drnas::require(gm.subset_modules>0 &&
+                 gm.subset_module_clauses>=3,
+                 "ATLASX S3 AND subset-support recognition failed");
+  for(int bits=0;bits<8;++bits) {
+    auto sat=[&](const CNF& x) {
+      for(const auto& cl:x.clauses) {
+        bool good=false;
+        for(int lit:cl)
+          if(bool((bits>>(std::abs(lit)-1))&1)==(lit>0))good=true;
+        if(!good)return false;
+      }
+      return true;
+    };
+    drnas::require(sat(and_gate)==sat(gtested),
+                   "ATLASX S3 AND original truth changed");
+  }
+  // Cross-support absorption: two 3-clauses plus their 2-clause resolvent.
+  CNF absorb;absorb.vars=16;
+  absorb.clauses={{1,2,3},{1,2,-3},{1,2}};
+  Metrics ax;const CNF reduced=preprocess(absorb,ax,10);
+  drnas::require(ax.subset_modules>0 && ax.decision=="commit" &&
+                 reduced.clauses.size()==1 && ax.saved_literals>0,
+                 "ATLASX S3 subset-support absorption failed");
+  std::cout<<"ATLASX_S3_SUBSET_PASS and_modules="<<gm.subset_modules
+           <<" absorption_saved="<<ax.saved_literals<<"\n";
   // Deterministic L2 redundancy positive control, 5-variable union.
   CNF f;f.vars=16;
   f.clauses={{1,2,3},{1,2,-3},{1,2,4,5},{1,2,-4,5}};
