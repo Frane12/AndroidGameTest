@@ -57,13 +57,8 @@ one("    uint64_t atlas26_compaction_moves_=0;",
         }
     }""")
 
-one("""    void atlas16_reduce_db(){
-        if(stats_.conflicts%1500!=0)return;
-        ++atlas15_reductions_;""",
-"""    void atlas16_reduce_db(){
-        if(stats_.conflicts%1500!=0)return;
-        atlas27_sample_pressure();
-        ++atlas15_reductions_;""")
+one("        if(stats_.conflicts%1500!=0)return;",
+    "        if(stats_.conflicts%1500!=0)return;\n        atlas27_sample_pressure();")
 
 one("""            if(atlas26_reuse_mode_){
                 auto hit=atlas26_use_.find(cid);""",
