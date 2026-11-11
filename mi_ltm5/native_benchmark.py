@@ -12,7 +12,7 @@ def original_model_ok(path,output):
  """Verify a SAT witness against *original* DIMACS, not derived clauses."""
  assignment={}
  for line in output.splitlines():
-  if not (line.startswith("v ") or line.startswith("v\\t")):continue
+  if not (line.startswith("v ") or line.startswith("v\t")):continue
   for token in line[1:].split():
    lit=int(token)
    if not lit:continue
