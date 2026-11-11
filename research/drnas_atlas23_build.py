@@ -36,7 +36,9 @@ for original,replacement in (
  ('mode=="C9_SLOW_Q4"','mode=="C9_SLOW_Q4"||mode=="C10_KEEP32"||mode=="C11_KEEP64"')):
  assert src.count(original)>=2,(original,src.count(original))
  src=src.replace(original,replacement)
-anchor='    if(mode=="C9_SLOW_Q4"||mode=="C10_KEEP32"||mode=="C11_KEEP64"||mode=="C9_SLOW_Q4_GAUSS"||mode=="C10_KEEP32_GAUSS"||mode=="C11_KEEP64_GAUSS")'
+expanded='    if(mode=="C9_SLOW_Q4"||mode=="C10_KEEP32"||mode=="C11_KEEP64"||mode=="C9_SLOW_Q4_GAUSS"||mode=="C10_KEEP32_GAUSS"||mode=="C11_KEEP64_GAUSS")'
+assert src.count(expanded)==1
+src=src.replace(expanded,'if(mode=="C9_SLOW_Q4"||mode=="C9_SLOW_Q4_GAUSS")',1)
 # Existing C9 condition may have been expanded by replacements; add independent mode enable before stats output.
 anchor='    if(mode=="C9_FIXED_Q4"||mode=="C9_FIXED_Q4_GAUSS")'
 assert src.count(anchor)==1
