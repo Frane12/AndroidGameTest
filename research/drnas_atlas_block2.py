@@ -103,9 +103,9 @@ selection=[{k:v for k,v in s.items() if k!="data"} for s in sources]
 print("MAP2_REAL47_SOURCE "+json.dumps({"total":47,"selected":selection},sort_keys=True),flush=True)
 
 import random
-CAP=8.0
+CAP=5.0
 REPS=2
-SHARD=int(os.environ.get("BLOCK2_SHARD","0"))
+SHARD=int(os.environ.get("BLOCK3_SHARD","0"))
 assert 0<=SHARD<3
 ARMS=("A","BLOCK2","B_RANDOM")
 def reduce_scc(n,clauses,seed=None):
@@ -208,6 +208,22 @@ for source in sources:
     original_path=OUT/("block2_original_%02d.cnf"%source["id"])
     original_path.write_bytes(source["data"])
     _,n,clauses=L.read_cnf(original_path)
+    # Half source-frozen SATLIB controls, half with exact fresh-variable aliases.
+    # Alias y <-> x is definitional and equisatisfiable with the original.
+    cohort="alias" if source["id"]%2==0 else "control"
+    if cohort=="alias":
+        original_n=n
+        rng=random.Random(int(source["source_sha256"][:16],16))
+        targets=rng.sample(range(1,original_n+1),min(12,original_n))
+        replacements={x:original_n+i+1 for i,x in enumerate(targets)}
+        new_clauses=[]
+        for ci,c in enumerate(clauses):
+            new_clauses.append([((replacements[abs(l)] if ci%2==0 and abs(l) in replacements else abs(l))*(1 if l>0 else -1)) for l in c])
+        for x,y in replacements.items():
+            new_clauses.extend([[-x,y],[x,-y]])
+        n=original_n+len(replacements)
+        clauses=new_clauses
+        write_cnf(original_path,n,clauses)
     for rep in range(REPS):
         for arm in ARMS:
             start=time.monotonic()
@@ -224,12 +240,12 @@ for source in sources:
             status,verified,decisions,conflicts=native_run(path,n,clauses,clauses,mapping,start)
             elapsed=time.monotonic()-start
             row={"id":source["id"],"family":source["family"],"sha256":source["source_sha256"],
-                 "arm":arm,"rep":rep,"status":status,"SAT_original_verified":verified,
+                 "arm":arm,"rep":rep,"cohort":cohort,"status":status,"SAT_original_verified":verified,
                  "UNSAT_independent_LRAT":False,"E2E_s":round(elapsed,6),
                  "PAR2_s":round(elapsed if status=="SAT" else 2*CAP,6),
                  "decisions":decisions,"conflicts":conflicts,**details}
             rows.append(row)
-            print("ATLAS_BLOCK2_TRIAL "+json.dumps(row,sort_keys=True),flush=True)
+            print("ATLAS_BLOCK3_TRIAL "+json.dumps(row,sort_keys=True),flush=True)
 summary={}
 for arm in ARMS:
     rr=[x for x in rows if x["arm"]==arm]
@@ -239,5 +255,5 @@ for arm in ARMS:
       "conflicts":sum(x["conflicts"] for x in rr),
       "rewritten":sum(x.get("equivalent_variables_rewritten",0) for x in rr),
       "clauses_saved":sum(x.get("clauses_before",0)-x.get("clauses_after",0) for x in rr)}
-(OUT/f"block2_audit_{SHARD}.json").write_text(json.dumps({"rows":rows,"summary":summary},indent=2))
-print("ATLAS_BLOCK2_FINAL "+json.dumps({"shard":SHARD,"summary":summary},sort_keys=True),flush=True)
+(OUT/f"block3_audit_{SHARD}.json").write_text(json.dumps({"rows":rows,"summary":summary},indent=2))
+print("ATLAS_BLOCK3_FINAL "+json.dumps({"shard":SHARD,"summary":summary},sort_keys=True),flush=True)
