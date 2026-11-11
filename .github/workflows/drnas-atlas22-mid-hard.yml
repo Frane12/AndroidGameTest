@@ -1,0 +1,80 @@
+name: DRNAS ATLAS21 medium SATLIB matched pilot
+run-name: ATLAS22 12 SATLIB mid-hard SHA x 6 arms x 2 reps 12s 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas22-mid-hard-20261111]
+    paths:
+      - research/drnas_atlas22_mid_hard.py
+      - .github/workflows/drnas-atlas21-medium.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen DRNAS and pinned Kissat
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas22_mid_hard.py research/drnas_atlas21_official.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          mkdir -p mre_atlas21/bin
+          g++ -std=c++17 -O2 -I mre_atlas19 -I mre_atlas15 mre_atlas19/native.cpp -o mre_atlas21/bin/drnas_atlas21
+          mre_atlas21/bin/drnas_atlas21 --selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas21m-kissat
+          git -C /tmp/atlas21m-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas21m-kissat && ./configure && make -j2)
+          cp /tmp/atlas21m-kissat/build/kissat mre_atlas21/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS22-BIN
+          path: mre_atlas21/bin
+  medium:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS22-BIN
+          path: mre_atlas21/bin
+      - name: Matched 12 SATLIB originals 6 arms 2 reps 12 seconds
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 -c 'import remotezip; print("ATLAS22_REMOTEZIP_PASS")'
+          chmod +x mre_atlas21/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas22_mid_hard.py --smoke | tee smoke.log
+          grep '^ATLAS22_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas22_mid_hard.py | tee medium.log
+          grep '^ATLAS22_FINAL ' medium.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS22-MEDIUM-RESULTS
+          retention-days: 60
+          path: |
+            smoke.log
+            medium.log
+            mre_atlas22/manifest.json
+            mre_atlas22/pilot.json
+  sql-ledger:
+    needs: medium
+    uses: ./.github/workflows/drnas-s-series-sql.yml
+    with:
+      series: S22
+      source_artifact: ATLAS22-MEDIUM-RESULTS
+      source_json_path: mre_atlas22/pilot.json
