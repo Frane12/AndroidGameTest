@@ -1,0 +1,142 @@
+name: DRNAS ATLAS26 real clause-use and independent GF2 proof
+run-name: ATLAS26 46 SHA x 8 arms x 2 reps 1CPU C7-GF2-reuse
+on:
+  push:
+    branches: [experiment/drnas-atlas26-reuse-gf2-proof-20261111]
+    paths:
+      - research/drnas_atlas26_build.py
+      - research/drnas_atlas26_benchmark.py
+      - research/drnas_atlas26_audit.py
+      - .github/workflows/drnas-atlas26-reuse-gf2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate native DRNAS ATLAS26, compile and selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas26_build.py research/drnas_atlas26_benchmark.py research/drnas_atlas26_audit.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas24_build.py
+          python3 research/drnas_atlas25_build.py
+          python3 research/drnas_atlas26_build.py
+          mkdir -p mre_atlas26/bin
+          g++ -std=c++17 -O2 -I mre_atlas26 -I mre_atlas15 mre_atlas26/native.cpp -o mre_atlas26/bin/drnas_atlas26
+          mre_atlas26/bin/drnas_atlas26 --selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas26-kissat
+          git -C /tmp/atlas26-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas26-kissat && ./configure && make -j2)
+          cp /tmp/atlas26-kissat/build/kissat mre_atlas26/bin/kissat
+          sha256sum mre_atlas26/bin/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS26-BIN
+          retention-days: 30
+          path: mre_atlas26/bin
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS26-BIN
+          path: mre_atlas26/bin
+      - name: 2 pinned CNFs x 8 modes; original witness and GF2 smoke
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          chmod +x mre_atlas26/bin/*
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_atlas26_benchmark.py --cohort smoke | tee smoke.log
+          grep '^ATLAS26_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS26-SMOKE
+          retention-days: 30
+          path: |
+            smoke.log
+            mre_atlas26/smoke/shard_0/results.json
+  matched:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {cohort: regression, shard: 0, shards: 1}
+          - {cohort: extension, shard: 0, shards: 1}
+          - {cohort: fresh, shard: 0, shards: 4}
+          - {cohort: fresh, shard: 1, shards: 4}
+          - {cohort: fresh, shard: 2, shards: 4}
+          - {cohort: fresh, shard: 3, shards: 4}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS26-BIN
+          path: mre_atlas26/bin
+      - name: Matched source SHA, one logical CPU, real E2E, independent proof
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y cryptominisat
+          chmod +x mre_atlas26/bin/*
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          COHORT="${{ matrix.cohort }}"
+          SHARD="${{ matrix.shard }}"
+          SHARDS="${{ matrix.shards }}"
+          taskset -c "$CPU" python3 -u research/drnas_atlas26_benchmark.py --cohort "$COHORT" --shard "$SHARD" --shards "$SHARDS" | tee matched.log
+          grep '^ATLAS26_FINAL ' matched.log >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "packaged/mre_atlas26/$COHORT/shard_$SHARD"
+          cp "mre_atlas26/$COHORT/shard_$SHARD/results.json" "packaged/mre_atlas26/$COHORT/shard_$SHARD/results.json"
+          cp matched.log "packaged/mre_atlas26/$COHORT/shard_$SHARD/matched.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS26-RESULT-${{ matrix.cohort }}-${{ matrix.shard }}
+          retention-days: 60
+          path: packaged/
+  audit:
+    needs: matched
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS26-RESULT-*
+          path: audits/
+          merge-multiple: true
+      - name: Cross-shard original SHA audit, PAR2 per group, SQLite
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_atlas26_audit.py | tee audit.log
+          grep '^ATLAS26_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^ATLAS26_SQL ' audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS26-FINAL-AUDIT-SQL
+          retention-days: 90
+          path: |
+            audit.log
+            mre_atlas26/audit/
