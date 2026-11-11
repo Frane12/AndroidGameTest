@@ -194,7 +194,7 @@ def main():
     audit=dict(stage=args.stage,shard=args.shard,source_manifest=manifest,manifest_sha256=ms,
                policy_upstream_sha=hashlib.sha256(json.dumps(policies,sort_keys=True).encode()).hexdigest(),
                rows=rows,summary=summary,uncertified_unsat_not_credited=True,
-               replay_nonblind=False)
+               replay_nonblind=True,mixed_cohort=True)
     (ROOT/f"audit_s{args.stage}_h{args.shard}.json").write_text(json.dumps(audit,sort_keys=True,indent=2))
     print("ATLAS19_FINAL "+json.dumps(dict(stage=args.stage,shard=args.shard,summary=summary),sort_keys=True),flush=True)
 
