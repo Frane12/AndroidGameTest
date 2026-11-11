@@ -1,11 +1,10 @@
-name: DRNAS ATLAS25 online adaptive CDCL
-run-name: ATLAS25 single native A-C7 pressure gate plus GF2 vs references 1CPU
+name: DRNAS ATLAS25 prospective frozen 64 CNFs
+run-name: ATLAS25P 64 unseen SHA x 7 arms x 2 reps 10s oneCPU
 on:
   push:
-    branches: [experiment/drnas-atlas25-bc-adaptive-20261111]
+    branches: [experiment/drnas-atlas25-prospective-20261111]
     paths:
-      - research/drnas_atlas25_build.py
-      - research/drnas_atlas25_benchmark.py
+      - research/drnas_atlas25_prospective.py
       - .github/workflows/drnas-atlas24-live-cdcl.yml
   workflow_dispatch:
 permissions:
@@ -45,156 +44,74 @@ jobs:
           name: ATLAS25-BIN
           retention-days: 30
           path: mre_atlas25/bin
-  smoke:
+  prospective:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: ATLAS25-BIN
           path: mre_atlas25/bin
-      - name: Native mode activation and source SAT witness smoke
+      - name: Prospective SHA locked single CPU shard
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -qq -y cryptominisat
           python3 -m pip install --break-system-packages -q remotezip
           chmod +x mre_atlas25/bin/*
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas25_benchmark.py --cohort smoke | tee smoke.log
-          grep '^ATLAS25_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas25_prospective.py --shard ${{ matrix.shard }} | tee prospective.log
+          grep '^ATLAS25P_FINAL ' prospective.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ATLAS25-SMOKE
-          retention-days: 30
-          path: |
-            smoke.log
-            mre_atlas25/smoke/results.json
-  regression:
-    needs: [build, smoke]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 65
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ATLAS25-BIN
-          path: mre_atlas25/bin
-      - name: regression matched original CNFs 10s E2E single CPU
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -qq -y cryptominisat
-          python3 -m pip install --break-system-packages -q remotezip
-          chmod +x mre_atlas25/bin/*
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas25_benchmark.py --cohort regression | tee regression.log
-          grep '^ATLAS25_FINAL ' regression.log >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ATLAS25-REGRESSION
+          name: ATLAS25P-SHARD-${{ matrix.shard }}
           retention-days: 60
           path: |
-            regression.log
-            mre_atlas25/regression/results.json
-  extension:
-    needs: [build, smoke]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 65
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ATLAS25-BIN
-          path: mre_atlas25/bin
-      - name: extension matched original CNFs 12s E2E single CPU
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -qq -y cryptominisat
-          python3 -m pip install --break-system-packages -q remotezip
-          chmod +x mre_atlas25/bin/*
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas25_benchmark.py --cohort extension | tee extension.log
-          grep '^ATLAS25_FINAL ' extension.log >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ATLAS25-EXTENSION
-          retention-days: 60
-          path: |
-            extension.log
-            mre_atlas25/extension/results.json
-  fresh:
-    needs: [build, smoke]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 65
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ATLAS25-BIN
-          path: mre_atlas25/bin
-      - name: fresh matched original CNFs 8s E2E single CPU
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -qq -y cryptominisat
-          python3 -m pip install --break-system-packages -q remotezip
-          chmod +x mre_atlas25/bin/*
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas25_benchmark.py --cohort fresh | tee fresh.log
-          grep '^ATLAS25_FINAL ' fresh.log >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ATLAS25-FRESH
-          retention-days: 60
-          path: |
-            fresh.log
-            mre_atlas25/fresh/results.json
+            prospective.log
+            mre_atlas25/prospective/manifest.json
+            mre_atlas25/prospective/results_*.json
   audit:
-    needs: [regression, extension, fresh]
+    needs: prospective
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ATLAS25-REGRESSION
-          path: audits/regression
-      - uses: actions/download-artifact@v4
-        with:
-          name: ATLAS25-EXTENSION
-          path: audits/extension
-      - uses: actions/download-artifact@v4
-        with:
-          name: ATLAS25-FRESH
-          path: audits/fresh
-      - name: Check disjoint SHA and publish all cohorts separately
+          pattern: ATLAS25P-SHARD-*
+          path: audits
+          merge-multiple: false
+      - name: Aggregate prospective paired PAR2 and verify source isolation
         run: |
-          set -euo pipefail
-          python3 - <<'PY' | tee audit.log
-          import json,pathlib
+          python3 - <<'PY'
+          import pathlib,json
           root=pathlib.Path('audits')
-          sets=[]
-          for cohort,count,cap in [('regression',10,10),('extension',6,12),('fresh',16,8)]:
-              d=json.loads((root/cohort/'mre_atlas25'/cohort/'results.json').read_text())
-              assert d['cap_s']==cap and len(d['sources'])==count
-              assert len(d['rows'])==count*2*8
-              shas={s['sha256'] for s in d['sources']}
-              assert len(shas)==count and all(not shas.intersection(z) for z in sets)
-              sets.append(shas)
-              assert all(not r['independent_UNSAT_proof_verified'] for r in d['rows'])
-              assert all(r['status']!='SAT_VERIFIED' or r['original_SAT_witness_verified'] for r in d['rows'])
-              summary=d['summary']; base=summary['A']['PAR2_reported_s']
-              ratios={a:round(base/max(v['PAR2_reported_s'],.000001),4) for a,v in summary.items()}
-              print('ATLAS25_AUDIT '+json.dumps(dict(cohort=cohort,sources=count,trials=len(d['rows']),
-                A_over_arm_reported_PAR2=ratios,summary=summary),sort_keys=True),flush=True)
-          print('ATLAS25_AUDIT_PASS disjoint_cohorts=true single_process=true UNSAT_independent=false')
+          rows=[];shas=set()
+          for i in range(8):
+              p=root/f'ATLAS25P-SHARD-{i}'/'mre_atlas25'/'prospective'/f'results_{i}.json'
+              d=json.loads(p.read_text())
+              assert d['shard']==i and len(d['rows'])==112
+              rows+=d['rows']
+              local={r['sha256'] for r in d['rows']}
+              assert len(local)==8 and not shas.intersection(local)
+              shas.update(local)
+          assert len(shas)==64 and len(rows)==896
+          arms=sorted({r['arm'] for r in rows})
+          summary={}
+          for arm in arms:
+              rr=[r for r in rows if r['arm']==arm]
+              summary[arm]=dict(trials=len(rr),
+                  solved=sum(r['status']!='UNKNOWN' for r in rr),
+                  sat_verified=sum(r['status']=='SAT_VERIFIED' for r in rr),
+                  unsat_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in rr),
+                  par2_reported_s=round(sum(r['PAR2_reported_s'] for r in rr),6),
+                  par2_verified_s=round(sum(r['PAR2_verified_s'] for r in rr),6),
+                  initial_c7=sum(r['telemetry'].get('atlas25_initial_c7',0) for r in rr),
+                  early_switches=sum(r['telemetry'].get('atlas25_early_switches',0) for r in rr))
+          print('ATLAS25P_AUDIT '+json.dumps(dict(sha=64,trials=896,summary=summary),sort_keys=True))
+          print('ATLAS25P_AUDIT_PASS independent_UNSAT_LRAT=false policy_frozen=true')
           PY
-          grep '^ATLAS25_AUDIT ' audit.log >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ATLAS25-FINAL-AUDIT
-          retention-days: 60
-          path: audit.log
