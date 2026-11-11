@@ -3,7 +3,7 @@
 Frozen source selection before outcomes; do not tune on this cohort.
 Generated CNFs are original inputs, NOT external competition instances.
 """
-import hashlib,json,pathlib,sys
+import argparse,hashlib,json,pathlib,sys
 sys.path.insert(0,"research")
 import drnas_atlas25_benchmark as B
 import drnas_atlas_wide500 as W
@@ -17,6 +17,7 @@ CATS=("random3_uniform","random3_planted","xor3_sat","xor4_sat",
 INDICES=(330,331,332,333,334,335,336,337)
 CAP=10
 def main():
+    ap=argparse.ArgumentParser();ap.add_argument('--shard',type=int,required=True,choices=range(8));args=ap.parse_args()
     sources=[]
     for family in CATS:
         for idx in INDICES:
@@ -41,7 +42,7 @@ def main():
     legacy=B.BIN/"drnas_atlas23"
     if not legacy.exists():legacy.symlink_to("drnas_atlas25")
     rows=[]
-    for source in sources:
+    for source in sources[args.shard*8:(args.shard+1)*8]:
         for rep in range(2):
             verdicts=set()
             for arm in ARMS:
@@ -51,8 +52,8 @@ def main():
                 if r["status"]!="UNKNOWN":verdicts.add(r["status"])
             if {"SAT_VERIFIED","UNSAT_UNVERIFIED"}<=verdicts:
                 raise AssertionError("contradictory SAT/UNSAT "+source["sha256"])
-    result=dict(manifest=manifest,rows=rows,summary=summarize(rows),
+    result=dict(manifest=manifest,shard=args.shard,rows=rows,summary=summarize(rows),
                 original_SHA_verified=True,independent_UNSAT_LRAT=False)
-    (ROOT/"prospective"/"results.json").write_text(json.dumps(result,sort_keys=True,indent=2))
-    print("ATLAS25P_FINAL "+json.dumps(dict(sources=64,trials=len(rows),summary=result["summary"]),sort_keys=True),flush=True)
+    (ROOT/"prospective"/f"results_{args.shard}.json").write_text(json.dumps(result,sort_keys=True,indent=2))
+    print("ATLAS25P_FINAL "+json.dumps(dict(shard=args.shard,sources=8,trials=len(rows),summary=result["summary"]),sort_keys=True),flush=True)
 if __name__=="__main__":main()
