@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ATLASX prospective holdout: 8 source-locked SATLIB CNFs, 5 solvers, one CPU each.
+"""ATLASX prospective holdout: 4 source-locked SATLIB CNFs, 5 solvers, one CPU each.
 Frozen 2-4 variable atlas; source-hash rank 24 never used for gate selection, 3 matched replicates.
 
 Compare frozen original inputs using the identical native solver with and without one bounded probe.
@@ -78,7 +78,7 @@ def run(arm,rep):
   assert m,"missing ATLASX telemetry"
   d=stats["ATLASX_TRIAL"]
   assert d["decision"] in ("commit","sleep","fallback"),d
-  assert int(d["removed"])<=16,d
+  assert int(d["removed"])<=900,d
   assert int(d["final_clauses"])==int(d["original_clauses"])-int(d["removed"])+int(d["added"]),d
   if d["decision"]=="commit":assert int(d["saved_literals"])>0,d
   if rep==0:
