@@ -1,0 +1,112 @@
+name: DRNAS ATLAS36 active C7 deletion gate audit
+run-name: ATLAS36 real C7 deletion 100 vs 90 vs 75 and Kissat 128 paired
+on:
+  push:
+    branches: [experiment/drnas-atlas36-active-reduce-audit-20261111]
+    paths:
+      - research/drnas_atlas36_build.py
+      - research/drnas_atlas36_benchmark.py
+      - .github/workflows/drnas-atlas36-active-reduce.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [regression, extension]
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run matched SATLIB
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_atlas36
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas36-kissat
+          git -C /tmp/atlas36-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas36-kissat && ./configure && make -j2)
+          cp /tmp/atlas36-kissat/build/kissat mre_atlas23/bin/kissat
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas36_benchmark.py --cohort ${{ matrix.cohort }} --shard ${{ matrix.shard }} | tee bench.log
+          grep '^ATLAS36_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS36-${{ matrix.cohort }}-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            bench.log
+            mre_atlas36/*/result_*.json
+  audit:
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ATLAS36-*
+          path: audits
+      - name: Paired original SHA audit
+        run: |
+          python3 - <<'PY'
+          import pathlib,json,collections
+          allrows=[]
+          for cohort,expected in [('regression',10),('extension',6)]:
+              seen=set()
+              for shard in (0,1):
+                  p=pathlib.Path('audits')/f'ATLAS36-{cohort}-{shard}'/'mre_atlas36'/cohort/f'result_{shard}.json'
+                  d=json.loads(p.read_text())
+                  rows=d['rows'];allrows+=rows
+                  assert len(rows)==(expected//2)*8,(cohort,shard,len(rows))
+                  hashes={r['sha256'] for r in rows}
+                  assert len(hashes)==expected//2 and not (seen&hashes)
+                  seen|=hashes
+              assert len(seen)==expected
+          assert len(allrows)==128
+          sums={}
+          for arm in ('KISSAT','V23_C7_STABLE','A36_90','A36_75'):
+              rr=[r for r in allrows if r['arm']==arm]
+              assert len(rr)==32
+              sums[arm]=dict(par2_s=round(sum(r['PAR2_reported_s'] for r in rr),6),
+                solved=sum(r['status']!='UNKNOWN' for r in rr),
+                sat_verified=sum(r['status']=='SAT_VERIFIED' for r in rr),
+                unsat_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in rr),
+                timeout=sum(r['status']=='UNKNOWN' for r in rr),
+                conflicts=sum(r['telemetry']['conflicts'] for r in rr),
+                deleted=sum(r['telemetry']['atlas15_deleted'] for r in rr),
+                propagations=sum(r['telemetry']['propagations'] for r in rr),
+                watch_visits=sum(r['telemetry']['watch_visits'] for r in rr),
+                peak_reported_rss_kb=max(r['telemetry']['atlas16_maxrss_kb'] for r in rr),
+                attempts=sum(r['telemetry']['atlas36_attempts'] for r in rr),
+                pressure_high=sum(r['telemetry']['atlas36_pressure_high'] for r in rr),
+                pressure_low=sum(r['telemetry']['atlas36_pressure_low'] for r in rr),
+                below48=sum(r['telemetry']['atlas36_below48'] for r in rr),
+                examined=sum(r['telemetry']['atlas36_examined'] for r in rr),
+                locked=sum(r['telemetry']['atlas36_locked'] for r in rr),
+                low_lbd=sum(r['telemetry']['atlas36_lbd'] for r in rr),
+                short=sum(r['telemetry']['atlas36_short'] for r in rr),
+                eligible=sum(r['telemetry']['atlas36_eligible'] for r in rr),
+                baseline_quota=sum(r['telemetry']['atlas36_base_quota'] for r in rr),
+                actual_quota=sum(r['telemetry']['atlas36_effective_quota'] for r in rr))
+          assert sums['V23_C7_STABLE']['baseline_quota']==sums['V23_C7_STABLE']['actual_quota']
+          assert all(sums[a]['baseline_quota']>=sums[a]['actual_quota']
+                     for a in ('A36_90','A36_75'))
+          assert any(sums[a]['actual_quota']<sums[a]['baseline_quota']
+                     for a in ('A36_90','A36_75')), 'Experiment did not actuate the active C7 path'
+          print('ATLAS36_AUDIT '+json.dumps(sums,sort_keys=True))
+          print('ATLAS36_AUDIT_PASS original_SHA=true one_cpu=true UNSAT_independent_LRAT=false')
+          PY
