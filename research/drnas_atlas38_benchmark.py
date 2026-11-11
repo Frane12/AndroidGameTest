@@ -86,7 +86,7 @@ def run(source,arm,rep,target=None):
         pass
     native=[l for l in out.splitlines() if l.startswith("ATLAS13_TRIAL ")]
     raw=dict(x.split("=",1) for x in native[-1].split()[1:] if "=" in x) if native else {}
-    metrics={field:(int(float(raw[field])) if field in raw else None)
+    metrics={field:(int(raw[field]) if field in raw else None)
              for field in METRICS}
     if arm.startswith("PULSE") and pre is not None and rc in (10,20):
         assert metrics["atlas38_applied"]==1
