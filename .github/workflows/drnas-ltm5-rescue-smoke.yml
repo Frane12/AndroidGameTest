@@ -1,28 +1,27 @@
-name: DRNAS earliest queued LTM5 smoke - pinned 55e0580
+name: DRNAS LTM5 rescue latest 6da5106
 on:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: drnas-earliest-queued-ltm5-smoke
+  group: drnas-ltm5-rescue-latest
   cancel-in-progress: false
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
-      - name: Checkout exact SHA for first queued LTM5 run 43095292436
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: '55e0580a6aac70a9bf240068fc8a9bfc713ab4c8'
+          ref: '6da51067ef1006f3a7104af4223d92504fef18e9'
           persist-credentials: false
-      - name: Verify source provenance
+      - name: Verify pinned source
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "55e0580a6aac70a9bf240068fc8a9bfc713ab4c8"
-          echo "Original queued run: https://github.com/Frane12/AndroidGameTest/actions/runs/43095292436" >> "$GITHUB_STEP_SUMMARY"
-          echo "Source SHA: 55e0580a6aac70a9bf240068fc8a9bfc713ab4c8" >> "$GITHUB_STEP_SUMMARY"
-      - name: First queued LTM5 native smoke (canonical historical job)
+          test "$(git rev-parse HEAD)" = "6da51067ef1006f3a7104af4223d92504fef18e9"
+          echo "Source SHA: 6da51067ef1006f3a7104af4223d92504fef18e9" >> "$GITHUB_STEP_SUMMARY"
+          echo "Original queued run: https://github.com/Frane12/AndroidGameTest/actions/runs/43096457033" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned latest LTM5 smoke selftests and native SAT verification
         run: |
           set -euo pipefail
           PYTHONPATH=. python3 -m unittest discover -s mi_ltm5 -p 'test_*.py' -v
@@ -38,9 +37,27 @@ jobs:
           python3 research/drnas_atlas36_build.py
           mkdir -p mre_atlas23/bin
           g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm5
+          python3 - <<'PY'
+          import pathlib,subprocess,tempfile
+          from mi_ltm5.cdcl_bridge import write_derived
+          from mi_ltm5.xor_fixtures import xor_clauses as xor
+          source=xor((1,2,3),0)+xor((2,3,4),1)
+          original=("p cnf 4 %d\n"%len(source)+"".join(" ".join(map(str,c))+" 0\n" for c in source))
+          with tempfile.TemporaryDirectory() as tmp:
+              a=pathlib.Path(tmp)/"original.cnf"
+              b=pathlib.Path(tmp)/"augmented.cnf"
+              a.write_text(original)
+              stats=write_derived(a,b)
+              assert stats["added"]==2,stats
+              assert a.read_text()==original
+              for name,p in (("BASE",a),("LTM5",b)):
+                  cmd=["mre_atlas23/bin/drnas_ltm5",str(p),"--mode","A36_75",
+                       "--time","3","--seed","1","--policy","1.0,0.85"]
+                  result=subprocess.run(cmd,capture_output=True,text=True,timeout=12)
+                  print("LTM5_NATIVE_TOY",name,"exit",result.returncode,"added",stats["added"],flush=True)
+                  assert result.returncode==10,(name,result.returncode,result.stderr[-500:],result.stdout[-500:])
+          PY
           echo 'LTM5_NATIVE_SMOKE_PASS' >> "$GITHUB_STEP_SUMMARY"
-      - name: Smoke-only scope
+      - name: Smoke only
         if: always()
-        run: |
-          echo "Runs the exact first queued native LTM5 smoke selftests, generators and compile." >> "$GITHUB_STEP_SUMMARY"
-          echo "Does not run paired benchmark, cancel queued jobs, nor alter historical outcomes." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "No matched benchmark or cancellation executed." >> "$GITHUB_STEP_SUMMARY"
