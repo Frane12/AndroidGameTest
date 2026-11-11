@@ -1,0 +1,70 @@
+name: DRNAS LTM5 rescue smoke - pinned stalled run
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-ltm5-rescue-smoke
+  cancel-in-progress: false
+
+jobs:
+  rescue-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact original source of stalled run 43096457033
+        uses: actions/checkout@v4
+        with:
+          ref: '6da51067ef1006f3a7104af4223d92504fef18e9'
+          persist-credentials: false
+      - name: Confirm immutable source commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "6da51067ef1006f3a7104af4223d92504fef18e9"
+          echo "Pinned source: 6da51067ef1006f3a7104af4223d92504fef18e9" >> "$GITHUB_STEP_SUMMARY"
+          echo "Original stalled run: https://github.com/Frane12/AndroidGameTest/actions/runs/43096457033" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned LTM5 smoke - selftests, native compile and SAT checks
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python3 -m unittest discover -s mi_ltm5 -p 'test_*.py' -v
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm5
+          python3 - <<'PY'
+          import pathlib,subprocess,tempfile
+          from mi_ltm5.cdcl_bridge import write_derived
+          from mi_ltm5.xor_fixtures import xor_clauses as xor
+          source=xor((1,2,3),0)+xor((2,3,4),1)
+          original=("p cnf 4 %d\n"%len(source)+"".join(" ".join(map(str,c))+" 0\n" for c in source))
+          with tempfile.TemporaryDirectory() as tmp:
+              a=pathlib.Path(tmp)/"original.cnf"
+              b=pathlib.Path(tmp)/"augmented.cnf"
+              a.write_text(original)
+              stats=write_derived(a,b)
+              assert stats["added"]==2,stats
+              assert a.read_text()==original
+              for name,p in (("BASE",a),("LTM5",b)):
+                  cmd=["mre_atlas23/bin/drnas_ltm5",str(p),"--mode","A36_75",
+                       "--time","3","--seed","1","--policy","1.0,0.85"]
+                  result=subprocess.run(cmd,capture_output=True,text=True,timeout=12)
+                  print("LTM5_NATIVE_TOY",name,"exit",result.returncode,"added",stats["added"],flush=True)
+                  assert result.returncode==10,(name,result.returncode,result.stderr[-500:],result.stdout[-500:])
+          PY
+          echo 'LTM5_NATIVE_SMOKE_PASS' >> "$GITHUB_STEP_SUMMARY"
+      - name: Report smoke outcome
+        if: always()
+        shell: bash
+        run: |
+          echo "This job runs ONLY the historical LTM5 smoke test from 6da51067ef1006f3a7104af4223d92504fef18e9." >> "$GITHUB_STEP_SUMMARY"
+          echo "It never starts the benchmark and does not cancel or modify queued jobs." >> "$GITHUB_STEP_SUMMARY"
