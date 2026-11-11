@@ -1,0 +1,44 @@
+name: DRNAS PCD2 native CDCL with failed literal units
+on:
+  push:
+    branches: [experiment/drnas-pcd1-parallel-conflict-20261111]
+    paths:
+      - research/drnas_pcd2_benchmark.py
+      - .github/workflows/drnas-pcd2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native C7 and PCD2 paired benchmark
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_atlas37_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_pcd2
+          g++ -O2 -std=c++17 -pthread -Wall -Wextra -Werror research/drnas_pcd1.cpp -o /tmp/drnas-pcd1
+          /tmp/drnas-pcd1 --selftest
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_pcd2_benchmark.py | tee bench.log
+          grep '^PCD2_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: PCD2-native-results
+          retention-days: 30
+          path: |
+            bench.log
+            pcd2_results/results.json
