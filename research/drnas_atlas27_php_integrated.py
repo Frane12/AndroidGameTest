@@ -3,7 +3,7 @@
 Gate emits theorem-backed UNSAT only on exact checked subformula; otherwise calls native V23.
 No claim of LRAT certification. One CPU, frozen source SHA and paired repetitions.
 """
-import argparse,hashlib,json,pathlib,sys,time
+import argparse,hashlib,json,pathlib,sys,time,subprocess,resource
 sys.path.insert(0,"research")
 import drnas_atlas_wide500 as W
 import drnas_atlas25_benchmark as B
@@ -35,17 +35,37 @@ def main():
                 t0=time.monotonic()
                 cert=prove_php(cls) if arm=="V23_PHP" else None
                 detection=time.monotonic()-t0 if arm=="V23_PHP" else 0
-                if cert:
-                    status="UNSAT_THEOREM";elapsed=time.monotonic()-t0
-                    par2=elapsed
-                    fallback=False
+                if arm=="V23_PHP":
+                    cmd=[str(B.BIN/"drnas_php_native"),str(path),
+                         str(B.BIN/"drnas_atlas23"),"--mode","V23_C7_STABLE",
+                         "--time",str(CAP),"--seed",str(rep+1)]
+                    def limits():
+                        resource.setrlimit(resource.RLIMIT_CPU,(CAP+4,CAP+5))
+                        resource.setrlimit(resource.RLIMIT_AS,(3*1024**3,3*1024**3))
+                    try:
+                        child=subprocess.run(cmd,text=True,capture_output=True,
+                            timeout=CAP,preexec_fn=limits)
+                        rc=child.returncode
+                        if rc not in (10,20,124,-9,-24,-25,15,-15):
+                            raise RuntimeError("native PHP failed rc="+str(rc)+" "+child.stderr[-300:])
+                        if rc==10:
+                            assert B.Old.Verify.model_ok(path,child.stdout),"invalid SAT witness"
+                        status=("SAT_VERIFIED" if rc==10 else
+                                "UNSAT_THEOREM" if rc==20 and "ATLAS28_PHP_THEOREM" in child.stdout else
+                                "UNSAT_UNVERIFIED" if rc==20 else "UNKNOWN")
+                    except subprocess.TimeoutExpired:
+                        status="UNKNOWN"
+                    elapsed=time.monotonic()-t0
+                    par2=elapsed if status!="UNKNOWN" else 2*CAP
+                    fallback=status!="UNSAT_THEOREM"
+                    if status=="UNSAT_THEOREM":assert cert is not None
+                    else:cert=None
                 else:
-                    actual="V23_C7_STABLE" if arm=="V23_PHP" else arm
-                    rr=B.run(source,actual,rep,max(0.001,CAP-detection))
-                    elapsed=(time.monotonic()-t0) if arm=="V23_PHP" else rr["E2E_s"]
+                    rr=B.run(source,arm,rep,CAP)
+                    elapsed=rr["E2E_s"]
                     status=rr["status"]
-                    par2=round(elapsed,6) if status!="UNKNOWN" else 2*CAP
-                    fallback=arm=="V23_PHP"
+                    par2=rr["PAR2_reported_s"]
+                    fallback=False
                 row=dict(sha256=sha,family=family,index=idx,arm=arm,rep=rep,
                     status=status,E2E_s=round(elapsed,6),PAR2_reported_s=round(par2,6),
                     detector_s=round(detection,6),fallback=fallback,
