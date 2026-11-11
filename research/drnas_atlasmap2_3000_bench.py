@@ -83,5 +83,5 @@ for local in range(50):
           "summary":summary},sort_keys=True),flush=True)
 save_checkpoint()
 print("MAP2_3K_FINAL "+json.dumps({"shard":SHARD,"count":50,
-      "cohort":"train" if SHARD<15 else "holdout",
+      "cohort":"train" if SHARD<30 else "holdout",
       "summary":summary},sort_keys=True),flush=True)
