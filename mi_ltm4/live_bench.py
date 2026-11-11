@@ -83,7 +83,10 @@ def run(*,rep=0,smoke=True,generation=1):
     if not BIN.exists() or not TRACE_BIN.exists():
         raise FileNotFoundError("Build BOTH normal and MICRO_TRACE native binaries")
     # Every family contributes a distinct training and SHA-disjoint holdout.
-    indices=(0,32) if smoke else (0,1,2,3,32,33,34,35)
+    # Native REDUCE2 reason-graph logging is enabled only for n<=50.
+    # Case indices 0 and 33 both generate n=48, unlike index 32 (n=80).
+    # Preserve SHA-disjoint generation separation and frozen heldout IDs.
+    indices=(0,33) if smoke else (0,1,2,3,32,33,34,35)
     cases=[make_case(f,i,generation=generation if i<32 else 0)
            for f in FAMILIES for i in indices]
     cases.sort(key=lambda c:c["case"]>=32)  # all training before sealed holdout
