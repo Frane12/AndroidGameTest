@@ -1,10 +1,10 @@
-name: DRNAS ATLAS25 prospective frozen 64 CNFs
-run-name: ATLAS25P 64 unseen SHA x 7 arms x 2 reps 10s oneCPU
+name: DRNAS ATLAS26 pigeonhole theorem test
+run-name: ATLAS26 pigeonhole theorem vs Kissat A with SAT controls 216 trials
 on:
   push:
-    branches: [experiment/drnas-atlas25-prospective-20261111]
+    branches: [experiment/drnas-atlas26-pigeonhole-proof-20261111]
     paths:
-      - research/drnas_atlas25_prospective.py
+      - research/drnas_atlas26_php.py
       - .github/workflows/drnas-atlas24-live-cdcl.yml
   workflow_dispatch:
 permissions:
@@ -44,74 +44,66 @@ jobs:
           name: ATLAS25-BIN
           retention-days: 30
           path: mre_atlas25/bin
-  prospective:
+  php:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 80
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
-        shard: [0,1,2,3,4,5,6,7]
+        shard: [0,1,2,3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: ATLAS25-BIN
           path: mre_atlas25/bin
-      - name: Prospective SHA locked single CPU shard
+      - name: Exact pigeonhole structural theorem and negative controls
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -qq -y cryptominisat
           python3 -m pip install --break-system-packages -q remotezip
           chmod +x mre_atlas25/bin/*
-          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas25_prospective.py --shard ${{ matrix.shard }} | tee prospective.log
-          grep '^ATLAS25P_FINAL ' prospective.log >> "$GITHUB_STEP_SUMMARY"
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas26_php.py --shard ${{ matrix.shard }} | tee php.log
+          grep '^ATLAS26_FINAL ' php.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ATLAS25P-SHARD-${{ matrix.shard }}
+          name: ATLAS26-PHP-${{ matrix.shard }}
           retention-days: 60
           path: |
-            prospective.log
-            mre_atlas25/prospective/manifest.json
-            mre_atlas25/prospective/results_*.json
+            php.log
+            mre_atlas26/php/results_*.json
   audit:
-    needs: prospective
+    needs: php
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: ATLAS25P-SHARD-*
+          pattern: ATLAS26-PHP-*
           path: audits
-          merge-multiple: false
-      - name: Aggregate prospective paired PAR2 and verify source isolation
+      - name: Aggregate SHA and validate controls
         run: |
           python3 - <<'PY'
-          import pathlib,json
-          root=pathlib.Path('audits')
-          rows=[];shas=set()
-          for i in range(8):
-              p=root/f'ATLAS25P-SHARD-{i}'/'mre_atlas25'/'prospective'/f'results_{i}.json'
-              d=json.loads(p.read_text())
-              assert d['shard']==i and len(d['rows'])==112
-              rows+=d['rows']
-              local={r['sha256'] for r in d['rows']}
-              assert len(local)==8 and not shas.intersection(local)
-              shas.update(local)
-          assert len(shas)==64 and len(rows)==896
-          arms=sorted({r['arm'] for r in rows})
-          summary={}
+          import json,pathlib
+          rows=[];seen=set()
+          for i in range(4):
+              p=pathlib.Path('audits')/f'ATLAS26-PHP-{i}'/'mre_atlas26'/'php'/f'results_{i}.json'
+              d=json.loads(p.read_text());assert d['shard']==i and len(d['rows'])==54
+              ss={r['sha256'] for r in d['rows']}
+              assert len(ss)==9 and not seen.intersection(ss)
+              seen|=ss;rows+=d['rows']
+          assert len(seen)==36 and len(rows)==216
+          arms=sorted({r['arm'] for r in rows});summary={}
           for arm in arms:
               rr=[r for r in rows if r['arm']==arm]
-              summary[arm]=dict(trials=len(rr),
-                  solved=sum(r['status']!='UNKNOWN' for r in rr),
-                  sat_verified=sum(r['status']=='SAT_VERIFIED' for r in rr),
-                  unsat_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in rr),
-                  par2_reported_s=round(sum(r['PAR2_reported_s'] for r in rr),6),
-                  par2_verified_s=round(sum(r['PAR2_verified_s'] for r in rr),6),
-                  initial_c7=sum(r['telemetry'].get('atlas25_initial_c7',0) for r in rr),
-                  early_switches=sum(r['telemetry'].get('atlas25_early_switches',0) for r in rr))
-          print('ATLAS25P_AUDIT '+json.dumps(dict(sha=64,trials=896,summary=summary),sort_keys=True))
-          print('ATLAS25P_AUDIT_PASS independent_UNSAT_LRAT=false policy_frozen=true')
+              summary[arm]=dict(par2_s=round(sum(r['PAR2_reported_s'] for r in rr),6),
+                  trials=len(rr),sat=sum(r['status']=='SAT_VERIFIED' for r in rr),
+                  theorem=sum(r['status']=='UNSAT_THEOREM' for r in rr),
+                  unknown=sum(r['status']=='UNKNOWN' for r in rr))
+          assert summary['PHP_THEOREM']['theorem']==24
+          assert all(r['status']!='UNSAT_THEOREM' for r in rows if r['family']!='pigeonhole_unsat')
+          print('ATLAS26_AUDIT '+json.dumps(dict(sha=36,trials=216,summary=summary),sort_keys=True))
+          print('ATLAS26_AUDIT_PASS theorem_not_LRAT=true negative_controls=true')
           PY
