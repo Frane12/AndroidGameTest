@@ -20,6 +20,14 @@ one("    bool atlas16_keep_=false;", """
     uint64_t atlas17_last_watch_=0, atlas17_last_prop_=0;
     uint64_t atlas17_pressure_cycles_=0, atlas17_low_cycles_=0;
     bool atlas16_keep_=false;""".strip("\n"))
+one("""                if(atlas15_enabled_ && stats_.conflicts%10000==0)atlas15_reduce_db();""",
+"""                // Legacy C5/C6 scheduling is deliberately identical to ATLAS16.
+                // C7 activates its own measured 1500-conflict sampling schedule.
+                if(atlas15_enabled_ &&
+                   ((atlas17_adaptive_ && stats_.conflicts%1500==0) ||
+                    (!atlas17_adaptive_ && stats_.conflicts%10000==0)))
+                    atlas15_reduce_db();""")
+
 one("""        if(stats_.conflicts%1500!=0)return;
         ++atlas15_reductions_;""", """        if(stats_.conflicts%1500!=0)return;
         if(atlas17_adaptive_){
