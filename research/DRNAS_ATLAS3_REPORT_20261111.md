@@ -104,3 +104,71 @@ very easy SAT formulas.
   expected saving estimate or a very cheap certified direct reduction,
   and remain on a new experiment branch. No performance claim from
   either of the completed two cohorts.
+
+
+## Final third cohort — 8 prospective SHA-selected original random-3SAT CNFs
+
+[Successful 8/8-shard GitHub Actions run](https://github.com/Frane12/AndroidGameTest/actions/runs/42937235798).
+Four SATLIB families `uf100-430`, `uf150-645`, `uf200-860`,
+`uf250-1065`; 2 previously unused SHA256(family|basename)
+source-only selection ranks **16/17** in each family; exact original CNF
+SHA256 recorded per shard. Six arms, 2 repeats, 12 s cap, one logical CPU
+per arm, SAT witness independently checked against original CNF.
+All **16/16 SAT** per arm, zero UNKNOWN, zero UNSAT.
+
+| Arm | Verified SAT | Total PAR2 (s) |
+|---|---:|---:|
+| CaDiCaL | 16/16 | **1.653633** |
+| ATLAS3 (gate >=12) | 16/16 | 1.776902 |
+| DRNAS A | 16/16 | 1.796231 |
+| ATLAS3_STRICT (gate >=32) | 16/16 | 1.800268 |
+| Frozen ATLAS2 | 16/16 | 1.825489 |
+| Kissat | 16/16 | 2.527845 |
+
+**The most convincing finding is structural abstention, not runtime
+superiority:** both ATLAS3 thresholds returned **SLEEP on all 8
+formulas**, and frozen ATLAS2 independently returned **SLEEP on all 8
+formula runs** after attempting the full scan. Thus the cheap gate avoided
+eight useless deep atlas probes on previously unseen original CNFs,
+without missing any accepted ATLAS2 rewrites within the compared cap.
+
+First-repeat preprocessing internal telemetry:
+
+| Family rank | ATLAS3 gate (µs) | Frozen ATLAS2 no-op index+probe (µs) | Gate score |
+|---|---:|---:|---:|
+| uf100 rank16 | 14 | 425 | 3 |
+| uf100 rank17 | 16 | 402 | 9 |
+| uf150 rank16 | 15 | 656 | 3 |
+| uf150 rank17 | 13 | 513 | 0 |
+| uf200 rank16 | 15 | 749 | 6 |
+| uf200 rank17 | 13 | 700 | 0 |
+| uf250 rank16 | 12 | 984 | 0 |
+| uf250 rank17 | 15 | 1081 | 3 |
+
+An approximate **49x lower no-op preprocessing probe time** on these
+8 formulas, comparing first-repeat instrumented internal measurements.
+This is **NOT a 49x end-to-end SAT speedup**. The observed total PAR2
+differences, particularly those in the difficult `uf250` family,
+can be dominated by runtime noise/search variance. ATLAS3's PAR2 ratio
+to DRNAS A is only about 1.011x, too little for a strong claim.
+
+## Final conclusions and next hypothesis
+
+The ATLAS3 gate is functionally validated on three distributions:
+it opens the catalog for repeated circuit-like structure, and
+correctly abstains from the deep catalog on a separate source-frozen
+random-3SAT cohort with no accepted ATLAS2 reductions. This meets
+the **cost-avoidance** design goal but does not establish predictable
+downstream runtime benefit.
+
+The next step should NOT blindly increase NPN table size. Instead:
+(1) learn an opportunity-to-search-benefit predictor only from a
+separate *training* cohort; (2) test it against untouched frozen
+holdout examples and a placebo gate; (3) prefer a direct, proof-checked,
+low-overhead reduction when an exact consequence can be obtained
+without fully scanning the atlas; (4) evaluate medium-hard structured
+instances with nontrivial CDCL conflict reduction, not only 5ms SAT.
+
+Stable main remains unchanged. Exact Boolean equivalence of each
+committed local block is verified over all assignments to its
+2–4 variables; there is NO independent UNSAT LRAT certification.
