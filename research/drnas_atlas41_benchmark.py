@@ -11,7 +11,7 @@ sys.path.insert(0, "research")
 import drnas_atlas_wide500 as W
 import drnas_atlas21_official as Verify
 
-ARMS = ("V23_C7_STABLE", "A36_75", "A39_SHADOW", "A39_PROTECT", "KISSAT")
+ARMS = ("A36_75", "A39_PROTECT", "A41_GUARD", "A41_DECAY", "KISSAT")
 ROOT = pathlib.Path("mre_atlas41")
 BIN = pathlib.Path("mre_atlas23/bin")
 REGRESSION_INDEX = (0, 1)
@@ -93,14 +93,14 @@ def run(source, mode, rep, cap):
                 "V23_C7_STABLE":"atlas23_stable_phase"}[mode]
         assert telem[flag] == 1, ("Mode was not activated", mode, flag)
     if rc in (10,20):
-        expected_pct = {"V23_C7_STABLE":100,"A36_75":75,"A39_SHADOW":75,"A39_PROTECT":75}
+        expected_pct = {"V23_C7_STABLE":100,"A36_75":75,"A39_PROTECT":75,"A41_GUARD":75,"A41_DECAY":75}
         if mode in expected_pct:
             assert telem["atlas36_quota_pct"] == expected_pct[mode], (
                 "ATLAS41 mode did not activate",mode,telem)
             assert telem["atlas23_stable_phase"] == 1, (
                 "ATLAS41 should retain C7 stable phase",mode)
-    if rc in (10,20) and mode in ("A39_SHADOW","A39_PROTECT"):
-        assert telem["atlas39_mode"]==(1 if mode=="A39_SHADOW" else 2), ("utility mode not activated",mode,telem)
+    if rc in (10,20) and mode in ("A39_PROTECT","A41_GUARD","A41_DECAY"):
+        assert telem["atlas39_mode"]=={"A39_PROTECT":2,"A41_GUARD":3,"A41_DECAY":4}[mode], ("utility mode not activated",mode,telem)
         assert telem["atlas23_stable_phase"]==1, "stable phase must be active"
     if mode.startswith("A41_") and rc in (10,20):
         assert telem["atlas41_eligible_scored"]>=telem["atlas41_guarded"]+telem["atlas41_decay_guarded"]
