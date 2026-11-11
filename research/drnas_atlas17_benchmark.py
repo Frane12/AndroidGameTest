@@ -70,7 +70,7 @@ def run_solver(source,arm,rep,policy):
     f=ROOT/"current.cnf";f.write_bytes(raw)
     assert hashlib.sha256(raw).hexdigest()==source["sha256"]
     seed=int.from_bytes(hashlib.sha256(f"ATLAS17|{source['sha256']}|{rep}".encode()).digest()[:8],"big")
-    native=str((ROOT/"bin/drnas_atlas16").resolve())
+    native=str((ROOT/"bin/drnas_atlas17").resolve())
     if arm in ("KISSAT","CMS"):
         cmd=([str((ROOT/"bin/kissat").resolve()),str(f.resolve())] if arm=="KISSAT"
             else ["cryptominisat5","--threads=1","--verb=0","--maxtime=8",str(f.resolve())])
