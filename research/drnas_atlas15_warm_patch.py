@@ -110,6 +110,6 @@ src=src.replace(needle2,"                if(atlas13_c_enabled_ && (atlas13_next(
 needle3="                auto [learned, target] = analyze(conflicting);"
 assert src.count(needle3)==1
 src=src.replace(needle3,needle3+"\n                atlas13_clause_feedback(learned);")
-dest=pathlib.Path("mre_atlas13/drnas_native_core_c.hpp")
+dest=pathlib.Path("mre_atlas15/drnas_native_core_c.hpp")
 dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(src)
 print("ATLAS13_C_PATCH_PASS generated",dest,"source_bytes",len(src))
