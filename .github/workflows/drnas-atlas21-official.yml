@@ -1,0 +1,94 @@
+name: DRNAS ATLAS21 official hard CNF pilot
+run-name: ATLAS21 official 2024 4 original SHA x 6 arms x 2 reps 30s 1CPU
+on:
+  push:
+    branches: [experiment/drnas-atlas21-official-hard-20261111]
+    paths:
+      - research/drnas_atlas21_official.py
+      - .github/workflows/drnas-atlas21-official.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frozen DRNAS and pinned Kissat
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_atlas21_official.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          mkdir -p mre_atlas15/bin mre_atlas21/bin
+          g++ -std=c++17 -O2 -I mre_atlas19 -I mre_atlas15 mre_atlas19/native.cpp -o mre_atlas21/bin/drnas_atlas21
+          mre_atlas21/bin/drnas_atlas21 --selftest
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/atlas21-kissat
+          git -C /tmp/atlas21-kissat checkout --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/atlas21-kissat && ./configure && make -j2)
+          cp /tmp/atlas21-kissat/build/kissat mre_atlas21/bin/kissat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS21-FROZEN-BIN
+          path: mre_atlas21/bin
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS21-FROZEN-BIN
+          path: mre_atlas21/bin
+      - name: Smoke first original source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat python3-remotezip
+          chmod +x mre_atlas21/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas21_official.py --smoke | tee smoke.log
+          grep '^ATLAS21_FINAL ' smoke.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS21-SMOKE
+          path: |
+            smoke.log
+            mre_atlas21/manifest.json
+            mre_atlas21/smoke.json
+  pilot:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ATLAS21-FROZEN-BIN
+          path: mre_atlas21/bin
+      - name: Four original SHA matched paired benchmark
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat python3-remotezip
+          chmod +x mre_atlas21/bin/*
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_atlas21_official.py | tee pilot.log
+          grep '^ATLAS21_FINAL ' pilot.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ATLAS21-PILOT
+          retention-days: 60
+          path: |
+            pilot.log
+            mre_atlas21/manifest.json
+            mre_atlas21/pilot.json
