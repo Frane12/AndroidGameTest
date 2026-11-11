@@ -6,7 +6,7 @@ def xor(v,rhs):
 class BridgeTests(unittest.TestCase):
  def test_provenance_and_derived_binary(self):
   a,st=derived_clauses(xor((1,2,3),0)+xor((2,3,4),1))
-  self.assertEqual(set(a),{(-1,-4),(1,4)})
+  self.assertEqual(set(a),{(-4,-1),(1,4)})
   self.assertEqual(st["proof_checked"],1)
  def test_no_incomplete_xor(self):
   a,st=derived_clauses(xor((1,2,3),0)[:-1]+xor((2,3,4),1))
