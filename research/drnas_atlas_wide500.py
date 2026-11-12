@@ -48,7 +48,7 @@ def parse_original(data):
     if pending or len(clauses)!=declared:raise ValueError("CNF parse mismatch")
     return n,clauses
 
-def source_corpus(limit=25, families=None):
+def source_corpus(limit=25, families=None, timeout=90):
     # Restrict expensive pinned SATLIB downloads when a benchmark needs a subset.
     # Default stays identical for existing WIDE500 callers.
     selected=SOURCES if families is None else tuple(families)
@@ -57,7 +57,7 @@ def source_corpus(limit=25, families=None):
     result={}
     for family in selected:
         entry=next(a for a in META["archives"] if a["set"]==family)
-        with urllib.request.urlopen(entry["url"],timeout=90) as r:archive=r.read()
+        with urllib.request.urlopen(entry["url"],timeout=timeout) as r:archive=r.read()
         if hashlib.sha256(archive).hexdigest()!=entry["archive_sha256"]:
             raise RuntimeError("frozen archive SHA failure: "+family)
         with tarfile.open(fileobj=io.BytesIO(archive),mode="r:gz") as tar:
