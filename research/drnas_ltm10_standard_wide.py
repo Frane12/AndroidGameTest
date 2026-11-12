@@ -85,7 +85,7 @@ def get_memory(train, root):
         for c in train:
             for name, policy in A.POLICIES.items():
                 r=execute("LTM10_LEARNED",c,name,17,cap=2.0)
-                record=dict(stage="TRAIN",sha256=c["sha256"],bucket=c["bucket"],**r)
+                record=dict(r, stage="TRAIN", bucket=c["bucket"])
                 log.write(json.dumps(record)+"\n")
                 if r["status"] in ("INVALID_SAT","ERROR"):
                     raise RuntimeError("Invalid training result: "+str(record))
