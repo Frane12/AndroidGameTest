@@ -80,13 +80,15 @@ def run(case,rep,arm):
         cmd=[str(BINARY),str(cnf),"--mode",mode,"--time",str(left),
              "--seed",str(rep+1),"--policy","1.0,0.85"]
         def limits():
-            resource.setrlimit(resource.RLIMIT_CPU,(6,7))
+            resource.setrlimit(resource.RLIMIT_CPU,(int(CAP)+2,int(CAP)+3))
             resource.setrlimit(resource.RLIMIT_AS,(3*1024**3,3*1024**3))
         try:
             proc=subprocess.run(cmd,text=True,capture_output=True,timeout=left+0.08,
                                 preexec_fn=limits)
             rc,out=proc.returncode,proc.stdout
-            if rc not in (0,10,20):
+            if rc == -24:  # SIGXCPU: resource timeout, not a solver verdict
+                rc=124
+            if rc not in (0,10,20,124):
                 raise RuntimeError(f"native exit {rc} {proc.stderr[-400:]}")
         except subprocess.TimeoutExpired:
             rc=124
