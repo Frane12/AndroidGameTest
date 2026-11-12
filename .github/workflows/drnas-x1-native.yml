@@ -1,0 +1,98 @@
+name: DRNAS X1 NATIVE — original C++ CDCL and implication horizon
+on:
+  push:
+    branches: [experiment/drnas-x1-native-horizon-20261112]
+    paths:
+      - src/drnas_x1.cpp
+      - research/drnas_x1_bench.py
+      - tests/test_random.py
+      - .github/workflows/drnas-x1-native.yml
+      - README_X1.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x1-native-one-runner
+  cancel-in-progress: true
+jobs:
+  native_and_paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build independent C++20 native solver (no APK)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic src/drnas_x1.cpp -o build/drnas-x1
+          g++ --version | head -n 1 | tee x1_versions.txt
+          git rev-parse HEAD >> x1_versions.txt
+      - name: Brute-force differential correctness, 1400 CNFs x 2 modes
+        run: |
+          set -euo pipefail
+          python3 tests/test_random.py --cases 1400
+      - name: Native-only 100 source-distinct CNF smoke with 200 verified trials
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X1_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x1_bench.py --smoke | tee x1_smoke.log
+      - name: Install pinned SAT references and range reader (benchmark only)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/x1-kissat
+          git -C /tmp/x1-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/x1-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/x1-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/x1-kissat && ./configure && make -j2)
+          sudo install /tmp/x1-kissat/build/kissat /usr/local/bin/kissat
+          git -C /tmp/x1-kissat rev-parse HEAD >> x1_versions.txt
+          cadical --version >> x1_versions.txt
+          cryptominisat5 --version >> x1_versions.txt
+          python3 -m venv .x1venv
+          .x1venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: X1 native two modes vs Kissat CaDiCaL CMS, 12 SAT2024 originals
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .x1venv/bin/python -u research/drnas_x1_bench.py --official | tee x1_official.log
+      - name: Report verified PAR2 and solved counts
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          rows=['## DRNAS X1 NATIVE','',
+                'C++20 native baseline vs implication horizon. Original CNF SAT witnessed; unverified large UNSAT penalized.','',
+                '| Group | Solver | Verified solved | Verified PAR2 (s) |',
+                '|---|---|---:|---:|']
+          for cohort in ('smoke','official'):
+              p=pathlib.Path('drnas_x1_results')/cohort/'report.json'
+              if not p.exists(): continue
+              result=json.loads(p.read_text())
+              for arm,v in result.items():
+                  if isinstance(v,dict) and 'PAR2_verified_s' in v:
+                      rows.append(f"| {cohort} | {arm} | {v['solved']} / {v['trials']} | {v['PAR2_verified_s']:.4f} |")
+          rows += ['', 'Official archive reused from past work: exploratory, not blind. X1 and reference solvers run separately under equal wall caps.']
+          output='\n'.join(rows)+'\n'
+          print(output)
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(output)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x1-native-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x1_versions.txt
+            x1_smoke.log
+            x1_official.log
+            drnas_x1_results/smoke/trials.jsonl
+            drnas_x1_results/smoke/selection.json
+            drnas_x1_results/smoke/report.json
+            drnas_x1_results/official/trials.jsonl
+            drnas_x1_results/official/selection.json
+            drnas_x1_results/official/report.json
