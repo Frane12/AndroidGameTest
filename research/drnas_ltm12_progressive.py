@@ -130,13 +130,14 @@ def gain(model, cases, win_margin=0.03):
     return dict(gain_s=round(improvement, 6), wins=wins,
                 regressions=regressions, switches=switches)
 
-def fit(train, validation, mode, win_margin=0.03, min_gain=0.5):
+def fit(train, validation, mode, win_margin=0.03, min_gain=0.5, extra_arms=()):
     """Thresholds and candidate selected using TRAIN only; one validation gate."""
     if len(train) < 20 or len(validation) < 10:
         raise ValueError("insufficient train/validation split")
     base = blank(mode)
     alternates = (("LTM8_FAST",) if mode == "NATIVE" else
                   ("CaDiCaL", "CryptoMiniSat", "LTM9_FAST", "LTM8_FAST"))
+    alternates += tuple(extra_arms)
     candidates = []
     for name in F.FEATURES:
         values = sorted({float(f[name]) for f, _ in train})
