@@ -1,0 +1,107 @@
+name: DRNAS S1 SELECTIVE REDUCE proof-first with CaDiCaL fallback
+on:
+  push:
+    branches: [experiment/drnas-selective-reduce-20261112]
+    paths:
+      - .github/workflows/drnas-selective-reduce-s1.yml
+      - research/drnas_selective_reduce_s1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-selective-reduce-s1-one-runner
+  cancel-in-progress: true
+
+jobs:
+  selective_reduction_benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference solver versions (no APK)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/s1-kissat
+          git -C /tmp/s1-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/s1-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/s1-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/s1-kissat && ./configure && make -j2)
+          sudo install /tmp/s1-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/s1-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+          } > selective_reduce_versions.txt
+
+      - name: Verify proof-gate implementation and contradictions
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_selective_reduce_s1.py research/drnas_ltm12_dynamic.py
+          python3 research/drnas_selective_reduce_s1.py --selftest
+          python3 - <<'PY'
+          import pathlib, sys, tempfile
+          sys.path.insert(0, "research")
+          import drnas_selective_reduce_s1 as S
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/"source.cnf"
+              p.write_text("p cnf 3 4\n1 2 3 0\n1 -2 -3 0\n-1 2 -3 0\n-1 -2 3 0\n")
+              assert S.precheck(p) == "xor3_candidate"
+              assert S.D.shortcut(p) == "gf2_elimination"
+              p.write_text("p cnf 2 2\n1 0\n-1 0\n")
+              assert S.D.shortcut(p) is None
+              print("S1_PROOF_GATE_AUDIT_PASS", flush=True)
+          PY
+
+      - name: Install remote official SAT2024 archive reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .s1venv
+          .s1venv/bin/python -m pip install --disable-pip-version-check remotezip
+
+      - name: One logical CPU paired synthetic and official original CNF verification
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "S1_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .s1venv/bin/python -u research/drnas_selective_reduce_s1.py --seed 82021112 | tee selective_reduce_s1.log
+
+      - name: Summarize verified PAR2 against best reference
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          path='drnas_selective_reduce_s1/combined.json'
+          result=json.load(open(path))
+          fn=os.getenv('GITHUB_STEP_SUMMARY')
+          lines=['## DRNAS S1 selective structural reduction','',
+                 'Exploratory results. One logical CPU; SAT witnesses verified on original CNF. Reused synthetic generators and SAT2024 archive: NOT globally blind.','',
+                 '| Set | Best reference | Reference PAR2 (s) | S1 verified PAR2 (s) | Reduction | 30% exploratory target |',
+                 '|---|---|---:|---:|---:|---|']
+          for name,study in result['results'].items():
+              vals=study['PAR2'];best=study['best_reference']
+              lhs=vals[best]['PAR2_verified_s'];rhs=vals['SELECTIVE_REDUCE']['PAR2_verified_s']
+              delta=100*(1-rhs/lhs) if lhs else 0
+              lines.append(f'| {name} | {best} | {lhs:.6f} | {rhs:.6f} | {delta:+.2f}% | {"YES (exploratory)" if delta>=30 else "NO"} |')
+          if fn:
+              with open(fn,'a') as f:f.write('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-s1-selective-reduce-compact-results
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            selective_reduce_s1.log
+            selective_reduce_versions.txt
+            drnas_selective_reduce_s1/*.json
+            drnas_selective_reduce_s1/synthetic/*.json
+            drnas_selective_reduce_s1/synthetic/*.jsonl
+            drnas_selective_reduce_s1/official/*.json
+            drnas_selective_reduce_s1/official/*.jsonl
