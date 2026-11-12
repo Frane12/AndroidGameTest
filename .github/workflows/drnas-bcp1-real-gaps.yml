@@ -1,0 +1,71 @@
+name: DRNAS BCP1 native propagation real gaps
+on:
+  push:
+    branches: [experiment/drnas-bcp1-real-gaps-20261112]
+    paths:
+      - '.github/workflows/drnas-bcp1-real-gaps.yml'
+      - 'research/drnas_bcp1*'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-bcp1-real-gaps-20261112
+  cancel-in-progress: false
+jobs:
+  paired_real_gaps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Pin references and environment
+        run: |
+          set -euo pipefail
+          mkdir -p bcp1_results
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          python3 -m pip install remotezip==0.12.3
+          dpkg-query -W cryptominisat > bcp1_results/cryptominisat-package.txt
+          sha256sum built/bin/kissat_4_0_4 built/bin/cadical_3_0_1 /usr/bin/cryptominisat5 > bcp1_results/reference-hashes.txt
+          lscpu > bcp1_results/cpu.txt
+          git rev-parse HEAD > bcp1_results/commit.txt
+      - name: Compile frozen baseline and two isolated propagation variants
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_r28_native_build.py
+          python3 research/drnas_bcp1_build.py
+      - name: Brute force, original certificates, backtracking and compaction under UBSan
+        run: |
+          set -euo pipefail
+          python3 research/drnas_bcp1_selftest.py | tee bcp1_results/selftest.log
+      - name: Serial one CPU original SAT2024 paired competition 360 trials
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_bcp1_benchmark.py | tee bcp1_results/live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-bcp1-real-gaps-compact
+          path: |
+            bcp1_results/
+            !bcp1_results/cases/
+            !bcp1_results/controls/
+            mre_bcp1/BLOCKER
+            mre_bcp1/CIRCULAR
+            mre_bcp1/pins.json
+            mre_r28_native/pins.json
+            research/drnas_bcp1_protocol.md
+            research/drnas_bcp1_sources.json
+          retention-days: 60
