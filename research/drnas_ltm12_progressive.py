@@ -111,7 +111,7 @@ def score(rows, arm, feature):
     routed = base + feature.get("feature_extract_s", 0)
     return routed if routed <= cap else 2 * cap
 
-def gain(model, cases):
+def gain(model, cases, win_margin=0.03):
     default = model["default"]
     improvement = 0.0
     wins = regressions = switches = 0
@@ -123,17 +123,17 @@ def gain(model, cases):
         improvement += delta
         if chosen != default:
             switches += 1
-            if delta > 0.03:
+            if delta > win_margin:
                 wins += 1
-            elif delta < -0.03:
+            elif delta < -win_margin:
                 regressions += 1
     return dict(gain_s=round(improvement, 6), wins=wins,
                 regressions=regressions, switches=switches)
 
-def fit(train, validation, mode):
+def fit(train, validation, mode, win_margin=0.03, min_gain=0.5):
     """Thresholds and candidate selected using TRAIN only; one validation gate."""
-    if len(train) != 60 or len(validation) != 20:
-        raise ValueError("unexpected train/validation split")
+    if len(train) < 20 or len(validation) < 10:
+        raise ValueError("insufficient train/validation split")
     base = blank(mode)
     alternates = (("LTM8_FAST",) if mode == "NATIVE" else
                   ("CaDiCaL", "CryptoMiniSat", "LTM9_FAST", "LTM8_FAST"))
@@ -150,10 +150,10 @@ def fit(train, validation, mode):
                     model = dict(base, enabled=True, alternate=alternate,
                                  feature=name, threshold=threshold,
                                  less_equal=sense, status="train-candidate")
-                    t = gain(model, train)
+                    t = gain(model, train, win_margin)
                     if t["wins"] < 2 or t["switches"] < 4:
                         continue
-                    if t["gain_s"] <= max(0.5, CAPS["train"] * 0.15):
+                    if t["gain_s"] <= min_gain:
                         continue
                     candidates.append((t["gain_s"], model, t))
     candidates.sort(key=lambda x: (-x[0], x[1]["feature"],
@@ -163,9 +163,9 @@ def fit(train, validation, mode):
         base["candidate_count"] = 0
         return base
     train_gain, candidate, training = candidates[0]
-    checked = gain(candidate, validation)
+    checked = gain(candidate, validation, win_margin)
     accepted = (checked["wins"] >= 2 and checked["switches"] >= 2
-                and checked["gain_s"] > 0.5
+                and checked["gain_s"] > min_gain
                 and checked["wins"] >= checked["regressions"])
     model = candidate if accepted else base
     model["status"] = "validated" if accepted else "validation-rejected"
@@ -344,3 +344,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

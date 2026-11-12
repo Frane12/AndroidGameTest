@@ -1,0 +1,83 @@
+name: DRNAS LTM12 FAST600 verified synthetic SAT learning
+on:
+  push:
+    branches: [experiment/drnas-ltm12-fast600-20261112]
+    paths:
+      - .github/workflows/drnas-ltm12-fast600.yml
+      - research/drnas_ltm12_progressive.py
+      - research/drnas_ltm12_fast600.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm12-fast600-one-runner
+  cancel-in-progress: true
+jobs:
+  train_validate_holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference solvers (no APK, no Android build)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/drnas-ltm12-kissat
+          git -C /tmp/drnas-ltm12-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/drnas-ltm12-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/drnas-ltm12-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/drnas-ltm12-kissat && ./configure && make -j2)
+          sudo install /tmp/drnas-ltm12-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/drnas-ltm12-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > ltm12_versions.txt
+      - name: Build frozen native SAT engines and independently check mathematical certificates
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_ltm9_selftest.py
+          python3 research/drnas_ltm9_independent_cert.py
+      - name: Syntax, policy and original-CNF witness selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ltm12_progressive.py research/drnas_ltm11_real2.py research/drnas_ltm11_policy.py
+          python3 research/drnas_ltm12_fast600.py --selftest
+      - name: SAT smoke on all five actual solvers
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, pathlib, sys, tempfile
+          sys.path.insert(0,"research")
+          import drnas_ltm12_progressive as L
+          L.setup_source()
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/"tiny-original.cnf"
+              p.write_text("p cnf 3 3\n1 2 0\n-2 3 0\n-3 0\n")
+              s={"path":str(p),"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),
+                 "id":-1,"split":"train"}
+              for arm in L.SCREEN_ARMS:
+                  row=L.run_checked(arm,s,17,3.0)
+                  assert row["status"]=="SAT_VERIFIED",(arm,row)
+                  print("LTM12_SMOKE_PASS",arm,row["e2e_s"],flush=True)
+          PY
+      - name: One CPU 600 quick SAT formulas with verified learning
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ltm12_fast600.py | tee ltm12_fast600.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm12-fast600-compact
+          retention-days: 14
+          path: |
+            ltm12_versions.txt
+            ltm12_fast600.log
+            ltm12_fast600/*.json
+            ltm12_fast600/*.jsonl
+
