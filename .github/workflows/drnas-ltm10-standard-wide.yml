@@ -43,6 +43,26 @@ jobs:
           python3 research/drnas_ltm9_selftest.py
           python3 research/drnas_ltm9_wide.py --selftest
           python3 -m py_compile research/drnas_ltm10_adaptive.py research/drnas_ltm10_standard_wide.py
+      - name: Smoke train all 40 cases and six solvers before full benchmark
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,sys,tempfile
+          sys.path.insert(0,'research')
+          import drnas_ltm10_standard_wide as B
+          with tempfile.TemporaryDirectory() as tmp:
+              root=pathlib.Path(tmp); cases=root/'cases';cases.mkdir()
+              train=B.make_cases(B.TRAIN_INDICES,cases)
+              assert len({c['sha256'] for c in train})==40
+              mem=B.get_memory(train,root)
+              assert mem and all(x['policy'] in B.A.POLICIES for x in mem.values())
+              case=next(c for c in train if c['family']=='random3_sat')
+              for arm in B.ARMS:
+                  choice=mem.get(case['bucket'],{}).get('policy','conservative') if arm=='LTM10_LEARNED' else 'conservative'
+                  result=B.execute(arm,case,choice,17,cap=2)
+                  assert result['status']=='SAT_VERIFIED',(arm,result)
+              print('LTM10_WIDE_PREFLIGHT_PASS train=40 solver_smoke=6',flush=True)
+          PY
       - name: Run 300 disjoint synthetic CNF x 3 repeats x 6 arms
         run: |
           set -euo pipefail
