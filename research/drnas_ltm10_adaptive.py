@@ -84,7 +84,8 @@ def main():
     for bucket,arms in train.items():
         base=statistics.median(arms['conservative'])
         candidates={k:statistics.median(v) for k,v in arms.items() if len(v)>=3}
-        best=min(candidates,key=candidates.get)
+        # Sparse buckets are expected: default safely rather than crashing.
+        best=min(candidates,key=candidates.get) if candidates else 'conservative'
         chosen=best if best!='conservative' and candidates[best]<base*.9 else 'conservative'
         memory[bucket]=dict(policy=chosen,observations=len(arms['conservative']),medians=candidates)
     (root/'frozen_memory.json').write_text(json.dumps(memory,indent=2,sort_keys=True))
