@@ -203,11 +203,11 @@ def main():
           invalid=len(bad))),flush=True)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:
-            out.write("300 synthetic SHA-disjoint CNFs × 3 repeats × 6 arms = 5400 E2E trials; one logical CPU; 8-second cap per trial. Train 40 additional SHA-disjoint CNFs.\\n\\n")
-            out.write("| Solver | Reported solved | SAT checked | UNSAT unverified | Timeouts | PAR2 reported (s) | PAR2 verified (s) |\\n|---|---:|---:|---:|---:|---:|---:|\\n")
+            out.write("300 synthetic SHA-disjoint CNFs × 3 repeats × 6 arms = 5400 E2E trials; one logical CPU; 8-second cap per trial. Train 40 additional SHA-disjoint CNFs.\n\n")
+            out.write("| Solver | Reported solved | SAT checked | UNSAT unverified | Timeouts | PAR2 reported (s) | PAR2 verified (s) |\n|---|---:|---:|---:|---:|---:|---:|\n")
             for arm,s in totals.items():
-                out.write(f"| {arm} | {s['solved_reported']}/{s['trials']} | {s['SAT_verified']} | {s['UNSAT_unverified']} | {s['timeout']} | {s['PAR2_reported_s']:.4f} | {s['PAR2_verified_s']:.4f} |\\n")
-            out.write("\\n**UNSAT returns not independently proof-verified.** Reported PAR2 is exploratory; verify columns before claiming solver superiority.\\n")
+                out.write(f"| {arm} | {s['solved_reported']}/{s['trials']} | {s['SAT_verified']} | {s['UNSAT_unverified']} | {s['timeout']} | {s['PAR2_reported_s']:.4f} | {s['PAR2_verified_s']:.4f} |\n")
+            out.write("\n**UNSAT returns not independently proof-verified.** Reported PAR2 is exploratory; verify columns before claiming solver superiority.\n")
     if disagreements or bad:
         raise RuntimeError(f"Invalid SAT or cross-solver contradiction: invalid={len(bad)} disagree={len(disagreements)}")
 if __name__=="__main__":
