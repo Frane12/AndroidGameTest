@@ -1,0 +1,45 @@
+name: DRNAS REX2 native CDCL smoke and paired SAT
+on:
+  push:
+    branches: [experiment/drnas-rex1-20261112]
+    paths: [.github/workflows/drnas-rex2.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-rex2-native-single
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native REX2 and LTM8 reference
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm8_compile.py
+          python3 research/drnas_rex2_native_patch.py
+          g++ -O3 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_rex2
+      - name: Real CDCL SAT smoke on original CNF
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 0\n-2 0\n' > /tmp/rex2_sat.cnf
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > /tmp/rex2_unsat.cnf
+          set +e
+          mre_atlas23/bin/drnas_rex2 /tmp/rex2_sat.cnf --mode REX2_GRAPH --time 5 > rex2_sat.log 2>&1
+          sat_rc=$?
+          mre_atlas23/bin/drnas_rex2 /tmp/rex2_unsat.cnf --mode REX2_GRAPH --time 5 > rex2_unsat.log 2>&1
+          unsat_rc=$?
+          set -e
+          cat rex2_sat.log rex2_unsat.log
+          test "$sat_rc" -eq 10
+          test "$unsat_rc" -eq 20
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rex2-native-smoke
+          retention-days: 7
+          path: |
+            rex2_sat.log
+            rex2_unsat.log
