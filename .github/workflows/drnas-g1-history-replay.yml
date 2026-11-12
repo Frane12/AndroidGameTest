@@ -1,0 +1,195 @@
+name: DRNAS historical replays R160 R190 R194
+run-name: R160 R190 R194 exact-history serial replays
+on:
+  push:
+    branches: [experiment/drnas-g1-history-replay-20261112]
+    paths: [.github/workflows/drnas-g1-history-replay.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-history-replay-one-run
+  cancel-in-progress: false
+env:
+  GH_TOKEN: ${{ github.token }}
+
+# Not a direct G1 comparison. One runner per study, historical shards sequential.
+# No Android APK build, no new G1 runs, no generated proofs in uploaded artifacts.
+jobs:
+  r160_gf2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b14abe967589f0dc9941fa76d553c320480101a5
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r153repeat-original25-frozen-source-and-binaries
+          run-id: 42128549081
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r160/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - name: Compile exact original R160 dispatcher and check frozen sources
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = b14abe967589f0dc9941fa76d553c320480101a5
+          (cd r160/source && sha256sum -c native-hashes.txt)
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x r160/source/r153 built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/r160_r153_r135_dispatch.cpp -o r160/r160_dispatch
+          python3 -u research/r160_hybrid_benchmark.py selftest | tee r160/replay-smoke.log
+          grep -q '^R160_SMOKE_PASS ' r160/replay-smoke.log
+          sha256sum r160/source/r153 r160/r160_dispatch > r160/native-pins.sha256
+      - name: Replay 25 source cases x 4 solvers x 2 reps at 20s cap
+        run: |
+          set -euo pipefail
+          for shard in 0 1 2 3 4; do
+            SHARD="$shard" python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          paths=['r160/source/r153','r160/r160_dispatch','built/bin/kissat_4_0_4','built/bin/cadical_3_0_1']
+          out={'binaries':{p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths},
+               'cpu':next((line for line in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name')),'unknown')}
+          pathlib.Path('r160/pin-'+os.environ['SHARD']+'.json').write_text(json.dumps(out,sort_keys=True)+'\n')
+          PY
+            python3 -u research/r160_hybrid_benchmark.py shard --shard "$shard" | tee "r160/replay-shard-$shard.log"
+            grep -q '^R160_SHARD_PASS ' "r160/replay-shard-$shard.log"
+          done
+          python3 -u research/r160_hybrid_benchmark.py audit | tee r160/replay-audit.log
+          grep -q '^R160_AUDIT_PASS ' r160/replay-audit.log
+          cat r160/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HIST-REPLAY-R160-GF2-200
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            r160/report.json
+            r160/paired.csv
+            r160/replay-*.log
+            r160/pin-*.json
+            r160/native-pins.sha256
+            r160/source/frozen/manifest.json
+
+  r190_router:
+    needs: [r160_gf2]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 250
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 615caf4ac5178aaf4f96a346e5d1bb2de859b9ea
+          persist-credentials: false
+      - name: Frozen 102-source manifest and CaDiCaL 2.1 compile
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 615caf4ac5178aaf4f96a346e5d1bb2de859b9ea
+          python3 -u research/r190_general_cdcl_router.py selftest
+          mkdir -p r190/source
+          gh run download 42221503842 --repo Frane12/AndroidGameTest -n r187-frozen-real25-synthetic13-native-binaries -D r190/source
+          python3 -u research/r190_general_cdcl_router.py freeze
+          python3 -u research/r190_general_cdcl_router.py verify
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/r190-cadical
+          (cd /tmp/r190-cadical && git checkout -q 31f9aae44947c673dc6190c9beb399acb9ffec6a && ./configure && make -j2)
+          test "$(git -C /tmp/r190-cadical rev-parse HEAD)" = 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          g++ -std=c++17 -O2 -Wall -Wextra -I/tmp/r190-cadical/src research/r190_general_cdcl_driver.cpp /tmp/r190-cadical/build/libcadical.a -o r190/r190-driver
+          chmod +x r190/r190-driver
+          sha256sum r190/r190-driver > r190/replay-bin.sha256
+          printf 'p cnf 3 2\n1 0\n-1 2 0\n' > r190/smoke.cnf
+          for profile in default sat unsat; do
+            r190/r190-driver r190/smoke.cnf 2 "$profile" > "r190/smoke-$profile.log"
+            grep -q '^R182_STATUS status=SAT' "r190/smoke-$profile.log"
+          done
+      - name: Replay 102 CNFs x 5 modes x 2 reps, 8 serial shards
+        run: |
+          set -euo pipefail
+          for shard in 0 1 2 3 4 5 6 7; do
+            python3 -u research/r190_general_cdcl_router.py shard --shard "$shard" --binary r190/r190-driver | tee "r190/replay-shard-$shard.log"
+            grep -q '^R190_SHARD_PASS ' "r190/replay-shard-$shard.log"
+          done
+          python3 -u research/r190_general_cdcl_router.py audit | tee r190/replay-audit.log
+          grep -q '^R190_FINAL ' r190/replay-audit.log
+          cat r190/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HIST-REPLAY-R190-1020
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            r190/frozen/manifest.json
+            r190/replay-bin.sha256
+            r190/replay-*.log
+            r190/report.json
+            r190/all-trials.json
+            r190/summary.md
+
+  r194_hybrid:
+    needs: [r190_router]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8229dc79bbb55577e1f0850ea3153a6740d18d38
+          persist-credentials: false
+      - name: Restore original frozen 38 CNFs and CMS 5.11.15
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 8229dc79bbb55577e1f0850ea3153a6740d18d38
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          cryptominisat5 --version | grep -q 'CryptoMiniSat version 5.11.15'
+          gh run download 42384364180 --repo Frane12/AndroidGameTest -n r192-38-source-pinned-gauss-cms-bundle -D .
+          test -s r192-pinned-source-bundle.tar.gz
+          tar xzf r192-pinned-source-bundle.tar.gz
+          chmod +x r190_cms_mixed/r28 built/bin/kissat_4_0_4 r192/cms_single.sh r192/cms_gauss_forced.sh
+          mkdir -p r194
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          paths=['r189/frozen/manifest.json','r190_cms_mixed/r28','built/bin/kissat_4_0_4',
+            'r192/cms_single.sh','r192/cms_gauss_forced.sh',
+            'research/r194_four_parallel_crosssolver_hybrid.py','research/r193_certified_gauss_cms.py',
+            'research/r192_gauss_first_cms_hybrid.py','research/r189_short_inference.py',
+            'research/r188_feedback_benchmark.py','research/r190_cms_mixed_benchmark.py',
+            'research/r182_mixed_engine.py','research/r183_external_mixed.py']
+          pins={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}
+          pathlib.Path('r194/pins.json').write_text(json.dumps(pins,sort_keys=True,indent=2)+'\n')
+          print('R194_SOURCE_BINARY_PIN',json.dumps(pins,sort_keys=True))
+          PY
+          python3 -u research/r194_four_parallel_crosssolver_hybrid.py smoke | tee r194/replay-smoke.log
+          grep -q '^R194_SELFTEST_PASS' r194/replay-smoke.log
+      - name: Replay 38 CNFs x 6 modes x 2 reps, four serial shards
+        run: |
+          set -euo pipefail
+          for shard in 0 1 2 3; do
+            python3 -u research/r194_four_parallel_crosssolver_hybrid.py shard --shard "$shard" | tee "r194/replay-shard-$shard.log"
+            grep -q '^R194_SHARD_PASS ' "r194/replay-shard-$shard.log"
+          done
+          python3 -u research/r194_four_parallel_crosssolver_hybrid.py audit | tee r194/replay-audit.log
+          grep -q '^R194_FINAL ' r194/replay-audit.log
+          cat r194/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HIST-REPLAY-R194-456
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            r194/pins.json
+            r194/replay-*.log
+            r194/report.json
+            r194/all-trials.json
+            r194/summary.md
