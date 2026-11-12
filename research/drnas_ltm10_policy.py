@@ -66,12 +66,12 @@ def extract(path):
                 binary_density=round(edge_count/max(1,n),6))
 
 def cost(row,cap):
-    if row["status"] in ("SAT_VERIFIED","UNSAT_MATH_CERTIFIED","UNSAT_UNVERIFIED"):
+    if row["status"] in ("SAT_VERIFIED","UNSAT_MATH_CERTIFIED"):
         return float(row["e2e_s"])
     return 2*cap
 
 def evaluate(policy,feature,rows,cap):
-    """Same source+seed paired results for all three native candidate arms."""
+    """Same source+seed paired results; only verified outcomes earn reward."""
     selected=pick(policy,feature)
     return cost(rows[selected],cap)
 
