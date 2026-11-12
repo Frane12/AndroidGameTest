@@ -1,0 +1,57 @@
+name: DRNAS X1 MEMORY1 structural transition learning
+on:
+  push:
+    branches: [experiment/drnas-x1-memory1-20261112]
+    paths:
+      - research/drnas_x1/**
+      - .github/workflows/drnas-x1-memory1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x1-memory1-cpu
+  cancel-in-progress: false
+jobs:
+  verified_memory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native X1 with strict warnings
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror research/drnas_x1/x1.cpp -o build/drnas-x1
+          python3 -m py_compile research/drnas_x1/memory1_bench.py
+          sha256sum build/drnas-x1 research/drnas_x1/x1.cpp research/drnas_x1/x1_memory.hpp
+      - name: Independent exhaustive original-CNF correctness regression
+        run: |
+          set -euo pipefail
+          python3 -S research/drnas_x1/test.py build/drnas-x1 --cases 350 --report x1-regression.json
+      - name: Structural memory trained only on verified outcomes; frozen holdout
+        run: |
+          set -euo pipefail
+          python3 -S research/drnas_x1/memory1_bench.py --binary build/drnas-x1 --out x1_memory1_results --train 18 --holdout 24 --repeats 3 --cap 1.5 | tee x1_memory1.log
+      - name: Verify negative input safety of policy format
+        run: |
+          set -euo pipefail
+          printf 'p cnf 1 1\n1 0\n' > x1_memory1_results/policy-negative.cnf
+          printf 'BAD 16 2\n' > x1_memory1_results/bad-policy.txt
+          set +e
+          build/drnas-x1 --mode core --memory-load x1_memory1_results/bad-policy.txt x1_memory1_results/policy-negative.cnf > x1_memory1_results/bad-policy.out 2>&1
+          rc="$?"
+          set -e
+          test "$rc" -eq 1
+          grep -q 'incompatible memory state' x1_memory1_results/bad-policy.out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x1-memory1-compact
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            x1-regression.json
+            x1_memory1_results/report.json
+            x1_memory1_results/trials.jsonl
+            x1_memory1_results/policy.txt
+            x1_memory1.log
