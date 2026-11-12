@@ -328,18 +328,18 @@ def selftest():
     with tempfile.TemporaryDirectory() as td:
         root=Path(td)
         p=root/"test.cnf"
-        p.write_text("p cnf 3 3\n1 2 0\n-1 2 0\n-2 3 0\n")
+        p.write_text("p cnf 3 9\n1 0\n2 0\n3 0\n1 2 0\n1 3 0\n2 3 0\n1 -2 0\n2 -3 0\n1 0\n")
         assert read_hint(p) == "binary_subsystem"
         operator, detail = mathematical_probe(p, "binary_subsystem",time.monotonic()+1)
         assert operator == "mixed_2sat_witness",(operator,detail)
-        p.write_text("p cnf 3 3\n1 2 0\n-1 2 0\n-2 0\n")
+        p.write_text("p cnf 3 8\n1 0\n-1 0\n2 0\n-2 0\n1 2 0\n-1 2 0\n1 -2 0\n-1 -2 0\n")
         operator, detail = mathematical_probe(p, "binary_subsystem",time.monotonic()+1)
         assert operator is None  # contradictory binary subsystem
         p.write_text("p cnf 3 4\n1 2 3 0\n1 -2 -3 0\n-1 2 -3 0\n-1 -2 3 0\n")
         assert D.shortcut(p) == "gf2_elimination"
         # A partial subsystem does not prove a mixed-CNF model: independent
         # verification on ALL original clauses is mandatory.
-        p.write_text("p cnf 3 3\n1 2 0\n-1 2 0\n-2 3 0\n")
+        p.write_text("p cnf 3 9\n1 0\n2 0\n3 0\n1 2 0\n1 3 0\n2 3 0\n1 -2 0\n2 -3 0\n1 0\n")
         assert not full_witness(p,[True,False,True])
         source=dict(id=1,split="holdout",path=str(p),
                     sha256=hashlib.sha256(p.read_bytes()).hexdigest(),known_sat=True)
