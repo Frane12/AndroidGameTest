@@ -13,23 +13,23 @@ def verify(clauses,max_width=4,max_groups=4000):
         ids=tuple(sorted(abs(x) for x in clause))
         if len(set(ids))!=len(ids):continue
         groups[ids].add(tuple(sorted(clause)))
+    if len(groups)>max_groups:return False
     equations=[]
     for ids,actual in groups.items():
-        if len(groups)>max_groups:return False
         k=len(ids)
-        if len(actual)!=(1<<(k-1)):continue
-        parities=set()
-        masks=set()
-        for c in actual:
-            mask=sum(1<<j for j,v in enumerate(ids) if -v in c)
-            masks.add(mask);parities.add(mask.bit_count()%2)
-        if len(parities)!=1 or len(masks)!=(1<<(k-1)):continue
-        # A clause forbids its unique all-false assignment.
-        # For negative-literal mask M, forbidden truth parity is parity(M).
-        # Thus the XOR constraint has the *opposite* parity.
-        rhs=1-next(iter(parities))
-        bits=sum(1<<(v-1) for v in ids)
-        equations.append((bits,rhs))
+        # A clause with one literal per variable forbids exactly one
+        # assignment: variable truth bits equal its negative-literal mask.
+        masks={sum(1<<j for j,v in enumerate(ids) if -v in c) for c in actual}
+        # Each *complete* forbidden parity class entails the opposite
+        # XOR equation. Mixed/extra clauses are fine: entailment is
+        # established only by full coverage, not the clause count.
+        for forbidden_parity in (0,1):
+            full={mask for mask in range(1<<k)
+                  if mask.bit_count()%2==forbidden_parity}
+            if not full.issubset(masks):continue
+            rhs=1-forbidden_parity
+            bits=sum(1<<(v-1) for v in ids)
+            equations.append((bits,rhs))
     pivots={}
     for bits,rhs in equations:
         while bits:
@@ -49,6 +49,10 @@ def selftest():
                 out.append([(-x if (mask>>j)&1 else x) for j,x in enumerate(v)])
         return out
     assert verify(xor([1,2,3],0)+xor([1,2,3],1))
+    assert not verify(xor([1,2,3],0)+xor([1,2,3],1)[:-1])
+    # A duplicated clause or irrelevant partial parity must never invent proof.
+    assert not verify(xor([1,2,3],0)+xor([1,2,3],0)[:1])
+    assert verify(xor([4,7,2],0)+xor([4,7,2],1))
     assert not verify(xor([1,2,3],0))
     assert verify(xor([1,2],0)+xor([2,3],0)+xor([1,3],1))
     assert not verify(xor([1,2],0)+xor([2,3],0)+xor([1,3],0))
