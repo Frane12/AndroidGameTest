@@ -314,7 +314,7 @@ def screening(sources):
     model=P.fit(train,val,SCREEN_CAP)
     names_train=[s["sha256"] for s,_,_ in pairs if s["split"]=="train"]
     names_val=[s["sha256"] for s,_,_ in pairs if s["split"]=="validation"]
-    memory=P.save(model,ROOT/"ltm10_memory.json",names_train,names_val)
+    memory=P.save(model,ROOT/"ltm11_memory.json",names_train,names_val)
     emit("LTM11_TRAIN_FINAL",dict(train=60,validation=20,
          all_real_original_CNF=True,training_rows=len(rows),
          strict_verified_only=True,reference_arms_in_training=True,
@@ -335,14 +335,14 @@ def run_learned(source,seed,memory):
     else:
         result=run_solver(selected,source,seed,remaining)
     result["arm"]="LTM11"
-    result["chosen_native"]=selected
+    result["chosen_solver"]=selected
     result["feature_extract_s"]=round(overhead,6)
     result["e2e_s"]=round(overhead+result["e2e_s"],6)
     return with_metrics(result,TEST_CAP)
 
 def holdout(sources):
     # Reload policy from disk to test actual persistent memory path.
-    memory=P.load(ROOT/"ltm10_memory.json")
+    memory=P.load(ROOT/"ltm11_memory.json")
     rows=[]
     tested=[]
     with (ROOT/"holdout.jsonl").open("w") as fd:
@@ -367,8 +367,8 @@ def holdout(sources):
             for s in range(4)}
     routing=dict(collection="LTM11",
                  chosen_native=dict(collections.Counter(
-                     x["chosen_native"] for x in rows if x["arm"]=="LTM11")),
-                 feature_extraction_s=round(sum(x["feature_extract_s"] for x in rows if x["arm"]=="LTM10"),5))
+                     x["chosen_solver"] for x in rows if x["arm"]=="LTM11")),
+                 feature_extraction_s=round(sum(x["feature_extract_s"] for x in rows if x["arm"]=="LTM11"),5))
     report=dict(train_sources=60,validation_sources=20,holdout_sources=20,
                 holdout_trials=len(rows),one_logical_cpu=True,
                 policy=memory,totals=totals,shards=shards,routing=routing,
