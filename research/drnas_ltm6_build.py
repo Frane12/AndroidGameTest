@@ -69,7 +69,7 @@ one('  std::cout<<std::fixed<<std::setprecision(8)',
            <<" overlaps="<<ltm6_screen.overlaps
            <<" reductive_pairs="<<ltm6_screen.reductive_pairs
            <<" short_pairs="<<ltm6_screen.short_pairs
-           <<" enabled="<<int(ltm6_screen.enabled)<<"\\n";
+           <<" enabled="<<int(ltm6_screen.enabled)<<"\n";
   std::cout<<std::fixed<<std::setprecision(8)''')
 one('           <<" SAT_original_verified="<<int(status==10)',
     '''           <<" ltm6_gate="<<int(ltm6_screen.enabled)
