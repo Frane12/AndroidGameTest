@@ -606,6 +606,7 @@ class Solver {
         if (heap_.empty()) return -1;
         if (!use_depth_ || (stats_.decisions%32)!=0 ||
             stats_.decisions<cooldown_until_decision_ ||
+            (stats_.decisions>=256 && stats_.conflicts*3>stats_.decisions*2) ||
             (timeout_s_>0 && elapsed()>timeout_s_*0.88) ||
             (probing_seconds_>std::max(0.007,0.07*elapsed()))) {
             const auto v=topCandidates(1);
