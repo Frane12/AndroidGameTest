@@ -37,43 +37,62 @@ template<class CNF> Result prove(const CNF& formula) {
     for (std::size_t ai=0; ai<positive.size(); ++ai) {
         const auto& anchor=positive[ai];
         const auto k=anchor.size();
-        std::vector<std::vector<int>> rows{anchor};
-        std::unordered_set<int> used(anchor.begin(),anchor.end());
+        // Precompute every candidate's uniquely matched anchor-column mapping.
+        // Greedy selection is NOT permutation invariant: a distractor row can
+        // block a genuine (K+1)-clique. Backtrack with a fixed effort budget.
+        std::vector<std::vector<int>> candidates;
         for (std::size_t ri=0;ri<positive.size();++ri) {
-            if (ri==ai || positive[ri].size()!=k) continue;
+            if (ri==ai || positive[ri].size()!=k)continue;
             std::vector<int> mapped(k,0);
             bool ok=true;
-            // A row's choices must map bijectively to anchor columns.
             for (int lit:positive[ri]) {
-                if (used.count(lit)) { ok=false; break; }
+                if (std::find(anchor.begin(),anchor.end(),lit)!=anchor.end()) {
+                    ok=false;break;
+                }
                 int slot=-1;
-                for (std::size_t j=0;j<k;++j) if (incompatible(lit,anchor[j])) {
-                    if (slot!=-1) { slot=-2; break; }
+                for (std::size_t j=0;j<k;++j)if(incompatible(lit,anchor[j])){
+                    if(slot!=-1){slot=-2;break;}
                     slot=static_cast<int>(j);
                 }
-                if (slot<0 || mapped[static_cast<std::size_t>(slot)]!=0) {
+                if(slot<0 || mapped[static_cast<std::size_t>(slot)]){
                     ok=false;break;
                 }
                 mapped[static_cast<std::size_t>(slot)]=lit;
             }
-            if (!ok) continue;
-            // Every two different rows must conflict in every same column.
-            // These negative binary clauses, not names or inferred structure,
-            // supply the entire mathematical UNSAT justification.
-            for (const auto& old:rows) {
-                for (std::size_t j=0;j<k;++j) {
-                    if (!mapped[j] || !incompatible(old[j],mapped[j])) {
-                        ok=false;break;
-                    }
-                }
-                if (!ok)break;
-            }
-            if (!ok)continue;
-            rows.push_back(mapped);
-            used.insert(mapped.begin(),mapped.end());
-            if (rows.size()>k)
-                return {true,static_cast<unsigned>(rows.size()),static_cast<unsigned>(k),rows};
+            if(ok)candidates.push_back(std::move(mapped));
         }
+        std::vector<std::vector<int>> rows{anchor};
+        std::unordered_set<int> used(anchor.begin(),anchor.end());
+        std::size_t searched=0;
+        auto extend=[&](auto&& self,std::size_t first)->bool {
+            if(rows.size()>k)return true;
+            if(rows.size()+candidates.size()-first<=k)return false;
+            if(++searched>50000)return false; // bounded: abstain, never infer.
+            for(std::size_t ri=first;ri<candidates.size();++ri){
+                const auto& mapped=candidates[ri];
+                bool ok=true;
+                for(int v:mapped)if(used.count(v)){ok=false;break;}
+                if(!ok)continue;
+                for(const auto& old:rows){
+                    for(std::size_t col=0;col<k;++col){
+                        if(!incompatible(old[col],mapped[col])){
+                            ok=false;break;
+                        }
+                    }
+                    if(!ok)break;
+                }
+                if(!ok)continue;
+                for(int v:mapped)used.insert(v);
+                rows.push_back(mapped);
+                if(self(self,ri+1))return true;
+                rows.pop_back();
+                for(int v:mapped)used.erase(v);
+            }
+            return false;
+        };
+        if(extend(extend,0))
+            return {true,static_cast<unsigned>(rows.size()),
+                    static_cast<unsigned>(k),rows};
     }
     return {};
 }
