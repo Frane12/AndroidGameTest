@@ -1,0 +1,9 @@
+# R28 DIRECT easy diagnostic
+
+Unchanged native DIRECT and R153 exact-only binaries from run 43182527980, hash-checked against its frozen manifest. Kissat 4.0.4, CaDiCaL 3.0.1, single-thread CMS. Serial on one pinned logical CPU, three seeds 17/29/41, deterministic shuffled arm order.
+
+Four original SAT2024 formulas selected explicitly from prior successful verified solves below 2 seconds in run 43151694295: simon-r16-1, worker_20_40_20_0.95, battleship-14-26-sat, Break_08_24. Frozen archive entry names, source hashes, historical times, and solver names are in easy_sources.json. Battleship was fast only for CMS; no guarantee it is easy for DIRECT. This is a deliberately outcome-selected, retrospective diagnostic, not blind generalization or training. Original CNFs are not reduced or regenerated. Eight-second cap, 60 attempts.
+
+Twelve separate synthetic controls: eight existing controls (two XOR, two PHP, four planted SAT) plus four planted SAT at 40/60/100/140 variables and density 4. Two-second cap, 180 attempts. Synthetic data and original data have separate tables and PAR2 totals. Never pool the two stages to claim general superiority. Total 240 attempts, maximum 14 minutes of timed solver execution if every attempt uses the cap; exact-only abstention normally makes it shorter. Setup/download/verification are additional.
+
+SAT witnesses checked against original inputs; source GF2/PHP certificates independently checked. Generic UNSAT remains unverified with separate reported PAR2. Unknown/timeout/unverified answers get 2*cap in verified PAR2. R153 exact-only abstention is not a solve. Per-stage groups, solved sources, paired ratios, regressions, and learning-window telemetry retained. No solver tuning, persistent learning, or automatic promotion in this test. Main and ongoing medium benchmark unchanged.
