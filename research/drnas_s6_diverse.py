@@ -203,8 +203,8 @@ def selftest():
         p.write_text("p cnf 3 3\n1 2 0\n-2 3 0\n-3 0\n")
         s=dict(id=0,path=str(p),sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
                split="holdout",known_sat=True)
-        assert B.sat_witness_valid(p,3,"v 1 -2 -3 0\n")==False
-        assert B.sat_witness_valid(p,3,"v 1 -2 3 0\n")
+        assert not B.sat_witness_valid(p,3,"v -1 2 3 0\n")
+        assert B.sat_witness_valid(p,3,"v 1 -2 -3 0\n")
         assert len(quantiles(list(range(12)),5))==5
         for arm in ARMS:
             assert arm in REFS or arm.startswith("S6_")
