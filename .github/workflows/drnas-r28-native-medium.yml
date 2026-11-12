@@ -1,0 +1,134 @@
+name: DRNAS R28 NATIVE DIRECT medium official12 60s
+on:
+  push:
+    branches: [experiment/drnas-r28-native-medium-20261112]
+    paths:
+      - '.github/workflows/drnas-r28-native-medium.yml'
+      - 'research/drnas_r28_native_medium*'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r28-native-medium
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          github-token: ${{ github.token }}
+          path: built/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: math14-real24-compact
+          run-id: 43161813420
+          github-token: ${{ github.token }}
+          path: real24_source
+      - name: Build unchanged native solver and check certificates
+        run: |
+          set -euo pipefail
+          (cd built/bin && sha256sum -c binaries.sha256)
+          python3 research/drnas_r28_native_build.py
+          python3 research/drnas_r28_native_selftest.py
+          python3 research/drnas_r28_native_medium.py selftest
+      - name: Freeze complementary twelve original CNFs
+        run: |
+          set -euo pipefail
+          python3 -m venv .realvenv
+          .realvenv/bin/pip install remotezip
+          .realvenv/bin/python research/drnas_r28_native_medium.py prepare
+          sha256sum mre_r28_native/drnas_r28_native mre_r28_native/r153_reference built/bin/kissat_4_0_4 built/bin/cadical_3_0_1 > r28_native_medium/binaries.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r28-medium-inputs
+          path: |
+            r28_native_medium/
+            mre_r28_native/drnas_r28_native
+            mre_r28_native/r153_reference
+            mre_r28_native/pins.json
+            built/bin/kissat_4_0_4
+            built/bin/cadical_3_0_1
+          retention-days: 30
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-medium-inputs
+          path: .
+      - name: Verify binaries and one-thread reference
+        run: |
+          set -euo pipefail
+          chmod +x mre_r28_native/drnas_r28_native mre_r28_native/r153_reference built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          sha256sum -c r28_native_medium/binaries.sha256
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          mkdir -p r28_native_medium/shard-${{ matrix.shard }}
+          lscpu > r28_native_medium/shard-${{ matrix.shard }}/cpu.txt
+          dpkg-query -W cryptominisat > r28_native_medium/shard-${{ matrix.shard }}/cms-version.txt
+          sha256sum /usr/bin/cryptominisat5 > r28_native_medium/shard-${{ matrix.shard }}/cms.sha256
+          python3 research/drnas_r28_native_medium.py smoke
+      - name: Four original formulas, five serial arms, two repeats at 60s
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_r28_native_medium.py run --shard ${{ matrix.shard }} | tee r28_native_medium/shard-${{ matrix.shard }}/live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r28-medium-shard-${{ matrix.shard }}
+          path: r28_native_medium/shard-${{ matrix.shard }}/
+          retention-days: 60
+  audit:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-medium-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-medium-shard-0
+          path: r28_native_medium/shard-0
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-medium-shard-1
+          path: r28_native_medium/shard-1
+      - uses: actions/download-artifact@v4
+        with:
+          name: r28-medium-shard-2
+          path: r28_native_medium/shard-2
+      - name: Audit 120 complete pairs and compare PAR2
+        run: python3 research/drnas_r28_native_medium.py audit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r28-native-medium-final
+          path: |
+            r28_native_medium/report.json
+            r28_native_medium/summary.json
+            r28_native_medium/manifest.json
+            r28_native_medium/binaries.sha256
+            r28_native_medium/shard-*/results.jsonl
+          retention-days: 60
