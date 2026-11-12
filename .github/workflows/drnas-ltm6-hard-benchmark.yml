@@ -1,0 +1,111 @@
+name: DRNAS LTM6 HARD - isolated 15s native GF2 benchmark
+on:
+  push:
+    branches:
+      - experiment/drnas-ltm6-hard-20261112
+    paths:
+      - mi_ltm6/HARD_BENCHMARK_REQUEST.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-ltm6-hard-single-20261112
+  cancel-in-progress: false
+
+jobs:
+  one_native_benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify source and certified graph tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python3 -m unittest discover -s mi_ltm5 -p 'test_*.py' -v
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          python3 -m py_compile mi_ltm6/native_benchmark.py research/drnas_ltm6_build.py
+          # Catch malformed C++ emitted by the Python patch before g++ runs.
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("mre_atlas23/native.cpp").read_text()
+          assert '<<" enabled="<<int(ltm6_screen.enabled)<<std::endl;' in s, (
+              "LTM6 telemetry C++ newline patch malformed")
+          assert s.count("LTM6_GRAPH source_rows=")==1
+          print("LTM6_CPP_GENERATION_PREFLIGHT_PASS valid_graph_telemetry_endline=true")
+          PY
+          python3 - <<'PY'
+          import ast,pathlib
+          source=pathlib.Path("mi_ltm6/native_benchmark.py").read_text()
+          tree=ast.parse(source)
+          blocked=("source_corpus","urlopen","urlretrieve")
+          assert not any(isinstance(n,ast.Call) and
+              isinstance(n.func,(ast.Name,ast.Attribute)) and
+              (n.func.id if isinstance(n.func,ast.Name) else n.func.attr) in blocked
+              for n in ast.walk(tree)), "LTM6 benchmark must never download network inputs"
+          assert "deterministic_synthetic_only" in source
+          print("LTM6_OFFLINE_PREFLIGHT_PASS remote_downloads=0")
+          PY
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm6
+          python3 - <<'PY'
+          import pathlib,subprocess,tempfile
+          from mi_ltm5.xor_fixtures import xor_clauses
+          from mi_ltm5.cdcl_bridge import write_derived
+          cs=xor_clauses((1,2,3),0)+xor_clauses((2,3,4),1)
+          raw=("p cnf 4 %d\n"%len(cs)+"".join(" ".join(map(str,c))+" 0\n" for c in cs))
+          with tempfile.TemporaryDirectory() as folder:
+              base=pathlib.Path(folder)/"base.cnf"
+              derived=pathlib.Path(folder)/"derived.cnf"
+              base.write_text(raw)
+              stats=write_derived(base,derived)
+              assert stats["added"]==2,stats
+              for arm,p,mode in (("BASE",base,"A36_75"),("LTM5",derived,"A36_75"),
+                                 ("LTM6",base,"LTM6_LIVE")):
+                  proc=subprocess.run(["mre_atlas23/bin/drnas_ltm6",str(p),
+                           "--mode",mode,"--time","3","--seed","1",
+                           "--policy","1.0,0.85"],text=True,capture_output=True,timeout=12)
+                  print("LTM6_SMOKE",arm,"status",proc.returncode,flush=True)
+                  if proc.returncode!=10:raise AssertionError((arm,proc.returncode,
+                                         proc.stderr[-500:],proc.stdout[-500:]))
+                  if arm=="LTM6":
+                      assert "LTM6_GRAPH " in proc.stdout,proc.stdout[-500:]
+                      assert "enabled=1" in proc.stdout,proc.stdout[-500:]
+                      lines=proc.stdout.splitlines()
+                      assert any(line.startswith("LTM6_GRAPH ") for line in lines),lines
+                      assert any(line.startswith("ATLAS13_TRIAL ") for line in lines),lines
+                      assert "ltm6_live_checks=" in proc.stdout,lines
+                      print("LTM6_TELEMETRY_SMOKE_PASS separate_graph_native_lines=true")
+              assert base.read_text()==raw
+          PY
+          echo 'LTM6_CERTIFIED_LIVE_SMOKE_PASS' >> "$GITHUB_STEP_SUMMARY"
+      - name: Benchmark 60 harder matched trials, one logical CPU, generated CNF
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u mi_ltm6/hard_benchmark.py | tee bench.log
+          grep '^LTM6_HARD_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^LTM6_HARD_AUDIT_PASS ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload only compact LTM6 audit files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LTM6-hard-native-graph-evidence
+          retention-days: 21
+          if-no-files-found: ignore
+          path: |
+            bench.log
+            ltm6_hard_results/results.json
+            ltm6_hard_results/structural_memory.json
