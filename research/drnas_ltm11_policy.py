@@ -37,12 +37,12 @@ def extract(path):
     dup = binary_edges = total = bytes_read = 0
     with open(path, "rb") as fd:
         while bytes_read < SAMPLE_BYTES and total < SAMPLE_CLAUSES:
-            line = fd.readline(min(8192, SAMPLE_BYTES - bytes_read))
+            line = fd.readline(SAMPLE_BYTES - bytes_read)
             if not line:
                 break
             bytes_read += len(line)
             if not line.endswith(b"\n") and bytes_read >= SAMPLE_BYTES:
-                break  # Do not use a truncated clause or comment.
+                break  # Do not parse a partial physical line or a split integer.
             stripped = line.strip()
             if not stripped or stripped.startswith((b"c", b"%")):
                 continue
@@ -261,6 +261,17 @@ def selftest():
         progress_row = dict(conflicts=None, decisions=None)
         assert progress(progress_row) is None
         assert verified_cost(dict(PAR2_verified_s=6.0))==6.0
+        # Official CNFs may contain very long physical lines; parsing must not
+        # split a literal such as -15 into '-' and '15'.
+        long_path = pathlib.Path(folder)/"long.cnf"
+        long_path.write_bytes(b"p cnf 4 1\n" + b"1 -2 " * 3000 + b"0\n")
+        a, _ = extract(long_path)
+        assert 0 < a["positive"] < 1
+        # A line exceeding the whole sample budget must be skipped safely.
+        giant_path = pathlib.Path(folder)/"giant.cnf"
+        giant_path.write_bytes(b"p cnf 4 1\n" + b"-2 " * 70000 + b"0\n")
+        a, _ = extract(giant_path)
+        assert a["log_vars"] > 0
     print("LTM11_POLICY_SELFTEST_PASS feature_limit=192KiB",flush=True)
 
 if __name__ == "__main__":
