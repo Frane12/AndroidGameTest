@@ -41,3 +41,20 @@ Both commands default to the DIRECT profile. Use `--cold` to compare the same co
 The small automatic pilot compares frozen R153-based native DIRECT, the new context controller with empty priors, and the same controller with transferred priors. Only the cold-versus-warm comparison isolates transferred memory. It reports verified/reported PAR2, solved attempts, SQL/snapshot preparation cost, solver time, independent verification time and commit time. Practical E2E includes memory preparation and commit; verification is separately reported. A valid answer delivered after that practical budget is penalized in PAR2.
 
 Each solver runs sequentially on one logical CPU. No external competition references are needed to test the memory mechanism itself; the separate historical nine-arm benchmark retains Kissat, CaDiCaL and CMS comparisons. The repeated synthetic holdout is a regression diagnostic, not a fresh blind test for promotion. This change does not claim a 30% speedup, a globally best solver, or that more memory always improves performance. A disjoint real-source study is still required before promotion.
+
+## First CI verification (2026-11-12)
+
+Run [43170470375](https://github.com/Frane12/AndroidGameTest/actions/runs/43170470375), commit `50ad1c358dc6e6247a3a29d10cac9eefc2164dbd`, completed both jobs successfully. The second runner restored generation 1 with exactly the same statistics SHA and produced generation 2. The saved SQLite database was 45056 bytes (44 KiB), with 40 active cells and 43 independently verified training sources out of 44 attempted. The compressed memory artifact was 6539 bytes.
+
+| Stage (separate runners and cohorts) | Arm | Verified attempts | Verified PAR2, seconds |
+| --- | --- | ---: | ---: |
+| 18-source holdout, two repeats | Frozen native DIRECT | 36/36 | 2.400628 |
+| Same holdout | Context, empty prior | 35/36 | 3.780630 |
+| Same holdout | Context, saved prior | 36/36 | 1.471656 |
+| 10-source subset after restore, two repeats | Frozen native DIRECT | 20/20 | 2.459060 |
+| Same subset | Context, empty prior | 19/20 | 3.255090 |
+| Same subset | Context, saved prior | 20/20 | 0.722647 |
+
+The first saved-prior result is 38.7% lower PAR2 than the frozen native baseline and 2.57x the empty-prior score ratio. Preparation averaged 0.17ms and 0.22ms for saved-prior evaluations in the two jobs, respectively; this includes SHA lookup and split registration, not just snapshot reading. Do not combine these stages or call the second subset a new blind holdout.
+
+A local continuation run had a small regression against its empty-prior control, despite correct persistence. The CI improvements are therefore pilot observations, not evidence of stable general superiority. Database inheritance and answer verification are confirmed independently of whether performance improves. The next workflow run exercises automatic artifact selection from this completed run, in addition to the already-tested fresh-runner restore.
