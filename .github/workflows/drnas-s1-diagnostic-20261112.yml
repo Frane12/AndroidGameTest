@@ -1,0 +1,50 @@
+name: DRNAS S1 diagnostic two official cases
+on:
+  push:
+    branches: [experiment/s1-diagnostic-20261112]
+  workflow_dispatch:
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y cadical cryptominisat python3-venv
+      - run: python3 -m venv .venv && .venv/bin/pip install remotezip
+      - name: Inspect and benchmark original CNFs
+        run: |
+          export PYTHONPATH=research
+          taskset -c "$(taskset -pc $$ | sed 's/.*: //' | cut -d, -f1 | cut -d- -f1)" .venv/bin/python -u - <<'PY'
+          import collections, json, pathlib, time
+          import drnas_selective_reduce_s1 as S
+          B = S.B
+          B.ROOT = pathlib.Path("s1_diagnostic")
+          sources = B.collect()
+          for source in sources:
+              if source["id"] not in (56, 77):
+                  continue
+              p = pathlib.Path(source["path"])
+              widths = collections.Counter()
+              current = 0
+              n = None
+              with p.open() as f:
+                  for line in f:
+                      if line.startswith("p "):
+                          n = int(line.split()[2])
+                      elif line.strip() and not line.lstrip().startswith(("c", "%")):
+                          for token in line.split():
+                              v = int(token)
+                              if v == 0:
+                                  widths[current] += 1
+                                  current = 0
+                              else:
+                                  current += 1
+              original = S.precheck(p)
+              S.PRECHECK_MAX_BYTES = 1024 * 1024
+              enlarged = S.precheck(p)
+              print("DIAGNOSTIC", json.dumps({"id":source["id"],"sha256":source["sha256"],"bytes":p.stat().st_size,"variables":n,"widths":dict(widths),"original_hint":original,"enlarged_hint":enlarged,"shortcut_file_limit":65536,"shortcut_var_limit":512,"shortcut_clause_limit":2500}), flush=True)
+              S.PRECHECK_MAX_BYTES = 64 * 1024
+              for arm in ("SELECTIVE_REDUCE","CaDiCaL","CryptoMiniSat"):
+                  row = S.trial(arm, source, 17, 30.0)
+                  print("DIAGNOSTIC_TRIAL",json.dumps(row,sort_keys=True),flush=True)
+          PY
