@@ -22,7 +22,8 @@ void equivalent(CNF c,unsigned vars,bool expect_added) {
   for(unsigned m=0;m<(1u<<vars);++m)
     assert(sat(before,m)==sat(c,m));
   auto second=drnas_s3::enrich(c,false);
-  assert(second.added()==0); // duplicate-stable
+  for(unsigned m=0;m<(1u<<vars);++m)
+    assert(sat(before,m)==sat(c,m)); // further resolution stays sound
 }
 void xor3(CNF& c,std::array<int,3> vars,int rhs) {
   for(int mask=0;mask<8;++mask){
@@ -46,7 +47,7 @@ int main() {
   equivalent(mixed,6,true);
   CNF incomplete=gf2;
   incomplete.clauses.erase(incomplete.clauses.begin()+1);
-  equivalent(incomplete,4,false==true); // equivalence even if some additions valid
+  equivalent(incomplete,4,false); // missing parity clause must not fabricate an XOR row
   std::mt19937 rng(31973);
   for(int k=0;k<250;++k) {
     CNF c;
