@@ -1,0 +1,59 @@
+name: DRNAS REX2 WIDE native SAT E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-rex1-20261112]
+    paths: [.github/workflows/drnas-rex2-wide.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-rex2-wide-single
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install reference solvers (version pinned Kissat)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git cmake cadical cryptominisat
+          git init /tmp/rex2-kissat
+          git -C /tmp/rex2-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/rex2-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/rex2-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/rex2-kissat && ./configure && make -j2)
+          sudo install /tmp/rex2-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/rex2-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > rex2-versions.txt
+          cat rex2-versions.txt
+      - name: Build native baseline and REX2 graph arm
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm8_compile.py
+          python3 research/drnas_rex2_native_patch.py
+          g++ -O3 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_rex2
+          python3 research/drnas_rex2_wide_benchmark.py --selftest
+      - name: Run 30 source-locked CNF x 2 reps x 5 arms
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_rex2_wide_benchmark.py | tee rex2-wide.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rex2-wide-compact-report
+          retention-days: 14
+          path: |
+            rex2-versions.txt
+            rex2-wide.log
+            rex2_wide/manifest.json
+            rex2_wide/trials.jsonl
+            rex2_wide/summary.json
