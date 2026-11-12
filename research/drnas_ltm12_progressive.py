@@ -312,8 +312,8 @@ def selftest():
             m.update(enabled=True, feature="binary", threshold=0.5,
                      alternate="CaDiCaL" if mode == "HYBRID" else "LTM8_FAST")
             assert pick(m, dict(feat, binary=0.1)) == m["alternate"]
-        assert B.sat_witness_valid(p, 3, "v -1 -2 -3 0\n")
-        assert not B.sat_witness_valid(p, 3, "v 1 2 3 0\n")
+        assert B.sat_witness_valid(p, 3, "v 1 -2 -3 0\n")
+        assert not B.sat_witness_valid(p, 3, "v -1 -2 -3 0\n")
     emit("LTM12_SELFTEST_PASS", dict(source_features=True, verified_witness=True,
                                      two_separate_policies=True))
 
