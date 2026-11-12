@@ -1,0 +1,87 @@
+name: DRNAS LTM11 REAL1 structural progress learning official SAT2024
+on:
+  push:
+    branches: [experiment/drnas-ltm11-structural-probe-20261112]
+    paths:
+      - .github/workflows/drnas-ltm11-real1.yml
+      - research/drnas_ltm11_policy.py
+      - research/drnas_ltm11_real1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm11-real1-single
+  cancel-in-progress: false
+
+jobs:
+  one_serial_official_benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference SAT solvers (no APK builds)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/ltm11-kissat
+          git -C /tmp/ltm11-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/ltm11-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/ltm11-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/ltm11-kissat && ./configure && make -j2)
+          sudo install /tmp/ltm11-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/ltm11-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            g++ --version
+          } > ltm11_versions.txt
+      - name: Build existing frozen native engines and independent PHP audit
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_ltm9_selftest.py
+          python3 research/drnas_ltm9_independent_cert.py
+      - name: Compile LTM11 and test policy without official downloads
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ltm11_policy.py research/drnas_ltm11_real1.py
+          python3 research/drnas_ltm11_policy.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_ltm11_real1 as L
+          import drnas_ltm11_policy as P
+          assert L.TRAIN_CAP==3.0 and L.DEEP_CAP==20.0
+          assert L.HOLDOUT_CAP==12.0
+          assert len(L.TEST_ARMS)==5
+          assert P.SAMPLE_BYTES<=192*1024
+          assert not P.blank()["enabled"]
+          print("LTM11_HARNESS_SELFTEST_PASS",flush=True)
+          PY
+      - name: Install source archive range reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .ltm11venv
+          .ltm11venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Train 60 validate 20 freeze then 200 paired official holdout trials
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "LTM11_SINGLE_LOGICAL_CPU $CPU"
+          taskset -c "$CPU" .ltm11venv/bin/python -u research/drnas_ltm11_real1.py | tee ltm11_real1.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm11-real1-compact-frozen-model-and-holdout
+          retention-days: 21
+          path: |
+            ltm11_versions.txt
+            ltm11_real1.log
+            ltm11_real1/manifest.json
+            ltm11_real1/ltm11_memory.json
+            ltm11_real1/train.json
+            ltm11_real1/report.json
+            ltm11_real1/screen.jsonl
+            ltm11_real1/holdout.jsonl
