@@ -29,7 +29,7 @@ def make_case(i: int):
     if kind == "parity":
         # Two coupled parity chains with a known final SAT/UNSAT condition.
         from bench import parity_pair
-        n, clauses = parity_pair(5 + (i % 8), bool(i % 2))
+        n, clauses = parity_pair(5 + (i // 3), bool(i % 2))
     else:
         planted = [False] + [bool(rng.randrange(2)) for _ in range(n)]
         clauses = []
