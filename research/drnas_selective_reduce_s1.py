@@ -23,7 +23,7 @@ import drnas_ltm12_dynamic as D
 B, L = D.B, D.L
 ROOT = pathlib.Path("drnas_selective_reduce_s1")
 CAP = 1.5
-ARMS = ("SELECTIVE_REDUCE", "CaDiCaL", "Kissat", "REDUCE_KISSAT")
+ARMS = ("SELECTIVE_REDUCE", "CaDiCaL", "Kissat", "CryptoMiniSat", "REDUCE_KISSAT")
 SEEDS = (17, 29)
 PRECHECK_MAX_BYTES = 64 * 1024
 PRECHECK_CLAUSES = 48
@@ -157,22 +157,25 @@ def trial(arm, source, seed, cap):
 
 def summary(rows, cap, arms):
     totals = B.metrics(rows, cap, arms)
-    best = min(("CaDiCaL", "Kissat"), key=lambda name: totals[name]["PAR2_verified_s"])
+    best = min(("CaDiCaL", "Kissat", "CryptoMiniSat"), key=lambda name: totals[name]["PAR2_verified_s"])
     paired = {(r["id"], r["seed"], r["arm"]): r for r in rows}
     regrets = {}
     for arm in arms:
         if arm == best:
             continue
         deltas = []
+        regressions = improvements = 0
         for row in rows:
             if row["arm"] != arm:
                 continue
             ref = paired[(row["id"], row["seed"], best)]
             deltas.append(row["PAR2_verified_s"] - ref["PAR2_verified_s"])
+            regressions += row["PAR2_verified_s"] > ref["PAR2_verified_s"] * 1.1 + .002
+            improvements += row["PAR2_verified_s"] + .002 < ref["PAR2_verified_s"] * .9
         regrets[arm] = dict(
             mean_regret_s=round(statistics.mean(deltas), 7),
-            regressions_over_10pct=sum(x > .002 for x in deltas),
-            improved_over_2ms=sum(x < -.002 for x in deltas))
+            regressions_over_10pct=regressions,
+            improved_over_10pct=improvements)
     s = [r for r in rows if r["arm"] == "SELECTIVE_REDUCE"]
     return dict(best_reference=best, totals=totals, regressions_vs_best=regrets,
                 selective_details=dict(
@@ -235,12 +238,11 @@ def official(root):
     This archive has been used in earlier DRNAS experiments; explicitly reused
     exploratory evaluation. No novel blind performance claim.
     """
-    L.setup_source()
     B.ROOT = root
     sources = B.collect()
     chosen = sorted(sources, key=lambda s: (s["compressed_bytes"], s["sha256"]))[:12]
     cap = 6.0
-    arms = ("SELECTIVE_REDUCE", "CaDiCaL", "Kissat")
+    arms = ("SELECTIVE_REDUCE", "CaDiCaL", "Kissat", "CryptoMiniSat")
     rows = []
     (root / "official_probe_selection.json").write_text(json.dumps(dict(
         archive=B.ARCHIVE, selected_ids=[s["id"] for s in chosen],
