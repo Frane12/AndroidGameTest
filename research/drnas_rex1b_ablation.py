@@ -16,10 +16,11 @@ def choose(n,clauses,top,budget):
         for value in (False,True):
             status,assigned,scans=P.propagate(clauses,{v:value},budget)
             result.append((status,assigned,scans));total_scans+=scans;probes+=1
+        local_scans=sum(scans for _,_,scans in result)
         local_conflicts=sum(status is False for status,_,_ in result)
         implied=sum(max(0,assigned-1) for _,assigned,_ in result)
         # Cost-aware: penalize the exact work expended by the probes.
-        score=1000*local_conflicts+implied+0.01*len(neighbors[v])-total_scans*0.0001
+        score=1000*local_conflicts+implied+0.01*len(neighbors[v])-local_scans*0.0001
         if score>bestscore:bestscore=score;best=v;conflicts=local_conflicts
     return dict(baseline=baseline,selected=best,changed=best!=baseline,
                 conflicts=conflicts,scans=total_scans,probes=probes)
