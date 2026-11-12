@@ -1,0 +1,108 @@
+name: DRNAS LTM7 REF1 - standard solvers
+on:
+  push:
+    branches: [experiment/drnas-ltm7-selective-20261112]
+    paths: [.github/workflows/drnas-ltm7-ref1.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm7-ref1-single
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y kissat cadical cryptominisat
+          command -v kissat
+          command -v cadical
+          command -v cryptominisat5
+      - name: Build LTM7
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python3 -m unittest discover -s mi_ltm5 -p 'test_*.py' -q
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          python3 research/drnas_ltm7_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm7
+      - name: Compare same original CNFs
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u - <<'PY' | tee ref1.log
+          import sys,hashlib,json,pathlib,subprocess,time,resource
+          sys.path[:0]=['research','.']
+          import drnas_atlas13_generator as G
+          import drnas_atlas_wide500 as W
+          cap=15.0
+          arms=['BASE','LTM7','Kissat','CaDiCaL','CryptoMiniSat']
+          synth=[('xor_dense_sat',64),('xor_dense_sat',65),('xor_dense_unsat',64),('xor_dense_unsat',65),('mixed_hard',64),('mixed_hard',65),('pigeonhole_unsat',64),('pigeonhole_unsat',65),('graph3color_unsat',64),('random3_unsat',64)]
+          root=pathlib.Path('ref1_cases');root.mkdir(exist_ok=True)
+          rows=[]
+          def witness_ok(raw,out):
+              n,clauses=W.parse_original(raw)
+              assignment={}
+              for line in out.splitlines():
+                  if not line.startswith('v '):continue
+                  for token in line[2:].split():
+                      lit=int(token)
+                      if not lit:continue
+                      if abs(lit)>n or (abs(lit) in assignment and assignment[abs(lit)]!=(lit>0)):return False
+                      assignment[abs(lit)]=lit>0
+              return all(any(assignment.get(abs(lit))==(lit>0) for lit in clause) for clause in clauses)
+          for family,index in synth:
+              n,clauses,_=G.build(family,index)
+              raw=W.canonical(n,clauses)
+              sha=hashlib.sha256(raw).hexdigest()
+              p=root/(sha+'.cnf');p.write_bytes(raw)
+              for rep in range(2):
+                  for arm in arms:
+                      if arm in ('BASE','LTM7'):
+                          mode='A36_75' if arm=='BASE' else 'LTM7_SELECT'
+                          cmd=['mre_atlas23/bin/drnas_ltm7',str(p),'--mode',mode,'--time','15','--seed',str(rep+1),'--policy','1.0,0.85']
+                      else:
+                          cmd={'Kissat':['kissat',str(p)],'CaDiCaL':['cadical',str(p)],'CryptoMiniSat':['cryptominisat5',str(p)]}[arm]
+                      start=time.monotonic()
+                      try:
+                          proc=subprocess.run(cmd,text=True,capture_output=True,timeout=cap,preexec_fn=lambda:resource.setrlimit(resource.RLIMIT_AS,(3*1024**3,3*1024**3)))
+                          rc=proc.returncode;out=proc.stdout
+                      except subprocess.TimeoutExpired:
+                          rc=124;out=''
+                      elapsed=min(cap,time.monotonic()-start)
+                      if rc==10:
+                          if not witness_ok(raw,out):raise RuntimeError('Invalid SAT witness '+arm+' '+sha)
+                          status='SAT_VERIFIED'
+                      elif rc==20:
+                          status='UNSAT_UNVERIFIED'
+                      else:
+                          status='UNKNOWN'
+                      row=dict(arm=arm,family=family,index=index,sha256=sha,rep=rep,status=status,e2e_s=round(elapsed,6),PAR2_verified_s=round(elapsed if status=='SAT_VERIFIED' else 30.0,6),PAR2_reported_s=round(elapsed if status!='UNKNOWN' else 30.0,6))
+                      rows.append(row);print('REF1_TRIAL '+json.dumps(row),flush=True)
+          summary={}
+          for arm in arms:
+              rr=[r for r in rows if r['arm']==arm]
+              summary[arm]=dict(trials=len(rr),SAT_verified=sum(r['status']=='SAT_VERIFIED' for r in rr),UNSAT_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in rr),PAR2_verified_s=round(sum(r['PAR2_verified_s'] for r in rr),6),PAR2_reported_s=round(sum(r['PAR2_reported_s'] for r in rr),6))
+          print('REF1_FINAL '+json.dumps(summary,sort_keys=True),flush=True)
+          print('REF1_AUDIT one_cpu=true original_CNF=true UNSAT_independent_proof=false synthetic_only=true',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm7-ref1-compact
+          path: ref1.log
+          retention-days: 14
