@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """X1 MEMORY1: verified train / frozen-holdout polarity-controller experiment.
 
-Synthetic family-disjoint-by-SHA split within this script (NOT globally unseen).
+Synthetic SHA-disjoint split (NOT family-disjoint and NOT globally unseen).
 No solver outcome or holdout result is used to choose the frozen policy.
 All claims require independent SAT witness / UNSAT DRUP verification.
 """
@@ -133,6 +133,7 @@ def main():
                 "flips":row["stats"].get("memory_flip_blocks",0)})
         if not memory.exists():
             raise AssertionError("no independently verified training instance")
+        policy_before=hashlib.sha256(memory.read_bytes()).hexdigest()
         for case in holdout:
             cnf=root/"holdout.cnf";cnf.write_text(case["source"])
             for rep in range(args.repeats):
@@ -140,7 +141,9 @@ def main():
                 for arm,flags in [
                     ("X1_CORE",[]),
                     ("X1_MEMORY_FROZEN",["--memory-load",str(memory),
-                         "--memory-frozen","--memory-interval","8"])
+                         "--memory-frozen","--memory-interval","8"]),
+                    ("X1_MEMORY_ONLINE",["--memory-load",str(memory),
+                         "--memory-interval","8"])
                 ]:
                     trial_row=trial(binary,cnf,args.cap,seed,flags,root,
                                     f"holdout-{arm}-{rep}")
@@ -154,6 +157,7 @@ def main():
                        "flipped_blocks":trial_row["stats"].get("memory_flip_blocks",0)})
                     rows.append(row)
                     emit("X1_MEMORY_TRIAL",row)
+        assert hashlib.sha256(memory.read_bytes()).hexdigest()==policy_before, "holdout data leaked into persistent training state"
         # The output for a variable-permuted formula should have the same
         # label-free fingerprint, while original CNF identity remains distinct.
         sample=holdout[0]
@@ -176,21 +180,25 @@ def main():
             return x["signature"]
         assert signature("left")==signature("right"),"renaming changed structural signature"
     summary={}
-    for arm in ("X1_CORE","X1_MEMORY_FROZEN"):
+    for arm in ("X1_CORE","X1_MEMORY_FROZEN","X1_MEMORY_ONLINE"):
         items=[x for x in rows if x["arm"]==arm]
         summary[arm]={"trials":len(items),"verified":sum(x["verified"] for x in items),
             "sat":sum(x["verified"] and x["status"]=="SAT" for x in items),
             "unsat":sum(x["verified"] and x["status"]=="UNSAT" for x in items),
             "PAR2_verified_e2e_s":round(sum(x["PAR2"] for x in items),6),
             "solver_s":round(sum(x["solve_s"] for x in items),6),
-            "memory_events":sum(x["events"] for x in items)}
+            "memory_events":sum(x["events"] for x in items),
+            "flipped_blocks":sum(x["flipped_blocks"] for x in items)}
     base=summary["X1_CORE"]["PAR2_verified_e2e_s"]
     mem=summary["X1_MEMORY_FROZEN"]["PAR2_verified_e2e_s"]
+    online=summary["X1_MEMORY_ONLINE"]["PAR2_verified_e2e_s"]
     report={"protocol":"synthetic_sha_disjoint_train_holdout_frozen",
         "globally_blind":False,"training_verified_instances":accepted,
         "train_sources":len(train),"holdout_sources":len(holdout),
         "repeats":args.repeats,"cap_s":args.cap,"per_arm":summary,
         "PAR2_speedup_vs_core_x":round(base/max(mem,1e-12),5),
+        "PAR2_speedup_online_vs_core_x":round(base/max(online,1e-12),5),
+        "holdout_policy_file_unchanged":True,
         "no_unverified_credit":True,"unsat_requires_independent_DRUP":True,
         "structural_rename_test":"PASS"}
     (args.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
