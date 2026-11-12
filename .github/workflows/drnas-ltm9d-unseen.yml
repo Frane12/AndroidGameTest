@@ -1,0 +1,84 @@
+name: DRNAS LTM9D native GF2 450 paired fresh CNF 10s
+on:
+  push:
+    branches: [experiment/drnas-ltm9d-gf2-20261112]
+    paths: [.github/workflows/drnas-ltm9d-unseen.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm9d-native-gf2-single
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and record reference versions
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git cmake cadical cryptominisat
+          git init /tmp/ltm8-kissat
+          git -C /tmp/ltm8-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/ltm8-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/ltm8-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/ltm8-kissat && ./configure && make -j2)
+          sudo install /tmp/ltm8-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/ltm8-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            dpkg-query -W cadical cryptominisat
+            g++ --version
+          } > ltm9d-versions.txt
+          cat ltm9d-versions.txt
+      - name: Compile native LTM9D GF2 and frozen LTM9B
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9d_compile.py
+          python3 research/drnas_ltm9d_selftest.py
+          python3 research/drnas_ltm9b_verify.py
+          python3 research/drnas_ltm9d_gf2_verify.py
+          python3 research/drnas_ltm9b_selftest.py
+          python3 research/drnas_ltm9_selftest.py
+          python3 research/drnas_ltm9d_refs_unseen.py --selftest
+      - name: Verify all five solver commands and models
+        run: |
+          python3 - <<'PY'
+          import pathlib,sys,tempfile
+          sys.path.insert(0,'research')
+          import drnas_ltm9d_refs_unseen as B
+          with tempfile.TemporaryDirectory() as d:
+              p=pathlib.Path(d)/'smoke.cnf'
+              for clauses,expected in [([[1],[-2]],'SAT_VERIFIED'),([[1],[-1]],'UNSAT_UNVERIFIED')]:
+                  p.write_bytes(B.canonical(2,clauses))
+                  case=dict(path=p,n=2,clauses=clauses,family='smoke',index=0,sha256='smoke')
+                  for arm in B.ARMS:
+                      r=B.run(arm,case,2,17,pathlib.Path(d)/'memory')
+                      print(r,flush=True)
+                      assert r['status']==expected,(arm,r)
+          PY
+      - name: Train disjoint memory then 450 new SHA disjoint paired trials
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ltm9d_refs_unseen.py | tee ltm9d-refs.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm9d-unseen-compact
+          retention-days: 14
+          path: |
+            ltm9d-versions.txt
+            ltm9d-refs.log
+            ltm9d_refs/manifest.json
+            ltm9d_refs/results.jsonl
+            ltm9d_refs/training.jsonl
+            ltm9d_refs/summary.json
+            ltm9d_refs/train/memory*
+# LTM9D: bounded native GF2 with original-CNF independent certification.
+
+# Rerun LTM9D after independently checked GF2 parity coverage correction.
