@@ -124,3 +124,42 @@ large per-family regression must be explicitly reported.
 
 No source code from these SAT solvers is embedded in X1. Using known algorithmic
 ideas is different from depending on another solver implementation.
+
+
+## MEMORY1 research branch: structural before/action/after memory
+
+The branch experiment/drnas-x1-memory1-20261112 adds an **opt-in C++20
+structural transition memory** to native X1 CORE. Original core/factor/auto
+behavior remains the default. This is not a neural network, an XOR detector,
+or evidence of a speedup yet.
+
+Every bounded CDCL decision block records a coarse structural context,
+the action (normal or inverted saved decision phase), before/after decisions,
+conflicts, propagations, low-LBD clauses, trail length, depth and wall time.
+The controller also records a separate terminal outcome. Its measured utility
+is a **proxy**, not a proven causal effect or distance to the answer.
+
+The variable-renaming-invariant clause-length and degree/polarity fingerprint
+is intentionally coarse (not an exact graph isomorphism test). The persistent
+policy contains 16 contexts x 2 arms with sample counts and cumulative scores.
+The chosen action can affect decision **polarity only**, never clause validity,
+learning correctness, DRUP proofs, SAT model verification, or the termination
+status. The transition log is bounded to 2048 detailed JSONL records plus the
+final outcome. Persistent state uses a versioned text format.
+
+Example commands:
+
+    g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror research/drnas_x1/x1.cpp -o build/drnas-x1
+    ./build/drnas-x1 --mode core --seconds 2 --proof /tmp/p.proof --memory --memory-interval 8 --memory-log /tmp/trace.jsonl --memory-save /tmp/policy.txt instance.cnf
+    ./build/drnas-x1 --mode core --seconds 2 --proof /tmp/p2.proof --memory-load /tmp/policy.txt --memory-frozen --memory-log /tmp/frozen.jsonl instance.cnf
+    python3 -S research/drnas_x1/memory1_bench.py --binary build/drnas-x1 --out memory1_results
+
+A solver-supplied UNSAT label is never itself ground truth. The benchmark
+promotes model state after independent original-CNF SAT/UNSAT verification,
+then freezes memory for SHA-disjoint synthetic holdout formulas (three
+repetitions). Compare independently verified solved counts and paired end-to-end
+PAR2; do not claim a universal benefit, globally blind official data, or a
+causal result based on before/after correlation alone.
+
+Next: signed implication graph events, bounded paired probes, factor route
+episodes, and proof-preserving extraction of new logical relations.
