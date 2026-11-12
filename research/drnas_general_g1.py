@@ -34,7 +34,7 @@ ARMS = (
     "Kissat", "CaDiCaL", "CryptoMiniSat",
 )
 EXTRA_BIN = {
-    "LTM8_KEEP50": "./mre_atlas23/bin/drnas_ltm9",
+    "LTM8_KEEP50": "./rex2_source/mre_atlas23/bin/drnas_ltm8",
     "REX2_GRAPH": "./rex2_source/mre_atlas23/bin/drnas_rex2",
     "ATLAS39_SHADOW": "./atlas39_source/mre_atlas23/bin/drnas_atlas39",
     "ATLAS39_PROTECT": "./atlas39_source/mre_atlas23/bin/drnas_atlas39",
