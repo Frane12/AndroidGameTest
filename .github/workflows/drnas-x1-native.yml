@@ -1,0 +1,129 @@
+name: DRNAS X1 pure native C++ core and factor elimination
+on:
+  push:
+    branches: [experiment/drnas-x1-native-factor-20261112]
+    paths:
+      - research/drnas_x1/**
+      - .github/workflows/drnas-x1-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x1-native-one-runner
+  cancel-in-progress: false
+jobs:
+  audit_and_original100:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compilers and independent benchmark tools (no APK)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential clang cadical python3-venv strace
+          python3 -m venv .x1venv
+          .x1venv/bin/python -m pip install --disable-pip-version-check remotezip==0.12.3
+          mkdir -p build x1_audit
+          {
+            git rev-parse HEAD
+            g++ --version
+            clang++ --version
+            cadical --version
+            .x1venv/bin/python -m pip freeze
+            lscpu
+          } > x1_audit/environment.txt
+      - name: Build standalone X1 and exhaustively audit 2000 CNFs
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG -flto -Wall -Wextra -Wpedantic -Werror research/drnas_x1/x1.cpp -o build/drnas-x1
+          python3 -S research/drnas_x1/test.py build/drnas-x1 --cases 2000 --report x1_audit/exhaustive.json
+          sha256sum build/drnas-x1 research/drnas_x1/x1.cpp research/drnas_x1/*.py > x1_audit/sha256.txt
+          nm -u build/drnas-x1 > x1_audit/imports.txt
+      - name: Independent Clang AddressSanitizer and UndefinedBehaviorSanitizer audit
+        run: |
+          set -euo pipefail
+          clang++ -std=c++20 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer research/drnas_x1/x1.cpp -o build/drnas-x1-sanitized
+          python3 -S research/drnas_x1/test.py build/drnas-x1-sanitized --cases 300 --report x1_audit/sanitizers.json
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' > x1_audit/exec.cnf
+          set +e
+          strace -f -e trace=execve -o x1_audit/execve.txt build/drnas-x1 --mode auto x1_audit/exec.cnf
+          rc=$?
+          set -e
+          test "$rc" -eq 10
+          test "$(grep -c 'execve(' x1_audit/execve.txt)" -eq 1
+      - name: Compile pinned reference and proof checker separately from X1
+        run: |
+          set -euo pipefail
+          git init /tmp/x1-kissat
+          git -C /tmp/x1-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/x1-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/x1-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/x1-kissat && ./configure && make -j2)
+          sudo install /tmp/x1-kissat/build/kissat /usr/local/bin/kissat
+          git init /tmp/x1-drat
+          git -C /tmp/x1-drat remote add origin https://github.com/marijnheule/drat-trim.git
+          git -C /tmp/x1-drat fetch --depth 1 origin 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          git -C /tmp/x1-drat checkout --detach FETCH_HEAD
+          make -C /tmp/x1-drat drat-trim
+          sudo install /tmp/x1-drat/drat-trim /usr/local/bin/drat-trim
+          {
+            git -C /tmp/x1-kissat rev-parse HEAD
+            git -C /tmp/x1-drat rev-parse HEAD
+            kissat --version
+            dpkg-query -W cadical
+          } >> x1_audit/environment.txt
+      - name: Check restarts and clause deletion on pigeonhole 8 into 7
+        run: |
+          set -euo pipefail
+          python3 -S - <<'PYCODE'
+          import sys,json
+          from pathlib import Path
+          sys.path.insert(0,'research/drnas_x1')
+          import bench
+          h,p=7,8
+          v=lambda i,j:i*h+j+1
+          clauses=[[v(i,j) for j in range(h)] for i in range(p)]
+          clauses += [[-v(i,j),-v(k,j)] for j in range(h) for i in range(p) for k in range(i+1,p)]
+          path=Path('x1_audit/php8-7.cnf')
+          bench.write_cnf(path,p*h,clauses)
+          row=bench.run_trial('X1_CORE',Path('build/drnas-x1').resolve(),path,10.0,17,'drat-trim')
+          assert row['verified'] and row['status']=='UNSAT',row
+          assert row['stats']['restarts']>0 and row['stats']['deleted']>0,row
+          Path('x1_audit/restart_deletion.json').write_text(json.dumps(row,indent=2)+'\n')
+          print('X1_RESTART_DELETE_PROOF_PASS',json.dumps(row))
+          PYCODE
+      - name: Require certified SAT and UNSAT from every benchmark arm
+        run: |
+          set -euo pipefail
+          python3 -S research/drnas_x1/bench.py --suite smoke --out x1_smoke | tee x1_smoke.log
+      - name: Exact-factor diagnostic ablation (synthetic, not competition evidence)
+        run: |
+          set -euo pipefail
+          python3 -S research/drnas_x1/bench.py --suite synthetic --native-only --out x1_synthetic | tee x1_synthetic.log
+      - name: One CPU paired original100 benchmark at 3 and 5 seconds
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -S -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .x1venv/bin/python -u research/drnas_x1/bench.py --suite official100 --out x1_official100 | tee x1_official100.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x1-native-compact
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            build/drnas-x1
+            x1_audit/*.json
+            x1_audit/*.txt
+            x1_smoke/*.json
+            x1_smoke/*.jsonl
+            x1_synthetic/*.json
+            x1_synthetic/*.jsonl
+            x1_synthetic/summary.md
+            x1_official100/*.json
+            x1_official100/*.jsonl
+            x1_official100/summary.md
+            x1_smoke.log
+            x1_synthetic.log
+            x1_official100.log
