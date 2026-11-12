@@ -51,6 +51,27 @@ class RoutingBudgetTest(unittest.TestCase):
     def test_reference_coverage(self):
         self.assertTrue(set(("Kissat", "CaDiCaL", "CryptoMiniSat")) <= set(L.TEST_ARMS))
 
+    def test_binary_xor_indicator_can_select_math14(self):
+        def cases(count, useful):
+            result=[]
+            for index in range(count):
+                xor = index % 2
+                feature={key:0.0 for key in L.F.FEATURES}
+                feature['xor3_pattern_density']=float(xor)
+                rows={a:dict(cap_s=1.,PAR2_verified_s=.5 if xor else .01)
+                      for a in L.SCREEN_ARMS}
+                rows['MATH14']=dict(cap_s=1.,PAR2_verified_s=.1 if xor and useful else .8)
+                result.append((feature,rows))
+            return result
+        model=L.fit(cases(40,True),cases(20,True),'NATIVE',extra_arms=('MATH14',))
+        self.assertTrue(model['enabled'])
+        self.assertEqual(model['feature'],'xor3_pattern_density')
+        self.assertEqual(L.pick(model,{'xor3_pattern_density':1.}), 'MATH14')
+        self.assertEqual(L.pick(model,{'xor3_pattern_density':0.}), 'LTM9_FAST')
+        rejected=L.fit(cases(40,True),cases(20,False),'NATIVE',extra_arms=('MATH14',))
+        self.assertFalse(rejected['enabled'])
+        self.assertEqual(rejected['status'],'validation-rejected')
+
 
 if __name__ == "__main__":
     unittest.main()

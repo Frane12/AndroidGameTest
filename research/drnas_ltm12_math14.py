@@ -77,7 +77,7 @@ def generate(family, seed):
 def collect(root):
     (root/'cases').mkdir(parents=True)
     sources = []
-    for split,count,offset in [('train',15,41000000),('validation',5,42000000),('holdout',10,43000000)]:
+    for split,count,offset in [('train',15,141000000),('validation',5,142000000),('holdout',10,143000000)]:
         group=[]
         for family_id,family in enumerate(FAMILIES):
             for index in range(count):

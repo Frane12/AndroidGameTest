@@ -141,7 +141,9 @@ def fit(train, validation, mode, win_margin=0.03, min_gain=0.5, extra_arms=()):
     candidates = []
     for name in F.FEATURES:
         values = sorted({float(f[name]) for f, _ in train})
-        if len(values) < 5:
+        # Binary/sparse indicators (e.g. XOR absent/present) are valid splits.
+        # Only constant features provide no decision boundary.
+        if len(values) < 2:
             continue
         thresholds = sorted({values[min(len(values) - 2, int((len(values)-1)*q))]
                              for q in (0.15, 0.30, 0.50, 0.70, 0.85)})
