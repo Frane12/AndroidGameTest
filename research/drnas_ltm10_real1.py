@@ -23,7 +23,6 @@ import shutil
 import subprocess
 import time
 
-from remotezip import RemoteZip
 import drnas_ltm10_policy as P
 from drnas_ltm9_independent_cert import (CertificateError,certificate_from_stdout,
                                          parse_dimacs,verify_php_certificate)
@@ -110,6 +109,7 @@ def decode(entry,data):
     return result
 
 def collect():
+    from remotezip import RemoteZip  # installed only in benchmark virtualenv
     (ROOT/"cases").mkdir(parents=True)
     with RemoteZip(ARCHIVE,timeout=90) as z:
         selected,eligible,families=choose_archive_entries(z.infolist())
