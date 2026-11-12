@@ -1,0 +1,64 @@
+name: DRNAS LTM10 real SAT2024 frozen-policy paired 120 E2E
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-ltm10-official-real-20261112]
+    paths:
+      - research/drnas_ltm10_official_real.py
+      - .github/workflows/drnas-ltm10-official-real.yml
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm10-official-real-single
+  cancel-in-progress: false
+jobs:
+  official_real:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned references and range-reader
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git cmake cadical cryptominisat python3-venv
+          git init /tmp/ltm10-kissat
+          git -C /tmp/ltm10-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/ltm10-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/ltm10-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/ltm10-kissat && ./configure && make -j2)
+          sudo install /tmp/ltm10-kissat/build/kissat /usr/local/bin/kissat
+          python3 -m venv .ltm10venv
+          .ltm10venv/bin/pip install --disable-pip-version-check remotezip
+          {
+            git rev-parse HEAD
+            git -C /tmp/ltm10-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } | tee ltm10-real-versions.txt
+      - name: Compile frozen LTM9 core and selftest official harness
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_compile.py
+          python3 research/drnas_ltm9_selftest.py
+          .ltm10venv/bin/python -m py_compile research/drnas_ltm10_official_real.py
+          .ltm10venv/bin/python research/drnas_ltm10_official_real.py --selftest
+      - name: Real source-disjoint training then frozen holdout 120 paired trials
+        run: |
+          set -euo pipefail
+          .ltm10venv/bin/python -u research/drnas_ltm10_official_real.py | tee ltm10-official-real.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm10-official-real-compact
+          retention-days: 14
+          path: |
+            ltm10-real-versions.txt
+            ltm10-official-real.log
+            ltm10_official_real/manifest.json
+            ltm10_official_real/training.jsonl
+            ltm10_official_real/frozen_memory.json
+            ltm10_official_real/results.jsonl
+            ltm10_official_real/summary.json
