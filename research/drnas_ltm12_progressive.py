@@ -24,7 +24,7 @@ HOLDOUT_SEEDS = (17, 29)
 CAPS = {"train": 3.0, "validation": 6.0, "holdout": 12.0}
 SCREEN_ARMS = ("LTM9_FAST", "LTM8_FAST", "Kissat", "CaDiCaL", "CryptoMiniSat")
 TEST_ARMS = ("LTM12_NATIVE", "LTM12_HYBRID", "LTM9_FAST",
-             "LTM8_FAST", "Kissat", "CaDiCaL")
+             "LTM8_FAST", "Kissat", "CaDiCaL", "CryptoMiniSat")
 SCHEMA = "ltm12-progressive-verified-v1"
 
 def emit(name, value):
@@ -188,7 +188,8 @@ def run_training(sources):
             feature = F.extract(source["path"])
             feature["feature_extract_s"] = time.monotonic() - start
             paired = {}
-            for arm in SCREEN_ARMS:
+            shift = source["id"] % len(SCREEN_ARMS)
+            for arm in SCREEN_ARMS[shift:] + SCREEN_ARMS[:shift]:
                 result = run_checked(arm, source, SEED, curriculum(source))
                 paired[arm] = result
                 rows.append(result)
@@ -225,8 +226,9 @@ def run_training(sources):
 
 def run_routed(source, seed, mode, memory):
     t = time.monotonic()
-    feature = F.extract(source["path"])
-    chosen = pick(memory["models"][mode], feature)
+    model = memory["models"][mode]
+    feature = F.extract(source["path"]) if model["enabled"] else {}
+    chosen = pick(model, feature)
     overhead = time.monotonic() - t
     remaining = CAPS["holdout"] - overhead
     if remaining < 0.55:
@@ -239,7 +241,12 @@ def run_routed(source, seed, mode, memory):
     out["arm"] = "LTM12_" + mode
     out["chosen_solver"] = chosen
     out["feature_extract_s"] = round(overhead, 6)
-    out["e2e_s"] = round(out["e2e_s"] + overhead, 6)
+    elapsed = time.monotonic() - t
+    out["e2e_s"] = round(elapsed, 6)
+    out["cap_s"] = CAPS["holdout"]
+    out["original_cnf_sha256"] = source["sha256"]
+    if elapsed > CAPS["holdout"]:
+        out.update(status="UNKNOWN", verified=False, php_math_certified=False)
     return B.with_metrics(out, CAPS["holdout"])
 
 def run_holdout(sources):
@@ -273,6 +280,8 @@ def run_holdout(sources):
                                 CAPS["holdout"], TEST_ARMS) for i in range(4)}
     baseline_native = totals["LTM9_FAST"]["PAR2_verified_s"]
     baseline_ref = totals["Kissat"]["PAR2_verified_s"]
+    best_ref = min(("Kissat", "CaDiCaL", "CryptoMiniSat"),
+                   key=lambda arm: totals[arm]["PAR2_verified_s"])
     report = dict(official_original_CNF=True, source_count=100,
                   train_sources=60, validation_sources=20, holdout_sources=20,
                   holdout_trials=len(rows), one_logical_CPU=True,
@@ -280,7 +289,12 @@ def run_holdout(sources):
                   independently_verified_unsat="PHP mathematical only, not LRAT",
                   policy=memory["models"], training_evidence=memory["evidence"],
                   totals=totals, shards=shards,
+                  best_reference=best_ref,
+                  best_reference_PAR2_s=totals[best_ref]["PAR2_verified_s"],
+                  success_criterion_met=False,  # Reused holdout cannot certify the blind goal.
                   relative_PAR2={
+                      "native_vs_best_reference_x": round(totals[best_ref]["PAR2_verified_s"] / max(0.000001, totals["LTM12_NATIVE"]["PAR2_verified_s"]), 5),
+                      "hybrid_vs_best_reference_x": round(totals[best_ref]["PAR2_verified_s"] / max(0.000001, totals["LTM12_HYBRID"]["PAR2_verified_s"]), 5),
                       "native_vs_LTM9_x": round(baseline_native / max(0.000001, totals["LTM12_NATIVE"]["PAR2_verified_s"]), 5),
                       "hybrid_vs_Kissat_x": round(baseline_ref / max(0.000001, totals["LTM12_HYBRID"]["PAR2_verified_s"]), 5)},
                   selections=dict(collections.Counter(x["chosen_solver"] for x in rows
@@ -344,4 +358,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
