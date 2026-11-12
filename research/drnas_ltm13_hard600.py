@@ -71,7 +71,7 @@ def trial(arm,s,seed,trained=0):
     try:r=L.run_checked(arm,s,seed,1.)
     finally:B.subprocess.run=original
     if r['status'].startswith('UNSAT'):raise RuntimeError('UNSAT contradicts generator witness')
-    lines=[x for text in captured for x in text.splitlines() if 'LTM13_WINDOW' in x or 'LTM8_LEARNING' in x]
+    lines=[x for text in captured for x in text.splitlines() if 'LTM13_WINDOW' in x or 'LTM8_LEARNING' in x or 'MATH14' in x]
     r.update(telemetry=lines,family=s['family'],fallback=any('fallback-low-reward' in x for x in lines))
     return r
 
