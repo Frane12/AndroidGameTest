@@ -1,0 +1,142 @@
+name: DRNAS GENERAL G1 - 25 families 11 arms paired native E2E
+run-name: G1 100 CNF x3 11 arms 5s plus 8 CNF 30s spotlight
+on:
+  push:
+    branches: [experiment/drnas-general-g1-20261112]
+    paths: [.github/workflows/drnas-general-g1.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-general-g1-single-run
+  cancel-in-progress: false
+jobs:
+  general_g1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin original R28
+        uses: actions/checkout@v4
+        with:
+          ref: 95b2b06f16efc68827ed34de9cbc1bda7b6a0a37
+          path: frozen_r28
+          persist-credentials: false
+      - name: Pin original R153
+        uses: actions/checkout@v4
+        with:
+          ref: ea3575a512a3f93bc60bf74d0014b18b0a5440af
+          path: frozen_r153
+          persist-credentials: false
+      - name: Pin REX2 and LTM8 frozen sources
+        uses: actions/checkout@v4
+        with:
+          ref: e78cef24ade360b636eaed31466d49714c08d193
+          path: rex2_source
+          persist-credentials: false
+      - name: Pin ATLAS39 frozen source
+        uses: actions/checkout@v4
+        with:
+          ref: 94784ca42bc0f07c6d848b72c2816b602a70fcb4
+          path: atlas39_source
+          persist-credentials: false
+      - name: Install and pin reference solvers; compile historical R28 and R153
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git cmake cadical cryptominisat
+          git init -q /tmp/g1-kissat
+          git -C /tmp/g1-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/g1-kissat fetch -q --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/g1-kissat checkout -q --detach FETCH_HEAD
+          test "$(git -C /tmp/g1-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/g1-kissat && ./configure >/dev/null && make -j2 >/tmp/g1-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/g1-kissat/build/kissat compiled/kissat
+          g++ -O3 -std=c++17 -DNDEBUG -Wall -Wextra -Werror frozen_r28/experiments/drnas_v16/r28_exact_gf2.cpp -o compiled/r28_gf2
+          g++ -O3 -std=c++17 -DNDEBUG -Wall -Wextra -Werror frozen_r153/research/r153_exact_units_gf2.cpp -o compiled/r153
+      - name: Compile native LTM7 LTM9 from source-pinned GF2/CDCL engine
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_general_g1.py research/drnas_allnative_competition_bench.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          for v in atlas16 atlas17 atlas19 atlas23 atlas36 ltm6 ltm7 ltm8_php ltm9_audit; do
+            python3 "research/drnas_${v}_build.py"
+          done
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm9
+          mre_atlas23/bin/drnas_ltm9 --selftest
+      - name: Compile independent LTM8 KEEP50 and REX2 graph-brancher
+        run: |
+          set -euo pipefail
+          cd rex2_source
+          python3 research/drnas_ltm8_compile.py
+          python3 research/drnas_rex2_native_patch.py
+          g++ -O3 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_rex2
+      - name: Compile source-pinned ATLAS39 SHADOW and PROTECT
+        run: |
+          set -euo pipefail
+          cd atlas39_source
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          for v in atlas16 atlas17 atlas19 atlas23 atlas36 atlas37 atlas39; do
+            python3 "research/drnas_${v}_build.py"
+          done
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_atlas39
+      - name: Freeze SHA and versions; native SAT/UNSAT smoke
+        run: |
+          set -euo pipefail
+          sha256sum compiled/r28_gf2 compiled/r153 compiled/kissat /usr/bin/cadical /usr/bin/cryptominisat5 mre_atlas23/bin/drnas_ltm9 rex2_source/mre_atlas23/bin/drnas_ltm8 rex2_source/mre_atlas23/bin/drnas_rex2 atlas39_source/mre_atlas23/bin/drnas_atlas39 | tee g1-versions.sha256
+          python3 - <<'PY'
+          import subprocess,tempfile,pathlib
+          with tempfile.TemporaryDirectory() as tmp:
+              p=pathlib.Path(tmp)/'sat.cnf'
+              p.write_text('p cnf 2 2\n1 0\n-2 0\n')
+              for name,exe,mode in [
+                  ('LTM8','rex2_source/mre_atlas23/bin/drnas_ltm8','LTM8_KEEP50'),
+                  ('REX2','rex2_source/mre_atlas23/bin/drnas_rex2','REX2_GRAPH'),
+                  ('ATLAS39_SHADOW','atlas39_source/mre_atlas23/bin/drnas_atlas39','A39_SHADOW'),
+                  ('ATLAS39_PROTECT','atlas39_source/mre_atlas23/bin/drnas_atlas39','A39_PROTECT'),
+              ]:
+                  r=subprocess.run([exe,str(p),'--mode',mode,'--time','2','--seed','1','--policy','1.0,0.85'],capture_output=True,text=True,timeout=8)
+                  print(name,'SAT_SMOKE',r.returncode,r.stderr[-200:],flush=True)
+                  assert r.returncode==10,(name,r.stdout[-700:],r.stderr[-700:])
+          PY
+      - name: G1 wide screen - 25 synthetic families x 4 CNFs x 3 reps x 11 arms at 5s cap
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_general_g1.py | tee g1-screen.log
+          grep -q '^G1_AUDIT ' g1-screen.log
+      - name: G1 predeclared 8-case spotlight x 11 arms at 30s cap
+        env:
+          G1_STAGE: spotlight
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_general_g1.py | tee g1-spotlight.log
+          grep -q '^G1_AUDIT ' g1-spotlight.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-general-g1-compact-audit
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            g1-versions.sha256
+            g1-screen.log
+            g1-spotlight.log
+            general_g1_screen/manifest.json
+            general_g1_screen/trials.jsonl
+            general_g1_screen/summary.json
+            general_g1_spotlight/manifest.json
+            general_g1_spotlight/trials.jsonl
+            general_g1_spotlight/summary.json
