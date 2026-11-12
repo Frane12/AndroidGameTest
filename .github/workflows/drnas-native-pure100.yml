@@ -1,0 +1,78 @@
+name: DRNAS PURE NATIVE 100 original SAT2024 CNF 3s 5s
+on:
+  push:
+    branches: [experiment/drnas-native-pure100-cap3-5-20261112]
+    paths:
+      - .github/workflows/drnas-native-pure100.yml
+      - research/drnas_native_pure100.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-native-pure100-one-runner
+  cancel-in-progress: true
+
+jobs:
+  native100:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python archive reader and native C++ compiler only
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential python3-venv
+          python3 -m venv .nativevenv
+          .nativevenv/bin/python -m pip install --disable-pip-version-check remotezip
+          git rev-parse HEAD > pure100_commit.txt
+
+      - name: Pure native runner selftest and independent certificate audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_native_pure100.py
+          python3 research/drnas_native_pure100.py --selftest
+          python3 research/drnas_ltm9_independent_cert.py
+
+      - name: Compile only DRNAS native CDCL variants
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          test -x mre_atlas23/bin/drnas_ltm8_base
+          test -x mre_atlas23/bin/drnas_ltm9_certificate
+          echo PURE100_NATIVE_BUILD_PASS
+      - name: One logical CPU — 100 official original SAT2024, 3/5 s, 3 native arms
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "PURE100_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .nativevenv/bin/python -u research/drnas_native_pure100.py | tee pure100.log
+
+      - name: Verified native PAR2, solved, conflicts, regressions
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open('drnas_native_pure100/report.json'))
+          lines=['## DRNAS PURE NATIVE — 100 ORIGINAL SAT2024 CNFs','',
+            'No Kissat, CaDiCaL, CryptoMiniSat, hybrid, external fallback or APK. One CPU. 50 cases at 3s and 50 at 5s.','',
+            '| Native | Verified solved | SAT | Certified UNSAT | Unverified UNSAT | PAR2 verified (s) |',
+            '|---|---:|---:|---:|---:|---:|']
+          for arm,m in d['totals'].items():
+              lines.append(f"| {arm} | {m['solved_verified']}/100 | {m['SAT_verified']} | {m['UNSAT_math_certified']} | {m['UNSAT_unverified']} | {m['PAR2_verified_s']:.4f} |")
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-pure-native100-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            pure100.log
+            pure100_commit.txt
+            drnas_native_pure100/*.json
+            drnas_native_pure100/*.jsonl
