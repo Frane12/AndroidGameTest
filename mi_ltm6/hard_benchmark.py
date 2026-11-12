@@ -140,7 +140,7 @@ for family,index,raw,provenance in cases:
     path.write_bytes(raw)
     sources.append(dict(family=family,index=index,path=path,sha256=sha,
                         provenance=provenance))
-print("LTM6_HARD_MANIFEST +json.dumps(dict(cases=len(sources),reps=2,arms=ARMS,
+print("LTM6_HARD_MANIFEST "+json.dumps(dict(cases=len(sources),reps=2,arms=ARMS,
       trials=len(sources)*2*len(ARMS),cap_s=CAP,one_cpu=True,
       corpus_type='harder_disjoint_deterministic_synthetic_only',external_downloads=0,
       original_source_sha256=[x["sha256"] for x in sources])),flush=True)
@@ -153,7 +153,7 @@ for case in sources:
             r=run(case,rep,arm)
             rows.append(r)
             statuses.add(r["status"])
-            print("LTM6_HARD_TRIAL +json.dumps(r,sort_keys=True),flush=True)
+            print("LTM6_HARD_TRIAL "+json.dumps(r,sort_keys=True),flush=True)
         if {"SAT_VERIFIED","UNSAT_UNVERIFIED"} <= statuses:
             raise RuntimeError("SAT-vs-UNSAT contradiction; audit refused")
 summary={}
