@@ -1,0 +1,105 @@
+name: DRNAS S5 REAL20 proof-checked math and serial budget cascades
+on:
+  push:
+    branches: [experiment/drnas-s5-short-cascade-real20-20261112]
+    paths:
+      - .github/workflows/drnas-s5-real20.yml
+      - research/drnas_s5_cascade.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-s5-real20-one-runner
+  cancel-in-progress: true
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned serial reference SAT solvers — no APK
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/s5-kissat
+          git -C /tmp/s5-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/s5-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/s5-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/s5-kissat && ./configure && make -j2)
+          sudo install /tmp/s5-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/s5-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+          } > s5_versions.txt
+      - name: Syntax and deterministic proof-checked shortcut selftest
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_s5_cascade.py research/drnas_selective_reduce_s2_mid.py research/drnas_ltm12_dynamic.py
+          python3 research/drnas_s5_cascade.py --selftest
+          python3 research/drnas_selective_reduce_s2_mid.py --selftest
+
+      - name: Real subprocess SAT smoke for all three cascade policies
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,hashlib,sys,tempfile,os
+          sys.path.insert(0,'research')
+          import drnas_s5_cascade as S
+          os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/'tiny.cnf'
+              p.write_text('p cnf 3 3\n1 2 0\n-2 3 0\n-3 0\n')
+              src=dict(id=-1,path=str(p),sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+                       split='holdout',known_sat=True)
+              for arm in S.ARMS:
+                  row=S.run_arm(arm,src,17,3.0)
+                  assert row['status']=='SAT_VERIFIED',(arm,row)
+                  print('S5_SMOKE_PASS',arm,row['e2e_s'],flush=True)
+          PY
+      - name: Install previously used SAT2024 range reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .s5venv
+          .s5venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: One logical CPU — 8 reused synthetic plus 20 official original CNFs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "S5_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .s5venv/bin/python -u research/drnas_s5_cascade.py --seed 520261112 | tee s5_real20.log
+      - name: Verified PAR2 and solved count audit
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open('drnas_s5_cascade/combined.json'))
+          lines=['## DRNAS S5 source-only cascade benchmark','',
+                 'Exploratory reused generator / original SAT2024 archive. Verified SAT on original CNF, unverified UNSAT excluded. One CPU.','',
+                 '| Dataset | Best reference | Reference PAR2 | S5 DIRECT | S5 Kissat→CaDiCaL | S5 Kissat→CMS |',
+                 '|---|---|---:|---:|---:|---:|']
+          for name,r in d.items():
+              m=r['PAR2'];ref=r['best_reference']
+              lines.append(f"| {name} | {ref} | {m[ref]:.4f} | {m['S5_DIRECT']:.4f} | {m['S5_KC']:.4f} | {m['S5_KM']:.4f} |")
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-s5-real20-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            s5_real20.log
+            s5_versions.txt
+            drnas_s5_cascade/*.json
+            drnas_s5_cascade/synthetic/*.json
+            drnas_s5_cascade/synthetic/*.jsonl
+            drnas_s5_cascade/official/*.json
+            drnas_s5_cascade/official/*.jsonl
