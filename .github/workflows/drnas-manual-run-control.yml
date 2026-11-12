@@ -1,24 +1,48 @@
-name: DRNAS manual run restart or delete
+name: DRNAS blocked SAT runs - inspect restart cancel
 
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: "Choose one run ID or every blocked SAT run (APK excluded)"
+        required: true
+        type: choice
+        default: all_blocked
+        options:
+          - all_blocked
+          - single
       mode:
-        description: "inspect = no changes; restart = GitHub rerun; delete = permanently remove run"
+        description: "inspect changes nothing; restart cancels blocked run then reruns; delete ONE run only"
         required: true
         type: choice
         default: inspect
         options:
           - inspect
           - restart
+          - cancel
           - delete
       run_id:
-        description: "Exact GitHub Actions run ID (first queued LTM5 = 43095292436)"
-        required: true
+        description: "Exact GitHub Actions run ID; only for target=single"
+        required: false
         type: string
-        default: '43095292436'
-      confirm_delete:
-        description: "Required for delete only. This permanently removes a run and logs."
+        default: ''
+      max_runs:
+        description: "Safety cap for bulk action; start with 1. 'all' is potentially many requeues!"
+        required: true
+        type: choice
+        default: '1'
+        options:
+          - '1'
+          - '3'
+          - '10'
+          - all
+      allow_force_cancel:
+        description: "If normal cancel stalls, attempt GitHub force-cancel on that run"
+        required: true
+        type: boolean
+        default: false
+      confirm_action:
+        description: "Required for restart/cancel/delete. Inspect needs no confirmation."
         required: true
         type: boolean
         default: false
@@ -34,97 +58,199 @@ concurrency:
 jobs:
   control:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 45
     steps:
-      - name: Inspect and optionally restart or delete ONE LTM5 queue run
+      - name: Inspect and control blocked DRNAS SAT runs safely
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.run_id }}
+          TARGET: ${{ inputs.target }}
           MODE: ${{ inputs.mode }}
-          CONFIRM_DELETE: ${{ inputs.confirm_delete }}
-        shell: bash
+          RUN_ID: ${{ inputs.run_id }}
+          MAX_RUNS: ${{ inputs.max_runs }}
+          ALLOW_FORCE_CANCEL: ${{ inputs.allow_force_cancel }}
+          CONFIRM_ACTION: ${{ inputs.confirm_action }}
         run: |
           python3 - <<'PY'
           import datetime as dt
           import json
           import os
+          import re
+          import time
           import urllib.error
+          import urllib.parse
           import urllib.request
 
-          repo = os.environ['GITHUB_REPOSITORY']
-          raw_run_id = os.environ['RUN_ID'].strip()
-          mode = os.environ['MODE']
-          confirmation = os.environ['CONFIRM_DELETE'].lower() == 'true'
-          if repo != 'Frane12/AndroidGameTest':
-              raise SystemExit('Wrong repository; no action taken.')
-          if not raw_run_id.isdecimal() or not (0 < int(raw_run_id) < 10**15):
-              raise SystemExit('Run ID must be a positive integer.')
-          if mode not in ('inspect', 'restart', 'delete'):
-              raise SystemExit('Unknown mode.')
-          run_id = int(raw_run_id)
+          repo = os.environ["GITHUB_REPOSITORY"]
+          if repo != "Frane12/AndroidGameTest":
+              raise SystemExit("Safety stop: wrong repository.")
+          target = os.environ["TARGET"]
+          mode = os.environ["MODE"]
+          raw_id = os.environ["RUN_ID"].strip()
+          cap_input = os.environ["MAX_RUNS"]
+          cap = 100 if cap_input == "all" else int(cap_input)
+          confirmed = os.environ["CONFIRM_ACTION"] == "true"
+          force = os.environ["ALLOW_FORCE_CANCEL"] == "true"
+          if target not in ("single", "all_blocked") or mode not in ("inspect", "restart", "cancel", "delete"):
+              raise SystemExit("Unsupported control input.")
+          if mode != "inspect" and not confirmed:
+              raise SystemExit("Safety stop: check confirm_action before changing a run.")
+          if target == "all_blocked" and mode == "delete":
+              raise SystemExit("Bulk deletion is deliberately disabled; use target=single.")
+          if target == "single" and (not raw_id.isdecimal() or int(raw_id) <= 0):
+              raise SystemExit("Enter a valid run_id for target=single.")
+
+          base = f"https://api.github.com/repos/{repo}/actions/runs"
           headers = {
-              'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-              'User-Agent': 'drnas-manual-run-control',
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "drnas-blocked-run-control",
           }
-          base = f'https://api.github.com/repos/{repo}/actions/runs/{run_id}'
-          def request(url, method='GET'):
-              req = urllib.request.Request(url, method=method, headers=headers)
+          def request(path, method="GET"):
+              req = urllib.request.Request(path, headers=headers, method=method)
               try:
-                  with urllib.request.urlopen(req, timeout=30) as response:
-                      body = response.read().decode('utf-8', 'replace')
-                      return response.status, (json.loads(body) if body else {})
-              except urllib.error.HTTPError as error:
-                  return error.code, {'message': error.read().decode('utf-8', 'replace')[:1000]}
+                  with urllib.request.urlopen(req, timeout=25) as response:
+                      data = response.read()
+                      return response.status, json.loads(data) if data else {}
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", "replace")
+                  try:
+                      details = json.loads(body)
+                  except ValueError:
+                      details = {"message": body[:500]}
+                  return exc.code, details
 
-          status, run = request(base)
-          if status != 200:
-              raise SystemExit(f'Cannot inspect run {run_id}: HTTP {status}, {run}')
-          name = run.get('name', '')
-          branch = run.get('head_branch') or ''
-          if not branch.startswith('experiment/drnas-ltm5-') or name not in (
-                  'DRNAS LTM5 certified graph into native CDCL',
-                  'Build Zvjezdana Macka APK'):
-              raise SystemExit('Safety stop: target must be an original queued LTM5/APK run from an experiment/drnas-ltm5-* branch.')
+          def sat_run(run):
+              name = (run.get("name") or "").lower()
+              path = (run.get("path") or "").lower()
+              if not (re.search(r"drnas|ltm\d*|atlas|mre|sat|dmd|crr|pcd|worldsim|gf2", name)):
+                  return False
+              if re.search(r"apk|zvjezdana|macka|mačka", name + " " + path):
+                  return False
+              if "manual-run-control" in path or "blocked-run" in name:
+                  return False
+              return True
 
-          lines = [
-              '### DRNAS manual run control',
-              f'- Run ID: {run_id}',
-              f'- Workflow: {name}',
-              f'- Branch containing the queue: {branch}',
-              f'- Source commit SHA: {run.get("head_sha")}',
-              f'- Current state: {run.get("status")}, conclusion: {run.get("conclusion")}',
-              f'- Requested operation: {mode}',
-              f'- Original run: {run.get("html_url")}',
-          ]
-          if mode == 'inspect':
-              lines.append('- No changes performed.')
-          elif mode == 'restart':
-              if run.get('status') != 'completed':
-                  lines.append('- WARNING: GitHub normally rejects re-running an unfinished queued run. Attempting only this one ID.')
-              response_status, data = request(base + '/rerun', 'POST')
-              lines.append(f'- REST POST /rerun response: HTTP {response_status}, details: {data}')
-              if response_status != 201:
-                  lines.append('- Restart NOT accepted by GitHub. No new attempt was confirmed.')
+          blocked = {"queued", "waiting", "pending", "requested"}
+          def list_blocked():
+              found = {}
+              for state in ("queued", "waiting", "pending", "requested"):
+                  for page in range(1, 11):
+                      query = urllib.parse.urlencode({"status": state, "per_page": 100, "page": page})
+                      status, data = request(base + "?" + query)
+                      if status != 200:
+                          raise SystemExit(f"Cannot list {state} runs: HTTP {status}: {data}")
+                      rows = data.get("workflow_runs", [])
+                      for item in rows:
+                          if item.get("status") in blocked and sat_run(item):
+                              found[item["id"]] = item
+                      if len(rows) < 100:
+                          break
+              return sorted(found.values(), key=lambda x: (x.get("created_at") or "", x["id"]))
+
+          if target == "single":
+              code, item = request(f"{base}/{raw_id}")
+              if code != 200:
+                  raise SystemExit(f"Cannot inspect run {raw_id}: HTTP {code}: {item}")
+              if not sat_run(item):
+                  raise SystemExit("Safety stop: run is not a DRNAS SAT run, or is an excluded APK/control run.")
+              selected = [item]
           else:
-              if not confirmation:
-                  raise SystemExit('Delete refused: check confirm_delete to explicitly authorize deleting ONE run.')
-              created = dt.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
-              eligible_age = dt.datetime.now(dt.timezone.utc) - created >= dt.timedelta(days=14)
-              if run.get('status') != 'completed' and not eligible_age:
-                  lines.append('- WARNING: GitHub normally allows deletion only after completion or after 14 days. Attempting only this one ID.')
-              response_status, data = request(base, 'DELETE')
-              lines.append(f'- REST DELETE response: HTTP {response_status}, details: {data}')
-              if response_status != 204:
-                  lines.append('- Deletion NOT accepted by GitHub. Historical run remains.')
+              selected = list_blocked()
 
-          report = '\n'.join(lines) + '\n'
-          print(report, flush=True)
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
-              f.write(report)
-          if mode == 'restart' and response_status != 201:
-              raise SystemExit('GitHub rejected rerun; see exact HTTP result above.')
-          if mode == 'delete' and response_status != 204:
-              raise SystemExit('GitHub rejected deletion; see exact HTTP result above.')
+          report = [
+              "# DRNAS blocked SAT runs control",
+              f"- Target: {target}; operation: {mode}; action cap: {cap_input}",
+              "- APK / Zvjezdana Macka workflows are excluded.",
+              f"- Eligible runs found: {len(selected)}",
+              "",
+              "| Run | Workflow | Status | Branch |",
+              "|---|---|---|---|",
+          ]
+          for run in selected[:150]:
+              name = (run.get("name") or "?").replace("|", "/")
+              branch = (run.get("head_branch") or "?").replace("|", "/")
+              report.append(f"| [#{run['id']}]({run.get('html_url')}) | {name} | {run.get('status')} | {branch} |")
+          if len(selected) > 150:
+              report.append(f"- Showing first 150 of {len(selected)} runs.")
+          report.append("")
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          def publish():
+              body = "\n".join(report) + "\n"
+              print(body, flush=True)
+              with open(summary_path, "w", encoding="utf-8") as f:
+                  f.write(body)
+
+          if mode == "inspect":
+              report.append("Inspection only: **nothing changed**. Choose mode=restart, max_runs=1 and confirm_action=true to retry the oldest blocked SAT run.")
+              publish()
+              raise SystemExit(0)
+
+          if not selected:
+              report.append("No eligible blocked SAT runs found; nothing changed.")
+              publish()
+              raise SystemExit(0)
+
+          results = []
+          for run in selected[:cap]:
+              run_id = run["id"]
+              run_url = f"{base}/{run_id}"
+              state = run.get("status")
+              note = ""
+              if mode == "delete":
+                  if state != "completed":
+                      note = "REFUSED: delete requires completed run; cancel it first."
+                  else:
+                      http, detail = request(run_url, "DELETE")
+                      note = f"delete HTTP {http}: {'DELETED' if http == 204 else detail}"
+              elif mode == "cancel":
+                  if state == "completed":
+                      note = "Already completed; no cancellation required."
+                  else:
+                      http, detail = request(run_url + "/cancel", "POST")
+                      if http != 202 and force:
+                          http, detail = request(run_url + "/force-cancel", "POST")
+                          note = f"force-cancel HTTP {http}: {detail}"
+                      else:
+                          note = f"cancel HTTP {http}: {detail}"
+              else:
+                  if state != "completed":
+                      http, detail = request(run_url + "/cancel", "POST")
+                      if http not in (202, 409):
+                          results.append((run_id, f"Cancel rejected HTTP {http}: {detail}"))
+                          continue
+                      completed = False
+                      for step in range(12):
+                          time.sleep(2)
+                          get_code, latest = request(run_url)
+                          if get_code == 200 and latest.get("status") == "completed":
+                              completed = True
+                              break
+                      if not completed and force:
+                          http, detail = request(run_url + "/force-cancel", "POST")
+                          if http == 202:
+                              for step in range(12):
+                                  time.sleep(2)
+                                  get_code, latest = request(run_url)
+                                  if get_code == 200 and latest.get("status") == "completed":
+                                      completed = True
+                                      break
+                      if not completed:
+                          results.append((run_id, "Not restarted: GitHub did not finish cancellation. Re-run this control after cancellation completes."))
+                          continue
+                  # GitHub only accepts /rerun on completed runs.
+                  http, detail = request(run_url + "/rerun", "POST")
+                  note = f"rerun HTTP {http}: {'REQUEST ACCEPTED (new attempt may queue)' if http in (201, 202) else detail}"
+              results.append((run_id, note))
+
+          report.extend(["", "## Actions attempted", "| Run ID | Result |", "|---|---|"])
+          for run_id, note in results:
+              report.append(f"| [#{run_id}](https://github.com/{repo}/actions/runs/{run_id}) | {note} |")
+          if len(selected) > cap:
+              report.append(f"- {len(selected) - cap} other eligible runs left untouched due to safety cap.")
+          report.append("- Rerunning a queued run does **not** bypass GitHub runner availability or concurrency restrictions.")
+          publish()
+          if any(("Not restarted" in note or "rejected" in note.lower() or "REFUSED" in note or "HTTP 4" in note or "HTTP 5" in note) for _, note in results):
+              raise SystemExit("Some operations were rejected; see the job summary.")
           PY
