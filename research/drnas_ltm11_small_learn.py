@@ -67,34 +67,41 @@ def family_key(name):
     return name
 
 def choose_archive_entries(all_entries):
-    # No outcome labels or solutions are read. Select a wide range of sizes,
-    # with one representative per normalized name family to reduce leakage.
-    eligible=sorted(
-       (item for item in all_entries
-        if not item.is_dir()
-        and item.filename.lower().endswith((".cnf",".cnf.xz",".cnf.gz",".cnf.bz2"))
-        and 4000<=item.file_size<=50000
-        and pathlib.PurePosixPath(item.filename).name not in OLD_OFFICIAL),
-       key=lambda e:(e.file_size,e.filename))
-    by_family={}
-    for e in eligible:
-        key=family_key(e.filename)
-        if key not in by_family:by_family[key]=e
-    pool=sorted(by_family.values(),key=lambda e:(e.file_size,e.filename))
-    if len(pool)<SAMPLE_COUNT:
-        # All source hashes remain distinct. If fewer than 100 heuristic
-        # families exist, allow training-family duplicates but explicitly
-        # REFUSE to call that family-disjoint or run a leaky holdout.
-        raise RuntimeError(f"Only {len(pool)} distinct official name families; need 40")
-    # Compressed-size-stratified: 40 evenly-spaced positions in the pool.
-    positions=[min(len(pool)-1,((2*i+1)*len(pool))//(2*SAMPLE_COUNT))
-               for i in range(SAMPLE_COUNT)]
-    if len(set(positions))!=SAMPLE_COUNT:
-        raise RuntimeError("nonunique source positions")
-    selected=[pool[i] for i in positions]
-    random.Random(1010).shuffle(selected)
-    assert len({family_key(x.filename) for x in selected})==SAMPLE_COUNT
-    return selected,len(eligible),len(pool)
+    # Deterministic fallback if strict small-source size range lacks enough
+    # distinct filename families. Never duplicate families across splits.
+    # Selection depends on archive metadata only, never solver outcomes.
+    tiers=((4000,50000),(1000,80000),(1000,200000),(1000,900000))
+    for lo,hi in tiers:
+        eligible=sorted(
+           (item for item in all_entries
+            if not item.is_dir()
+            and item.filename.lower().endswith((".cnf",".cnf.xz",".cnf.gz",".cnf.bz2"))
+            and lo<=item.file_size<=hi
+            and pathlib.PurePosixPath(item.filename).name not in OLD_OFFICIAL),
+           key=lambda e:(e.file_size,e.filename))
+        by_family={}
+        for e in eligible:
+            key=family_key(e.filename)
+            if key not in by_family:
+                by_family[key]=e
+        pool=sorted(by_family.values(),key=lambda e:(e.file_size,e.filename))
+        if len(pool)<SAMPLE_COUNT:
+            emit("LTM11_SELECTION_TIER_INSUFFICIENT",
+                 dict(min_bytes=lo,max_bytes=hi,distinct_families=len(pool),
+                      required=SAMPLE_COUNT))
+            continue
+        positions=[min(len(pool)-1,((2*i+1)*len(pool))//(2*SAMPLE_COUNT))
+                   for i in range(SAMPLE_COUNT)]
+        if len(set(positions))!=SAMPLE_COUNT:
+            raise RuntimeError("nonunique source positions")
+        selected=[pool[i] for i in positions]
+        random.Random(1010).shuffle(selected)
+        assert len({family_key(x.filename) for x in selected})==SAMPLE_COUNT
+        emit("LTM11_SELECTION_TIER",
+             dict(min_bytes=lo,max_bytes=hi,distinct_families=len(pool),
+                  selected=SAMPLE_COUNT))
+        return selected,len(eligible),len(pool)
+    raise RuntimeError("Insufficient distinct official CNF families even after size-tier expansion")
 
 def decode(entry,data):
     name=entry.filename.lower()
@@ -138,7 +145,7 @@ def collect():
     manifest=dict(archive=ARCHIVE,collection="SAT Competition 2024 Main",
                   source_count=40,train=20,validation=10,holdout=10,
                   independently_untested_2024_names_excluded=len(OLD_OFFICIAL),
-                  source_selection="4k-50k compressed bytes quantiles over unique normalized name families",
+                  source_selection="smallest successful deterministic compressed-size tier over disjoint normalized name families",
                   selection_did_not_use_results=True,
                   family_disjoint_by_filename_heuristic=True,
                   global_novelty_not_guaranteed=True,
