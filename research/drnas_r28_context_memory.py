@@ -85,7 +85,7 @@ class Memory:
         finally:target.close()
 
 def solve(memory,cnf,split='eval',cap=1.,seed=17,warm=True,binary=BINARY,build='local'):
-    if not 0<cap<=120:raise ValueError('invalid time cap')
+    if not 0<cap<=300:raise ValueError('invalid time cap')
     started=time.perf_counter();sha=file_sha(cnf);memory.register(sha,split)
     env=dict(os.environ,DRNAS_LTM8_MEMORY='')
     env.pop('DRNAS_CONTEXT_SNAPSHOT',None)

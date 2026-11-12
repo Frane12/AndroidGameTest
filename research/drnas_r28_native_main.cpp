@@ -36,7 +36,7 @@ int main(int argc,char** argv) {
             else if(key=="--gf2-ms")math_ms=std::stod(value);
             else throw std::runtime_error("unknown option");
         }
-        if(!std::isfinite(cap)||cap<=0||cap>120||!std::isfinite(math_ms)||math_ms<0||math_ms>1000||
+        if(!std::isfinite(cap)||cap<=0||cap>300||!std::isfinite(math_ms)||math_ms<0||math_ms>1000||
            (profile!="fast"&&profile!="direct"&&profile!="fixed0"))throw std::runtime_error("invalid setting");
         std::signal(SIGALRM,deadline);
         itimerval timer{};timer.it_value.tv_sec=long(cap);

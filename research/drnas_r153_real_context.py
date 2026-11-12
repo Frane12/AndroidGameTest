@@ -5,7 +5,7 @@ from drnas_r28_context_memory import Memory,solve,file_sha
 import drnas_r28_native_benchmark as references
 ROOT=pathlib.Path('r153_real_context')
 ARMS=('NATIVE_DIRECT','CONTEXT_COLD','CONTEXT_MEMORY','Kissat','CaDiCaL','CryptoMiniSat')
-REFS=ARMS[3:];CAP=5.;REPEATS=2
+REFS=ARMS[3:];CAP=60.;REPEATS=2
 
 def emit(tag,x):print(tag,json.dumps(x,sort_keys=True),flush=True)
 def decode(name,data):
@@ -96,7 +96,7 @@ def run(sources,memory):
                         row.update(prior_weight=sum(weights),learning_windows_logged=out.count('c LTM13_WINDOW'),route='exact_gf2' if 'route=exact_gf2' in out else 'native_learning')
                         if row['answer_verified']:
                             proof=ROOT/'certificates'/f'{c["id"]:02d}-{arm}-{rep}.txt';proof.parent.mkdir(exist_ok=True);proof.write_text(out)
-                    row.update(id=c['id'],sha256=c['sha256'],family=c['family'],arm=arm,rep=rep,shard=c['id']//4)
+                    row.update(id=c['id'],sha256=c['sha256'],family=c['family'],arm=arm,rep=rep,shard=c['id']//4,stage=f'cap_{CAP:g}s')
                     rows.append(row);f.write(json.dumps(row)+'\n');f.flush();emit('R153_REAL_TRIAL',row)
             check_claims(rows);report=summarize(rows);emit('R153_REAL_PROGRESS',dict(sources_completed=c['id']+1,totals=report['totals']))
     assert memory.digest()==digest,'evaluation changed learned statistics'
@@ -104,7 +104,7 @@ def run(sources,memory):
     (ROOT/'report.json').write_text(json.dumps(report,indent=2)+'\n');emit('R153_REAL_FINAL',report)
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
-            f.write('## R153/R160 memory on 12 original SAT2024 formulas\n\nFrozen prior; 2 repeats; 5s; one logical CPU. Previously used dataset, not a blind benchmark.\n\n| Arm | Verified | Reported | PAR2 verified s | PAR2 reported s | Loaded priors |\n|---|---:|---:|---:|---:|---:|\n')
+            f.write(f'## R153/R160 memory on {len(sources)} original SAT2024 formulas\n\nFrozen prior; {REPEATS} repeats; {CAP:g}s; one logical CPU. Previously used dataset, not a blind benchmark.\n\n| Arm | Verified | Reported | PAR2 verified s | PAR2 reported s | Loaded priors |\n|---|---:|---:|---:|---:|---:|\n')
             for arm,s in report['totals'].items():f.write(f"|{arm}|{s['verified']}/{s['trials']}|{s['reported_solved']}|{s['PAR2_verified_s']:.4f}|{s['PAR2_reported_s']:.4f}|{s['prior_loaded_attempts']}|\n")
             f.write('\nMissing generic UNSAT certificates affect verified PAR2. No automatic promotion.\n')
 

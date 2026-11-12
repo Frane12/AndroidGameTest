@@ -19,6 +19,7 @@ s=one(s,'atlas36_quota_pct_=ltm8_.quota;',
     'atlas36_quota_pct_=(std::getenv("DRNAS_R28_KEEP50") && std::string(std::getenv("DRNAS_R28_KEEP50"))=="1")?50:ltm8_.quota;')
 (ROOT/'ltm8_members.hpp').write_text(s)
 s=Path('mre_atlas23/native_certificate.cpp').read_text()
+s=one(s,'cap>0&&cap<=120&&std::isfinite(cap)','cap>0&&cap<=300&&std::isfinite(cap)')
 s=one(s,'int main(int argc,char**argv){','int drnas_native_entry(int argc,char**argv){')
 s=one(s,'   if(use_gf2&&(!use_gauss||gauss.source>=4))\n    solver.enable_gf2_from_original(orig);',
     '''   if(use_gf2&&(!use_gauss||gauss.source>=4)){
