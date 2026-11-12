@@ -1,0 +1,78 @@
+name: DRNAS R153 LTM7 integrated selective Gaussian vs 3 references
+on:
+  push:
+    branches: [experiment/drnas-r153-ltm7-selective-gauss-20261112]
+    paths: [.github/workflows/drnas-r153-ltm7-gauss.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r153-ltm7-gauss-one-run
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin original R153 C++ source
+        uses: actions/checkout@v4
+        with:
+          ref: ea3575a512a3f93bc60bf74d0014b18b0a5440af
+          path: frozen_r153
+          persist-credentials: false
+      - name: Compile pinned reference solver Kissat, CaDiCaL, CryptoMiniSat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical cryptominisat
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/gauss-kissat
+          git -C /tmp/gauss-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/gauss-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/gauss-kissat && ./configure && make -j2 >/tmp/gauss-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/gauss-kissat/build/kissat compiled/kissat
+          sha256sum compiled/kissat /usr/bin/cadical /usr/bin/cryptominisat5 > compiled/binaries.sha256
+          git -C frozen_r153 rev-parse HEAD
+      - name: Generate and compile unified R153 LTM7 selective Gaussian native C++
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_r153_ltm7_gauss_build.py research/drnas_r153_ltm7_gauss_benchmark.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          python3 research/drnas_ltm7_build.py
+          python3 research/drnas_ltm8_php_build.py
+          python3 research/drnas_ltm9_audit_build.py
+          python3 research/drnas_r153_ltm7_gauss_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_r153_ltm7
+          mre_atlas23/bin/drnas_r153_ltm7 --selftest
+          sha256sum mre_atlas23/bin/drnas_r153_ltm7
+      - name: Single CPU paired 34 SHA-distinct CNFs x 2 repeats x 7 arms
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_r153_ltm7_gauss_benchmark.py | tee r153_ltm7_gauss.log
+          grep -q '^R153_LTM7_AUDIT ' r153_ltm7_gauss.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r153-ltm7-selective-gauss-476-paired-audit
+          path: |
+            r153_ltm7_gauss.log
+            compiled/binaries.sha256
+            r153_ltm7_gauss_results/manifest.json
+            r153_ltm7_gauss_results/results.json
+            r153_ltm7_gauss_results/summary.json
+          retention-days: 14
+          if-no-files-found: warn
