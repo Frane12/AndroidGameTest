@@ -127,7 +127,7 @@ def collect(root, run_seed):
     return sources
 
 
-def implication_model(n, clauses):
+def implication_components(n, clauses):
     graph = [[] for _ in range(2 * n)]
     reverse = [[] for _ in graph]
     for clause in clauses:
@@ -163,6 +163,11 @@ def implication_model(n, clauses):
                 if component[child] == -1:
                     component[child] = i
                     stack.append(child)
+    return component
+
+
+def implication_model(n, clauses):
+    component = implication_components(n, clauses)
     if any(component[2 * i] == component[2 * i + 1] for i in range(n)):
         return None
     return [component[2 * i] > component[2 * i + 1] for i in range(n)]

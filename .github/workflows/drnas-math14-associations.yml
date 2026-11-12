@@ -1,0 +1,57 @@
+name: DRNAS MATH14 associations and bounded analytical cascades
+on:
+  push:
+    branches: [experiment/drnas-math14-associations-20261112]
+    paths:
+      - .github/workflows/drnas-math14-associations.yml
+      - research/drnas_math14_associations.py
+      - research/drnas_ltm12_dynamic.py
+permissions:
+  contents: read
+concurrency:
+  group: drnas-math14-associations
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference solvers (no APK, no Android build)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/drnas-ltm12-kissat
+          git -C /tmp/drnas-ltm12-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/drnas-ltm12-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/drnas-ltm12-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/drnas-ltm12-kissat && ./configure && make -j2)
+          sudo install /tmp/drnas-ltm12-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/drnas-ltm12-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > ltm12_versions.txt
+      - name: Check generator and original-CNF witness path
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_math14_associations.py
+          python3 research/drnas_ltm12_dynamic.py --selftest --seed 71
+      - name: One CPU matched analytical reductions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_math14_associations.py | tee math14_associations.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math14-associations-compact
+          retention-days: 30
+          path: |
+            ltm12_versions.txt
+            math14_associations.log
+            math14_associations/*.json
+            math14_associations/*.jsonl
