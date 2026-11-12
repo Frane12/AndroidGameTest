@@ -1,0 +1,127 @@
+name: DRNAS S3 CRR native XOR binary CDCL paired medium benchmark
+on:
+  push:
+    branches: [experiment/drnas-s3-crr-native-20261112]
+    paths:
+      - .github/workflows/drnas-s3-crr-native.yml
+      - research/drnas_s3_crr*
+      - research/drnas_s3_compile.py
+      - research/drnas_s3_benchmark.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-s3-crr-native-single
+  cancel-in-progress: true
+
+jobs:
+  native_crr_medium:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned SAT reference solvers — never build APK
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/s3-kissat
+          git -C /tmp/s3-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/s3-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/s3-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/s3-kissat && ./configure && make -j2)
+          sudo install /tmp/s3-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/s3-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > s3_versions.txt
+
+      - name: Exhaustive independent logical soundness test
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -I research research/drnas_s3_crr_test.cpp -o /tmp/s3-crr-test
+          /tmp/s3-crr-test
+          python3 -m py_compile research/drnas_s3_compile.py research/drnas_s3_benchmark.py
+          python3 research/drnas_s3_benchmark.py --selftest
+          python3 research/drnas_selective_reduce_s2_mid.py --selftest
+
+      - name: Build stable LTM9 and isolated S3 native CDCL executable
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_ltm9_independent_cert.py
+          python3 research/drnas_s3_compile.py
+
+      - name: Verify S3 SAT witness on original CNF and derived binary telemetry
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, pathlib, sys, tempfile
+          sys.path.insert(0,"research")
+          import drnas_s3_benchmark as S
+          S.L.setup_source()
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/"original.cnf"
+              p.write_text("p cnf 3 2\n1 2 0\n-2 3 0\n")
+              src=dict(id=-1,split="holdout",path=str(p),
+                       sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+                       known_sat=True,nvars=3)
+              result=S.native_trial(src,17,2.)
+              assert result["status"]=="SAT_VERIFIED",result
+              assert result["telemetry_seen"],result
+              assert result["resolution_added"]>=1,result
+              print("S3_NATIVE_SMOKE_PASS",result,flush=True)
+          PY
+
+      - name: Install previously used official SAT2024 range reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .s3venv
+          .s3venv/bin/python -m pip install --disable-pip-version-check remotezip
+
+      - name: One logical CPU — 20 medium synthetic and 4–6 official SAT2024 CNFs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "S3_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .s3venv/bin/python -u research/drnas_s3_benchmark.py --seed 320261112 | tee s3_crr.log
+
+      - name: Summary — verified PAR2, solved and C++ clause derivations
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open('drnas_s3_crr/combined.json'))
+          lines=['## DRNAS S3 CRR native paired medium benchmark','',
+            '**Exploratory**: prior-known generator classes and SAT2024 archive; no global blind or general UNSAT claim. All reference runs serial on one logical CPU.','',
+            '| Dataset | Best reference | PAR2 ref (s) | PAR2 S3 gated (s) | Reduction % | Derived clauses S3 gated |',
+            '|---|---|---:|---:|---:|---:|']
+          for name,item in d['results'].items():
+              ref=item['reference']
+              baseline=item['PAR2'][ref]
+              s3=item['PAR2']['S3_GATED']
+              reduction=100*(1-s3/baseline) if baseline else 0
+              lines.append(f"| {name} | {ref} | {baseline:.6f} | {s3:.6f} | {reduction:+.2f}% | {item['s3']['S3_GATED']['derived_clauses']} |")
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-s3-crr-native-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            s3_versions.txt
+            s3_crr.log
+            drnas_s3_crr/*.json
+            drnas_s3_crr/synthetic/*.json
+            drnas_s3_crr/synthetic/*.jsonl
+            drnas_s3_crr/official/*.json
+            drnas_s3_crr/official/*.jsonl
