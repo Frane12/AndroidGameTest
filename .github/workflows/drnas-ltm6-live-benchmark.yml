@@ -1,0 +1,84 @@
+name: DRNAS LTM6 - one isolated native live graph benchmark
+on:
+  push:
+    branches:
+      - experiment/drnas-ltm6-20261112
+    paths:
+      - mi_ltm6/BENCHMARK_REQUEST.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-ltm6-single-20261112
+  cancel-in-progress: false
+
+jobs:
+  one_native_benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify source and certified graph tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python3 -m unittest discover -s mi_ltm5 -p 'test_*.py' -v
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm6
+          python3 - <<'PY'
+          import pathlib,subprocess,tempfile
+          from mi_ltm5.xor_fixtures import xor_clauses
+          from mi_ltm5.cdcl_bridge import write_derived
+          cs=xor_clauses((1,2,3),0)+xor_clauses((2,3,4),1)
+          raw=("p cnf 4 %d\n"%len(cs)+"".join(" ".join(map(str,c))+" 0\n" for c in cs))
+          with tempfile.TemporaryDirectory() as folder:
+              base=pathlib.Path(folder)/"base.cnf"
+              derived=pathlib.Path(folder)/"derived.cnf"
+              base.write_text(raw)
+              stats=write_derived(base,derived)
+              assert stats["added"]==2,stats
+              for arm,p,mode in (("BASE",base,"A36_75"),("LTM5",derived,"A36_75"),
+                                 ("LTM6",base,"LTM6_LIVE")):
+                  proc=subprocess.run(["mre_atlas23/bin/drnas_ltm6",str(p),
+                           "--mode",mode,"--time","3","--seed","1",
+                           "--policy","1.0,0.85"],text=True,capture_output=True,timeout=12)
+                  print("LTM6_SMOKE",arm,"status",proc.returncode,flush=True)
+                  if proc.returncode!=10:raise AssertionError((arm,proc.returncode,
+                                         proc.stderr[-500:],proc.stdout[-500:]))
+                  if arm=="LTM6":
+                      assert "LTM6_GRAPH " in proc.stdout,proc.stdout[-500:]
+                      assert "enabled=1" in proc.stdout,proc.stdout[-500:]
+              assert base.read_text()==raw
+          PY
+          echo 'LTM6_CERTIFIED_LIVE_SMOKE_PASS' >> "$GITHUB_STEP_SUMMARY"
+      - name: Benchmark 60 matched trials, one logical CPU, original CNF
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u mi_ltm6/native_benchmark.py | tee bench.log
+          grep '^LTM6_NATIVE_FINAL ' bench.log >> "$GITHUB_STEP_SUMMARY"
+          grep '^LTM6_NATIVE_AUDIT_PASS ' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload only compact LTM6 audit files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LTM6-native-graph-evidence
+          retention-days: 21
+          if-no-files-found: ignore
+          path: |
+            bench.log
+            ltm6_results/results.json
+            ltm6_results/structural_memory.json
