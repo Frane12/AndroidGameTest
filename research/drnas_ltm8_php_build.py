@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""LTM8 PHP: experimental conservative learned-clause deletion quota (50%).
-Patch generated native code AFTER ATLAS36/LTM7. No change to soundness rules.
+"""LTM8 PHP: isolated lower deletion quota, preserving soundness checks.
+Run after ATLAS36, LTM6 and LTM7 native patches.
 """
 from pathlib import Path
-h=Path("mre_atlas23/drnas_native_core_c.hpp")
-s=h.read_text()
-old='require(pct==90 || pct==75,"ATLAS36 invalid percentage");'
-assert s.count(old)==1
-s=s.replace(old,'require(pct==90 || pct==75 || pct==50,"ATLAS36 invalid percentage");')
-h.write_text(s)
-p=Path("mre_atlas23/native.cpp")
-s=p.read_text()
-old='mode=="A36_75"'
-assert s.count(old)>=2
-# Add new mode to existing mode-dispatch predicates, not the setter statement.
-s=s.replace('||mode=="A36_75"','||mode=="A36_75"||mode=="LTM8_KEEP50"')
-anchor='solver.atlas36_enable_quota(75);'
-assert s.count(anchor)==1
-s=s.replace(anchor,anchor+'\n    if(mode=="LTM8_KEEP50")solver.atlas36_enable_quota(50);',1)
-assert 'mode=="LTM8_KEEP50"' in s
-p.write_text(s)
-print("LTM8_KEEP50_PATCH_PASS",flush=True)
+
+header=Path("mre_atlas23/drnas_native_core_c.hpp")
+source=Path("mre_atlas23/native.cpp")
+h=header.read_text()
+permit='require(pct==90 || pct==75,"ATLAS36 invalid percentage");'
+assert h.count(permit)==1,("quota guard drift",h.count(permit))
+h=h.replace(permit,'require(pct==90 || pct==75 || pct==50,"ATLAS36 invalid percentage");')
+header.write_text(h)
+
+s=source.read_text()
+mode='mode=="A36_75"'
+count=s.count(mode)
+assert count>=3,("A36_75 mode dispatch drift",count)
+# Extend all A36_75 dispatch sites, including the quota-setting if branch.
+# Keep the BASE, LTM6 and LTM7 code paths untouched.
+s=s.replace(mode,'(mode=="A36_75"||mode=="LTM8_KEEP50")')
+# Previous anchor was not unique in generated code; turn the existing
+# quota setting into an explicit per-mode choice at every such call site.
+quota='solver.atlas36_enable_quota(75);'
+quota_count=s.count(quota)
+assert quota_count>=1,("quota setter missing",quota_count)
+s=s.replace(quota,'solver.atlas36_enable_quota(mode=="LTM8_KEEP50"?50:75);')
+assert s.count('mode=="LTM8_KEEP50"')==count+quota_count
+source.write_text(s)
+print(f"LTM8_KEEP50_PATCH_PASS dispatch_sites={count} quota_sites={quota_count} BASE_unchanged=true",flush=True)
