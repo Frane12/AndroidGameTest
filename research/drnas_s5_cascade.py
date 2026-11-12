@@ -236,7 +236,7 @@ def selftest():
         assert preset_path("S5_KC",f,4)[1][0]=="CaDiCaL"
         assert S2.D.shortcut(p)=="gf2_elimination"
         assert B.sat_witness_valid(p,3,"v 1 1 1 0\n")==False
-        assert B.sat_witness_valid(p,3,"v -1 -2 -3 0\n")
+        assert B.sat_witness_valid(p,3,"v 1 2 3 0\n")
         p.write_text("p cnf 3 2\n1 2 0\n-2 3 0\n")
         assert B.sat_witness_valid(p,3,"v 1 -2 3 0\n")
     emit("S5_SELFTEST_PASS",dict(original_cnf_witness=True,source_only_router=True,
