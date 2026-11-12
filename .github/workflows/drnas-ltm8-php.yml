@@ -1,0 +1,85 @@
+name: DRNAS LTM8 PHP - conservative clause retention
+on:
+  push:
+    branches: [experiment/drnas-ltm8-php-20261112]
+    paths: [.github/workflows/drnas-ltm8-php.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm8-php-single
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate native solver with LTM8 quota
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          python3 research/drnas_ltm7_build.py
+          python3 research/drnas_ltm8_php_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm8
+      - name: Paired pigeonhole baseline and 50 percent quota
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u - <<'PY' | tee ltm8.log
+          import sys,hashlib,json,pathlib,subprocess,time
+          sys.path.insert(0,'research')
+          import drnas_atlas13_generator as G
+          import drnas_atlas_wide500 as W
+          root=pathlib.Path('ltm8_cases');root.mkdir(exist_ok=True)
+          rows=[]
+          for family,index in [('pigeonhole_unsat',64),('pigeonhole_unsat',65),('mixed_hard',64),('mixed_hard',65)]:
+              n,clauses,_=G.build(family,index)
+              raw=W.canonical(n,clauses);sha=hashlib.sha256(raw).hexdigest()
+              p=root/(sha+'.cnf');p.write_bytes(raw)
+              for rep in range(2):
+                  for arm,mode in [('BASE','A36_75'),('LTM8_KEEP50','LTM8_KEEP50'),('LTM7','LTM7_SELECT')]:
+                      start=time.monotonic()
+                      try:
+                          q=subprocess.run(['mre_atlas23/bin/drnas_ltm8',str(p),'--mode',mode,'--time','15','--seed',str(rep+1),'--policy','1.0,0.85'],capture_output=True,text=True,timeout=15.2)
+                          rc=q.returncode
+                      except subprocess.TimeoutExpired:
+                          rc=124
+                      elapsed=min(15,time.monotonic()-start)
+                      status={10:'SAT',20:'UNSAT_UNVERIFIED'}.get(rc,'UNKNOWN')
+                      if rc==10:
+                          assignment={}
+                          for line in q.stdout.splitlines():
+                              if line.startswith('v '):
+                                  for x in line[2:].split():
+                                      lit=int(x)
+                                      if lit:
+                                          if abs(lit)>n or (abs(lit) in assignment and assignment[abs(lit)]!=(lit>0)):raise RuntimeError('invalid witness')
+                                          assignment[abs(lit)]=lit>0
+                          if not all(any(assignment.get(abs(x))==(x>0) for x in clause) for clause in clauses):raise RuntimeError('invalid SAT witness')
+                          status='SAT_VERIFIED'
+                      row=dict(arm=arm,family=family,index=index,rep=rep,sha256=sha,status=status,e2e_s=round(elapsed,6),PAR2_verified_s=round(elapsed if status=='SAT_VERIFIED' else 30,6),PAR2_reported_s=round(elapsed if status in ('SAT_VERIFIED','UNSAT_UNVERIFIED') else 30,6))
+                      rows.append(row);print('LTM8_TRIAL '+json.dumps(row),flush=True)
+          summary={}
+          for arm in ['BASE','LTM8_KEEP50','LTM7']:
+              a=[r for r in rows if r['arm']==arm]
+              summary[arm]=dict(trials=len(a),SAT_verified=sum(r['status']=='SAT_VERIFIED' for r in a),UNSAT_unverified=sum(r['status']=='UNSAT_UNVERIFIED' for r in a),PAR2_verified_s=round(sum(r['PAR2_verified_s'] for r in a),6),PAR2_reported_s=round(sum(r['PAR2_reported_s'] for r in a),6))
+          print('LTM8_FINAL '+json.dumps(summary,sort_keys=True),flush=True)
+          print('LTM8_AUDIT single_cpu=true synthetic=true original_sat_verified=true UNSAT_independent_proof=false',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm8-php-compact
+          path: ltm8.log
+          retention-days: 14
