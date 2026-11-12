@@ -1,0 +1,94 @@
+name: DRNAS S2 MID mixed CNF reductions grouped medium variables
+on:
+  push:
+    branches: [experiment/drnas-selective-reduce-s2-mid-20261112]
+    paths:
+      - .github/workflows/drnas-selective-reduce-s2-mid.yml
+      - research/drnas_selective_reduce_s2_mid.py
+      - research/drnas_ltm13_hard600.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-s2-mid-one-runner
+  cancel-in-progress: true
+
+jobs:
+  medium_grouped:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fixed reference SAT solvers (no APK build)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/s2-kissat
+          git -C /tmp/s2-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/s2-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/s2-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/s2-kissat && ./configure && make -j2)
+          sudo install /tmp/s2-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/s2-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+          } > s2_versions.txt
+
+      - name: Proof-first gate static and contradiction smoke
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_selective_reduce_s2_mid.py research/drnas_selective_reduce_s1.py research/drnas_ltm12_dynamic.py research/drnas_ltm13_hard600.py
+          python3 research/drnas_selective_reduce_s2_mid.py --selftest
+          python3 research/drnas_selective_reduce_s1.py --selftest
+
+      - name: Install existing official SAT2024 source reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .s2venv
+          .s2venv/bin/python -m pip install --disable-pip-version-check remotezip
+
+      - name: Serial one-logical-CPU grouped medium SAT benchmark
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "S2_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .s2venv/bin/python -u research/drnas_selective_reduce_s2_mid.py --seed 220261112 | tee s2_mid.log
+
+      - name: Verified PAR2 and regression summary
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          p='drnas_selective_reduce_s2_mid/combined.json'
+          d=json.load(open(p))
+          lines=['### DRNAS S2 grouped medium benchmark','','Exploratory results only: single logical CPU; reuse of prior synthetic generators and original SAT2024 archive.','',
+                 '| Dataset | Best reference | S2 verified PAR2 s | Reference PAR2 s | S2 improvement |',
+                 '|---|---|---:|---:|---:|']
+          for k,v in d.items():
+              ref=v['reference'];par2=v['solvers']
+              lines.append(f"| {k} | {ref} | {par2['S2']['PAR2_verified_s']:.6f} | {par2[ref]['PAR2_verified_s']:.6f} | {v['improvement_pct']:+.2f}% |")
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+                  f.write('\n'.join(lines)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-s2-mid-compact
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            s2_versions.txt
+            s2_mid.log
+            drnas_selective_reduce_s2_mid/*.json
+            drnas_selective_reduce_s2_mid/synthetic/*.json
+            drnas_selective_reduce_s2_mid/synthetic/*.jsonl
+            drnas_selective_reduce_s2_mid/official/*.json
+            drnas_selective_reduce_s2_mid/official/*.jsonl
