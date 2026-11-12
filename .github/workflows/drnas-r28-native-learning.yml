@@ -1,0 +1,87 @@
+name: DRNAS R28 native learning historical extremes
+on:
+  push:
+    branches: [experiment/drnas-r28-native-learning-20261112]
+    paths:
+      - '.github/workflows/drnas-r28-native-learning.yml'
+      - 'research/drnas_r28_native*'
+      - 'research/r28_native_vendor/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r28-native-learning-20261112
+  cancel-in-progress: false
+jobs:
+  native_extremes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: built/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: r153repeat-original25-frozen-source-and-binaries
+          run-id: 42128549081
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r28_fixtures/r153
+      - uses: actions/download-artifact@v4
+        with:
+          name: R115-historical-14k-repeat-raw
+          run-id: 41898809612
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          path: r28_fixtures/r115
+      - name: Pin references and original source hashes
+        run: |
+          set -euo pipefail
+          mkdir -p r28_native_results
+          (cd built/bin && sha256sum -c binaries.sha256)
+          chmod +x built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          dpkg-query -W cryptominisat | tee r28_native_results/cryptominisat-package.txt
+          sha256sum built/bin/kissat_4_0_4 built/bin/cadical_3_0_1 /usr/bin/cryptominisat5 > r28_native_results/reference-hashes.txt
+          lscpu > r28_native_results/cpu.txt
+          git rev-parse HEAD > r28_native_results/commit.txt
+          PYTHONPATH=research python3 - <<'PY'
+          from pathlib import Path
+          from drnas_r28_native_benchmark import sources
+          cs=sources(Path('r28_fixtures'))
+          print('R28_NATIVE_ORIGINAL_SHA_PASS',len(cs),flush=True)
+          PY
+      - name: Compile frozen native baseline and isolated R28 native composite
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_r28_native_build.py
+      - name: Independent models, mathematical proofs and deadline selftests
+        run: |
+          set -euo pipefail
+          python3 research/drnas_r28_native_selftest.py | tee r28_native_results/selftest.log
+      - name: Serial one CPU paired 9 arms, historical R160 and R115 extremes
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_r28_native_benchmark.py | tee r28_native_results/live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-r28-native-learning-extremes-compact
+          path: |
+            r28_native_results/
+            mre_r28_native/drnas_r28_native
+            mre_r28_native/r28_reference
+            mre_r28_native/r153_reference
+            mre_r28_native/pins.json
+            research/drnas_r28_native_protocol.md
+          retention-days: 60
