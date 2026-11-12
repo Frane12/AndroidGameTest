@@ -1,0 +1,112 @@
+name: DRNAS S6 DIVERSE real20 15s 25s reverse cascades
+on:
+  push:
+    branches: [experiment/drnas-s6-cap15-25-diverse-20261112]
+    paths:
+      - .github/workflows/drnas-s6-diverse-real20.yml
+      - research/drnas_s6_diverse.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-s6-diverse-real20-one-runner
+  cancel-in-progress: true
+
+jobs:
+  paired_original_cnf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference SAT solvers (never build APK)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/s6-kissat
+          git -C /tmp/s6-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/s6-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/s6-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/s6-kissat && ./configure && make -j2)
+          sudo install /tmp/s6-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/s6-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > s6_versions.txt
+
+      - name: Syntax and source-independent verification selftests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_s6_diverse.py research/drnas_s5_cascade.py
+          python3 research/drnas_s6_diverse.py --selftest
+          python3 research/drnas_s5_cascade.py --selftest
+
+      - name: Real original CNF SAT smoke for all five approaches
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, pathlib, sys, tempfile, os
+          sys.path.insert(0,'research')
+          import drnas_s6_diverse as S
+          os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/'smoke.cnf'
+              p.write_text('p cnf 3 3\n1 2 0\n-2 3 0\n-3 0\n')
+              src=dict(id=-1,path=str(p),sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+                       split='holdout',known_sat=True)
+              for arm in S.ARMS:
+                  row=S.run_one(arm,src,17,3.)
+                  assert row['status']=='SAT_VERIFIED',(arm,row)
+                  print('S6_SMOKE_PASS',arm,row['e2e_s'],flush=True)
+          PY
+
+      - name: Install reused SAT2024 range reader (isolated virtualenv)
+        run: |
+          set -euo pipefail
+          python3 -m venv .s6venv
+          .s6venv/bin/python -m pip install --disable-pip-version-check remotezip
+
+      - name: One logical CPU — 6 synthetic and 20 official originals at 15 25 s
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "S6_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .s6venv/bin/python -u research/drnas_s6_diverse.py --seed 620261112 | tee s6_diverse.log
+
+      - name: Source-disjoint cohort PAR2 and solved comparison
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          result=json.load(open('drnas_s6_diverse/combined.json'))
+          lines=['## DRNAS S6 — larger caps, diverse ORIGINAL SAT2024 CNFs','',
+                 'Source-only 8 low / 7 medium / 5 high-variable selection, 15/15/25s per source; same cap for every solver. Historical archive reuse: exploratory, not globally blind.','',
+                 '| Dataset | Best reference | Ref PAR2 s | CMS→Kissat PAR2 s | Kissat→CMS PAR2 s |',
+                 '|---|---|---:|---:|---:|']
+          for cohort,values in result.items():
+              m=values['verified_PAR2'];best=values['reference']
+              lines.append(f"| {cohort} | {best} | {m[best]:.3f} | {m['S6_CMS_KISSAT']:.3f} | {m['S6_KISSAT_CMS']:.3f} |")
+          lines.append('\nAll SAT results independently checked on original CNF; unverified UNSAT receives PAR2 penalty. Full per-source logs in compact artifact.')
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fd:fd.write('\n'.join(lines)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-s6-diverse-real20-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            s6_versions.txt
+            s6_diverse.log
+            drnas_s6_diverse/*.json
+            drnas_s6_diverse/synthetic/*.json
+            drnas_s6_diverse/synthetic/*.jsonl
+            drnas_s6_diverse/official/*.json
+            drnas_s6_diverse/official/*.jsonl
