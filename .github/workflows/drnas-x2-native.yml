@@ -1,0 +1,103 @@
+name: DRNAS X2 NATIVE backdoor depth vs X1 and 3 references
+on:
+  push:
+    branches: [experiment/drnas-x2-native-depth-20261112]
+    paths:
+      - src/drnas_x2.cpp
+      - tests/test_x2.py
+      - research/drnas_x2_bench.py
+      - .github/workflows/drnas-x2-native.yml
+      - README_X2.md
+      - CMakeLists.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x2-native-single-runner
+  cancel-in-progress: true
+jobs:
+  native_and_paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone native X1 and X2 (no APK)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x2.cpp -o build/drnas-x2
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x1.cpp -o build/drnas-x1
+          g++ --version | head -1 | tee x2_versions.txt
+          git rev-parse HEAD >> x2_versions.txt
+      - name: Exhaustive independent validation (2836 CNFs x 3 modes)
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x2.py --cases 2500 | tee x2_test.log
+      - name: Deterministic synthetic 64 source-distinct CNFs vs X1
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X2_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x2_bench.py --smoke --synthetic-count 64 --smoke-cap 0.35 | tee x2_synthetic.log
+      - name: Install PINNED reference solvers and SAT2024 archive reader (benchmark only)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/x2-kissat
+          git -C /tmp/x2-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/x2-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/x2-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/x2-kissat && ./configure && make -j2)
+          sudo install /tmp/x2-kissat/build/kissat /usr/local/bin/kissat
+          git -C /tmp/x2-kissat rev-parse HEAD >> x2_versions.txt
+          cadical --version >> x2_versions.txt
+          cryptominisat5 --version >> x2_versions.txt
+          python3 -m venv .x2venv
+          .x2venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Historical 12 SAT2024 original CNFs, matched 5s cap, one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .x2venv/bin/python -u research/drnas_x2_bench.py --official --official-cap 5 | tee x2_official.log
+      - name: Summary by cohort, arm and proven solved count
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          lines=['## DRNAS X2 native — structural distance / 2-SAT backdoor','',
+                 'C++20 all-native X2. References used only outside solver by Python harness. One logical CPU; full process wall time including parsing.','',
+                 '| Dataset | Arm | Solved (verified) | Verified PAR2 (s) |',
+                 '|---|---|---:|---:|']
+          for cohort in ('synthetic','official'):
+              p=pathlib.Path('drnas_x2_results')/cohort/'report.json'
+              if not p.exists(): continue
+              r=json.loads(p.read_text())
+              for arm,v in r['arms'].items():
+                  lines.append(f"| {cohort} | {arm} | {v['solved']}/{v['trials']} | {v['PAR2_verified_s']:.4f} |")
+              for group, data in r['groups'].items():
+                  lines.append('')
+                  lines.append(f'**{cohort}/{group}**: '+', '.join(f"{k}: {v['solved']} solved, PAR2 {v['PAR2_verified_s']:.3f}s" for k,v in data.items()))
+          lines += ['', 'Official SAT2024 archive is historical/reused, not a globally blind holdout. No independent general UNSAT proof; unverified UNSAT penalized. Synthetic construction verification is not a DRAT/LRAT certificate.']
+          summary='\n'.join(lines)+'\n'
+          print(summary)
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x2-native-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x2_versions.txt
+            x2_test.log
+            x2_synthetic.log
+            x2_official.log
+            drnas_x2_results/synthetic/report.json
+            drnas_x2_results/synthetic/selection.json
+            drnas_x2_results/synthetic/trials.jsonl
+            drnas_x2_results/official/report.json
+            drnas_x2_results/official/selection.json
+            drnas_x2_results/official/trials.jsonl
