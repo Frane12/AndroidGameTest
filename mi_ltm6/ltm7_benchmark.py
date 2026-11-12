@@ -183,13 +183,13 @@ for arm in ARMS:
 summary["speedup_verified_BASE_over_LTM7"]=round(
     summary["BASE"]["PAR2_verified_s"]/max(.000001,summary["LTM7"]["PAR2_verified_s"]),6)
 summary["speedup_reported_BASE_over_LTM7"]=round(
-    summary["BASE"]["PAR2_reported_s"]/max(.000001,summary["LTM6"]["PAR2_reported_s"]),6)
+    summary["BASE"]["PAR2_reported_s"]/max(.000001,summary["LTM7"]["PAR2_reported_s"]),6)
 # Evidence journal: raw per-source structural characteristics and paired
 # measured gains. Not a certified cross-formula inference rule or live policy.
 memory=[]
 for case in sources:
     subset=[r for r in rows if r["sha256"]==case["sha256"]]
-    selected=[r for r in subset if r["arm"]=="LTM6"]
+    selected=[r for r in subset if r["arm"]=="LTM7"]
     by_arm={arm:sum(r["PAR2_verified_s"] for r in subset if r["arm"]==arm)
             for arm in ARMS}
     memory.append(dict(
