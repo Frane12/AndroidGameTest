@@ -77,9 +77,11 @@ s=replace_once(s,'   solver.add_cnf(work);',
 s=replace_once(s,'  solver.ltm8_finish();',
     '  solver.ltm8_finish();\n  solver.rex2_report();',"native_run_report")
 
-old='(mode=="LTM8_KEEP50"||mode=="LTM8_FAST"||mode=="LTM8_CHAOS")'
-if s.count(old)<3:raise RuntimeError(f"REX2 mode whitelist drift: {s.count(old)}")
-s=s.replace(old,'(mode=="LTM8_KEEP50"||mode=="LTM8_FAST"||mode=="LTM8_CHAOS"||mode=="REX2_GRAPH")')
+# REX2 and LTM8_FAST must have exactly the same runtime configuration.
+# Inherit FAST at *all* mode dispatch sites; only branching differs.
+fast='mode=="LTM8_FAST"'
+if s.count(fast)<4:raise RuntimeError(f"REX2 FAST dispatch drift: {s.count(fast)}")
+s=s.replace(fast,'(mode=="LTM8_FAST"||mode=="REX2_GRAPH")')
 # No file is changed unless ALL anchors above match.
 members.write_text(m)
 core.write_text(h)
