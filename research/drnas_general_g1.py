@@ -67,7 +67,7 @@ def generate():
     assert len(G.CATEGORIES) == 10 and len(W.SYNTH) == 15
     assert len(all_cases) == 100
     if STAGE == "spotlight":
-        all_cases = [c for c in all_cases if c[1] in SPOTLIGHT and c[2] in (231, 131)]
+        all_cases = [c for c in all_cases if c[1] in SPOTLIGHT and c[2] == (231 if c[0] == "ATLAS13" else 131) and not (c[0] == "WIDE500" and c[1] == "pigeonhole_unsat")]
         assert len(all_cases) == len(SPOTLIGHT) == 8
     cases = []
     for origin, family, idx, n, clauses in all_cases:
