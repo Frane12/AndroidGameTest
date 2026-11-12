@@ -1,0 +1,102 @@
+name: DRNAS LTM11 DIVERSE100 verified learning official SAT2024
+on:
+  push:
+    branches: [experiment/drnas-ltm11-diverse100-learn-20261112]
+    paths:
+      - .github/workflows/drnas-ltm11-diverse100.yml
+      - research/drnas_ltm11_diverse100.py
+      - research/drnas_ltm11_policy.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm11-diverse100-one-runner
+  cancel-in-progress: false
+jobs:
+  train_validate_holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/drnas-ltm10-kissat
+          git -C /tmp/drnas-ltm10-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/drnas-ltm10-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/drnas-ltm10-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/drnas-ltm10-kissat && ./configure && make -j2)
+          sudo install /tmp/drnas-ltm10-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/drnas-ltm10-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > ltm11_versions.txt
+          cat ltm11_versions.txt
+      - name: Build frozen native baseline plus instrumented LTM9
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_ltm9_selftest.py
+          python3 research/drnas_ltm9_independent_cert.py
+      - name: Compile/check new LTM11 learning system
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ltm11_policy.py research/drnas_ltm11_diverse100.py
+          python3 research/drnas_ltm11_policy.py
+          python3 - <<'PY'
+          import pathlib,sys,tempfile
+          sys.path.insert(0,"research")
+          import drnas_ltm11_diverse100 as B
+          assert B.family_key("foo_42.sanitized.cnf.xz")==B.family_key("foo_73.sanitized.cnf.xz")
+          with tempfile.TemporaryDirectory() as td:
+              path=pathlib.Path(td)/"tiny.cnf"
+              path.write_text("p cnf 2 2\n1 0\n-2 0\n")
+              assert B.sat_witness_valid(path,2,"s SATISFIABLE\nv 1 -2 0\n")
+              assert not B.sat_witness_valid(path,2,"v -1 2 0\n")
+          print("LTM11_HARNESS_SELFTEST_PASS",flush=True)
+          PY
+      - name: Smoke real single-core invocation of all five training solvers
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,pathlib,sys,tempfile
+          sys.path.insert(0,"research")
+          import drnas_ltm11_diverse100 as B
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/"tiny-original.cnf"
+              p.write_text("p cnf 2 2\n1 0\n2 0\n")
+              source={"id":-1,"path":str(p),"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"split":"train"}
+              assert set(B.SCREEN_ARMS)=={"Kissat","CaDiCaL","CryptoMiniSat","LTM9_FAST","LTM8_FAST"}
+              for arm in B.SCREEN_ARMS:
+                  x=B.run_solver(arm,source,17,2.0)
+                  assert x["status"]=="SAT_VERIFIED",(arm,x)
+                  print("LTM11_SMOKE_PASS",arm,x["status"],flush=True)
+          PY
+      - name: Install range-fetch dependencies in isolated venv
+        run: |
+          set -euo pipefail
+          python3 -m venv .ltm11venv
+          .ltm11venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Train on 60 diverse CNFs validate 20 freeze and holdout 20
+        run: |
+          set -euo pipefail
+          .ltm11venv/bin/python -u research/drnas_ltm11_diverse100.py | tee ltm11_diverse100.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm11-diverse100-verified-audit
+          retention-days: 21
+          path: |
+            ltm11_versions.txt
+            ltm11_diverse100.log
+            ltm11_diverse100/manifest.json
+            ltm11_diverse100/screen.jsonl
+            ltm11_diverse100/ltm11_memory.json
+            ltm11_diverse100/holdout.jsonl
+            ltm11_diverse100/report.json
