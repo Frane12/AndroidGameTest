@@ -1,0 +1,83 @@
+name: DRNAS LTM10 REAL1 structure learning on 100 official SAT2024 CNFs
+on:
+  push:
+    branches: [experiment/drnas-ltm10-real-learn-20261112]
+    paths:
+      - .github/workflows/drnas-ltm10-real1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm10-real1-single
+  cancel-in-progress: false
+jobs:
+  train_validate_holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/drnas-ltm10-kissat
+          git -C /tmp/drnas-ltm10-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/drnas-ltm10-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/drnas-ltm10-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/drnas-ltm10-kissat && ./configure && make -j2)
+          sudo install /tmp/drnas-ltm10-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/drnas-ltm10-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > ltm10_versions.txt
+          cat ltm10_versions.txt
+      - name: Build frozen native baseline plus instrumented LTM9
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_ltm9_selftest.py
+          python3 research/drnas_ltm9_independent_cert.py
+      - name: Compile/check new LTM10 learning system
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_ltm10_policy.py research/drnas_ltm10_real1.py
+          python3 research/drnas_ltm10_policy.py
+          python3 - <<'PY'
+          import pathlib,sys,tempfile
+          sys.path.insert(0,"research")
+          import drnas_ltm10_real1 as B
+          assert B.family_key("foo_42.sanitized.cnf.xz")==B.family_key("foo_73.sanitized.cnf.xz")
+          with tempfile.TemporaryDirectory() as td:
+              path=pathlib.Path(td)/"tiny.cnf"
+              path.write_text("p cnf 2 2\n1 0\n-2 0\n")
+              assert B.sat_witness_valid(path,2,"s SATISFIABLE\nv 1 -2 0\n")
+              assert not B.sat_witness_valid(path,2,"v -1 2 0\n")
+          print("LTM10_HARNESS_SELFTEST_PASS",flush=True)
+          PY
+      - name: Install range-fetch dependencies in isolated venv
+        run: |
+          set -euo pipefail
+          python3 -m venv .ltm10venv
+          .ltm10venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Train on 60 real CNFs validate on 20 freeze and test on 20
+        run: |
+          set -euo pipefail
+          .ltm10venv/bin/python -u research/drnas_ltm10_real1.py | tee ltm10_real1.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm10-real1-policy-and-compact-audit
+          retention-days: 21
+          path: |
+            ltm10_versions.txt
+            ltm10_real1.log
+            ltm10_real1/manifest.json
+            ltm10_real1/screen.jsonl
+            ltm10_real1/ltm10_memory.json
+            ltm10_real1/holdout.jsonl
+            ltm10_real1/report.json
