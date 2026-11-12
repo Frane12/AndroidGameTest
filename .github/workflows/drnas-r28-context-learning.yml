@@ -1,0 +1,124 @@
+name: DRNAS R153 R160 context memory across builds
+on:
+  push:
+    branches: [experiment/drnas-r153-context-memory-20261112]
+    paths:
+      - 'research/drnas_r28_context*'
+      - '.github/workflows/drnas-r28-context-learning.yml'
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-context-memory-v1-serial
+  cancel-in-progress: false
+jobs:
+  train_validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Find previous successful versioned SQL memory
+        id: memory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 research/drnas_r28_context_restore.py locate
+      - uses: actions/download-artifact@v4
+        if: steps.memory.outputs.found == 'true'
+        with:
+          name: drnas-context-memory-v1
+          run-id: ${{ steps.memory.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: drnas_memory
+      - name: Validate memory checksum, schema and database
+        run: python3 research/drnas_r28_context_restore.py validate
+      - name: Build unchanged algebra base and separate context learner
+        run: |
+          set -euo pipefail
+          python3 research/drnas_r28_native_build.py
+          python3 research/drnas_r28_context_build.py
+      - name: Test original answers, transfer, deduplication and holdout isolation
+        run: |
+          set -euo pipefail
+          python3 research/drnas_r28_native_selftest.py
+          python3 research/drnas_r28_context_selftest.py
+          PYTHONPATH=research python3 - <<'PY'
+          import drnas_r28_native_selftest as t
+          t.BIN='mre_r28_context/drnas_r28_context'
+          t.main()
+          PY
+      - name: Train across formulas and freeze memory for paired evaluation
+        run: |
+          set -euo pipefail
+          mkdir -p r28_context_results
+          python3 -u research/drnas_r28_context_benchmark.py --train 32 --holdout 16 --cap 1 | tee r28_context_results/live.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-context-seed-v1
+          path: drnas_memory/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-context-native-binaries
+          path: |
+            mre_r28_native/drnas_r28_native
+            mre_r28_context/drnas_r28_context
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-context-first-pass-audit
+          path: |
+            r28_context_results/
+            mre_r28_context/pins.json
+          retention-days: 30
+  resume_next_build:
+    needs: train_validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-context-seed-v1
+          path: drnas_memory
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-context-native-binaries
+          path: .
+      - name: Restore on fresh runner without recompiling
+        run: |
+          set -euo pipefail
+          chmod +x mre_r28_native/drnas_r28_native mre_r28_context/drnas_r28_context
+          python3 research/drnas_r28_context_restore.py validate
+      - name: Continue training with saved SQL memory on new formulas
+        run: |
+          set -euo pipefail
+          mkdir -p r28_context_results
+          python3 -u research/drnas_r28_context_benchmark.py --train 8 --holdout 8 --cap 1 | tee r28_context_results/live.log
+      - name: Verify inherited generation and learning cells
+        run: |
+          python3 - <<'PY'
+          import json
+          s=json.load(open('r28_context_results/summary.json'))
+          assert s['initial_memory']['generation']>=1
+          assert s['initial_memory']['cells']>0
+          assert s['final_memory']['generation']==s['initial_memory']['generation']+1
+          print('R153_CONTEXT_NEXT_BUILD_INHERITANCE_PASS',s['initial_memory'],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-context-memory-v1
+          path: drnas_memory/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-context-resume-audit
+          path: r28_context_results/
+          retention-days: 30
