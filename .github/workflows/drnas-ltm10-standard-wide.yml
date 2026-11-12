@@ -1,0 +1,64 @@
+name: DRNAS LTM10 WIDE 300 CNF 5400 paired vs LTM8 LTM9 Kissat CMS CaDiCaL
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/drnas-ltm10-adaptive-20261112]
+    paths:
+      - .github/workflows/drnas-ltm10-standard-wide.yml
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm10-standard-wide-single-runner
+  cancel-in-progress: false
+jobs:
+  wide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned solver references
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git cmake cadical cryptominisat
+          git init /tmp/ltm10-wide-kissat
+          git -C /tmp/ltm10-wide-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/ltm10-wide-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/ltm10-wide-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/ltm10-wide-kissat && ./configure && make -j2)
+          sudo install /tmp/ltm10-wide-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/ltm10-wide-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            dpkg-query -W cadical cryptominisat
+            g++ --version
+          } | tee ltm10-wide-versions.txt
+      - name: Compile LTM8 and LTM9 native and verify preflight
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_compile.py
+          python3 research/drnas_ltm9_selftest.py
+          python3 research/drnas_ltm9_wide.py --selftest
+          python3 -m py_compile research/drnas_ltm10_adaptive.py research/drnas_ltm10_standard_wide.py
+      - name: Run 300 disjoint synthetic CNF x 3 repeats x 6 arms
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ltm10_standard_wide.py | tee ltm10-standard-wide.log
+      - name: Upload compact benchmark audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ltm10-standard-wide-5400
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ltm10-wide-versions.txt
+            ltm10-standard-wide.log
+            ltm10_standard_wide/manifest.json
+            ltm10_standard_wide/training.jsonl
+            ltm10_standard_wide/frozen_memory.json
+            ltm10_standard_wide/results.jsonl
+            ltm10_standard_wide/summary.json
