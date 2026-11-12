@@ -67,7 +67,7 @@ def run(case,rep,arm,mode):
     assert hashlib.sha256(pathlib.Path(case["path"]).read_bytes()).hexdigest()==case["sha256"]
     cmd=([NATIVE,case["path"],"--mode",mode,"--time",str(CAP),
            "--seed",str(rep+1),"--policy","1.0,0.85"]
-         if mode else ["cadical","-q",case["path"]])
+         if mode else ["cadical",case["path"]])
     def limits():
         resource.setrlimit(resource.RLIMIT_AS,(3*1024**3,3*1024**3))
         resource.setrlimit(resource.RLIMIT_CPU,(int(CAP)+2,int(CAP)+3))
