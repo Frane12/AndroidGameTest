@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(pathlib.Path.cwd()))
 sys.path.insert(0, "research")
 import drnas_atlas13_generator as G
 import drnas_atlas_wide500 as W
