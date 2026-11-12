@@ -1,0 +1,71 @@
+name: DRNAS LTM9 independent PHP certificate audit plus official SAT2024 pilot
+on:
+  push:
+    branches: [experiment/drnas-ltm9-certaudit-20261112]
+    paths: [.github/workflows/drnas-ltm9-certaudit-official.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm9-certaudit-official-single
+  cancel-in-progress: false
+jobs:
+  audit_and_official:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install reference solvers and pin Kissat
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential git cmake cadical cryptominisat python3-venv
+          git init /tmp/ltm9-audit-kissat
+          git -C /tmp/ltm9-audit-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/ltm9-audit-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/ltm9-audit-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/ltm9-audit-kissat && ./configure && make -j2)
+          sudo install /tmp/ltm9-audit-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/ltm9-audit-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > ltm9-audit-versions.txt
+          cat ltm9-audit-versions.txt
+      - name: Compile separated certificate-emitting native engine
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 -m py_compile research/drnas_ltm9_independent_cert.py research/drnas_ltm9_cert_audit.py research/drnas_ltm9_official_pilot.py
+          python3 research/drnas_ltm9_independent_cert.py
+          python3 research/drnas_ltm9_selftest.py
+      - name: Independently check 60 PHP contradictions and 20 SAT controls
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_ltm9_cert_audit.py | tee ltm9-certaudit.log
+      - name: Install source archive range reader in isolated virtual environment
+        run: |
+          set -euo pipefail
+          python3 -m venv .ltm9venv
+          .ltm9venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Original CNF SAT Competition 2024 pilot - 80 single-CPU trials
+        run: |
+          set -euo pipefail
+          .ltm9venv/bin/python -u research/drnas_ltm9_official_pilot.py | tee ltm9-official.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm9-cert-audit-official-compact
+          retention-days: 14
+          path: |
+            ltm9-audit-versions.txt
+            ltm9-certaudit.log
+            ltm9-official.log
+            ltm9_certaudit/summary.json
+            ltm9_certaudit/trials.jsonl
+            ltm9_official2024/manifest.json
+            ltm9_official2024/summary.json
+            ltm9_official2024/trials.jsonl
