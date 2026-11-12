@@ -7,6 +7,7 @@ LTM6 = certified structure gate + live native GF2 CDCL.
 Original model checked externally. UNSAT not credited without LRAT.
 A compact structural evidence journal is saved, never used as a trained policy
 or as a mathematical justification for adding clauses.
+This offline-reproducible cohort contains only generated formulas, NOT SATLIB.
 """
 import hashlib
 import json
@@ -32,6 +33,7 @@ SYNTH=(
     ("xor_dense_sat",42),("xor_dense_sat",43),
     ("xor_dense_unsat",40),("xor_dense_unsat",41),
     ("mixed_circuit",40),("random3_sat",40),
+    ("random3_sat",41),("mixed_hard",41),
 )
 
 def parse_metrics(output):
@@ -122,12 +124,10 @@ for category,index in SYNTH:
     n,clauses,_=G.build(category,index)
     raw=W.canonical(n,clauses)
     cases.append((category,index,raw,"ATLAS13 deterministic generator"))
-# Public source-frozen SATLIB control group, disjoint from synthetic XOR cases.
-corpus=W.source_corpus(limit=2,families=("uf250-1065",))
-for idx,(n,clauses,sha,entry) in enumerate(corpus["uf250-1065"]):
-    raw=W.canonical(n,clauses)
-    assert hashlib.sha256(raw).hexdigest()==sha
-    cases.append(("uf250-1065",idx,raw,entry))
+# OFFLINE FIX: exclude remote SATLIB archive fetch from the required smoke cohort.
+# Every source is deterministic, reproducible, and SHA-checked. The two
+# additional control formulas are generated independently of any remote CDN.
+# Do NOT report this synthetic cohort as an independent SATLIB benchmark.
 assert len(cases)==10
 assert len(set(hashlib.sha256(c[2]).hexdigest() for c in cases))==10
 
@@ -140,6 +140,7 @@ for family,index,raw,provenance in cases:
                         provenance=provenance))
 print("LTM6_MANIFEST "+json.dumps(dict(cases=len(sources),reps=2,arms=ARMS,
       trials=len(sources)*2*len(ARMS),cap_s=CAP,one_cpu=True,
+      corpus_type='deterministic_synthetic_only',external_downloads=0,
       original_source_sha256=[x["sha256"] for x in sources])),flush=True)
 
 rows=[]
