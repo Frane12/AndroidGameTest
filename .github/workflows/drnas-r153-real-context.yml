@@ -1,0 +1,87 @@
+name: DRNAS R153 R160 saved memory real SAT2024 12 CNFs
+on:
+  push:
+    branches: [experiment/drnas-r153-real-context-20261112]
+    paths:
+      - 'research/drnas_r153_real_context*'
+      - '.github/workflows/drnas-r153-real-context.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-r153-real-context-one-runner
+  cancel-in-progress: false
+jobs:
+  real12:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-context-memory-v1
+          run-id: 43170837571
+          github-token: ${{ github.token }}
+          path: drnas_memory
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-context-native-binaries
+          run-id: 43170837571
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: r52-three-pinned-solvers
+          run-id: 41684183452
+          github-token: ${{ github.token }}
+          path: built/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: math14-real24-compact
+          run-id: 43161813420
+          github-token: ${{ github.token }}
+          path: real24_source
+      - name: Check restored memory and frozen solver binaries
+        run: |
+          set -euo pipefail
+          mkdir -p r153_real_context
+          python3 research/drnas_r28_context_restore.py validate | tee r153_real_context/restore.log
+          chmod +x mre_r28_native/drnas_r28_native mre_r28_context/drnas_r28_context built/bin/kissat_4_0_4 built/bin/cadical_3_0_1
+          (cd built/bin && sha256sum -c binaries.sha256)
+          sha256sum mre_r28_native/drnas_r28_native mre_r28_context/drnas_r28_context built/bin/kissat_4_0_4 built/bin/cadical_3_0_1 > r153_real_context/binaries.sha256
+          cp drnas_memory/manifest.json r153_real_context/inherited-memory.json
+          git rev-parse HEAD > r153_real_context/commit.txt
+          lscpu > r153_real_context/cpu.txt
+      - name: Install CMS and original archive reader
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat python3-venv
+          python3 -m venv .realvenv
+          .realvenv/bin/pip install remotezip
+          .realvenv/bin/pip freeze > r153_real_context/python-packages.txt
+          dpkg-query -W cryptominisat > r153_real_context/cms-package.txt
+          sha256sum /usr/bin/cryptominisat5 >> r153_real_context/binaries.sha256
+      - name: Verify all six actual solvers on original-CNF SAT smoke
+        run: |
+          set -euo pipefail
+          .realvenv/bin/python research/drnas_r153_real_context.py --smoke --db /tmp/r153-smoke/memory.sqlite
+      - name: Twelve official formulas six arms two repetitions five seconds one CPU
+        run: |
+          set -euo pipefail
+          .realvenv/bin/python -u research/drnas_r153_real_context.py | tee r153_real_context/live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-r153-real-context12-compact
+          path: |
+            r153_real_context/*.json
+            r153_real_context/*.jsonl
+            r153_real_context/*.txt
+            r153_real_context/*.log
+            r153_real_context/*.sha256
+            r153_real_context/certificates/
+          retention-days: 60
