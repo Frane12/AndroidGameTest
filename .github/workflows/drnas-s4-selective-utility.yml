@@ -1,0 +1,115 @@
+name: DRNAS S4 SELECTIVE UTILITY 16 32 root-BCP native benchmark
+on:
+  push:
+    branches: [experiment/drnas-s4-selective-utility-20261112]
+    paths:
+      - .github/workflows/drnas-s4-selective-utility.yml
+      - research/drnas_s4*
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-s4-utility-one-runner
+  cancel-in-progress: true
+
+jobs:
+  selective_utility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned SAT solvers (no APK or Android build)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/s4-kissat
+          git -C /tmp/s4-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/s4-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/s4-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/s4-kissat && ./configure && make -j2)
+          sudo install /tmp/s4-kissat/build/kissat /usr/local/bin/kissat
+          {
+            git rev-parse HEAD
+            git -C /tmp/s4-kissat rev-parse HEAD
+            kissat --version
+            cadical --version
+            cryptominisat5 --version
+            g++ --version
+          } > s4_versions.txt
+      - name: Exhaustive equivalence and Python harness selftest
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -I research research/drnas_s4_utility_test.cpp -o /tmp/s4-utility-test
+          /tmp/s4-utility-test
+          python3 -m py_compile research/drnas_s4_compile.py research/drnas_s4_benchmark.py
+          python3 research/drnas_s4_benchmark.py --selftest
+      - name: Build isolated 16 32 and S3 native CDCL variants
+        run: |
+          set -euo pipefail
+          python3 research/drnas_ltm9_cert_compile.py
+          python3 research/drnas_ltm9_independent_cert.py
+          python3 research/drnas_s3_compile.py
+          python3 research/drnas_s4_compile.py
+      - name: Native S4 original CNF witness and telemetry smoke
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,pathlib,sys,tempfile
+          sys.path.insert(0,"research")
+          import drnas_s4_benchmark as S
+          S.L.setup_source()
+          with tempfile.TemporaryDirectory() as td:
+              p=pathlib.Path(td)/"tiny.cnf"
+              p.write_text("p cnf 4 8\n1 2 3 0\n1 -2 -3 0\n-1 2 -3 0\n-1 -2 3 0\n1 2 4 0\n1 -2 -4 0\n-1 2 -4 0\n-1 -2 4 0\n")
+              source=dict(id=-1,split="holdout",path=str(p),
+                  sha256=hashlib.sha256(p.read_bytes()).hexdigest(),known_sat=True,nvars=4)
+              for n in (16,32):
+                  row=S.native(source,17,2.,n)
+                  assert row["status"]=="SAT_VERIFIED",row
+                  assert row["telemetry_seen"],row
+                  assert row["derived_clauses"]<=n,row
+                  print("S4_NATIVE_SMOKE_PASS",n,row,flush=True)
+          PY
+      - name: Install pinned official SAT2024 remote reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .s4venv
+          .s4venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Single CPU paired 20 synthetic and 4 original SAT2024 cases
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "S4_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .s4venv/bin/python -u research/drnas_s4_benchmark.py --seed 420261112 | tee s4_utility.log
+      - name: Summary PAR2 solved clauses and regressions
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("drnas_s4_utility/combined.json"))
+          lines=["## DRNAS S4 Selective Utility — exploratory medium benchmark",
+                 "", "Prior-known synthetic generator classes and SAT2024 archive. One logical CPU; independently verified original-CNF SAT witnesses.",
+                 "", "| Set | Best reference | PAR2 ref (s) | S4 gated PAR2 (s) | S4-16 PAR2 (s) | S4-32 PAR2 (s) |",
+                 "|---|---|---:|---:|---:|---:|"]
+          for name,obj in d["results"].items():
+              ref=obj["reference"];m=obj["verified_PAR2"]
+              lines.append(f"| {name} | {ref} | {m[ref]:.6f} | {m['S4_GATED']:.6f} | {m['S4_16']:.6f} | {m['S4_32']:.6f} |")
+          print("\n".join(lines))
+          if os.getenv("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write("\n".join(lines)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-s4-utility-compact
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            s4_versions.txt
+            s4_utility.log
+            drnas_s4_utility/*.json
+            drnas_s4_utility/synthetic/*.json
+            drnas_s4_utility/synthetic/*.jsonl
+            drnas_s4_utility/official/*.json
+            drnas_s4_utility/official/*.jsonl
