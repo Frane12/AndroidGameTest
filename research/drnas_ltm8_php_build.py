@@ -15,9 +15,9 @@ old='mode=="A36_75"'
 assert s.count(old)>=2
 # Add new mode to existing mode-dispatch predicates, not the setter statement.
 s=s.replace('||mode=="A36_75"','||mode=="A36_75"||mode=="LTM8_KEEP50"')
-anchor='if(mode=="A36_75")solver.atlas36_enable_quota(75);'
+anchor='solver.atlas36_enable_quota(75);'
 assert s.count(anchor)==1
-s=s.replace(anchor,anchor+'\n    if(mode=="LTM8_KEEP50")solver.atlas36_enable_quota(50);')
+s=s.replace(anchor,anchor+'\n    if(mode=="LTM8_KEEP50")solver.atlas36_enable_quota(50);',1)
 assert 'mode=="LTM8_KEEP50"' in s
 p.write_text(s)
 print("LTM8_KEEP50_PATCH_PASS",flush=True)
