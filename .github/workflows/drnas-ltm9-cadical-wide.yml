@@ -1,0 +1,60 @@
+name: DRNAS LTM9 AUDIT - 25 families vs CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-ltm9-cadical-bench-20261112]
+    paths: [.github/workflows/drnas-ltm9-cadical-wide.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ltm9-cadical-wide-single
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install standard reference solver
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cadical
+          command -v cadical
+          cadical --version || true
+      - name: Generate and compile instrumented native LTM9
+        run: |
+          set -euo pipefail
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          python3 research/drnas_ltm7_build.py
+          python3 research/drnas_ltm8_php_build.py
+          python3 research/drnas_ltm9_audit_build.py
+          python3 -m py_compile research/drnas_ltm9_cadical_benchmark.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm9
+          mre_atlas23/bin/drnas_ltm9 --selftest
+      - name: Wide paired 26 CNF x 2 repeats x 3 arms single CPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_ltm9_cadical_benchmark.py | tee ltm9.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ltm9-wide-cadical-audit
+          path: |
+            ltm9.log
+            ltm9_results/manifest.json
+            ltm9_results/results.json
+            ltm9_results/summary.json
+          retention-days: 14
+          if-no-files-found: warn
