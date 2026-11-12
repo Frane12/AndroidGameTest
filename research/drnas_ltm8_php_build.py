@@ -10,7 +10,6 @@ h=header.read_text()
 permit='require(pct==90 || pct==75,"ATLAS36 invalid percentage");'
 assert h.count(permit)==1,("quota guard drift",h.count(permit))
 h=h.replace(permit,'require(pct==90 || pct==75 || pct==50,"ATLAS36 invalid percentage");')
-header.write_text(h)
 
 s=source.read_text()
 mode='mode=="A36_75"'
@@ -26,5 +25,10 @@ quota_count=s.count(quota)
 assert quota_count>=1,("quota setter missing",quota_count)
 s=s.replace(quota,'solver.atlas36_enable_quota(mode=="LTM8_KEEP50"?50:75);')
 assert s.count('mode=="LTM8_KEEP50"')==count+quota_count
+header.write_text(h)
 source.write_text(s)
 print(f"LTM8_KEEP50_PATCH_PASS dispatch_sites={count} quota_sites={quota_count} BASE_unchanged=true",flush=True)
+
+# Compile both new policies through the existing workflow entry point.
+import runpy
+runpy.run_path("research/drnas_ltm8_adaptive_build.py", run_name="__main__")
