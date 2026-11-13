@@ -1,0 +1,155 @@
+name: DRNAS X4.6 GLOBAL MEMORY frozen model train-only paired holdout
+on:
+  push:
+    branches: [experiment/drnas-x46-global-memory-20261113]
+    paths:
+      - research/drnas_x46_global_bridge.py
+      - .github/workflows/drnas-x46-global-memory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+# Serialize all writes to shared memory with the evidence importer and X47 learner.
+concurrency:
+  group: drnas-global-memory-single-writer
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  LC_ALL: C
+
+jobs:
+  x46_global_train_memory_holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read existing global memory data branch without changing X47 training labels
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-global-memory-store-20261113
+          path: global_store
+          persist-credentials: true
+      - name: Build exact X46 native and regression check
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          python3 -m py_compile research/drnas_x46_global_bridge.py research/drnas_x46_cost_train.py research/drnas_x46_probe_bench.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x46
+          python3 -u tests/test_x41.py --cases 400 | tee x46_regression.log
+          sha256sum src/drnas_x41.cpp research/drnas_x46_global_bridge.py build/drnas-x41
+          test -s global_store/research/memory/global/global.sqlite.gz
+      - name: Freeze train and holdout generator namespaces for this unique CI cycle
+        run: |
+          set -euo pipefail
+          TRAIN_INDEX=$((1500000 + GITHUB_RUN_ID % 200000))
+          HOLDOUT_INDEX=$((2000000 + GITHUB_RUN_ID % 200000))
+          echo "TRAIN_INDEX=$TRAIN_INDEX" >> "$GITHUB_ENV"
+          echo "HOLDOUT_INDEX=$HOLDOUT_INDEX" >> "$GITHUB_ENV"
+          echo "X46_GLOBAL_NAMESPACE train=$TRAIN_INDEX sealed=$HOLDOUT_INDEX"
+      - name: Collect 84 fresh X46 paired TRAIN and VALIDATION originals, original-CNF certified
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_global_train \
+            --per-family 12 --repeats 2 --cap 0.8 \
+            --index-offset "$TRAIN_INDEX" --probe-ms 1.5 | tee x46_global_train.log
+      - name: Train compatible X46COST1 on train only, tune threshold using its validation split
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x46_cost_train.py \
+            --trials x46_global_train/trials.jsonl \
+            --model x46_global_train/frozen_cost_model.txt \
+            --report x46_global_train/learn_report.json | tee x46_global_fit.log
+          sha256sum x46_global_train/frozen_cost_model.txt
+      - name: Audit SHA partitions then store trained X46 model and train-only examples in GLOBAL SQLite
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x46_global_bridge.py stage \
+            --store global_store/research/memory/global/global.sqlite.gz \
+            --manifest x46_global_train/manifest.json \
+            --trials x46_global_train/trials.jsonl \
+            --model x46_global_train/frozen_cost_model.txt \
+            --learn-report x46_global_train/learn_report.json \
+            --summary global_store/research/memory/global/latest_x46_candidate.json \
+            --index-offset "$TRAIN_INDEX" | tee x46_global_stage.log
+          git -C global_store config user.name 'github-actions[bot]'
+          git -C global_store config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C global_store add research/memory/global/global.sqlite.gz research/memory/global/latest_x46_candidate.json
+          git -C global_store commit -m "memory(x46): store source-locked verified X46 training and frozen cost model"
+          git -C global_store push origin HEAD:experiment/drnas-global-memory-store-20261113
+      - name: Reload exact same model only from persistent GLOBAL SQLite memory
+        run: |
+          set -euo pipefail
+          MODEL_SHA="$(sha256sum x46_global_train/frozen_cost_model.txt | cut -d ' ' -f1)"
+          echo "MODEL_SHA=$MODEL_SHA" >> "$GITHUB_ENV"
+          python3 -u research/drnas_x46_global_bridge.py export \
+            --store global_store/research/memory/global/global.sqlite.gz \
+            --model-sha "$MODEL_SHA" --experimental \
+            --output x46_global_reload.txt | tee x46_global_reload.log
+          sha256sum x46_global_reload.txt
+          cmp x46_global_train/frozen_cost_model.txt x46_global_reload.txt
+      - name: Independently test model loaded from GLOBAL memory on 112 NEW sealed SAT/UNSAT originals
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_global_sealed \
+            --per-family 16 --repeats 3 --cap 0.8 \
+            --index-offset "$HOLDOUT_INDEX" --probe-ms 1.5 \
+            --model-file x46_global_reload.txt | tee x46_global_sealed.log
+      - name: Compare CORE, X46-8 and GLOBAL-MEMORY-X46 and persist sealed evidence
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x46_global_bridge.py finalize \
+            --store global_store/research/memory/global/global.sqlite.gz \
+            --manifest x46_global_sealed/manifest.json \
+            --trials x46_global_sealed/trials.jsonl \
+            --report x46_global_sealed/report.json \
+            --model-sha "$MODEL_SHA" --index-offset "$HOLDOUT_INDEX" \
+            --summary global_store/research/memory/global/latest_x46.json \
+            | tee x46_global_final.log
+          git -C global_store add research/memory/global/global.sqlite.gz research/memory/global/latest_x46.json
+          git -C global_store commit -m "memory(x46): seal fresh benchmark and audit promotion gate"
+          git -C global_store push origin HEAD:experiment/drnas-global-memory-store-20261113
+          python3 - <<'PY'
+          import json
+          r=json.load(open('global_store/research/memory/global/latest_x46.json'))
+          assert r['trials']>2000 and r['holdout_sources']==112
+          assert all(v['verified']==r['paired_checkpoint_rows'] for v in r['arms'].values())
+          print('X46_GLOBAL_COMPLETE',json.dumps({
+              'promoted':r['promoted'],'CORE':r['arms']['CORE'],
+              'X46_8':r['arms']['X46_8'],
+              'GLOBAL_MEMORY':r['arms']['X46_LEARNED_8'],
+              'paired_formula_cluster_CI':r['learned_vs_CORE'],
+              'model_sha':r['model_sha']
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x46-global-memory-train-sealed-audit
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            x46_global_train.log
+            x46_global_train/manifest.json
+            x46_global_train/learn_report.json
+            x46_global_train/frozen_cost_model.txt
+            x46_global_train/trials.jsonl
+            x46_global_sealed.log
+            x46_global_sealed/report.json
+            x46_global_sealed/manifest.json
+            x46_global_sealed/trials.jsonl
+            x46_global_stage.log
+            x46_global_reload.log
+            x46_global_final.log
+            x46_regression.log
+            global_store/research/memory/global/latest_x46.json
+            global_store/research/memory/global/latest_x46_candidate.json
