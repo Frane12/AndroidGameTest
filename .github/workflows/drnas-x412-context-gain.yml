@@ -23,6 +23,8 @@ env:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -63,9 +65,36 @@ jobs:
             x412_diagnostics/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Preserve failed smoke diagnostics on isolated experimental branch
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p audit/x412
+          {
+            echo 'phase=smoke'
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "attempt=$GITHUB_RUN_ATTEMPT"
+            echo "head_sha=$GITHUB_SHA"
+            echo "run_url=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            for f in x412_diagnostics/python_syntax.log x412_diagnostics/native_x49.log x412_diagnostics/native_x410.log x412_diagnostics/native_x412.log x412_diagnostics/x410_oracle.log x412_diagnostics/x412_smoke.log; do
+              if test -f "$f"; then
+                echo "===== $f ====="
+                tail -n 120 "$f"
+              fi
+            done
+          } > audit/x412/latest_failure.txt
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name 'github-actions[bot]'
+          git add audit/x412/latest_failure.txt
+          if ! git diff --cached --quiet; then
+            git commit -m 'audit(x412): capture failed smoke output without rerunning benchmark'
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+          fi
   benchmark:
     needs: smoke
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -98,3 +127,28 @@ jobs:
             x412_unsat.log
           if-no-files-found: ignore
           retention-days: 30
+      - name: Preserve failed benchmark diagnostics on isolated experimental branch
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p audit/x412
+          {
+            echo 'phase=benchmark'
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "attempt=$GITHUB_RUN_ATTEMPT"
+            echo "head_sha=$GITHUB_SHA"
+            echo "run_url=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            for f in x412_benchmark.log x412_unsat.log; do
+              if test -f "$f"; then
+                echo "===== $f ====="
+                tail -n 120 "$f"
+              fi
+            done
+          } > audit/x412/latest_failure.txt
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name 'github-actions[bot]'
+          git add audit/x412/latest_failure.txt
+          if ! git diff --cached --quiet; then
+            git commit -m 'audit(x412): capture failed benchmark output without rerunning smoke'
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+          fi
