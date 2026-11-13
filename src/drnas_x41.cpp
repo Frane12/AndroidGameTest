@@ -1174,6 +1174,8 @@ int run(int argc, char** argv) {
                  <<",\"skipped\":"<<(solver->x46Skipped()?"true":"false")
                  <<",\"shadow\":"<<(solver->x46Shadow()?"true":"false")
                  <<",\"recommend_flip\":"<<(solver->x46ChosenFlip()?"true":"false")
+                 <<",\"learned_model\":"<<(solver->x46ModelLoaded()?"true":"false")
+                 <<",\"predicted_flip_probability\":"<<solver->x46ModelProbability()
                  <<",\"probe_pair_wall_ms\":"<<std::fixed<<std::setprecision(7)<<solver->x46ProbesWallMs()
                  <<",\"pre_state_digest\":\""<<std::hex<<solver->x46ProbesHash()<<std::dec
                  <<"\",\"original\":{\"status\":"<<a.result
