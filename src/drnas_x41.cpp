@@ -682,7 +682,7 @@ class Solver {
         // than nonterminal proxy scores. UNSAT is NEVER accepted as a proof.
         if(flip.result==10 && normal.result!=10)return true;
         if(normal.result==10 && flip.result!=10)return false;
-        const double score=[](const BranchProbeCost& p){
+        const auto score=[](const BranchProbeCost& p){
             return 4.0*p.conflicts+0.55*p.decisions+0.003*p.propagations;
         };
         const double a=score(normal),b=score(flip);
