@@ -1,0 +1,135 @@
+name: DRNAS X4.4 300 CNFs controlled same-state paired decisions
+on:
+  push:
+    branches: [experiment/drnas-x44-counterfactual-20261113]
+    paths:
+      - src/drnas_x44.cpp
+      - research/drnas_x44_counterfactual.py
+      - tests/test_x44.py
+      - .github/workflows/drnas-x44-counterfactual-300.yml
+      - README_X44.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x44-paired-20261113
+  cancel-in-progress: true
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile independent native C++20 X4.4 (no APK)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x44.cpp -o build/drnas-x44
+          { git rev-parse HEAD; g++ --version | head -1; } > x44_versions.txt
+      - name: Exhaustive tiny-CNF oracle and identical-state paired tests
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x44.py | tee x44_test.log
+      - name: Freeze 300 source SHA and family-disjoint splits before execution
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x44_counterfactual.py freeze | tee x44_freeze.log
+          sha256sum drnas_x44_results/manifest.json | awk '{print $1}' > x44_manifest_sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x44-frozen-manifest
+          retention-days: 21
+          path: |
+            x44_test.log
+            x44_freeze.log
+            x44_versions.txt
+            x44_manifest_sha.txt
+            drnas_x44_results/manifest.json
+  paired:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x44-frozen-manifest
+          path: .
+      - name: Compile native exact-prefix intervention solver
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x44.cpp -o build/drnas-x44
+      - name: Thirty SHA-frozen CNFs, five checkpoints and two polarities per checkpoint
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X44_SHARD_${{ matrix.shard }}_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x44_counterfactual.py shard --shard ${{ matrix.shard }} --shards 10 --cap 2.5 --manifest-sha "$(cat x44_manifest_sha.txt)" | tee x44_shard.log
+      - name: Stage compact results without CNFs or huge logs
+        if: always()
+        run: |
+          mkdir -p x44_stage
+          cp -f drnas_x44_results/shard_${{ matrix.shard }}/report.json x44_stage/report.json 2>/dev/null || true
+          cp -f drnas_x44_results/shard_${{ matrix.shard }}/baselines.jsonl x44_stage/baselines.jsonl 2>/dev/null || true
+          cp -f drnas_x44_results/shard_${{ matrix.shard }}/pairs.jsonl x44_stage/pairs.jsonl 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x44-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x44_stage/
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x44-frozen-manifest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x44-shard-*
+          path: x44_shards
+          merge-multiple: false
+      - name: Audit identical SHA + paired internal states; fit TRAIN, select VALIDATION, evaluate HOLDOUT
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x44_counterfactual.py aggregate --shard-dir x44_shards --shards 10 --cap 2.5 --manifest-sha "$(cat x44_manifest_sha.txt)" | tee x44_final.log
+      - name: Publish accurate limits and compact metrics
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          j=json.load(open('drnas_x44_results/final/report.json'))
+          lines=['## DRNAS X4.4 — paired same-state interventions',
+                 '',f"300 distinct GENERATED SAT CNFs, {j['selected_states']} checkpoint states, {j['total_counterfactual_solver_attempts']} two-polarity continuations.",
+                 '', '| Split | Baseline SAT | Checkpoints | Matched prestate | Both SAT | Strong signal |',
+                 '|---|---:|---:|---:|---:|---:|']
+          for split,v in j['splits'].items():
+              lines.append(f"| {split} | {v['baseline_sat_verified']}/{v['source_count']} | {v['checkpoint_states_attempted']} | {v['identical_prefix_verified']} | {v['both_sat_verified']} | {v['strong_absolute_and_relative_signal']} |")
+          x=j['shadow_learning'];lines.append(f"\nOffline shadow: {x['status']}; never deployed as a live policy.")
+          if 'holdout' in x:lines.append(f"Holdout selection vs baseline: {x['holdout']['model_improvement_over_default_pct']}% of completed continuation time; 95% formula bootstrap CI: {x['holdout_formula_bootstrap_95pct_improvement_ci']}")
+          lines.append('**Caveats:** planted SAT, not official industrial; no general distance metric; censored runs excluded from time labels; single-run timing is noisy, and all data collection costs CPU.')
+          summary='\n'.join(lines)+'\n';print(summary)
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x44-final-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x44_final.log
+            drnas_x44_results/final/report.json
+            drnas_x44_results/final/model_frozen.json
