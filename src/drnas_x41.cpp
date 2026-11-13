@@ -465,7 +465,6 @@ class Solver {
         x46_model_loaded_=true;
     }
     void loadX47Guard(const std::string& path) {
-        if(!x46_model_loaded_)throw std::runtime_error("X47 needs frozen X46 cost model");
         std::ifstream input(path);
         if(!input)throw std::runtime_error("X47 guard model missing");
         std::string version;int format=0;
@@ -504,6 +503,10 @@ class Solver {
     bool x46Shadow() const{return x46_shadow_;}
     bool x46ModelLoaded() const{return x46_model_loaded_;}
     bool x47Enabled() const{return x47_enabled_;}
+    bool x47PreProbeEligible() const {
+        return !x47_enabled_ || (n_>=x47_min_vars_ &&
+            original_count_>=x47_min_clauses_ && compare_at_<=x47_max_k_);
+    }
     bool x47SkippedByGate() const{return x47_gate_skipped_;}
     double x47PredictedNetConflicts() const{return x47_expected_saving_;}
     bool x47RejectedAfterProbe() const{return x47_rejected_after_probe_;}
@@ -1177,7 +1180,6 @@ int run(int argc, char** argv) {
             if (trace_trail && declared_vars>18) throw std::runtime_error("--trace-trail only supported for at most 18 variables");
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
-            if(!x46_model_path.empty())solver->loadX46CostModel(x46_model_path);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
         }
@@ -1203,6 +1205,12 @@ int run(int argc, char** argv) {
     if (!solver || !clause.empty() || seen_clauses!=declared_clauses)
         throw std::runtime_error("incomplete or mismatched DIMACS clause count");
     solver->finishParsing();
+    // Fast fallback: if the frozen risk gate rejects this source before
+    // any probe, do not even open or deserialize the learned cost model.
+    // The original C++ CDCL search is left intact. The guard itself still
+    // loads and validates so corrupted files fail closed.
+    if(!x46_model_path.empty() && solver->x47PreProbeEligible())
+        solver->loadX46CostModel(x46_model_path);
     const Result r=solver->solve();
     const double solve_finish_elapsed=solver->elapsed();
     if (r==Result::SAT) {
