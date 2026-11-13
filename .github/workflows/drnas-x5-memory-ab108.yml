@@ -1,0 +1,123 @@
+name: DRNAS X5 NO MIN MEMORY AB108 diverse cold and warm 5s
+on:
+  push:
+    branches: [experiment/drnas-x5-memory-ab108-20261113]
+    paths:
+      - .github/workflows/drnas-x5-memory-ab108.yml
+      - research/drnas_x5_memory_ab.py
+      - tests/test_x5_memory_ab.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x5-memory-ab108
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  LC_ALL: C
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: b1e738d9ff5eacd6a1e1dac57957afc6ee4ba746
+          path: frozen_global_store
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Verify frozen native and references; verify cache and model plumbing
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -m pip install remotezip==0.12.3
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -m py_compile research/drnas_x5_memory_ab.py tests/test_x5_memory_ab.py
+          python3 -u tests/test_x5_memory_ab.py | tee memory_selftest.log
+      - name: Synthetic 96 medium and larger sources in 12 categories; cold then persistent replay
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_memory_ab.py bench \
+            --store frozen_global_store/research/memory/global/global.sqlite.gz \
+            --out memory_synthetic_${{ matrix.shard }} \
+            --per-family 8 --offset 14700000 --cap 5 \
+            --shards 3 --shard ${{ matrix.shard }} \
+            | tee memory_synthetic_${{ matrix.shard }}.log
+      - name: Original SAT2024 12 distinct families; separate retrospective cohort
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_memory_ab.py bench \
+            --store frozen_global_store/research/memory/global/global.sqlite.gz \
+            --out memory_official_${{ matrix.shard }} \
+            --official --offset 14700000 --cap 5 \
+            --shards 3 --shard ${{ matrix.shard }} \
+            | tee memory_official_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-memory-ab108-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            memory_selftest.log
+            memory_synthetic_${{ matrix.shard }}.log
+            memory_official_${{ matrix.shard }}.log
+            memory_synthetic_${{ matrix.shard }}/
+            memory_official_${{ matrix.shard }}/
+  report:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x5-memory-ab108-shard-*
+          path: results
+      - name: Require all 1944 trials; paired SHA bootstrap; cold and warm never pooled
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_memory_ab.py report \
+            --root results --out x5_memory_ab108_report.json | tee x5_memory_ab108_report.log
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('x5_memory_ab108_report.json'))
+          lines=['# X5_NO_MIN global policy and exact-result cache', '',
+            '108 source formulas; 5 s E2E cap; 1944 trials. Global database is read-only and pinned.',
+            'Cold = new solve. Warm = identical formula replay; every cache hit is certificate-checked.', '']
+          for cohort in ('synthetic','official_retrospective'):
+              for phase,rr in r[cohort]['phases'].items():
+                  lines += [f'## {cohort} / {phase}', '', '| Arm | Verified solved | PAR2 s | Cache hits |', '|---|---:|---:|---:|']
+                  for arm,t in rr['totals'].items():
+                      lines.append(f"| {arm} | {t['solved']}/{t['trials']} | {t['PAR2_s']:.6f} | {t['cache_hits']} |")
+                  lines.append('')
+          lines += r['limits']
+          open(os.environ['GITHUB_STEP_SUMMARY'],'w').write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-memory-ab108-final
+          retention-days: 30
+          path: |
+            x5_memory_ab108_report.json
+            x5_memory_ab108_report.log
