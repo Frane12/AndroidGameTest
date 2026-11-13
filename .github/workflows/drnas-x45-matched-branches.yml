@@ -1,0 +1,96 @@
+name: DRNAS X4.5 causal matched-state branch polarity
+on:
+  push:
+    branches: [experiment/drnas-x45-matched-branch-cost-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x45_matched_branches.py
+      - .github/workflows/drnas-x45-matched-branches.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x45-matched-one-runner
+  cancel-in-progress: false
+jobs:
+  matched_polarity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile exact native X4.5 and retain original regression controls
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x45
+          python3 -m py_compile research/drnas_x45_matched_branches.py
+          python3 -u tests/test_x41.py --cases 300 | tee x45_regression.log
+          sha256sum build/drnas-x41 src/drnas_x41.cpp research/drnas_x45_matched_branches.py
+      - name: Verify checkpoint matching and SAT/UNSAT truth on diagnostic pilot
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x45_matched_branches.py \
+            --binary build/drnas-x45 --out x45_smoke --per-family 4 --repeats 2 \
+            --cap 0.8 --index-offset 200000 | tee x45_smoke.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('x45_smoke/report.json').read_text())
+          assert report['distinct_source_formulas']==28
+          assert report['matched_pairs']>40,report
+          assert report['unverified_pairs']==0,report
+          print('X45_SMOKE_MATCHING_PASS',report['matched_pairs'])
+          PYCODE
+      - name: Paired 168 fresh originals four checkpoint locations three repetitions two branches
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x45_matched_branches.py \
+            --binary build/drnas-x45 --out x45_matched \
+            --per-family 24 --repeats 3 --cap 0.8 --index-offset 300000 | tee x45_matched.log
+      - name: Independently audit non-reused source SHA, matched checkpoints and statistics
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('x45_matched')
+          manifest=json.loads((p/'manifest.json').read_text())
+          report=json.loads((p/'report.json').read_text())
+          pairs=[json.loads(x) for x in (p/'paired.jsonl').read_text().splitlines()]
+          assert len(manifest['sources'])==168
+          assert len({x['sha256'] for x in manifest['sources']})==168
+          assert report['distinct_source_formulas']==168
+          assert report['matched_pairs']==len(pairs)
+          assert len(pairs)>200
+          assert report['unverified_pairs']==0
+          assert len(report['groups'])==7
+          for x in pairs:
+              assert x['baseline_literal']==-x['flipped_literal']
+              assert x['pre_state_digest']
+              assert x['base_verified'] and x['flip_verified']
+              assert x['base_status']==x['flip_status']
+          print('X45_MATCHED_PROOF_AUDIT_PASS',json.dumps({
+              'sources':168,'matched_pairs':len(pairs),
+              'overall':report['total'],
+              'cluster_CI':report['formula_cluster_uncertainty']},
+              sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x45-matched-branch-verification
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x45_regression.log
+            x45_smoke.log
+            x45_smoke/report.json
+            x45_smoke/manifest.json
+            x45_smoke/paired.jsonl
+            x45_matched.log
+            x45_matched/report.json
+            x45_matched/manifest.json
+            x45_matched/paired.jsonl
