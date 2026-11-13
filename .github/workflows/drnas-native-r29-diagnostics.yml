@@ -1,0 +1,69 @@
+name: DRNAS R29 PURE NATIVE 100 diagnostic 0.5 1 2 3s
+on:
+  push:
+    branches: [experiment/drnas-native-r29-diagnostics-20261113]
+    paths:
+      - .github/workflows/drnas-native-r29-diagnostics.yml
+      - research/drnas_native_r29_diagnostics.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r29-diagnostics
+  cancel-in-progress: true
+jobs:
+  native_diagnostics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Python and archive reader
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential python3-venv
+          python3 -m venv .r29venv
+          .r29venv/bin/python -m pip install --disable-pip-version-check remotezip
+          git rev-parse HEAD > r29_commit.txt
+      - name: Selftest and compile DRNAS-only native variants
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_native_r29_diagnostics.py
+          python3 research/drnas_native_r29_diagnostics.py --selftest
+          python3 research/drnas_ltm9_cert_compile.py
+          test -x mre_atlas23/bin/drnas_ltm8_base
+          test -x mre_atlas23/bin/drnas_ltm9_certificate
+      - name: 100 original CNFs x 3 native modes 3/5s with process snapshots
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "R29_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .r29venv/bin/python -u research/drnas_native_r29_diagnostics.py | tee r29.log
+      - name: Summarize native PAR2 and process telemetry
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open('drnas_native_r29/report.json'))
+          lines=['## DRNAS R29 Native diagnostic','',
+            'Observational build, not an optimized solver. Native only, 100 original SAT2024, 3/5s caps.','',
+            '| Arm | Verified SAT | Verified PAR2 |',
+            '|---|---:|---:|']
+          for a,m in d['totals'].items():
+              lines.append(f"| {a} | {m['SAT_verified']} | {m['PAR2_verified_s']:.4f} s |")
+          lines.append('\nInternal BCP/restart/learning counters unavailable for timed-out processes. CPU and RSS sampled at 0.5, 1, 2, 3 seconds.')
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-r29-native100-diagnostics
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            r29_commit.txt
+            r29.log
+            drnas_native_r29/*.json
+            drnas_native_r29/*.jsonl
