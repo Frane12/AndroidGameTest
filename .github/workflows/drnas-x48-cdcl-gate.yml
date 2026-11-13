@@ -1,0 +1,85 @@
+name: DRNAS X4.8 CDCL confidence gate sealed benchmark
+on:
+  push:
+    branches: [experiment/drnas-x48-cdcl-riskgate-20261113]
+    paths:
+      - src/drnas_x48.cpp
+      - research/drnas_x48.py
+      - research/x48_models.py
+      - tests/test_x48.py
+      - .github/workflows/drnas-x48-cdcl-gate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x48-cdcl-gate-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Compile and smoke-test native X4.7 and experimental X4.8
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/drnas_x48.py research/x48_models.py tests/test_x48.py
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x47.cpp -o build/drnas-x47
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x48.cpp -o build/drnas-x48
+          ./build/drnas-x48 --help
+          python -u tests/test_x48.py --cases 100 | tee x48_smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x48-smoke
+          path: x48_smoke.log
+          if-no-files-found: ignore
+          retention-days: 14
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Build frozen native X4.8 with fixed compiler options
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x48.cpp -o build/drnas-x48
+      - name: Train, freeze, measure validation and open holdout once
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x48.py --binary build/drnas-x48 --out x48_results --per-family 40 --cap 0.8 --repeats 3 | tee x48_benchmark.log
+      - name: Upload all bounded evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x48-benchmark-evidence
+          path: |
+            x48_results/protocol.json
+            x48_results/manifest.json
+            x48_results/train_pairs.jsonl
+            x48_results/validation_pairs.jsonl
+            x48_results/validation_trials.jsonl
+            x48_results/freeze.json
+            x48_results/holdout_pairs.jsonl
+            x48_results/holdout_trials.jsonl
+            x48_results/report.json
+            x48_results/*_t*_c*.txt
+            x48_benchmark.log
+          if-no-files-found: ignore
+          retention-days: 30
