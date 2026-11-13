@@ -1,0 +1,160 @@
+name: DRNAS X4.7 tail risk and cost-aware probe abstention
+on:
+  push:
+    branches: [experiment/drnas-x47-riskgate-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x46_probe_bench.py
+      - research/drnas_x46_cost_train.py
+      - research/drnas_x47_guard_fit.py
+      - .github/workflows/drnas-x47-riskgate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x47-one-verified-runner
+  cancel-in-progress: false
+jobs:
+  frozen_guarded_controller:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Strict native X4.7 build and original regression tests
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x47
+          python3 -m py_compile research/drnas_x46_probe_bench.py research/drnas_x46_cost_train.py research/drnas_x47_guard_fit.py
+          python3 -u tests/test_x41.py --cases 400 | tee x47_native_regression.log
+          sha256sum build/drnas-x41 src/drnas_x41.cpp research/drnas_x47_guard_fit.py
+      - name: Collect certified matched train CNFs under new synthetic source indices
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x47 --out x47_training \
+            --per-family 12 --repeats 2 --cap 0.8 \
+            --index-offset 600000 --probe-ms 1.5 | tee x47_train.log
+      - name: Freeze logistic counterfactual model and train-source risk tail
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x46_cost_train.py \
+            --trials x47_training/trials.jsonl \
+            --model x47_training/frozen_cost_model.txt \
+            --report x47_training/cost_report.json | tee x47_cost_training.log
+          python3 -u research/drnas_x47_guard_fit.py \
+            --trials x47_training/trials.jsonl \
+            --frozen-cost-model x47_training/frozen_cost_model.json \
+            --guard-output x47_training/frozen_risk_guard.txt \
+            --report x47_training/guard_report.json | tee x47_risk_training.log
+          sha256sum x47_training/frozen_cost_model.txt x47_training/frozen_risk_guard.txt > x47_frozen_sha256.txt
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('x47_training/guard_report.json').read_text())
+          assert r['training_original_sources']>=60 and r['validation_original_sources']>=15
+          assert r['holdout_outcomes_not_seen']
+          assert len(r['validation_candidate_menu'])==7
+          print('X47_MODEL_FROZEN',r['selected_guard']['name'],r['validation_original_sources'])
+          PYCODE
+      - name: Reject corrupt X47 risk model and verify learned guard in smoke test
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' > x47_parser.cnf
+          printf 'X47WRONG 1\n' > x47_corrupt.txt
+          set +e
+          build/drnas-x47 x47_parser.cnf --mode core --time 1 --branch-at 1 \
+            --x46-conflicts 8 --x46-model x47_training/frozen_cost_model.txt \
+            --x47-guard x47_corrupt.txt > x47_invalid.log 2>&1
+          rc="$?"
+          set -e
+          test "$rc" -ne 0 -a "$rc" -ne 10 -a "$rc" -ne 20
+          grep -q 'incompatible X47 guard' x47_invalid.log
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x47 --out x47_smoke \
+            --per-family 3 --repeats 2 --cap 0.8 \
+            --index-offset 620000 --probe-ms 1.5 \
+            --model-file x47_training/frozen_cost_model.txt \
+            --guard-file x47_training/frozen_risk_guard.txt | tee x47_smoke.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          j=json.loads(Path('x47_smoke/report.json').read_text())
+          assert j['matched_checkpoint_pairs']>35
+          assert j['by_arm']['X47_RISKGATE_8']['verified']==j['matched_checkpoint_pairs']
+          assert j['all_continuations_verified']
+          print('X47_SMOKE_PASS',j['matched_checkpoint_pairs'],j['by_arm']['X47_RISKGATE_8'])
+          PYCODE
+      - name: Holdout on 112 new original CNFs and eight matched strategies
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x47 --out x47_holdout \
+            --per-family 16 --repeats 3 --cap 0.8 \
+            --index-offset 800000 --probe-ms 1.5 \
+            --model-file x47_training/frozen_cost_model.txt \
+            --guard-file x47_training/frozen_risk_guard.txt | tee x47_holdout.log
+          sha256sum -c x47_frozen_sha256.txt
+      - name: Independent SHA, correctness, pairing, abstention and PAR2 audit
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          train=json.loads(Path('x47_training/manifest.json').read_text())
+          hold=json.loads(Path('x47_holdout/manifest.json').read_text())
+          r=json.loads(Path('x47_holdout/report.json').read_text())
+          a={x['sha256'] for x in train['sources']}
+          b={x['sha256'] for x in hold['sources']}
+          assert len(a)==84 and len(b)==112 and not a&b
+          assert r['distinct_original_sources']==112
+          assert r['matched_checkpoint_pairs']>250
+          assert r['all_continuations_verified']
+          assert len(hold['arms'])==8 and len(r['by_arm'])==8
+          pairs=[json.loads(x) for x in Path('x47_holdout/trials.jsonl').read_text().splitlines()]
+          assert len(pairs)==8*r['matched_checkpoint_pairs']
+          assert all(x['verified'] and x['pre_hash'] for x in pairs)
+          risk=[x for x in pairs if x['arm']=='X47_RISKGATE_8']
+          assert len(risk)==r['matched_checkpoint_pairs']
+          assert all(x['x47_enabled'] for x in risk)
+          assert r['by_arm']['X47_RISKGATE_8']['verified']==r['matched_checkpoint_pairs']
+          print('X47_VERIFIED_FINAL',json.dumps({
+              'holdout_sha_distinct':112,
+              'matched_pairs':r['matched_checkpoint_pairs'],
+              'guard_skips':sum(x['x47_preprobe_skipped'] for x in risk),
+              'guard_rejections_after_probe':sum(x['x47_rejected_after_probe'] for x in risk),
+              'guarded_PAR2':r['by_arm']['X47_RISKGATE_8'],
+              'core_PAR2':r['by_arm']['CORE'],
+              'learned_X46_PAR2':r['by_arm']['X46_LEARNED_8'],
+              'guarded_CI':r['comparisons_vs_CORE']['X47_RISKGATE_8']
+          },sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-riskgate-costed-holdout
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_native_regression.log
+            x47_train.log
+            x47_training/manifest.json
+            x47_training/cost_report.json
+            x47_training/guard_report.json
+            x47_training/frozen_cost_model.txt
+            x47_training/frozen_cost_model.json
+            x47_training/frozen_risk_guard.txt
+            x47_frozen_sha256.txt
+            x47_cost_training.log
+            x47_risk_training.log
+            x47_smoke.log
+            x47_smoke/report.json
+            x47_holdout.log
+            x47_holdout/report.json
+            x47_holdout/manifest.json
+            x47_holdout/trials.jsonl
