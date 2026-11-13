@@ -1,0 +1,132 @@
+name: DRNAS ADAPTIVE first real conflict original REAL3 5s 30s
+on:
+  push:
+    branches: [experiment/drnas-adaptive-first-conflict-real3-20261113]
+    paths:
+      - research/build_adaptive_fc.py
+      - research/adaptive_fc_real3.py
+      - tests/test_adaptive_fc.py
+      - .github/workflows/drnas-adaptive-first-conflict-real3.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-adaptive-first-conflict-real3
+  cancel-in-progress: false
+jobs:
+  freeze_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43390832273
+          github-token: ${{ github.token }}
+          name: gate-real3-context
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          github-token: ${{ github.token }}
+          name: gate-real36-native
+          path: .
+      - name: Restore unchanged original CNFs and reference binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real3_context.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Generate candidate from pinned X3 and compile candidate plus matched control
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/build_adaptive_fc.py research/adaptive_fc_real3.py tests/test_adaptive_fc.py
+          python3 research/build_adaptive_fc.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_adaptive_fc.cpp -o build/drnas-adaptive-fc
+          sha256sum build/drnas-adaptive-fc > build/ADAPTIVE_FC_SHA256SUMS
+          git rev-parse HEAD > build/adaptive_fc_commit.txt
+          g++ --version | head -1 > build/adaptive_fc_compiler.txt
+      - name: Verify exact small oracles, CORE-prefix equality and no speculative pre-conflict activation
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 tests/test_adaptive_fc.py | tee build/adaptive_fc_test.log
+      - name: Freeze original source SHA, both controls and diagnostic success rule
+        run: |
+          set -euo pipefail
+          python3 -u research/adaptive_fc_real3.py freeze | tee adaptive_fc_freeze.log
+          cp build/adaptive_fc_source.json build/adaptive_fc_test.json build/adaptive_fc_commit.txt build/adaptive_fc_compiler.txt build/ADAPTIVE_FC_SHA256SUMS adaptive_fc_freeze.log fc_frozen/
+          tar -czf adaptive_fc_context.tgz fc_frozen real36_frozen build/drnas-adaptive-fc build/ADAPTIVE_FC_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adaptive-fc-context
+          retention-days: 21
+          path: adaptive_fc_context.tgz
+  paired:
+    needs: freeze_audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: adaptive-fc-context
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          github-token: ${{ github.token }}
+          name: gate-real36-native
+          path: .
+      - name: Run serial matched arms on one logical CPU with fixed input and executable SHA
+        run: |
+          set -euo pipefail
+          tar -xzf adaptive_fc_context.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/ADAPTIVE_FC_SHA256SUMS
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "ADAPTIVE_FC_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/adaptive_fc_real3.py shard --shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real3-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: real3_stage/${{ matrix.shard }}/
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: adaptive-fc-context
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-real3-[0-9]*
+          path: real3_downloads
+          merge-multiple: false
+      - name: Audit 126 pairs, activation invariants and prespecified SIMON plus Break goals
+        run: |
+          set -euo pipefail
+          tar -xzf adaptive_fc_context.tgz
+          python3 -u research/adaptive_fc_real3.py finish | tee adaptive_fc_final.log
+          cp fc_frozen/manifest.json fc_frozen/protocol.json fc_frozen/adaptive_fc_source.json fc_frozen/adaptive_fc_test.json real3_final/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adaptive-fc-real3-final
+          retention-days: 21
+          path: |
+            real3_final/
+            adaptive_fc_final.log
