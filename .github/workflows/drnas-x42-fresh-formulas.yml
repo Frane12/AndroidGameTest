@@ -1,0 +1,72 @@
+name: DRNAS X4.2 fresh 144 CNFs 9 families three search cycles
+on:
+  push:
+    branches: [experiment/drnas-x42-fresh-formulas-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x42_convergence_cycles.py
+      - .github/workflows/drnas-x42-fresh-formulas.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x42-fresh-20261113
+  cancel-in-progress: false
+jobs:
+  fresh_three_cycles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile exact native observer and run correctness regression
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x42
+          python3 -m py_compile research/drnas_x42_convergence_cycles.py
+          python3 -u tests/test_x41.py --cases 500 | tee x42_fresh_regression.log
+          sha256sum build/drnas-x41 src/drnas_x41.cpp research/drnas_x42_convergence_cycles.py
+      - name: Run 144 new SHA-distinct original CNFs through 3 cycles
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x42_convergence_cycles.py \
+            --binary build/drnas-x42 --out x42_fresh \
+            --per-family 16 --offset 10000 --exclude-prior --cycles 3 --cap 2 \
+            | tee x42_fresh.log
+      - name: Enforce no reused formulas and audited SAT/UNSAT
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path("x42_fresh")
+          s=json.loads((p/"summary.json").read_text())
+          assert s["independent_CNF_sources"]==144,s
+          assert s["runs"]==432,s
+          assert s["verified_sat"]==336,s
+          assert s["exhaustively_checked_unsat"]==96,s
+          assert s["overlap_with_prior_48_source_cycles"]==0,s
+          rows=[json.loads(x) for x in (p/"trajectories.jsonl").read_text().splitlines()]
+          assert len({r["sha256"] for r in rows})==432
+          ids={(r["family"],r["base_id"]) for r in rows}
+          assert len(ids)==144
+          assert {r["cycle"] for r in rows}=={0,1,2}
+          print("X42_FRESH_AUDIT_PASS",json.dumps({
+            "distinct_original_sources":144,"synthetic_families":9,
+            "cycles":3,"verified_sat":336,"exhaustive_unsat":96,
+            "previous_SHA_overlap":0,"new_sha_per_replay":432,
+            "proxy":s["proxy_heldout_sign_audit"]},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x42-fresh-144-nine-families
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x42_fresh_regression.log
+            x42_fresh.log
+            x42_fresh/summary.json
+            x42_fresh/trajectories.jsonl
