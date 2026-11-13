@@ -1,0 +1,183 @@
+name: DRNAS X5.7 Decision Trace verified SAT10 paths
+on:
+  push:
+    branches: [experiment/drnas-x57-decision-trace-20261113]
+    paths: [.github/workflows/drnas-x57-decision-trace.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x57-decision-trace-sat10-20261113
+  cancel-in-progress: true
+
+jobs:
+  validate_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43418696306
+          name: x57-chb-lrb-real36-final
+          github-token: ${{ github.token }}
+          path: x57_previous
+      - name: Verify original CNF SHA and previous independently-certified SAT outcomes
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 -m py_compile research/drnas_x57_decision_trace_sat10.py tests/test_x57_decision_trace.py
+      - name: Build frozen original X5.7 and observation-only trace variant with identical flags
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x57.cpp -o build/drnas-x57
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x57_trace.cpp -o build/drnas-x57-decision
+          sha256sum build/drnas-x57 build/drnas-x57-decision build/drat-trim > build/X57DT_BINARIES.sha256
+          git rev-parse HEAD > build/X57DT_COMMIT
+          g++ --version | head -1 > build/X57DT_COMPILER
+      - name: Independent SAT UNSAT exact oracle, DRAT and decision trace invariance
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X57DT_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_x57_decision_trace.py | tee build/X57DT_SELFTEST.log
+      - name: Freeze SAT10 source SHAs, old SAT evidence and exact binary versions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x57_decision_trace_sat10.py freeze | tee build/X57DT_FREEZE.log
+          tar -czf x57dt_frozen.tgz \
+            build/drnas-x57 build/drnas-x57-decision build/X57DT_BINARIES.sha256 \
+            build/X57DT_COMMIT build/X57DT_COMPILER build/X57DT_SELFTEST.log \
+            build/X57DT_FREEZE.log x57_trace_freeze/protocol.json \
+            x57_previous/x57_final/paired_trials.jsonl \
+            x57_previous/x57_freeze/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x57dt-verified-frozen
+          retention-days: 30
+          path: x57dt_frozen.tgz
+
+  paired_sat10:
+    needs: validate_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x57dt-verified-frozen
+          path: .
+      - name: Restore and hash-check original CNFs, old result evidence and both binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          tar -xzf x57dt_frozen.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/X57DT_BINARIES.sha256
+      - name: Trace real SAT decision paths, 9 arms x 2 originals x 2 repeats, single logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X57DT_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x57_decision_trace_sat10.py shard \
+             --shard ${{ matrix.shard }} | tee x57dt_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x57dt-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          path: x57_trace_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired_sat10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x57dt-verified-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x57dt-shard-*
+          path: x57_trace_downloads
+          merge-multiple: false
+      - name: Recheck all 180 SHA-paired SAT records and full JSONL provenance
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x57dt_frozen.tgz
+          python3 -u research/drnas_x57_decision_trace_sat10.py finish | tee x57dt_final.log
+          python3 - <<'PY'
+          import json,os
+          j=json.load(open("x57_trace_final/report.json"))
+          assert j["status"]=="COMPLETE"
+          assert all(v["runs"]==20 and v["SAT_verified"]==20 for v in j["overall"].values())
+          out=["## DRNAS X5.7 Decision Trace — 10 previously SAT-verified originals",
+            "180 paired executions, 60 detailed JSONL decision traces, frozen original source SHA checks.",
+            "This is retrospective, not a blind evaluation; samples describe observations, never causal action effects.","",
+            "| Arm | SAT /20 | Total decisions | Conflicts | PAR2 (s) | Trace rows | Write overhead (s) |",
+            "|---|---:|---:|---:|---:|---:|---:|"]
+          for arm,v in j["overall"].items():
+              out.append(f"| {arm} | {v['SAT_verified']} | {v['total_decisions']} | {v['total_conflicts']} | {v['PAR2_s']:.4f} | {v['trace_records']} | {v['trace_write_s']:.4f} |")
+          out+=["", "### Scheduling SAT formula (source 12): complete first decision path"]
+          target=next(x for x in j["by_original"] if x["id"]==12)
+          for arm in ("TRACEON_VSIDS","TRACEON_CHB","TRACEON_LRB"):
+              z=target["arms"][arm]
+              out.append(f"- {arm}: decisions={z['total_decisions']} /2 reps; PAR2={z['total_PAR2_s']:.4f}s")
+          out+=["", "No automatic policy promotion. Immediate BCP outcomes are not counterfactual rewards."]
+          content="\n".join(out)+"\n"
+          print(content)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(content)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x57-decision-trace-sat10-final
+          retention-days: 30
+          path: |
+            x57_trace_final/report.json
+            x57_trace_final/paired_trials.jsonl
+            x57dt_final.log
+            x57_trace_freeze/protocol.json
