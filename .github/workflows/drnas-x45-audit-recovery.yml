@@ -1,0 +1,94 @@
+name: DRNAS X4.5 FINAL audit only from frozen 1200 paired trials
+on:
+  push:
+    branches: [experiment/drnas-x45-audit-recovery-20261113]
+    paths:
+      - research/drnas_x45_trial.py
+      - .github/workflows/drnas-x45-audit-recovery.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x45-1200-audit-only
+  cancel-in-progress: true
+
+jobs:
+  audit_only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover immutable original 1200 SHA manifest (no rerun)
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43356913822
+          github-token: ${{ github.token }}
+          name: x45-frozen-1200-SHA
+          path: .
+      - name: Recover all 12 completed paired-result artifacts (no rerun)
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43356913822
+          github-token: ${{ github.token }}
+          pattern: x45-eval-*
+          path: x45_eval_downloads
+          merge-multiple: false
+      - name: Finish frozen-source audit, paired PAR2 bootstraps and exact SAT tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_x45_trial.py
+          python3 -u research/drnas_x45_trial.py finish | tee x45_final.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open("x45_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert d["sources"]==1200
+          assert d["splits"]["eval_known"]["sources"]==480
+          assert d["splits"]["eval_ood"]["sources"]==720
+          assert sum(x["sources"] for x in d["families"].values())==1200
+          assert d["overall"]["SHAM"]["counterfactuals"]>0
+          assert d["overall"]["SHAM"]["interventions"]==0
+          assert d["overall"]["FIXED"]["interventions"]>0
+          assert d["overall"]["ONLINE"]["online_updates"]>0
+          print("X45_AUDIT_PASS",d["sources"],"online_feedback_updates",d["overall"]["ONLINE"]["online_updates"])
+          PY
+      - name: Publish complete result in GitHub job summary
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x45_final/report.json"))
+          a=d["overall"]
+          lines=["## DRNAS X4.5: full 1200 paired SAT CNFs — independently recovered and audited","",
+            "Original runner ID: 43356913822. Only audit was rerun; **no solver benchmark rerun**.","",
+            "| Arm | SAT verified / 1200 | Verified PAR2 seconds | Total E2E seconds | Counterfactual probes | Intervention decisions | ONLINE feedback updates |",
+            "|---|---:|---:|---:|---:|---:|---:|"]
+          for k in ("CORE","ADAPTIVE","SHAM","FIXED","ONLINE"):
+            x=a[k]
+            lines.append(f"| {k} | {x['SAT_verified']} | {x['PAR2_s']:.4f} | {x['total_E2E_s']:.4f} | {x['counterfactuals']} | {x['interventions']} | {x['online_updates']} |")
+          lines.append("")
+          lines.append("| Split | n | CORE SAT | ADAPT SAT | SHAM SAT | FIXED SAT | ONLINE SAT | ONLINE PAR2 s |")
+          lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+          for k in ("eval_known","eval_ood"):
+            x=d["splits"][k]
+            lines.append(f"| {k} | {x['sources']} | "+ " | ".join(str(x[z]['SAT_verified']) for z in ("CORE","ADAPTIVE","SHAM","FIXED","ONLINE"))+f" | {x['ONLINE']['PAR2_s']:.3f} |")
+          lines.append("")
+          for comp in ("ONLINE_vs_FIXED","ONLINE_vs_SHAM","ONLINE_vs_CORE","ONLINE_vs_ADAPTIVE"):
+            x=a[comp]
+            diff=x["paired_PAR2_delta"]
+            lines.append(f"- {comp}: paired ΔPAR2 **{diff['observed_sum_s']:+.3f} s**, bootstrap95 {diff['bootstrap95_sum_s']}; SAT unique wins {x['SAT_only_challenger']} vs losses {x['SAT_only_baseline']}, exact McNemar p={x['mcnemar_p_two_sided']}")
+          lines.extend(["","All instances are **generated planted SAT**, not official industrial SAT/UNSAT. Speculative BCP under assumptions reveals immediate effects, not certified causal changes in time-to-SAT or global distance to a solution. ONLINE memory resets for every formula."])
+          summary="\n".join(lines)+"\n"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x45-1200-audited-final-no-solver-rerun
+          retention-days: 21
+          path: |
+            x45_final/report.json
+            x45_final/paired_trials.jsonl
+            x45_final.log
