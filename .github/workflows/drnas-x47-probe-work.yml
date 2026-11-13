@@ -1,0 +1,53 @@
+name: DRNAS X4.7 bounded probes and deterministic work learning
+on:
+  push:
+    branches: ['experiment/drnas-x47-probe-work-20261113']
+    paths:
+      - src/drnas_x47.cpp
+      - research/drnas_x47.py
+      - research/x47_models.py
+      - tests/test_x47.py
+      - .github/workflows/drnas-x47-probe-work.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x47-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  train_freeze_validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Compile engines
+        run: |
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x47.cpp -o build/drnas-x47
+      - name: Exhaustive correctness, shadow isolation and deterministic budgets
+        run: |
+          set -euo pipefail
+          python -u tests/test_x47.py --cases 400 | tee x47_correctness.log
+      - name: Work-limited training and frozen runtime holdout
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x47.py --per-family 48 --cap 0.8 --repeats 3 --out x47_results | tee x47_benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-probe-work
+          retention-days: 30
+          path: |
+            x47_correctness.log
+            x47_benchmark.log
+            x47_results/
