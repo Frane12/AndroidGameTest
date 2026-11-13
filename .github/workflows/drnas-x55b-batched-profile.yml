@@ -1,0 +1,161 @@
+name: DRNAS X5.5b Batched CPU propagation profile 12 originals
+on:
+  push:
+    branches: [experiment/drnas-x55b-batched-bcp-20261113]
+    paths: [.github/workflows/drnas-x55b-batched-profile.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x55b-batched-20261113
+  cancel-in-progress: true
+jobs:
+  validate_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: SHA-check original SAT2024 bytes, compile baseline and batched CPU sampler
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x54.cpp -o build/drnas-x54
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x55b.cpp -o build/drnas-x55b
+          python3 -m py_compile tests/test_x55b_batched_profile.py research/drnas_x55b_batched_real12.py
+          sha256sum build/drnas-x54 build/drnas-x55b build/drat-trim > build/X55B_SHA256SUMS
+          git rev-parse HEAD > build/X55B_COMMIT
+      - name: 205 exact SAT UNSAT executions with independent DRAT and same-search controls
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u tests/test_x55b_batched_profile.py | tee build/X55B_SELFTEST.log
+      - name: Freeze 12 SHA-selected source inputs and five binary arms
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x55b_batched_real12.py freeze | tee build/X55B_FREEZE.log
+          tar -czf x55b_protocol.tgz \
+            build/drnas-x54 build/drnas-x55b build/X55B_SHA256SUMS \
+            build/X55B_COMMIT build/X55B_SELFTEST.log build/X55B_FREEZE.log \
+            x55b_freeze/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x55b-frozen-protocol
+          retention-days: 21
+          path: x55b_protocol.tgz
+
+  paired_real12:
+    needs: validate_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x55b-frozen-protocol
+          path: .
+      - name: Restore original SHA-frozen 12 CNFs and immutable binary control
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          tar -xzf x55b_protocol.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/X55B_SHA256SUMS
+      - name: Four-shard serial paired CPU profiling, one logical core per solver
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x55b_batched_real12.py shard --shard ${{ matrix.shard }} \
+              | tee x55b_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x55b-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x55b_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired_real12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x55b-frozen-protocol
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x55b-shard-*
+          path: x55b_downloads
+          merge-multiple: false
+      - name: Validate 120 paired runs, CPU estimates and source clusters
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x55b_protocol.tgz
+          python3 -u research/drnas_x55b_batched_real12.py finish | tee x55b_final.log
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x55b_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert all(v["attempts"]==24 for v in d["overall"].values())
+          out=["## X5.5b batched CPU profiling on 12 original SAT2024 CNFs", "",
+               "| Arm | Verified /24 | PAR2 seconds | Thread CPU seconds | Estimated propagation CPU | Plausible estimate |",
+               "|---|---:|---:|---:|---:|---|"]
+          for arm,v in d["overall"].items():
+              val=v["bcp_extrapolated_cpu_s"]
+              out.append(f"| {arm} | {v['solved']} | {v['PAR2_s']:.2f} | {v['process_cpu_s']:.2f} | {val if val is not None else 'N/A'} | {v['sample_plausible']} |")
+          out+=["", "Clock samples are approximations. Do not promote based on this retrospective subset."]
+          text="\n".join(out)+"\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(text)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x55b-batched-real12-final
+          retention-days: 21
+          path: |
+            x55b_final/report.json
+            x55b_final/trials.jsonl
+            x55b_final.log
+            x55b_freeze/protocol.json
