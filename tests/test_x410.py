@@ -14,6 +14,7 @@ sys.path.insert(0,str(ROOT/'research'))
 import drnas_x47 as X
 from x410_models import NF,predict,choose,write_model
 from drnas_x410_unsat import pigeonhole
+from drnas_x410 import make_case as medium_case
 
 
 def oracle(n, clauses):
@@ -125,6 +126,15 @@ def main():
                     assert pol['flipped']==choose(mock,pol['features'])
                     reached+=1
                 checked+=1
+        # Exercise actual medium generator, including the planted3 composition.
+        for fam in ('uniform3','grid_xor','circuit'):
+            case=medium_case(fam,3,'smoke')
+            assert case['n']>=150 and len(case['sha256'])==64
+            cnf.write_text(case['source'])
+            trial=X.run(new,cnf,case,'core',0,work_limit=100000)
+            assert trial['verified'] or trial['policy']['work_limit_hit']
+            assert trial['policy']['probe_inspections']==0
+            checked+=1
         for bad in ('garbage','X491 30 2 0 8 ridge 0 0','X4101 30 2 nan 8 ridge 0 0 0','X4101 30 2 0 8 ridge 0 -2 0','X4101 30 2 0 8 ridge 0 0 -3'):
             model.write_text(bad)
             p=subprocess.run([str(new),str(cnf),'--mode','core','--branch-at','16',
