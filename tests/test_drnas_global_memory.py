@@ -62,7 +62,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.db.execute(
             "SELECT role,verified_claim,par2_s FROM observations").fetchone(),
             ("holdout", 1, 0.005))
-        self.assertEqual(M.import_zip(self.db, 9, 27, b.getvalue()), (2, 0))
+        self.assertEqual(M.import_zip(self.db, 9, 27, b.getvalue()), (0, 0))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0], 1)
 
     def test_legacy_train_import_with_holdout_taint(self):
@@ -109,6 +109,60 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(self.db.execute(
                 "SELECT COUNT(*) FROM eligible_training").fetchone()[0], 0)
             self.assertEqual(M.import_legacy(self.db, archive, latest)["state"], "unchanged")
+
+    def test_generic_named_report_and_learning_counters(self):
+        manifest={"originals":[{"sha256":self.sha1,"family":"test"}],
+                  "cohort":"synthetic"}
+        with io.BytesIO() as binary:
+            with zipfile.ZipFile(binary,"w",zipfile.ZIP_DEFLATED) as z:
+                z.writestr("out/manifest.json",json.dumps(manifest))
+                z.writestr("out/2026_new_solver_summary.json",
+                           json.dumps({"PAR2":3.0,"arm":"X5"}))
+            reports,trials=M.import_zip(self.db,5,22,binary.getvalue())
+        self.assertEqual(reports,2)
+        self.assertEqual(trials,0)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM reports").fetchone()[0],2)
+        self.db.execute("""
+          CREATE TABLE continual_experiences(source_sha TEXT)
+        """)
+        self.db.execute("INSERT INTO continual_experiences VALUES (?)",(self.sha2,))
+        self.db.execute("""
+          CREATE TABLE sealed_global_sources(source_sha TEXT)
+        """)
+        self.db.execute("INSERT INTO sealed_global_sources VALUES (?)",(self.sha1,))
+        self.db.execute("""
+          CREATE TABLE global_learning_events(promoted INTEGER)
+        """)
+        self.db.execute("INSERT INTO global_learning_events VALUES (0)")
+        s=M.stats(self.db,{"mode":"unit_test"})
+        self.assertEqual(s["continual_training_sources"],1)
+        self.assertEqual(s["fresh_sealed_holdout_sources"],1)
+        self.assertEqual(s["completed_learning_cycles"],1)
+        self.assertEqual(s["promoted_models"],0)
+
+    def test_generic_artifact_from_drnas_run_is_recovered(self):
+        blob=io.BytesIO()
+        with zipfile.ZipFile(blob,"w",zipfile.ZIP_DEFLATED) as z:
+            z.writestr("eval-0/run_summary.json",json.dumps({"benchmark":"DRNAS","PAR2":3.}))
+        class FakeGH:
+            def artifact_zip(self,artifact_id):
+                self.seen=artifact_id
+                return blob.getvalue()
+        gh=FakeGH()
+        self.db.execute("INSERT INTO runs(run_id,name) VALUES (?,?)",
+                        (99,"DRNAS X47 Native native test"))
+        self.db.execute("""
+            INSERT INTO artifacts(artifact_id,run_id,name,size_bytes,created_at,expired,import_state)
+            VALUES (?,?,?,?,?,?,?)
+        """,(8,99,"eval-0",len(blob.getvalue()),"2026-11-13T00:00:00Z",0,"unrelated"))
+        imported=M.ingest_artifacts(self.db,gh,1)
+        self.assertEqual(imported["downloaded"],1)
+        self.assertEqual(imported["reports"],1)
+        self.assertEqual(gh.seen,8)
+        self.assertEqual(self.db.execute(
+            "SELECT import_state FROM artifacts WHERE artifact_id=8"
+        ).fetchone()[0],"parsed")
 
     def test_invalid_sha_and_unverified_not_trusted(self):
         self.assertFalse(M.valid_sha("not a SHA"))
