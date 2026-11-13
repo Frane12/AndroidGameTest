@@ -1,0 +1,201 @@
+name: DRNAS X5.4 BCP rotating watched-literal scan and proof-limit audit
+on:
+  push:
+    branches: [experiment/drnas-x54-bcp-watch-cursor-20261113]
+    paths: [.github/workflows/drnas-x54-bcp-watch-cursor.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x54-bcp-cursor-20261113
+  cancel-in-progress: true
+
+jobs:
+  prior_x53_evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43399730112
+          name: x53-frozen-binaries-protocol
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43399730112
+          pattern: x53-shard-*
+          github-token: ${{ github.token }}
+          path: x53_previous
+          merge-multiple: false
+      - name: Diagnose failed X53 report and independently certify 128MiB SIGXFSZ
+        run: |
+          set -euo pipefail
+          tar -xzf x53_binaries_protocol.tgz
+          python3 -u research/drnas_x53_salvage.py | tee x53_salvage.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x54-prior-x53-salvage
+          retention-days: 21
+          path: |
+            x53_salvage/report.json
+            x53_salvage.log
+
+  freeze_and_selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Recover SHA-verified original SAT2024 formula files and frozen references
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Compile identical X53 control and X54 bounded rotation candidate
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x53.cpp -o build/drnas-x53
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x54.cpp -o build/drnas-x54
+          python3 -m py_compile research/drnas_x53_salvage.py research/drnas_x54_real36.py tests/test_x54_watch_cursor.py
+          sha256sum build/drnas-x53 build/drnas-x54 build/kissat build/cadical build/drat-trim > build/X54_SHA256SUMS
+          git rev-parse HEAD > build/X54_COMMIT
+          g++ --version | head -1 > build/X54_COMPILER
+      - name: Exact SAT UNSAT brute oracle, independent DRAT, control identical
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X54_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_x54_watch_cursor.py | tee build/X54_SELFTEST.log
+      - name: Freeze source SHA, 512MiB proof cap and all compared binary hashes
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x54_real36.py freeze | tee build/X54_FREEZE.log
+          tar -czf x54_protocol_binaries.tgz \
+            build/drnas-x53 build/drnas-x54 build/X54_SHA256SUMS \
+            build/X54_COMMIT build/X54_COMPILER build/X54_SELFTEST.log \
+            build/X54_FREEZE.log x54_freeze/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x54-frozen-protocol
+          retention-days: 21
+          path: x54_protocol_binaries.tgz
+
+  paired_real36:
+    needs: freeze_and_selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x54-frozen-protocol
+          path: .
+      - name: Recover original bytes and immutable solver comparisons
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          tar -xzf x54_protocol_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/X54_SHA256SUMS
+      - name: Serial 5-arm, 8s E2E benchmark; 1 CPU per solver; 3 CNFs x2 repeats
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X54_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x54_real36.py shard --shard ${{ matrix.shard }} | tee x54_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x54-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x54_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired_real36
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x54-frozen-protocol
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x54-shard-*
+          path: x54_downloads
+          merge-multiple: false
+      - name: Verify all 360 paired trials and source-clustered PAR2
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x54_protocol_binaries.tgz
+          python3 -u research/drnas_x54_real36.py finish | tee x54_final.log
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x54_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert all(v["attempts"]==72 for v in d["overall"].values())
+          out=["## X5.4: 36 original SAT2024 CNFs × 2 repeats × 5 arms",
+               "Proof cap 512 MiB, isolated watch-scan order; no promotion or main change.","",
+               "| Solver | Verified /72 | PAR2 seconds | Proof-size limited |",
+               "|---|---:|---:|---:|"]
+          for arm,v in d["overall"].items():
+              out.append(f"| {arm} | {v['solved']} | {v['PAR2_s']:.2f} | {v['proof_size_limited']} |")
+          out+=["", "## Source-cluster 95% interval", ""]
+          for k,v in d["comparisons"].items():
+              out.append(f"- {k}: delta PAR2 {v['observed_PAR2_delta_s']:+.4f}s; CI {v['95pct_cluster_bootstrap_delta_s']}")
+          report="\n".join(out)+"\n"
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fd:fd.write(report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x54-real36-final
+          retention-days: 21
+          path: |
+            x54_final/report.json
+            x54_final/paired_trials.jsonl
+            x54_final.log
+            x54_freeze/protocol.json
