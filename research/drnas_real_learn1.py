@@ -8,6 +8,7 @@ and evaluate on untouched HOLDOUT. No model promotion or change to solver core.
 import argparse
 import collections
 import hashlib
+import io
 import json
 import math
 import os
@@ -99,7 +100,7 @@ def structural_features(text, nvars, nclauses):
     widths = []
     binary = unit = horn = 0
     open_clause = []
-    for line in text.splitlines():
+    for line in io.StringIO(text):
         ln = line.lstrip()
         if not ln or ln[0] in "cp%":
             continue
@@ -288,8 +289,8 @@ def source_metrics(rows, split):
 def rule_score(samples, rule):
     base = sum(r["cost"]["CORE"] for r in samples.values())
     cost = sum(r["cost"][choose({"active_rule":rule},r["features"])] for r in samples.values())
-    solved = sum(r["solved"]["CORE"] for r in samples.values())
-    candidate_solved = sum(r["solved"][choose({"active_rule":rule},r["features"])] for r in samples.values())
+    solved = sum(r["solved"].get("CORE",0) for r in samples.values())
+    candidate_solved = sum(r["solved"].get(choose({"active_rule":rule},r["features"]),0) for r in samples.values())
     acted = sum(choose({"active_rule":rule},r["features"])!="CORE" for r in samples.values())
     acted_families = len({r["family"] for r in samples.values() if choose({"active_rule":rule},r["features"])!="CORE"})
     return {"relative_gain": (base-cost)/base if base else 0.0,
