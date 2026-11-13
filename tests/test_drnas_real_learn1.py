@@ -27,7 +27,7 @@ class RealLearn1Tests(unittest.TestCase):
         f=L.structural_features("c note\np cnf 3 3\n1 0\n1 -2 0\n-1 -2 3 0\n",3,3)
         self.assertEqual(f["unit_fraction"],1/3)
         self.assertEqual(f["binary_fraction"],1/3)
-        self.assertEqual(f["horn_fraction"],2/3)
+        self.assertEqual(f["horn_fraction"],1)
         self.assertEqual(f["mean_width"],2)
         self.assertEqual(f["density"],1)
 
