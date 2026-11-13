@@ -1,0 +1,194 @@
+name: DRNAS X5.8 BCP hotwatch same binary A-B REAL36
+
+on:
+  push:
+    branches: [experiment/drnas-x58-bcp-hotwatch-20261113]
+    paths:
+      - .github/workflows/drnas-x58-bcp-hotwatch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x58-hotwatch-experimental
+  cancel-in-progress: false
+
+jobs:
+  validate_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: reference
+      - name: 01 / Restore original REAL36 and frozen competitor references
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          cp reference/* build/
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          chmod +x build/*
+      - name: 02 / Compile X58 once and validate off/on oracle with independent proof
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror src/drnas_x58.cpp -o build/drnas-x58
+          chmod +x build/drnas-x58
+          test -x build/drnas-x58
+          python3 -m py_compile research/drnas_x58_bcp_real36.py tests/test_x58_hotwatch.py
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X58_SINGLE_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_x58_hotwatch.py | tee x58_safety.log
+          git rev-parse HEAD > X58_GIT_COMMIT
+          g++ --version | head -n1 > X58_COMPILER
+      - name: 03 / Freeze exact hashes, REAL36 source family and control binary
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x58_bcp_real36.py freeze | tee x58_freeze.log
+          sha256sum build/drnas-x5 build/drnas-x58 build/kissat build/cadical build/cms build/drat-trim build/frat-rs > build/X58_BINARIES.sha256
+          tar -czf x58_frozen.tgz \
+            build/drnas-x5 build/drnas-x58 build/kissat build/cadical \
+            build/cms build/drat-trim build/frat-rs build/X58_BINARIES.sha256 \
+            x58_freeze/protocol.json X58_GIT_COMMIT X58_COMPILER x58_safety.log
+          echo 'X58_STAGE preflight COMPLETE original CNF only, no blind holdout, main unchanged' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x58-frozen
+          retention-days: 60
+          path: |
+            x58_frozen.tgz
+            x58_freeze.log
+            x58_safety.log
+            X58_GIT_COMMIT
+            X58_COMPILER
+
+  paired:
+    needs: validate_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x58-frozen
+          path: .
+      - name: 04 / Verify binary and source hashes independently on every shard
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x58_frozen.tgz
+          sha256sum -c build/X58_BINARIES.sha256
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,"research")
+          import drnas_x58_bcp_real36 as X
+          sources,_=X.frozen_sources()
+          assert len(sources)==36
+          print("X58_SHA_FROZEN_RECHECK",len(sources))
+          PY
+      - name: 05 / Paired six-solver A-B on one logical CPU, shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X58_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x58_bcp_real36.py shard --shard ${{ matrix.shard }} \
+             | tee x58_shard.log
+          echo "X58_STAGE shard=${{ matrix.shard }} COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x58-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: x58_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x58-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x58-shard-*
+          path: x58_downloads
+          merge-multiple: false
+      - name: 06 / Report all 432 trials, proof status, family CIs and memory savings
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x58_frozen.tgz
+          python3 -u research/drnas_x58_bcp_real36.py finish | tee x58_final.log
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x58_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert d["promotion"] is False and not d["blind_holdout"]
+          assert all(v["attempts"]==72 for v in d["overall"].values())
+          out=["## DRNAS X5.8 hotwatch A/B on 36 retrospective SAT2024 originals x2",
+               "Same binary controls OFF/ON, independent verified SAT models and UNSAT proofs. No main promotion.","",
+               "| Arm | Verified /72 | SAT | UNSAT | PAR2 (s) | CPU data missing | Skipped writes |",
+               "|---|---:|---:|---:|---:|---:|---:|"]
+          for a,v in d["overall"].items():
+              out.append(f"| {a} | {v['verified']} | {v['SAT']} | {v['UNSAT']} | {v['PAR2_s']:.4f} | {v['cpu_missing']} | {v['avoided_writes']} |")
+          out+=["","### Family-cluster bootstrap confidence intervals"]
+          for name,values in d["family_CI"].items():
+              out.append(f"- {name}: gain {100*values['relative_PAR2_reduction']:+.3f}% "+
+                         f"95% CI {[round(100*z,3) for z in values['family_bootstrap95']]}%, "+
+                         f"families={values['independent_families']}")
+          out+=["","Result is retrospective diagnostic only; no blind holdout or solver promotion."]
+          msg="\n".join(out)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x58-hotwatch-real36-final
+          retention-days: 60
+          path: |
+            x58_final/report.json
+            x58_final/trials.jsonl
+            x58_final.log
+            x58_freeze/protocol.json
