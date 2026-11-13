@@ -5,7 +5,8 @@ Same binary OFF vs ON, plus SHA-frozen X5 and two external references.
 This is retrospective diagnostic material, NEVER a fresh blind holdout.
 """
 from __future__ import annotations
-import argparse, collections, hashlib, json, os, pathlib, random, subprocess, tempfile, time
+import argparse, collections, hashlib, json, os, pathlib, random, subprocess, tempfile, time, sys
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 import drnas_x55_cpu_real36 as B
 
 CAP=5.0
