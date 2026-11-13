@@ -1,0 +1,144 @@
+name: DRNAS X4.5 native decision-level memory 1200 prospective
+on:
+  push:
+    branches: [experiment/drnas-x45-online-branch-feedback-20261113]
+    paths:
+      - src/drnas_x45.cpp
+      - research/drnas_x45_trial.py
+      - tests/test_x45_feedback.py
+      - .github/workflows/drnas-x45-prospective-1200.yml
+      - README_X45.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x45-prospective-1200-one-workflow
+  cancel-in-progress: true
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile all standalone native DRNAS solvers
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45.cpp -o build/drnas-x45
+      - name: Audit 240 exact-oracle SAT and UNSAT native runs, plus planted medium samples
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_x45_trial.py tests/test_x45_feedback.py
+          python3 -u tests/test_x45_feedback.py
+      - name: Freeze 1200 NEW SHA, verify none reused from X4.4
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/drnas_x45_trial.py freeze | tee x45_freeze.log
+          test -s x45_frozen/manifest_sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x45-frozen-1200-SHA
+          retention-days: 21
+          path: |
+            x45_frozen/manifest.json
+            x45_frozen/manifest_sha.txt
+            x45_freeze.log
+
+  eval:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x45-frozen-1200-SHA
+          path: .
+      - name: Compile same native solvers independently
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45.cpp -o build/drnas-x45
+      - name: 100 frozen original CNFs, five rotating native arms, one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X45_SHARD_${{ matrix.shard }}_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x45_trial.py shard --shard ${{ matrix.shard }} | tee x45_eval.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x45-eval-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            x45_stage/shard_${{ matrix.shard }}/report.json
+            x45_stage/shard_${{ matrix.shard }}/trials.jsonl
+
+  final_report:
+    needs: eval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x45-frozen-1200-SHA
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x45-eval-*
+          path: x45_eval_downloads
+          merge-multiple: false
+      - name: Audit SHA pairing, native correctness, PAR2 and paired confidence intervals
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x45_trial.py finish | tee x45_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open('x45_final/report.json'))
+          assert r['status']=='COMPLETE'
+          assert r['overall']['ONLINE']['online_updates']>0, 'ONLINE never trained on real feedback'
+          assert r['overall']['SHAM']['interventions']==0, 'SHAM intervention contamination'
+          assert r['overall']['SHAM']['counterfactuals']>0, 'No counterfactual probes'
+          assert r['overall']['FIXED']['interventions']>0, 'FIXED never changed branch'
+          print('X45_AUDIT_PASS feedback_updates',r['overall']['ONLINE']['online_updates'])
+          PY
+      - name: Publish paired native benchmark with exact-discordance tests
+        run: |
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('x45_final/report.json'))
+          a=r['overall']
+          lines=['## DRNAS X4.5 — 1200 new generated original CNFs, 5 native arms','',
+            'The SHAM arm performs identical speculative BCP but makes CORE decisions. FIXED chooses a probe-rated branch. ONLINE updates its local scoring weights using the *real* previous branch outcome. No policy receives planted witness or future SAT status.','','| Arm | SAT/1200 | PAR2 s | Total E2E s | Probes | Changed branches | ONLINE updates |','|---|---:|---:|---:|---:|---:|---:|']
+          for k in ('CORE','ADAPTIVE','SHAM','FIXED','ONLINE'):
+            x=a[k]
+            lines.append(f"| {k} | {x['SAT_verified']} | {x['PAR2_s']:.3f} | {x['total_E2E_s']:.3f} | {x['counterfactuals']} | {x['interventions']} | {x['online_updates']} |")
+          lines.append('')
+          for k in ('ONLINE_vs_FIXED','ONLINE_vs_SHAM','ONLINE_vs_ADAPTIVE'):
+            x=a[k]
+            lines.append(f"- {k}: paired PAR2 delta {x['paired_PAR2_delta']['observed_sum_s']:.4f}s, bootstrap95 {x['paired_PAR2_delta']['bootstrap95_sum_s']}, SAT-only {x['SAT_only_challenger']} vs {x['SAT_only_baseline']}, exact McNemar p={x['mcnemar_p_two_sided']:.5f}")
+          lines.extend(['','Generated SAT only. Local counterfactual propagation is not a proof of progress toward SAT. Training memory resets at the beginning of each solve.'])
+          s='\n'.join(lines)+'\n'
+          print(s)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x45-1200-native-online-final
+          retention-days: 21
+          path: |
+            x45_final/report.json
+            x45_final/paired_trials.jsonl
+            x45_final.log
