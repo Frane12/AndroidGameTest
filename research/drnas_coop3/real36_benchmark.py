@@ -170,8 +170,8 @@ def summarize(rows):
           "check_s":round(sum(r["proof_audit_s"] for r in rs),6),
           "mode_reports":sum(r["coop3"].get("mode")=={
                                 "COOP3_OFF":"off","COOP3_OBSERVE":"observe",
-                                "COOP3_ALGEBRA":"algebra","COOP3_ON":"on","COOP3_GATE":"on"
-                              }.get(arm) and r["coop3"].get("delayed")==(arm!="COOP3_GATE")
+                                "COOP3_ALGEBRA":"algebra","COOP3_ON":"on","COOP3_GATE":"gate"
+                              }.get(arm) and r["coop3"].get("delayed") is True
                               for r in rs) if arm.startswith("COOP3_") else 0,
           "eligible_trial_sources":len({r["sha256"] for r in rs
                if r["nvars"]<=4096 and r["nclauses"]<=12000}),
