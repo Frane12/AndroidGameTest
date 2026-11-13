@@ -1,0 +1,220 @@
+name: DRNAS X4.7 LONG 120 larger harder CNFs original SAT2024
+on:
+  push:
+    branches: [experiment/drnas-x47-longer-120-20261113]
+    paths:
+      - research/drnas_x47_long_bench.py
+      - research/drnas_x47_long_aggregate.py
+      - .github/workflows/drnas-x47-long.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x47-long-120-originals
+  cancel-in-progress: false
+
+jobs:
+  freeze_models:
+    name: Freeze X46 and X47 policy on independent source CNFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native build and unchanged CDCL correctness regression
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x47
+          python3 -m py_compile research/drnas_x47_long_bench.py research/drnas_x47_long_aggregate.py
+          python3 -u tests/test_x41.py --cases 300 | tee x47_long_core_regression.log
+          sha256sum build/drnas-x47
+      - name: Train and freeze on 84 preselected separate source formulas
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x47 --out x47long_training \
+            --per-family 12 --repeats 2 --cap 0.8 \
+            --index-offset 600000 --probe-ms 1.5 | tee x47long_training.log
+          python3 -u research/drnas_x46_cost_train.py \
+            --trials x47long_training/trials.jsonl \
+            --model x47long_training/frozen_cost_model.txt \
+            --report x47long_training/cost_report.json | tee x47long_cost.log
+          python3 -u research/drnas_x47_guard_fit.py \
+            --trials x47long_training/trials.jsonl \
+            --frozen-cost-model x47long_training/frozen_cost_model.json \
+            --guard-output x47long_training/frozen_risk_guard.txt \
+            --report x47long_training/guard_report.json | tee x47long_guard.log
+          sha256sum x47long_training/frozen_cost_model.txt x47long_training/frozen_risk_guard.txt | tee x47long_frozen_sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          retention-days: 21
+          path: |
+            x47long_training/frozen_cost_model.txt
+            x47long_training/frozen_risk_guard.txt
+            x47long_training/cost_report.json
+            x47long_training/guard_report.json
+            x47long_frozen_sha256.txt
+            x47_long_core_regression.log
+
+  synthetic_shards:
+    name: Synthetic hard shard ${{ matrix.shard }} / 3
+    runs-on: ubuntu-24.04
+    needs: freeze_models
+    timeout-minutes: 47
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          path: frozen
+      - name: Build same native binary and freeze checksum
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x47
+          sha256sum -c frozen/x47long_frozen_sha256.txt
+      - name: 24 larger original CNFs with 5 arms x 2 reps, 6-second cap
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x47_long_bench.py \
+            --binary build/drnas-x47 --cohort synthetic \
+            --out x47_long_synth_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 \
+            --synthetic-count 96 --source-offset 1100000 \
+            --cap 6.0 --repeats 2 \
+            --model frozen/x47long_training/frozen_cost_model.txt \
+            --guard frozen/x47long_training/frozen_risk_guard.txt \
+            | tee x47_long_synth_${{ matrix.shard }}.log
+      - name: Enforce 24 SHA-distinct originals, 5 paired arms, no solver answer mismatch
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path("x47_long_synth_${{ matrix.shard }}")
+          manifest=json.loads((p/"manifest.json").read_text())
+          report=json.loads((p/"report.json").read_text())
+          rows=[json.loads(x) for x in (p/"trials.jsonl").read_text().splitlines()]
+          assert report['original_sources']==24
+          assert len({v['sha256'] for v in manifest['originals']})==24
+          assert report['total_trials']==24*2*5
+          assert all(report['all_arms'][a]['trials']==48 for a in manifest['arms'])
+          assert all(not (x['status']=='SAT' and not x['verified']) for x in rows)
+          assert all(x['certification']!='UNSAT_NO_INDEPENDENT_CERT' for x in rows)
+          print('X47_LONG_SYNTH_SHARD_AUDIT_PASS',manifest['shard'],report['all_arms'])
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-long-synth-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_long_synth_${{ matrix.shard }}/manifest.json
+            x47_long_synth_${{ matrix.shard }}/report.json
+            x47_long_synth_${{ matrix.shard }}/trials.jsonl
+            x47_long_synth_${{ matrix.shard }}.log
+
+  official_retrospective:
+    name: Original SAT Competition 2024, 24 diverse families
+    runs-on: ubuntu-24.04
+    needs: freeze_models
+    timeout-minutes: 47
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          path: frozen
+      - name: Build native core, install bounded archive-range loader
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o drnas-x47-long
+          python3 -m pip install --break-system-packages -q remotezip
+          sha256sum -c frozen/x47long_frozen_sha256.txt
+      - name: 24 original SAT2024 CNFs x 5 arms x 2 reps, 8-second cap
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x47_long_bench.py \
+            --binary drnas-x47-long --cohort official \
+            --out x47_long_official \
+            --shard 0 --shards 1 --official-count 24 \
+            --cap 8.0 --repeats 2 \
+            --model frozen/x47long_training/frozen_cost_model.txt \
+            --guard frozen/x47long_training/frozen_risk_guard.txt \
+            | tee x47_long_official.log
+      - name: Explicitly disallow uncertified official UNSAT credit
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('x47_long_official')
+          m=json.loads((p/'manifest.json').read_text())
+          r=json.loads((p/'report.json').read_text())
+          assert r['original_sources']==24 and r['total_trials']==24*2*5
+          assert len({x['sha256'] for x in m['originals']})==24
+          assert len({x['family'] for x in m['originals']})==24
+          for x in (json.loads(t) for t in (p/'trials.jsonl').read_text().splitlines()):
+              if x['status']=='UNSAT':assert not x['verified'] and x['PAR2']==16.0
+          print('X47_OFFICIAL_PROVENANCE_AUDIT_PASS',r['all_arms'])
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-long-official-retrospective
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_long_official/manifest.json
+            x47_long_official/report.json
+            x47_long_official/trials.jsonl
+            x47_long_official.log
+
+  aggregate:
+    name: Aggregate verified source-level PAR2 and intervals
+    if: always()
+    runs-on: ubuntu-24.04
+    needs: [synthetic_shards, official_retrospective]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x47-long-*
+          path: results
+          merge-multiple: false
+      - name: Reconcile all source manifests, verified results and intervals
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_long_aggregate.py \
+            --root results --out x47_long_summary.json | tee x47_long_summary.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          j=json.loads(Path('x47_long_summary.json').read_text())
+          if j['synthetic'].get('status')!='not_run':
+              assert j['synthetic']['original_sources']==96,j['synthetic']['original_sources']
+              assert j['synthetic']['total_trials']==960
+          if j['official'].get('status')!='not_run':
+              assert j['official']['original_sources']==24
+              assert j['official']['total_trials']==240
+          print('X47_LONG_AGGREGATION_AUDIT',j['synthetic'].get('original_sources'),j['official'].get('original_sources'))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-long-summary
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_long_summary.json
+            x47_long_summary.log
