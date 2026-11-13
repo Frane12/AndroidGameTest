@@ -74,6 +74,8 @@ def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None):
         raise AssertionError("shadow modified a real decision")
     if probe is not None:
         if probe["triggered"]:
+            if arm==LEARNED_ARM and not probe.get("learned_model",False):
+                raise AssertionError("frozen X46 model failed to load into active controller")
             if probe["pre_state_digest"]!=pre["pre_state_digest"]:
                 raise AssertionError("cloned pre-state digest differs from controller")
             if (arm=="SHADOW_8" and not probe["shadow"]) or (arm!="SHADOW_8" and probe["shadow"]):
