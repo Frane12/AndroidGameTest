@@ -1,0 +1,65 @@
+# DRNAS X4.5a: predict measured continuation work
+
+X4.5a changes one polarity at native CDCL decision 4. It learns from paired
+continuations of the same deterministic solver state. The target is
+`log1p(base remaining propagations) - log1p(flipped remaining propagations)`;
+it is not a clause-satisfaction proxy or a claimed mathematical SAT distance.
+
+## Fixed protocol
+
+- 768 new generated SAT formulas: 384 training, 144 validation, 240 holdout.
+- 16 generator regimes (8/3/5), not 16 independent mathematical classes.
+- Model, threshold and feature schema frozen before holdout outcomes.
+- One logical CPU, 0.4 s end-to-end cap, 3 randomized-order holdout repeats.
+- SAT witnesses checked against each original CNF outside the solver.
+- Independent exhaustive small SAT/UNSAT correctness tests cover every policy.
+- No changes to main, no APK, no foreign solver linked into the implementation.
+
+## Policies
+
+CORE preserves the original branching policy. SHAM computes identical learned
+features/model scores but keeps CORE's decision. FIXED chooses polarity using
+the weighted residual clause occurrence difference. FLIP always reverses the
+selected decision. LEARNED uses a frozen nine-member ridge ensemble trained
+on continuation work; an ensemble disagreement penalty and a train-scaled
+feature guard can abstain. The score is not a calibrated probability.
+
+The validation-only threshold grid includes disabling intervention entirely.
+The baseline is not assumed inferior. There is no holdout-driven retraining.
+
+## Evidence and limits
+
+Primary outcome: paired holdout end-to-end PAR2 for LEARNED vs CORE. The
+predeclared success criterion is a lower 95% formula-cluster bootstrap bound
+above 10% improvement. The same comparisons against SHAM, FIXED and FLIP are
+mandatory controls. All repeated trials are clustered by original formula;
+an exploratory family-cluster interval is also reported, with only five
+holdout regimes. These exploratory intervals are not multiplicity-adjusted.
+
+Training and prediction metrics exclude pairs whose continuations do not
+both finish and verify within the cap. Their exclusions are counted. Runtime
+PAR2 includes every held-out formula, including timeouts and overhead.
+Prediction metrics use nontrivial work differences (absolute log ratio >0.10).
+The model acts once; its labels do not establish utility of repeated interventions.
+
+Process startup and model loading may dominate these small formulas. Work
+counts help distinguish search effects from timer noise but do not replace
+end-to-end results. This is a mechanism experiment on generated SAT; it does
+not establish industrial, UNSAT, or Kissat/CaDiCaL/CryptoMiniSat superiority.
+Training/generation/verification costs are not amortized into solve speed.
+
+## Reproduction
+
+```bash
+python3 -m pip install numpy==2.3.5
+mkdir -p build
+g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45a.cpp -o build/drnas-x45a
+python3 tests/test_x45a.py --cases 400
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 -u research/drnas_x45a.py --out x45a_results
+```
+
+Artifacts include the frozen manifest and protocol, all paired training and
+validation observations, the exact frozen model, per-formula holdout runs,
+matched holdout diagnostic pairs, and the final report. Repeating this exact
+manifest is a replication, not a fresh blind generalization test.

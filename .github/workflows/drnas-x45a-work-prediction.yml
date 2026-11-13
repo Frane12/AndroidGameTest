@@ -1,0 +1,53 @@
+name: DRNAS X4.5a matched-state learned continuation work
+on:
+  push:
+    branches: ['experiment/drnas-x45a-work-prediction-20261113']
+    paths:
+      - src/drnas_x45a.cpp
+      - research/drnas_x45a.py
+      - tests/test_x45a.py
+      - .github/workflows/drnas-x45a-work-prediction.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x45a-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify_train_freeze_holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install numerical dependency
+        run: python -m pip install numpy==2.3.5
+      - name: Compile original and X4.5a native engines
+        run: |
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45a.cpp -o build/drnas-x45a
+      - name: Independent truth-table and policy correctness
+        run: |
+          set -euo pipefail
+          python -u tests/test_x45a.py --cases 400 | tee x45a_correctness.log
+      - name: Train, freeze, evaluate five unseen generator regimes
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x45a.py --per-family 48 --cap 0.4 --repeats 3 --out x45a_results | tee x45a_benchmark.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x45a-work-prediction
+          retention-days: 30
+          path: |
+            x45a_correctness.log
+            x45a_benchmark.log
+            x45a_results/
