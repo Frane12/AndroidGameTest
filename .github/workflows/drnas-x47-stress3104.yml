@@ -1,0 +1,204 @@
+name: DRNAS X47 STRESS 3104 sources 43456 trials
+on:
+  push:
+    branches: [experiment/drnas-x47-stress3104-20261113]
+    paths:
+      - research/drnas_x47_stress.py
+      - research/x47_stress_frozen/**
+      - .github/workflows/drnas-x47-stress3104.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x47-stress3104
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  LC_ALL: C
+
+jobs:
+  prepare:
+    name: Build, freeze, correctness and resource smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unchanged native solver and fixed reference solvers
+        run: |
+          set -euo pipefail
+          mkdir -p build bundle/bin
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          cp build/drnas-x41 bundle/bin/drnas
+          git clone --depth 1 https://github.com/arminbiere/kissat.git reference-kissat
+          (cd reference-kissat && ./configure && make -j2)
+          cp reference-kissat/build/kissat bundle/bin/kissat
+          git clone --depth 1 https://github.com/arminbiere/cadical.git reference-cadical
+          (cd reference-cadical && ./configure && make -j2)
+          cp reference-cadical/build/cadical bundle/bin/cadical
+          cp research/x47_stress_frozen/model.txt bundle/model.txt
+          cp research/x47_stress_frozen/guard.txt bundle/guard.txt
+          printf '234cb83b155bc5fe5ff5ec0337945480f4c09082f37fcfaacda6a1b7995cb4c4  bundle/model.txt\n7647bf185d8c75a184cfff3e1f4f500434619bf6b553b0516b8c5a9150c223a7  bundle/guard.txt\n' | sha256sum -c -
+          {
+            echo "DRNAS_SOURCE=$(git rev-parse HEAD)"
+            echo "KISSAT_SOURCE=$(git -C reference-kissat rev-parse HEAD)"
+            echo "CADICAL_SOURCE=$(git -C reference-cadical rev-parse HEAD)"
+            g++ --version | head -1
+            bundle/bin/kissat --version
+            bundle/bin/cadical --version
+          } > bundle/provenance.txt
+          (cd bundle && sha256sum bin/* model.txt guard.txt provenance.txt > SHA256SUMS)
+      - name: Differential correctness and independent generator/certificate tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_x47_stress.py
+          python3 -u tests/test_x41.py --cases 400 | tee native-regression.log
+          python3 -u research/drnas_x47_stress.py selftest | tee stress-selftest.log
+      - name: All-seven-arm smoke test before large matrix launch
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_stress.py run --smoke --out stress-smoke | tee stress-smoke.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('stress-smoke/summary.json').read_text())
+          assert r['sources']==12 and r['runs']==168 and r['errors']==0
+          assert set(r['arms'])=={'CORE','X46_8','X46_128','X46_LEARNED_8','X47_RISKGATE_8','KISSAT','CADICAL'}
+          assert all(v['runs']==24 for v in r['arms'].values())
+          print('X47_STRESS_PREPARATION_PASS',r['sources'],r['runs'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x47-stress-binary-bundle
+          path: bundle/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47-stress-preflight
+          path: |
+            native-regression.log
+            stress-selftest.log
+            stress-smoke.log
+            stress-smoke/
+          retention-days: 14
+
+  synthetic:
+    name: Stress shard ${{ matrix.shard }} of 32
+    runs-on: ubuntu-24.04
+    needs: prepare
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47-stress-binary-bundle
+          path: bundle
+      - name: Verify identical executables and frozen policies
+        run: |
+          set -euo pipefail
+          (cd bundle && sha256sum -c SHA256SUMS)
+          chmod +x bundle/bin/*
+      - name: Serial paired load on 96 fresh CNFs, 7 arms, 2 repeats
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_stress.py run \
+            --shard ${{ matrix.shard }} --out stress-${{ matrix.shard }} --memory-mb 1536 \
+            | tee stress-${{ matrix.shard }}.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('stress-${{ matrix.shard }}/summary.json').read_text())
+          assert r['sources']==96 and r['runs']==1344 and r['errors']==0
+          assert all(v['runs']==192 for v in r['arms'].values())
+          print('X47_STRESS_SHARD_PASS',r['shard'],r['sources'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47-stress-data-synthetic-${{ matrix.shard }}
+          path: |
+            stress-${{ matrix.shard }}/
+            stress-${{ matrix.shard }}.log
+          retention-days: 14
+          compression-level: 6
+          if-no-files-found: warn
+
+  official:
+    name: 32 original SAT2024 sources, 15s, no uncertified UNSAT credit
+    runs-on: ubuntu-24.04
+    needs: prepare
+    timeout-minutes: 145
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47-stress-binary-bundle
+          path: bundle
+      - name: Verify frozen binaries and bounded archive loader
+        run: |
+          set -euo pipefail
+          (cd bundle && sha256sum -c SHA256SUMS)
+          chmod +x bundle/bin/*
+          python3 -m venv .archive-venv
+          .archive-venv/bin/pip install remotezip
+          .archive-venv/bin/pip freeze > official-loader-versions.txt
+      - name: Retrospective original CNFs, separate from synthetic score
+        run: |
+          set -euo pipefail
+          .archive-venv/bin/python -u research/drnas_x47_stress.py official \
+            --out stress-official --memory-mb 1536 | tee stress-official.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('stress-official')
+          r=json.loads((p/'summary.json').read_text())
+          assert r['sources']==32 and r['runs']==448 and r['errors']==0
+          for line in (p/'trials.jsonl').read_text().splitlines():
+              x=json.loads(line)
+              if x['status']=='UNSAT':assert not x['verified'] and x['PAR2']==30.0
+          print('X47_STRESS_OFFICIAL_PASS',r['sources'],r['runs'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47-stress-data-official
+          path: |
+            stress-official/
+            stress-official.log
+            official-loader-versions.txt
+          retention-days: 14
+          compression-level: 6
+          if-no-files-found: warn
+
+  report:
+    name: Per-source PAR2, resource and worst-regression report
+    runs-on: ubuntu-24.04
+    needs: [synthetic,official]
+    if: always()
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x47-stress-data-*
+          path: all-results
+          merge-multiple: false
+      - name: Keep incomplete or failed cohorts explicitly incomplete
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_stress.py aggregate \
+            --root all-results --out x47-stress-report.json | tee x47-stress-report.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47-stress-3104-final-report
+          path: |
+            x47-stress-report.json
+            x47-stress-report.log
+          retention-days: 21
+          if-no-files-found: warn
