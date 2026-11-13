@@ -221,6 +221,14 @@ def main():
           for k in ARMS}
     # AUC on nontrivial completed counterfactuals is exploratory, not a performance guarantee.
     diagnostics=X.discrimination(frozen,holdout_pairs) if y else {'n':0,'auc':None}
+    # The inherited discrimination helper scores the model but does not know
+    # X4.8's cheap pre-probe gate. Report actual gated decisions separately.
+    comparable=[r for r in holdout_pairs if r['label'] is not None and abs(r['label'])>.1]
+    diagnostics['gate_eligible']=sum(r['base']['pre']['prefix_conflicts']>=frozen['min_conflicts'] for r in comparable)
+    diagnostics['gated_accepted_flips']=sum(
+        r['base']['pre']['prefix_conflicts']>=frozen['min_conflicts'] and choose(frozen,r['features'])
+        for r in comparable)
+    diagnostics['accepted_flips']=diagnostics['gated_accepted_flips']
     report={'status':'COMPLETE','namespace':NAMESPACE,'source_count':len(source_ids),
             'train':len(train),'validation':len(validation),
             'holdout':len(cohorts['holdout']),'repeats':args.repeats,
