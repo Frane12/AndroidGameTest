@@ -1,0 +1,158 @@
+name: DRNAS X5.9 COOP5 COOP5.1 OMEGA4.2 vs Kissat CaDiCaL REAL36 cross
+on:
+  push:
+    branches:
+      - experiment/drnas-x59-coop5-omega42-cross-20261114
+    paths:
+      - .github/workflows/drnas-x59-coop-omega-cross.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-x59-coop5-omega42-real36-cross-once
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43449841902
+          name: x59-frozen
+          github-token: ${{ github.token }}
+          path: frozen/x59_dl
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43524169066
+          name: coop51-hybrid-frozen-safe
+          github-token: ${{ github.token }}
+          path: frozen/coop_dl
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43519470159
+          name: omega42-frozen-development-inputs-and-native
+          github-token: ${{ github.token }}
+          path: frozen/omega_dl
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/input_dl
+      - name: Verify original SHA36 and all immutable solver binaries
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_x59_coop_omega_cross.py
+          mkdir -p cross/x59 cross/coop cross/omega/mre_omega42
+          tar -xzf frozen/x59_dl/x59_frozen.tgz -C cross/x59
+          tar -xzf frozen/coop_dl/coop51_frozen.tgz -C cross/coop
+          cp -a frozen/omega_dl/mre_omega42/bin cross/omega/mre_omega42/
+          cp -a frozen/omega_dl/mre_omega42/native-source-pins.txt cross/omega/mre_omega42/
+          (cd cross/x59 && sha256sum -c build/X59_BINARIES.sha256)
+          (cd cross/coop && sha256sum -c build/COOP51_BINARIES.sha256)
+          (cd cross/omega && grep 'mre_omega42/bin/omega42_' mre_omega42/native-source-pins.txt | sha256sum -c -)
+          tar -xzf frozen/input_dl/real36_inputs.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as B
+          originals, protocol=B.official_manifest()
+          assert len(originals)==36 and len(set(s['sha256'] for s in originals))==36
+          print("CROSS_FROZEN_36_SHA_PASS", protocol['manifest_sha256'])
+          PY
+          chmod +x cross/x59/build/drnas-x59 cross/x59/build/kissat cross/x59/build/cadical cross/x59/build/drat-trim
+          chmod +x cross/coop/build/drnas-coop5-fixed cross/coop/build/drnas-coop51-hybrid
+          chmod +x cross/omega/mre_omega42/bin/omega42_bridge cross/omega/mre_omega42/bin/omega42_rows
+          cross/omega/mre_omega42/bin/omega42_bridge selftest | tee omega42_preflight.log
+          grep -q '^OMEGA42_SELFTEST_PASS' omega42_preflight.log
+          tar -czf cross_frozen.tgz cross real36_frozen build/REAL36_SHA256SUMS
+          echo 'CROSS_FREEZE_PASS original REAL36 36 SHA, pinned 3 solver artifact runs, 7 arms, no main promotion' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-frozen-inputs-20261114
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            cross_frozen.tgz
+            omega42_preflight.log
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-frozen-inputs-20261114
+          path: .
+      - name: Freeze SHA on each shard and use only one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf cross_frozen.tgz
+          (cd cross/x59 && sha256sum -c build/X59_BINARIES.sha256)
+          (cd cross/coop && sha256sum -c build/COOP51_BINARIES.sha256)
+          (cd cross/omega && grep 'mre_omega42/bin/omega42_' mre_omega42/native-source-pins.txt | sha256sum -c -)
+          sha256sum -c build/REAL36_SHA256SUMS
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "CROSS_ONE_LOGICAL_CPU=$CPU"
+      - name: Seven-arm paired original SAT2024 trial shard
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x59_coop_omega_cross.py shard \
+            --shard ${{ matrix.shard }} --cap 8 --reps 2 | tee cross_shard.log
+          grep -q '^CROSS_SHARD_PASS' cross_shard.log
+          echo 'CROSS_SHARD_PASS shard=${{ matrix.shard }}' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            cross_results/shard_${{ matrix.shard }}/
+            cross_shard.log
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-frozen-inputs-20261114
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-shard-*
+          merge-multiple: false
+          path: cross_downloads
+      - name: Reconcile 504 paired trials, proof status, PAR2 and family CIs
+        run: |
+          set -euo pipefail
+          tar -xzf cross_frozen.tgz
+          python3 -u research/drnas_x59_coop_omega_cross.py aggregate | tee cross_final.log
+          grep -q '^CROSS_FINAL' cross_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x59-coop-omega42-cross-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            cross_final/
+            cross_final.log
