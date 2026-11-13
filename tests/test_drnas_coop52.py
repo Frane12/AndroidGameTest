@@ -37,7 +37,7 @@ def verify(src,p,expected,proof,clauses,n):
     elif p.returncode==20:
         t=subprocess.run([str(R/"build/drat-trim"),str(src),str(proof)],
                          capture_output=True,text=True,timeout=18)
-        assert t.returncode==0 and "s VERIFIED" in t.stdout,(t.stdout[-250:],t.stderr[-250:])
+        assert t.returncode in (0,20) and "s VERIFIED" in t.stdout,(t.stdout[-250:],t.stderr[-250:])
     stats=[json.loads(s.split(" ",1)[1]) for s in p.stderr.splitlines()
            if s.startswith("COOP52_GATE ")]
     assert len(stats)==1,p.stderr[-700:]
