@@ -1,0 +1,106 @@
+name: DRNAS X4.1 native proven structural and future-signal audit
+on:
+  push:
+    branches: [experiment/drnas-x41-signals-and-training-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - tests/test_x41.py
+      - tests/test_x41_data.py
+      - research/drnas_x41_dataset.py
+      - research/drnas_x41_evaluate.py
+      - README_X41.md
+      - .github/workflows/drnas-x41-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x41-single-runner
+  cancel-in-progress: true
+jobs:
+  audit_and_collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native C++20 observer with strict warnings (no APK)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          { git rev-parse HEAD; g++ --version | head -1; } > x41_versions.txt
+      - name: Independent exhaustive truth-table and unchanged-branch-policy checks
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x41.py --cases 2800 | tee x41_oracle.log
+          python3 -u tests/test_x41_data.py | tee x41_generator_audit.log
+      - name: Collect 384 synthetic controls across eight source-disjoint families
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X41_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x41_dataset.py --synthetic --per-family 48 --synthetic-cap 0.35 | tee x41_synthetic.log
+      - name: Fixed, non-driving offline cost-model test on untouched families
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x41_evaluate.py | tee x41_offline.log
+      - name: Prepare public SAT2024 range-reader (not linked to X4.1)
+        run: |
+          set -euo pipefail
+          python3 -m venv .x41venv
+          .x41venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Collect 80 retrospective original SAT2024 CNFs, source-only selection
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .x41venv/bin/python -u research/drnas_x41_dataset.py --official --official-count 80 --official-cap 1.5 | tee x41_official.log
+      - name: Real-CNF offline forecast diagnostic (skip if too few SAT witnesses)
+        if: success()
+        run: |
+          python3 -u research/drnas_x41_evaluate.py --transitions drnas_x41_results/retrospective_SAT2024_original/transitions.jsonl --out drnas_x41_results/retrospective_SAT2024_original/offline_eval.json | tee x41_official_eval.log
+      - name: Summary, proof limits and precise split sizes
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          lines=['## DRNAS X4.1 — no fake distance to solution','',
+             'Independent native C++20, no active learned branch policy. Training data and benchmark remain separate.','']
+          for label in ('synthetic_controls','retrospective_SAT2024_original'):
+              p=pathlib.Path('drnas_x41_results')/label/'report.json'
+              if not p.exists(): continue
+              r=json.loads(p.read_text())
+              lines.extend([f'### {label}',f"- {r['source_count']} source SHA-distinct CNFs, {r['transition_records']} sampled transition rows, {r['verified_future_labels']} externally verified SAT future labels"])
+              for split,d in sorted(r['split'].items()):
+                  lines.append(f"- {split}: solved {d.get('solved',0)}/{d['trials']}, SAT verified={d.get('sat_verified',0)}, construct UNSAT={d.get('unsat_construction_checked',0)}, UNKNOWN={d.get('unknown',0)}, PAR2≈{d['PAR2_milliseconds']/1000:.3f} s")
+              e=p.parent/'offline_eval.json'
+              if e.exists():
+                  ee=json.loads(e.read_text())
+                  lines.append(f"- Shadow predictor: {ee.get('status','unknown')}; validation={ee.get('validation',{})}; holdout={ee.get('holdout',{})}")
+          lines.extend(['','**Limits:** Not globally blind; unknown/uncertified UNSAT are censored, not solved. No DRAT/LRAT certificates; no policy improvement claim.'])
+          text='\n'.join(lines)+'\n';print(text)
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(text)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x41-observation-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x41_versions.txt
+            x41_oracle.log
+            x41_generator_audit.log
+            x41_synthetic.log
+            x41_offline.log
+            x41_official.log
+            x41_official_eval.log
+            drnas_x41_results/synthetic_controls/frozen_manifest.json
+            drnas_x41_results/synthetic_controls/report.json
+            drnas_x41_results/synthetic_controls/offline_eval.json
+            drnas_x41_results/synthetic_controls/trials.jsonl
+            drnas_x41_results/synthetic_controls/transitions.jsonl
+            drnas_x41_results/retrospective_SAT2024_original/frozen_manifest.json
+            drnas_x41_results/retrospective_SAT2024_original/report.json
+            drnas_x41_results/retrospective_SAT2024_original/offline_eval.json
+            drnas_x41_results/retrospective_SAT2024_original/trials.jsonl
+            drnas_x41_results/retrospective_SAT2024_original/transitions.jsonl
