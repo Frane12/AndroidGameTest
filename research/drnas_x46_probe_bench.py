@@ -27,21 +27,25 @@ import drnas_x45_matched_branches as X45
 
 ARMS=("CORE","FLIP","SHADOW_8","X46_8","X46_32","X46_128")
 LEARNED_ARM="X46_LEARNED_8"
+X47_ARM="X47_RISKGATE_8"
 CHECKPOINTS=(1,2,4,8)
 
 def emit(tag,obj):
     print(tag+" "+json.dumps(obj,sort_keys=True,separators=(",",":")),flush=True)
 
-def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None):
+def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None,guard_file=None):
     cmd=[str(binary),str(cnf),"--mode","core","--time",str(cap),"--branch-at",str(k),"--stats"]
     if arm=="FLIP":cmd.append("--flip-branch")
     elif arm.startswith("X46_") or arm=="SHADOW_8":
-        n=8 if arm in ("SHADOW_8",LEARNED_ARM) else int(arm.split("_")[1])
+        n=8 if arm in ("SHADOW_8",LEARNED_ARM,X47_ARM) else int(arm.split("_")[1])
         cmd+=["--x46-conflicts",str(n),"--x46-probe-ms",str(probe_ms)]
         if arm=="SHADOW_8":cmd.append("--x46-shadow")
-        if arm==LEARNED_ARM:
+        if arm in (LEARNED_ARM,X47_ARM):
             if model_file is None:raise ValueError("learned arm requires model")
             cmd+=["--x46-model",str(model_file)]
+            if arm==X47_ARM:
+                if guard_file is None:raise ValueError("X47 arm requires guard")
+                cmd+=["--x47-guard",str(guard_file)]
     started=time.monotonic()
     try:
         p=subprocess.run(cmd,capture_output=True,text=True,timeout=cap+1)
@@ -74,8 +78,10 @@ def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None):
         raise AssertionError("shadow modified a real decision")
     if probe is not None:
         if probe["triggered"]:
-            if arm==LEARNED_ARM and not probe.get("learned_model",False):
+            if arm in (LEARNED_ARM,X47_ARM) and not probe.get("learned_model",False):
                 raise AssertionError("frozen X46 model failed to load into active controller")
+            if arm==X47_ARM and not probe.get("x47_enabled",False):
+                raise AssertionError("frozen X47 guard did not load")
             if probe["pre_state_digest"]!=pre["pre_state_digest"]:
                 raise AssertionError("cloned pre-state digest differs from controller")
             if (arm=="SHADOW_8" and not probe["shadow"]) or (arm!="SHADOW_8" and probe["shadow"]):
@@ -142,6 +148,7 @@ def main():
     p.add_argument("--probe-ms",type=float,default=1.5)
     p.add_argument("--index-offset",type=int,default=400000)
     p.add_argument("--model-file",type=Path,default=None)
+    p.add_argument("--guard-file",type=Path,default=None)
     args=p.parse_args()
     if args.per_family<3 or args.repeats<2 or args.cap<.25 or args.index_offset<400000:
         raise ValueError("X46 input too small, reused source or invalid cap")
@@ -152,7 +159,12 @@ def main():
     model_file=args.model_file.resolve() if args.model_file else None
     if model_file is not None and not model_file.exists():raise ValueError("frozen model absent")
     model_sha=hashlib.sha256(model_file.read_bytes()).hexdigest() if model_file else None
+    guard_file=args.guard_file.resolve() if args.guard_file else None
+    if guard_file is not None and (model_file is None or not guard_file.exists()):
+        raise ValueError("X47 guard requires existing frozen learned model")
+    guard_sha=hashlib.sha256(guard_file.read_bytes()).hexdigest() if guard_file else None
     used_arms=ARMS+(LEARNED_ARM,) if model_file else ARMS
+    if guard_file:used_arms+=(X47_ARM,)
     cases=[X45.make_case(fam,args.index_offset+i) for fam in X45.FAMILIES
            for i in range(args.per_family)]
     if len({x["sha256"] for x in cases})!=len(cases):
@@ -167,6 +179,7 @@ def main():
        "source_generation_index_offset":args.index_offset,
        "repeats":args.repeats,"checkpoints":CHECKPOINTS,"arms":used_arms,
        "frozen_learned_model_sha256":model_sha,
+       "frozen_x47_risk_guard_sha256":guard_sha,
        "per_probe_ms_limit":args.probe_ms,"cap_s":args.cap,
        "no_oracle_knowledge_in_runtime_controller":True,
        "SAT_independent_original_CNF_witness":True,
@@ -189,7 +202,7 @@ def main():
                     arms=arms[offset:]+arms[:offset]
                     one={}
                     for arm in arms:
-                        one[arm]=run(binary,cnf,case,k,arm,args.cap,args.probe_ms,model_file)
+                        one[arm]=run(binary,cnf,case,k,arm,args.cap,args.probe_ms,model_file,guard_file)
                     reached={one[a]["reached"] for a in used_arms}
                     if len(reached)!=1:raise AssertionError("different checkpoint reachability")
                     if not one["CORE"]["reached"]:
@@ -226,7 +239,7 @@ def main():
                         if p and p["skipped"]:probe_skipped+=1
                         rec=(p["recommend_flip"] if p else False)
                         actual_flip=(r["pre"]["actual_literal"]==-pre["baseline_literal"])
-                        if arm.startswith("X46_") and label!="equal_conflicts":
+                        if (arm.startswith("X46_") or arm==X47_ARM) and label!="equal_conflicts":
                             recommended_correct[arm+"|correct"]+=int(rec==(label=="flip_cheaper"))
                             recommended_correct[arm+"|seen"]+=1
                         row={"sha256":case["sha256"],"family":case["family"],
@@ -239,6 +252,10 @@ def main():
                              "probe_wall_ms":round(probe_ms,7),
                              "probe_triggered":bool(p and p["triggered"]),
                              "probe_skipped":bool(p and p["skipped"]),
+                             "x47_enabled":bool(p and p.get("x47_enabled",False)),
+                             "x47_preprobe_skipped":bool(p and p.get("x47_preprobe_skipped",False)),
+                             "x47_rejected_after_probe":bool(p and p.get("x47_rejected_after_probe",False)),
+                             "x47_expected_net_conflicts":p.get("x47_expected_net_conflicts") if p else None,
                              "recommended_flip":bool(rec),"actual_flip":actual_flip,
                              "learned_model":bool(p and p.get("learned_model",False)),
                              "flip_probability":p.get("predicted_flip_probability") if p else None,
@@ -257,6 +274,8 @@ def main():
         for row in rows:out.write(json.dumps(row,sort_keys=True)+"\n")
     if model_file and hashlib.sha256(model_file.read_bytes()).hexdigest()!=model_sha:
         raise AssertionError("holdout rewrote frozen X46 model")
+    if guard_file and hashlib.sha256(guard_file.read_bytes()).hexdigest()!=guard_sha:
+        raise AssertionError("holdout rewrote frozen X47 risk guard")
     totals={arm:aggregate(rows,arm) for arm in used_arms}
     tests={arm:bootstrap(rows,arm) for arm in used_arms[1:]}
     family={fam:{arm:aggregate([x for x in rows if x["family"]==fam],arm) for arm in used_arms}
@@ -271,6 +290,7 @@ def main():
         "all_continuations_verified":True,
         "training":False,"probe_policy_fixed_pre_holdout":True,
         "frozen_learned_cost_model":model_sha,
+        "frozen_x47_risk_guard":guard_sha,
         "default_branch_unchanged":True,
         "full_counterfactual_labels":dict(winning_counts),
         "probe_vs_full_continuation":{arm:{
@@ -279,7 +299,9 @@ def main():
             "accuracy":round(recommended_correct[arm+"|correct"]/
                       recommended_correct[arm+"|seen"],5)
                       if recommended_correct[arm+"|seen"] else None}
-            for arm in (("X46_8","X46_32","X46_128",LEARNED_ARM) if model_file else ("X46_8","X46_32","X46_128"))},
+            for arm in (("X46_8","X46_32","X46_128",LEARNED_ARM,X47_ARM) if guard_file
+                else ("X46_8","X46_32","X46_128",LEARNED_ARM) if model_file
+                else ("X46_8","X46_32","X46_128"))},
         "by_arm":totals,"comparisons_vs_CORE":tests,
         "by_family":family,"all_probe_triggered_arm_runs":probes_triggered,
         "probe_skips":probe_skipped,
