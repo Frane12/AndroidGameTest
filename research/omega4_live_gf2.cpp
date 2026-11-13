@@ -32,12 +32,22 @@ public:
     int max_accepted_reason_width=0;
     long max_scans=12000;
     int max_reason_width=16;
+    // Bounded, frozen opportunity-cost policy: no learned parameters.
+    // A genuinely used reason is one whose CNF explanation CaDiCaL
+    // explicitly requested to completion, NOT merely a proposed literal.
+    bool cost_gate=false;
+    long gated_skips=0, gate_active_scans=0, gate_low_yield_events=0;
+    long sum_reason_width=0, delivered_reason_count=0;
+    long sum_proof_depth=0, checked_proof_rows=0;
+    uint64_t scan_wall_ns=0;
     map<int,vector<int>> explanations;
     map<int,size_t> explanation_positions;
     // outgoing/send_index are inherited and only used for verified conflicts.
 
-    explicit Omega4Bridge(vector<XorRow> originals, int n, Mode m):
+    explicit Omega4Bridge(vector<XorRow> originals, int n, Mode m, bool gated=false):
         DrnasBridge(vector<XorRow>{},n,false,false),mode(m),source(std::move(originals)){
+        cost_gate=gated;
+        if(cost_gate) max_scans=6000;
         if(source.size()>32)throw runtime_error("OMEGA4_SOURCE_ROW_CAP");
         for(const auto& r:source) {
             if(r.vars.size()<2 || r.vars.size()>8 || r.rhs<0 || r.rhs>1)
@@ -88,6 +98,8 @@ public:
             full.rhs^=source[i].rhs;
         }
         reason_replays++;
+        ++checked_proof_rows;
+        sum_proof_depth+=__builtin_popcountll(ancestry);
         return full;
     }
 
@@ -128,8 +140,27 @@ public:
     void scan_live() {
         if(disabled || budget_off || generation==scanned_generation)return;
         scanned_generation=generation;
-        if(++scans>max_scans){budget_off=true;abstentions++;return;}
         if(source.empty())return;
+        // Cold-start: first 128 distinct trail states always checked.
+        // Thereafter, only if accepted reasons per scan are scarce,
+        // sample 1 in 8 trail states. Skipping is proof-safe abstention.
+        // This rule is computed ONLY from in-solver causal observations.
+        if(cost_gate && scans>=128) {
+            const long used=completed_reasons+conflict_clauses;
+            if(used*64 < scans) {
+                ++gate_low_yield_events;
+                if((generation&7ULL)!=0ULL){++gated_skips;return;}
+            }
+        }
+        if(++scans>max_scans){budget_off=true;abstentions++;return;}
+        if(cost_gate)++gate_active_scans;
+        auto scan_start=chrono::steady_clock::now();
+        struct ScanTimer{
+            Omega4Bridge &b;
+            chrono::steady_clock::time_point start;
+            ~ScanTimer(){b.scan_wall_ns+=uint64_t(chrono::duration_cast<chrono::nanoseconds>(
+                           chrono::steady_clock::now()-start).count());}
+        } scan_timer{*this,scan_start};
         // Reduce after substituting real current CDCL trail assignments.
         map<int,Omega4Row> pivots;
         vector<Omega4Row> contradiction;
@@ -187,6 +218,8 @@ public:
         }
         if(best_clause.empty())return;
         if(mode==SHADOW)return; // exact same audit, but NEVER affect CDCL.
+        sum_reason_width+=long(best_clause.size());
+        delivered_reason_count++;
         if(best_implied==0){
             // Every literal is the negation of a currently assigned literal.
             // A CNF conflict clause follows from the source-certified parity.
@@ -290,13 +323,24 @@ static void omega4_selftest(){
         bool cl=truth(1)||!truth(5)||truth(6);
         if(formulas && !cl)throw runtime_error("OMEGA4_SELFTEST_UNSOUND_REASON");
     }
+    Omega4Bridge g(src,6,Omega4Bridge::LIVE,true);
+    g.notify_new_decision_level();g.notify_assignment({5,-6});
+    if(g.cb_propagate()!=1)throw runtime_error("OMEGA41_GATED_REASON_MISSING");
+    g.notify_backtrack(0);
+    for(int k=0;k<200;k++){
+        g.notify_new_decision_level();
+        g.notify_assignment({2});
+        g.cb_propagate();
+        g.notify_backtrack(0);
+    }
+    if(g.gated_skips==0)throw runtime_error("OMEGA41_GATING_NOT_TRIGGERED");
     Omega4Bridge sh(src,6,Omega4Bridge::SHADOW);
     sh.notify_new_decision_level();sh.notify_assignment({5,-6});
     if(sh.cb_propagate()!=0 || sh.unit_candidates==0 || sh.proposals!=0)
         throw runtime_error("OMEGA4_SHADOW_NOT_MATCHED");
     // No unverified row should ever be accepted or injected.
     cout<<"OMEGA4_SELFTEST_PASS 3way_source_rows=3 unit=1 conflict=1 "
-        <<"reason_width=3 rollback=1 shadow=1 independent_64_assignments=1\n";
+        <<"reason_width=3 rollback=1 shadow=1 gated=1 independent_64_assignments=1\n";
 }
 
 static int omega4_run(const string& mode,const string& src,const string& tsv,double cap_s){
@@ -304,7 +348,7 @@ static int omega4_run(const string& mode,const string& src,const string& tsv,dou
     vector<XorRow> rows=mode=="clean" ? vector<XorRow>{}:load_rows(tsv,n);
     if(rows.size()>32)throw runtime_error("OMEGA4_TOO_MANY_SOURCE_ROWS");
     Omega4Bridge bridge(std::move(rows),n,mode=="shadow"?
-                 Omega4Bridge::SHADOW:Omega4Bridge::LIVE);
+                 Omega4Bridge::SHADOW:Omega4Bridge::LIVE, mode=="gated");
     if(mode!="clean"&&!bridge.source.empty()){
         solver.connect_external_propagator(&bridge);
         set<int> observed;
@@ -339,7 +383,7 @@ static int omega4_run(const string& mode,const string& src,const string& tsv,dou
     if(bridge.disabled || bridge.proof_failures)
         throw runtime_error("OMEGA4_PROOF_SAFETY_FAILURE");
     cout<<fixed<<setprecision(6)
-        <<"OMEGA4_RESULT mode="<<mode
+        <<"OMEGA41_RESULT mode="<<mode
         <<" status="<<(result==10?"SAT":result==20?"UNSAT":"UNKNOWN")
         <<" solve_s="<<elapsed
         <<" source_rows="<<bridge.source.size()
@@ -357,7 +401,15 @@ static int omega4_run(const string& mode,const string& src,const string& tsv,dou
         <<" skipped_wide="<<bridge.skipped_wide
         <<" budget_off="<<bridge.budget_off
         <<" verified_sat="<<(result==10?1:0)
-        <<" unsafe_claims="<<bridge.proof_failures<<"\n";
+        <<" unsafe_claims="<<bridge.proof_failures
+        <<" gate_low_yield_events="<<bridge.gate_low_yield_events
+        <<" gated_skips="<<bridge.gated_skips
+        <<" gated_scans="<<bridge.gate_active_scans
+        <<" scan_wall_ns="<<bridge.scan_wall_ns
+        <<" checked_proof_rows="<<bridge.checked_proof_rows
+        <<" sum_proof_depth="<<bridge.sum_proof_depth
+        <<" sum_reason_width="<<bridge.sum_reason_width
+        <<" delivered_reason_count="<<bridge.delivered_reason_count<<"\n";
     cout<<"OMEGA4_STATS_BEGIN mode="<<mode<<"\n"<<flush;
     solver.statistics();
     cout<<"OMEGA4_STATS_END mode="<<mode<<"\n"<<flush;
@@ -369,9 +421,9 @@ int main(int argc,char** argv) {
             omega4_selftest();return 0;
         }
         if(argc!=5)
-            throw runtime_error("usage: omega4 clean|shadow|live ORIGINAL.cnf CERTIFIED.tsv CAP");
+            throw runtime_error("usage: omega4 clean|shadow|live|gated ORIGINAL.cnf CERTIFIED.tsv CAP");
         string mode=argv[1];
-        if(mode!="clean"&&mode!="shadow"&&mode!="live")
+        if(mode!="clean"&&mode!="shadow"&&mode!="live"&&mode!="gated")
             throw runtime_error("OMEGA4_UNKNOWN_MODE");
         double cap=stod(argv[4]);
         if(cap<0.05 || cap>120.0)
