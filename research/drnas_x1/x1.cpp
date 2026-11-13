@@ -91,6 +91,7 @@ struct Stats {
   double factor_s=0; std::string factor_stop="off",route="cdcl";
 };
 #include "x1_memory.hpp"
+#include "x1_memory2.hpp"
 class Core {
   struct Clause {std::vector<int> l; bool learned=false,dead=false; int lbd=0;};
   struct Watch {int id,block;};
@@ -101,6 +102,7 @@ class Core {
   std::vector<uint8_t> seen; double increment=1.0; size_t qhead=0; bool okay=true;
   uint64_t seed;
   X1Memory* memory=nullptr;
+  X1Memory2* memory2=nullptr;
   uint64_t tie(int v) const {
     uint64_t z=static_cast<uint64_t>(v)+seed+0x9e3779b97f4a7c15ULL;
     z=(z^(z>>30))*0xbf58476d1ce4e5b9ULL; z=(z^(z>>27))*0x94d049bb133111ebULL; return z^(z>>31);
@@ -190,9 +192,9 @@ class Core {
     // Deletion records are unnecessary: retaining implied clauses is sound for DRUP checking.
   }
 public:
-  Core(const Formula& formula,Budget& b,Proof& p,Stats& s,uint64_t se,X1Memory* mem=nullptr):f(formula),budget(b),proof(p),stats(s),
+  Core(const Formula& formula,Budget& b,Proof& p,Stats& s,uint64_t se,X1Memory* mem=nullptr,X1Memory2* mem2=nullptr):f(formula),budget(b),proof(p),stats(s),
       watch(static_cast<size_t>(2)*f.n),val(f.n,-1),phase(f.n,0),level(f.n,0),reason(f.n,-1),
-      activity(f.n,0),pos(f.n,-1),seen(f.n,0),seed(se),memory(mem){
+      activity(f.n,0),pos(f.n,-1),seen(f.n,0),seed(se),memory(mem),memory2(mem2){
     std::vector<uint8_t> used(f.n,0);
     for(const auto& c:f.clauses){int id=add(c,false);if(c.empty())okay=false;
       if(c.size()==1&&!enqueue(c[0],id))okay=false;
@@ -219,7 +221,8 @@ public:
       }else{
         int v=-1;while(!heap.empty()){int t=pop();if(val[t]<0){v=t;break;}}
         if(v<0){model=val;for(auto& x:model)if(x<0)x=0;return 10;}
-        const int action=memory?memory->select(stats,trail.size(),dl(),budget.elapsed()):0;
+        const int action=memory2?memory2->select(stats,trail.size(),dl(),budget.elapsed(),v):
+          (memory?memory->select(stats,trail.size(),dl(),budget.elapsed()):0);
         const int chosen=phase[v]^(action==1);
         limits.push_back(static_cast<int>(trail.size()));++stats.decisions;
         if(!enqueue(2*v+(chosen?0:1),-1))throw std::runtime_error("decision invariant");
@@ -312,7 +315,7 @@ public:
   }
 };
 int main(int argc,char** argv){
-  Budget budget;std::string path,mode="auto",proof_path,mem_load,mem_save,mem_log;uint64_t seed=17;int width=12,mem_interval=64;bool mem_on=false,mem_frozen=false;
+  Budget budget;std::string path,mode="auto",proof_path,mem_load,mem_save,mem_log,mem2_load,mem2_save,mem2_log;uint64_t seed=17;int width=12,mem_interval=64,mem2_interval=8;bool mem_on=false,mem_frozen=false,mem2_on=false,mem2_frozen=false,mem2_shadow=false;
   try{
     for(int i=1;i<argc;++i){std::string arg=argv[i];auto next=[&](){if(++i>=argc)throw std::runtime_error("missing option value");return std::string(argv[i]);};
       if(arg=="--seconds")budget.seconds=std::stod(next());else if(arg=="--mode")mode=next();
@@ -323,11 +326,19 @@ int main(int argc,char** argv){
       else if(arg=="--memory-log"){mem_log=next();mem_on=true;}
       else if(arg=="--memory-frozen"){mem_frozen=true;mem_on=true;}
       else if(arg=="--memory-interval"){mem_interval=std::stoi(next());mem_on=true;}
-      else if(arg=="--help"){std::cout<<"drnas-x1 [--mode core|factor|auto] [--seconds N] [--width 4..16] [--proof FILE] [--seed N] [--memory] [--memory-load FILE] [--memory-save FILE] [--memory-log FILE] [--memory-frozen] [--memory-interval 8..4096] input.cnf\n";return 0;}
+      else if(arg=="--memory2"){mem2_on=true;}
+      else if(arg=="--memory2-load"){mem2_load=next();mem2_on=true;}
+      else if(arg=="--memory2-save"){mem2_save=next();mem2_on=true;}
+      else if(arg=="--memory2-log"){mem2_log=next();mem2_on=true;}
+      else if(arg=="--memory2-frozen"){mem2_frozen=true;mem2_on=true;}
+      else if(arg=="--memory2-shadow"){mem2_shadow=true;mem2_on=true;}
+      else if(arg=="--memory2-interval"){mem2_interval=std::stoi(next());mem2_on=true;}
+      else if(arg=="--help"){std::cout<<"drnas-x1 [--mode core|factor|auto] [--seconds N] [--width 4..16] [--proof FILE] [--seed N] [--memory] [--memory-load FILE] [--memory-save FILE] [--memory-log FILE] [--memory-frozen] [--memory-interval 8..4096] [--memory2] [--memory2-load FILE] [--memory2-save FILE] [--memory2-log FILE] [--memory2-frozen] [--memory2-shadow] [--memory2-interval 4..1024] input.cnf\n";return 0;}
       else if(!arg.empty()&&arg[0]=='-')throw std::runtime_error("unknown option");else if(path.empty())path=arg;else throw std::runtime_error("multiple input files");}
     if(path.empty()||(mode!="core"&&mode!="factor"&&mode!="auto")||!std::isfinite(budget.seconds)||budget.seconds<=0||width<4||width>16)
       throw std::runtime_error("invalid arguments");
-    auto f=read_cnf(path,budget);Proof proof(proof_path);Stats stats;std::vector<int8_t> model;int result=0;X1Memory memory(f,seed,mem_on,mem_frozen,mem_interval,mem_load,mem_save,mem_log);size_t last_trail=0;int last_depth=0;
+    if(mem_on&&mem2_on)throw std::runtime_error("MEMORY1 and MEMORY2 cannot both control a single run");
+    auto f=read_cnf(path,budget);Proof proof(proof_path);Stats stats;std::vector<int8_t> model;int result=0;X1Memory memory(f,seed,mem_on,mem_frozen,mem_interval,mem_load,mem_save,mem_log);X1Memory2 memory2(f,mem2_on,mem2_frozen,mem2_shadow,mem2_interval,mem2_load,mem2_save,mem2_log);size_t last_trail=0;int last_depth=0;
     if(mode!="core"&&!budget.expired()){
       double t=budget.elapsed();double slice=mode=="factor"?budget.seconds:std::min(0.05,budget.seconds*0.03);
       if(f.n<=2048 && f.clauses.size()<=20000){
@@ -336,17 +347,22 @@ int main(int argc,char** argv){
       }else stats.factor_stop="size_gate";stats.factor_s=budget.elapsed()-t;if(result)stats.route="factor";
     }
     if(result==0&&mode!="factor"&&!budget.expired()){
-      proof.reset(false);Core core(f,budget,proof,stats,seed,mem_on?&memory:nullptr);result=core.solve(model);last_trail=core.assigned();last_depth=core.depth();stats.route="cdcl";
+      proof.reset(false);Core core(f,budget,proof,stats,seed,mem_on?&memory:nullptr,mem2_on?&memory2:nullptr);result=core.solve(model);last_trail=core.assigned();last_depth=core.depth();stats.route="cdcl";
     }
     if(result==10&&!model_ok(f,model))throw std::runtime_error("invalid internal SAT witness");
     if(proof.stream.is_open()){proof.stream.flush();if(!proof.stream)throw std::runtime_error("proof flush failed");}
     if(budget.expired()||proof.full)result=0;
     memory.finish(stats,last_trail,last_depth,budget.elapsed(),result);
+    memory2.finish(stats,last_trail,last_depth,budget.elapsed(),result);
     std::cout<<"c X1_STATS {\"mode\":\""<<mode<<"\",\"route\":\""<<stats.route<<"\",\"decisions\":"<<stats.decisions
       <<",\"conflicts\":"<<stats.conflicts<<",\"propagations\":"<<stats.propagations<<",\"restarts\":"<<stats.restarts
       <<",\"learned\":"<<stats.learned<<",\"deleted\":"<<stats.deleted<<",\"factor_steps\":"<<stats.factor_steps
       <<",\"factor_checks\":"<<stats.factor_checks<<",\"factor_max_width\":"<<stats.factor_max_width<<",\"factor_s\":"<<stats.factor_s
-      <<",\"factor_stop\":\""<<stats.factor_stop<<"\",\"elapsed_s\":"<<budget.elapsed()<<",\"proof_bytes\":"<<proof.bytes<<",\"external_solver_calls\":0,\"memory_on\":"<<(memory.enabled?"true":"false")<<",\"memory_frozen\":"<<(memory.frozen?"true":"false")<<",\"memory_events\":"<<memory.events<<",\"memory_flip_blocks\":"<<memory.flips<<",\"low_lbd\":"<<stats.low_lbd<<"}\n";
+      <<",\"factor_stop\":\""<<stats.factor_stop<<"\",\"elapsed_s\":"<<budget.elapsed()<<",\"proof_bytes\":"<<proof.bytes<<",\"external_solver_calls\":0,\"memory_on\":"<<(memory.enabled?"true":"false")<<",\"memory_frozen\":"<<(memory.frozen?"true":"false")<<",\"memory_events\":"<<memory.events<<",\"memory_flip_blocks\":"<<memory.flips<<",\"low_lbd\":"<<stats.low_lbd
+      <<",\"memory2_on\":"<<(memory2.enabled?"true":"false")<<",\"memory2_frozen\":"<<(memory2.frozen?"true":"false")
+      <<",\"memory2_shadow\":"<<(memory2.shadow?"true":"false")<<",\"memory2_episodes\":"<<memory2.episodes
+      <<",\"memory2_horizon_observations\":"<<memory2.horizon_observations<<",\"memory2_flip_blocks\":"<<memory2.flip_blocks
+      <<",\"memory2_exploration_blocks\":"<<memory2.exploration_blocks<<"}\n";
     if(result==10){std::cout<<"s SATISFIABLE\nv";for(int v=0;v<f.n;++v){if(v&&v%32==0)std::cout<<"\nv";std::cout<<' '<<(model[v]?v+1:-v-1);}std::cout<<" 0\n";}
     else if(result==20)std::cout<<"s UNSATISFIABLE\n";else std::cout<<"s UNKNOWN\n";
     return result;
