@@ -13,3 +13,8 @@ add_executable(drnas-x3 src/drnas_x3.cpp)
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-x3 PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+add_executable(drnas-x4 src/drnas_x4.cpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(drnas-x4 PRIVATE -O3 -Wall -Wextra -Wpedantic)
+endif()
