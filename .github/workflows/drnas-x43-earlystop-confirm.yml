@@ -1,0 +1,70 @@
+name: DRNAS X4.3 early stopping confirmation three new SAT families
+on:
+  push:
+    branches: [experiment/drnas-x43-earlystop-newfamilies-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x42_convergence_cycles.py
+      - research/drnas_x43_*.py
+      - .github/workflows/drnas-x43-earlystop-confirm.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x43-earlystop-confirm-20261113
+  cancel-in-progress: false
+jobs:
+  fixed_validation_earlystop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unmodified X4.3 native observer and audit correctness
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          python3 -m py_compile research/drnas_x43_earlystop_confirm.py
+          python3 -u tests/test_x41.py --cases 300 | tee x43_early_regression.log
+      - name: Freeze validation-calibrated models, then test 108 truly fresh formulas
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x43_earlystop_confirm.py \
+            --binary build/drnas-x41 --out x43_early_confirm \
+            --per-test-family 36 --cap 1.5 | tee x43_early_confirm.log
+      - name: Audit independent SAT labels, source count and frozen models
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path("x43_early_confirm")
+          j=json.loads((p/"report.json").read_text())
+          assert j["new_holdout_sources"]==108,j
+          assert len(j["new_holdout_families"])==3
+          assert j["holdout_model_sha_unchanged"]
+          assert j["previous_X43_holdout_not_reused_for_model_selection"]
+          assert j["replay_cycles"]==3
+          assert j["early_stop_vs_overtrained"]["unique_source_units"]==108
+          for arm in j["arms"]:
+              assert j["arms"][arm]["new_holdout"]["source_count"]==108
+          print("X43_EARLY_AUDIT_PASS",json.dumps({
+              "early20":j["arms"]["CYCLE3_EARLY20"]["new_holdout"]["model_logloss_formula_mean"],
+              "overtrained90":j["arms"]["CYCLE3_90"]["new_holdout"]["model_logloss_formula_mean"],
+              "paired95":j["early_stop_vs_overtrained"]["formula_cluster_95pct"],
+              "balanced_sign95":j["sign_direction"].get("early20_minus_90_balanced_sign_accuracy_formula95pct")
+          },sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x43-earlystop-independent-confirmation
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x43_early_regression.log
+            x43_early_confirm.log
+            x43_early_confirm/report.json
+            x43_early_confirm/frozen_models.json
+            x43_early_confirm/holdout_decisions.jsonl
