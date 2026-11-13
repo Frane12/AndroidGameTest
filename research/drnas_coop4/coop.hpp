@@ -46,6 +46,7 @@ struct Output {std::vector<std::vector<int>> clauses;int hint=-1;};
 class Engine {
  public:
     std::string mode="off";
+    std::string retention_policy="keep";
     std::vector<std::vector<int>> originals;
     std::vector<Block> blocks;
     std::set<std::vector<int>> known;
@@ -259,7 +260,7 @@ class Engine {
         ms+=std::chrono::duration<double,std::milli>(Tick::now()-start).count();return out;
     }
     void report()const{
-        std::cerr<<"COOP4_STATS {\"mode\":\""<<mode<<"\",\"delayed\":"<<(delayed?"true":"false")
+        std::cerr<<"COOP4_STATS {\"mode\":\""<<mode<<"\",\"retention_policy\":\""<<retention_policy<<"\",\"delayed\":"<<(delayed?"true":"false")
           <<",\"prepared\":"<<(prepared?"true":"false")
           <<",\"prepare_events\":"<<prep_events
           <<",\"delayed_skips\":"<<delayed_skips
