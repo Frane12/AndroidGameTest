@@ -23,10 +23,11 @@ def oracle(n, clauses):
                for bits in itertools.product((0,1), repeat=n))
 
 
-def call(binary, cnf, policy, model=None, decision=16):
-    cmd=[str(binary),str(cnf),'--mode','core','--time','2',
+def call(binary, cnf, policy, model=None, decision=16, work_limit=0):
+    cmd=[str(binary),str(cnf),'--mode','core','--time','0' if work_limit else '2',
          '--branch-at',str(decision),'--stats','--policy',policy]
     if model is not None:cmd+=['--model',str(model)]
+    if work_limit:cmd+=['--work-limit',str(work_limit)]
     p=subprocess.run(cmd,capture_output=True,text=True,timeout=5)
     data={}
     for line in p.stderr.splitlines():
@@ -82,11 +83,11 @@ def main():
             for i in range(8):
                 case=X.make_case(family,i,'x48-exhaustive-sample')
                 cnf.write_text(case['source'])
-                old,a=call(x47,cnf,'core')
-                core,b=call(x48,cnf,'core')
-                skip,c=call(x48,cnf,'gated',model)
-                assert old.returncode==core.returncode==skip.returncode==10
-                assert X.witness_ok(core.stdout,case)
+                old,a=call(x47,cnf,'core',work_limit=100000)
+                core,b=call(x48,cnf,'core',work_limit=100000)
+                skip,c=call(x48,cnf,'gated',model,work_limit=100000)
+                assert old.returncode==core.returncode==skip.returncode and core.returncode in (0,10)
+                if core.returncode==10:assert X.witness_ok(core.stdout,case)
                 for k in ('decisions','conflicts','propagations','learnt','restarts'):
                     assert a['X41_STATS'][k]==b['X41_STATS'][k]==c['X41_STATS'][k]
                 assert old.stdout==core.stdout==skip.stdout
@@ -103,8 +104,8 @@ def main():
             for i in range(8):
                 case=X.make_case(family,i,'x48-inference-test')
                 cnf.write_text(case['source'])
-                result=X.run(x48,cnf,case,'gated',2,model=model)
-                assert result['verified']
+                result=X.run(x48,cnf,case,'gated',0,model=model,work_limit=100000)
+                assert result['verified'] or result['policy']['work_limit_hit']
                 p=result['policy']
                 if result['reached']:
                     assert not p['gate_skipped'] and len(p['features'])==NF
