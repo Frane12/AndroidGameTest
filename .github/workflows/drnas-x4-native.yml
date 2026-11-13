@@ -1,0 +1,101 @@
+name: DRNAS X4.0 NATIVE state-transition observer vs X3 and references
+on:
+  push:
+    branches: [experiment/drnas-x4-transition-observer-20261113]
+    paths:
+      - src/drnas_x4.cpp
+      - tests/test_x4.py
+      - research/drnas_x4_bench.py
+      - .github/workflows/drnas-x4-native.yml
+      - README_X4.md
+      - CMakeLists.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x4-native-one-runner-20261113
+  cancel-in-progress: true
+jobs:
+  native_and_paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone C++20 X3 and X4 — NO APK
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x4.cpp -o build/drnas-x4
+          { git rev-parse HEAD; g++ --version | head -1; } > x4_versions.txt
+      - name: Truth-table SAT and UNSAT audit, plus no-policy-change test
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x4.py --cases 2800 | tee x4_oracle.log
+      - name: 96 synthetic source-distinct CNFs on one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X4_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x4_bench.py --smoke --synthetic-count 96 --smoke-cap 0.35 | tee x4_synthetic.log
+      - name: Install pinned benchmark references only, never linked into X4
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake git cadical cryptominisat python3-venv
+          git init /tmp/x4-kissat
+          git -C /tmp/x4-kissat remote add origin https://github.com/arminbiere/kissat.git
+          git -C /tmp/x4-kissat fetch --depth 1 origin 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          git -C /tmp/x4-kissat checkout --detach FETCH_HEAD
+          (cd /tmp/x4-kissat && ./configure && make -j2)
+          sudo install /tmp/x4-kissat/build/kissat /usr/local/bin/kissat
+          git -C /tmp/x4-kissat rev-parse HEAD >> x4_versions.txt
+          cadical --version >> x4_versions.txt
+          cryptominisat5 --version >> x4_versions.txt
+          python3 -m venv .x4venv
+          .x4venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Historical SAT2024 originals — 12 paired CNFs, 5 seconds
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .x4venv/bin/python -u research/drnas_x4_bench.py --official --official-cap 5 | tee x4_official.log
+      - name: Verified PAR2, solved and trace-overhead summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import pathlib,json,os
+          lines=['## DRNAS X4.0 — passive transition memory','',
+                 'Observer is NOT a new branching policy. Same CPU, original CNF SAT checks, historical archive (not blind).','',
+                 '| Cohort | Solver | Verified solved | PAR2 (s) |','|---|---|---:|---:|']
+          for cohort in ('synthetic','official'):
+              p=pathlib.Path('drnas_x4_results')/cohort/'report.json'
+              if not p.exists(): continue
+              d=json.loads(p.read_text())
+              for arm,v in sorted(d['arms'].items(),key=lambda x:x[1]['PAR2_verified_s']):
+                  lines.append(f"| {cohort} | {arm} | {v['solved']}/{v['trials']} | {v['PAR2_verified_s']:.6f} |")
+              t=d.get('telemetry',{}).get('X4_TRACE',{})
+              lines.append(f"- {cohort} trace records: total sampled {t.get('trace_samples_total',0)}, retained {t.get('trace_samples_retained',0)}, evicted {t.get('trace_evicted',0)}")
+          lines.extend(['','Unverified official UNSAT earns PAR2 timeout penalty; synthetic mathematical UNSAT construction is not DRAT/LRAT proof.'])
+          summary='\n'.join(lines)+'\n'
+          print(summary)
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x4-native-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x4_versions.txt
+            x4_oracle.log
+            x4_synthetic.log
+            x4_official.log
+            drnas_x4_results/synthetic/report.json
+            drnas_x4_results/synthetic/selection.json
+            drnas_x4_results/synthetic/trials.jsonl
+            drnas_x4_results/official/report.json
+            drnas_x4_results/official/selection.json
+            drnas_x4_results/official/trials.jsonl
+            drnas_x4_results/official/traces/*.jsonl
