@@ -10,6 +10,7 @@
         if(policy!="keep" && policy!="short" && policy!="long" &&
            policy!="adaptive")throw std::runtime_error("invalid COOP4 retention policy");
         coop4_policy_=policy;
+        coop_.retention_policy=policy;
     }
     void coop4RecordUse(int cid,bool conflict) {
         if(cid<0 || cid>=static_cast<int>(clauses_.size()))return;
