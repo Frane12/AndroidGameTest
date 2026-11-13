@@ -190,7 +190,16 @@ def main():
     emit('TRAIN_STATS',dict(train=dict(Counter(r['exclusion'] or 'labeled' for r in train)),
                            validation=dict(Counter(r['exclusion'] or 'labeled' for r in valid)),
                            decision=X.DECISION))
-    models=fit(train)
+    labeled_pairs=sum(r['label'] is not None for r in train)
+    if labeled_pairs < 80:
+        # Keep the benchmark and truth-check audit alive, but DO NOT claim training.
+        emit('INSUFFICIENT_LABELS',dict(labeled=labeled_pairs,required=80,deploy_policy='core'))
+        fallback=dict(centers=[0.0]*NF,scales=[1.0]*NF,
+                      weights=[[0.0]*NF+[0.0]]*2,threshold=1e9,ood_limit=8.,
+                      training_pairs=labeled_pairs,bias=0.0,kind='ridge')
+        models={'ridge':fallback}
+    else:
+        models=fit(train)
     candidates={}
     for kind,base in models.items():
         for threshold in THRESHOLDS:
@@ -253,8 +262,9 @@ def main():
                 sum(v>0 for v in family_gain.values())>=2)
         evaluations[key]=dict(holdout_accessed=False,metrics=m,effect=delta,
                               family_gain=family_gain,eligible_for_deployment=accept)
-    winner=min(selected,key=lambda k:(evaluations[k]['metrics']['PAR2'],k))
-    accepted=evaluations[winner]['eligible_for_deployment']
+    eligible=[k for k in selected if evaluations[k]['eligible_for_deployment'] and labeled_pairs>=80]
+    winner=min(eligible or selected,key=lambda k:(evaluations[k]['metrics']['PAR2'],k))
+    accepted=bool(eligible)
     frozen=candidates[winner]
     frozen_path=paths[winner]
     frozen_sha=hashlib.sha256(frozen_path.read_bytes()).hexdigest()
