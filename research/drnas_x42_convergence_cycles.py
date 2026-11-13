@@ -20,6 +20,7 @@ import statistics
 import subprocess
 import tempfile
 import time
+import zipfile
 
 FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3","community3","xor_ring","graph_k4_unsat")
 WINDOWS=((1,8),(9,16),(17,128))
@@ -225,13 +226,16 @@ def external_model_ok(n,clauses,stdout):
     if len(assignment)!=n:return False
     return all(any(assignment[abs(l)]==(l>0) for l in c) for c in clauses)
 
-def analyze_run(source,cycle,binary,root,limit,base_models):
+def analyze_run(source,cycle,binary,root,limit,base_models,archive=None):
     n,clauses=source["n"],source["clauses"]
     permuted,p=permute(n,clauses,random.Random(9900+source["base_id"]*71+
                                              FAMILIES.index(source["family"])*13+cycle*147),cycle)
     models=[transform_model(m,p) for m in base_models]
     cnf=root/"input.cnf";trace=root/"trace.jsonl"
     sha=write_dimacs(cnf,n,permuted)
+    if archive is not None:
+        member=f"{source['family']}/{source['base_id']}_cycle{cycle+1}_{sha[:12]}.cnf"
+        archive.writestr(member,cnf.read_bytes())
     core_cmd=[str(binary.resolve()),str(cnf),"--mode","trace","--time",str(limit),
               "--stats","--transitions",str(trace),"--trace-trail"]
     started=time.monotonic()
@@ -312,7 +316,9 @@ def main():
     previously_used=original_shas_from_prior_cycles() if args.exclude_prior else set()
     if args.exclude_prior and args.offset<10000:
         raise ValueError("fresh holdout needs generator index offset >=10000")
-    with tempfile.TemporaryDirectory(prefix="x42-") as td:
+    with tempfile.TemporaryDirectory(prefix="x42-") as td, zipfile.ZipFile(
+        args.out/"fresh_sources_and_replays.zip","w",compression=zipfile.ZIP_DEFLATED,
+        compresslevel=6) as archive:
         root=Path(td)
         for family in FAMILIES:
             for i in range(args.offset,args.offset+args.per_family):
@@ -321,7 +327,7 @@ def main():
                 if case["has_planted_witness"] and not models:raise AssertionError("planted SAT missing")
                 if family in ("php_unsat","graph_k4_unsat") and models:raise AssertionError("constructed UNSAT cohort not UNSAT")
                 for cycle in range(args.cycles):
-                    row=analyze_run(case,cycle,args.binary,root,args.cap,models)
+                    row=analyze_run(case,cycle,args.binary,root,args.cap,models,archive)
                     if row["sha256"] in previously_used:
                         raise AssertionError("fresh source SHA repeats previous 48-case cohort")
                     all_rows.append(row)
@@ -334,6 +340,18 @@ def main():
                                                          for x in row["windows"])})
     if len({x["sha256"] for x in all_rows})!=len(all_rows):
         raise AssertionError("duplicate permutation cycles")
+    (args.out/"source_manifest.json").write_text(json.dumps({
+        "generator_offset":args.offset,
+        "original_source_count":len(FAMILIES)*args.per_family,
+        "replay_count":len(all_rows),
+        "source_archive":"fresh_sources_and_replays.zip",
+        "replay_sha256":[{"family":r["family"],"source_id":r["base_id"],
+                          "cycle":r["cycle"]+1,"sha256":r["sha256"]}
+                         for r in all_rows],
+        "no_sha_overlap_with_previous_cohort":args.exclude_prior,
+        "original_sat_oracle":"exhaustive enumeration, n<=18",
+        "cycles_not_independent_source_instances":True
+    },indent=2,sort_keys=True)+"\n")
     (args.out/"trajectories.jsonl").write_text(
         "".join(json.dumps(row,sort_keys=True)+"\n" for row in all_rows))
     by_cycle={}
@@ -393,8 +411,11 @@ def main():
             flat=[x for group in sampled for x in group]
             differences.append((sum(x[0] for x in flat)-sum(x[1] for x in flat))/len(flat))
         differences.sort()
+        negative_proxy=sum(e["sampled_delta_satisfied"]<0 for e in sat_events)
         signal_audit={
             "eligible_nonflat_events":len(eligible),
+            "negative_satisfied_clause_proxy_events":negative_proxy,
+            "positive_or_zero_proxy_cannot_detect_away":negative_proxy==0,
             "post_action_proxy_accuracy":round(observed_agreement,5),
             "always_toward_accuracy":round(always_toward,5),
             "paired_difference_proxy_minus_naive":round(observed_agreement-always_toward,5),
