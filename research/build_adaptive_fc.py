@@ -65,16 +65,12 @@ def generate():
           '            stats_.fc_first_probe_decision = stats_.decisions;\n'
           '        }\n'
           '        if (stats_.conflicts == 0) ++stats_.fc_probes_before_conflict;\n')
-    patch('                 <<",\"probe_seconds\":"<<solver->probeSeconds() <<"}\n";',
-          '                 <<",\"fc_first_conflict_decision\":"<<s.fc_first_conflict_decision\n'
-          '                 <<",\"fc_prefix_decisions\":"<<s.fc_prefix_decisions\n'
-          '                 <<",\"fc_prefix_hash\":\""<<s.fc_prefix_hash<<"\""\n'
-          '                 <<",\"fc_first_literal\":"<<s.fc_first_literal\n'
-          '                 <<",\"fc_first_probe_conflicts\":"<<s.fc_first_probe_conflicts\n'
-          '                 <<",\"fc_first_probe_decision\":"<<s.fc_first_probe_decision\n'
-          '                 <<",\"fc_probes_before_conflict\":"<<s.fc_probes_before_conflict\n'
-          '                 <<",\"fc_first_backdoor_conflicts\":"<<s.fc_first_backdoor_conflicts\n'
-          '                 <<",\"probe_seconds\":"<<solver->probeSeconds() <<"}\n";')
+    marker = next(line for line in text.splitlines() if 'probe_seconds' in line and 'solver->probeSeconds()' in line)
+    keys = ('fc_first_conflict_decision','fc_prefix_decisions','fc_prefix_hash',
+            'fc_first_literal','fc_first_probe_conflicts','fc_first_probe_decision',
+            'fc_probes_before_conflict','fc_first_backdoor_conflicts')
+    extra = ['                 <<'+json.dumps(','+json.dumps(key)+':')+'<<s.'+key for key in keys]
+    patch(marker, '\n'.join(extra)+'\n'+marker)
     path = Path('build/drnas_adaptive_fc.cpp')
     path.parent.mkdir(exist_ok=True)
     path.write_text(text)
