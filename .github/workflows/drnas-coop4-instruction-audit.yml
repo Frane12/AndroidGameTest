@@ -1,0 +1,138 @@
+name: DRNAS COOP4 instruction audit stale hints and phase choice
+on:
+  push:
+    branches: [experiment/drnas-coop4-instruction-audit-20261113]
+    paths: [.github/workflows/drnas-coop4-instruction-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop4-instruction-audit-only
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43515153402
+          name: coop4-frozen
+          github-token: ${{ github.token }}
+          path: .
+      - name: Build and independently certify audit correctness
+        run: |
+          set -euo pipefail
+          tar -xzf coop4_frozen.tgz
+          sha256sum -c build/COOP4_BINARIES.sha256
+          python3 research/drnas_coop4_audit/build.py | tee audit_build.log
+          python3 -m py_compile research/drnas_coop4_audit/*.py tests/test_drnas_coop4_audit.py
+          python3 research/drnas_coop4_audit/math_check.py | tee audit_math.log
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop4_audit.py | tee audit_safety.log
+          sha256sum build/drnas-coop4-audit build/drat-trim build/drnas-x5 > build/COOP4_AUDIT_SHA256SUMS
+          tar -czf coop4_audit_frozen.tgz build/drnas-coop4-audit build/drat-trim build/drnas-x5 build/COOP4_AUDIT_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-instruction-audit-frozen
+          retention-days: 60
+          path: |
+            coop4_audit_frozen.tgz
+            audit_build.log
+            audit_math.log
+            audit_safety.log
+
+  synthetic_hint_audit:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-instruction-audit-frozen
+          path: .
+      - name: Frozen synthetic stress, original SAT witness and DRAT, paired
+        run: |
+          set -euo pipefail
+          tar -xzf coop4_audit_frozen.tgz
+          sha256sum -c build/COOP4_AUDIT_SHA256SUMS
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop4_audit/benchmark.py --cohort synthetic --cap 1 --repeats 2 --out audit_synthetic | tee audit_synthetic.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-hint-audit-synthetic
+          retention-days: 60
+          path: |
+            audit_synthetic/report.json
+            audit_synthetic/trials.jsonl
+            audit_synthetic.log
+
+  real_hint_audit:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-instruction-audit-frozen
+          path: .
+      - name: Original SAT2024 CNFs, same-binary ON vs fresh and proof audit
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf coop4_audit_frozen.tgz
+          sha256sum -c build/COOP4_AUDIT_SHA256SUMS
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop4_audit/benchmark.py --cohort real --cap 2 --repeats 1 --out audit_real | tee audit_real.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-hint-audit-real
+          retention-days: 60
+          path: |
+            audit_real/report.json
+            audit_real/trials.jsonl
+            audit_real.log
+
+  summary:
+    needs: [synthetic_hint_audit, real_hint_audit]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-hint-audit-synthetic
+          path: audit_synthetic_artifact
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-hint-audit-real
+          path: audit_real_artifact
+      - name: Report tested CDCL hint policies (no promotion)
+        run: |
+          python3 - <<'PY'
+          import json,os
+          docs=[json.load(open(x)) for x in
+               ('audit_synthetic_artifact/report.json','audit_real_artifact/report.json')]
+          lines=["## COOP4 CDCL hint audit","",
+                 "OFF/ALGEBRA/ON/ON_FRESH same binary, proof checked; NOT blind evidence.","",
+                 "| Cohort | Arm | Verified | PAR2 | Hints overridden | Stale applied | Phase disagrees |",
+                 "|---|---|---:|---:|---:|---:|---:|"]
+          for d in docs:
+            assert d['status']=='COMPLETE' and d['promotion'] is False
+            for arm,v in d['overall'].items():
+              lines.append(f"| {d['cohort']} | {arm} | {v['verified']}/{v['n']} | {v['PAR2']:.4f} | {v['overrides']} | {v['stale_overrides']} | {v['phase_opposite_small_branch']}/{v['phase_comparable']} |")
+          msg='\n'.join(lines)+'\n'
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          print('COOP4_INSTRUCTION_AUDIT_FINAL',json.dumps({d['cohort']:d['overall'] for d in docs},sort_keys=True),flush=True)
+          PY
