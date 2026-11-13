@@ -1,0 +1,63 @@
+name: DRNAS X4.2 three-cycle exact SAT trajectory diagnostic
+on:
+  push:
+    branches: [experiment/drnas-x42-convergence-oracle-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x42_convergence_cycles.py
+      - .github/workflows/drnas-x42-convergence.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x42-convergence-20261113
+  cancel-in-progress: false
+jobs:
+  run_three_cycles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build X4.2 exact-trail diagnostic
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x42
+          python3 -m py_compile research/drnas_x42_convergence_cycles.py
+          sha256sum build/drnas-x42 src/drnas_x41.cpp
+      - name: Regression against independent small-CNF SAT oracle
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x41.py --cases 300 | tee x42_regression.log
+      - name: Three independent search trajectories per formula; exact offline oracle
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x42_convergence_cycles.py \
+            --binary build/drnas-x42 --out x42_convergence \
+            --per-family 8 --cycles 3 --cap 1.5 | tee x42_convergence.log
+      - name: Audit convergence signal versus real SAT completion
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("x42_convergence/summary.json").read_text())
+          assert r["independent_CNF_sources"]==32
+          assert r["runs"]==96
+          assert r["verified_sat"]==72
+          assert r["exhaustively_checked_unsat"]==24
+          assert len(r["cycle_summary"])==3
+          print("X42_AUDIT_PASS",json.dumps(r["cycle_summary"],sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x42-convergence-three-cycles
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x42_regression.log
+            x42_convergence.log
+            x42_convergence/summary.json
+            x42_convergence/trajectories.jsonl
