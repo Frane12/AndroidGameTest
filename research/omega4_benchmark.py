@@ -162,7 +162,7 @@ def run_arm(c,arm,tsv,prepass_s,cap):
     if run.returncode not in (0,10,20) or len(found)!=1:
         raise RuntimeError("Native proof safety / execution error "+
                            run.stderr[-1600:]+" stdout="+run.stdout[-300:])
-    row=dict(re.findall(r"([a-z_]+)=([^\s]+)",found[0]))
+    row=dict(re.findall(r"([a-z0-9_]+)=([^\s]+)",found[0]))
     status=row.get("status")
     if status not in statuses:raise RuntimeError("Unknown native status "+str(status))
     if status=="SAT":sat_model_check(Path(c["path"]).read_bytes(),run.stdout)
