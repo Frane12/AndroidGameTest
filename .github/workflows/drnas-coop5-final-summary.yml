@@ -1,0 +1,68 @@
+name: DRNAS COOP5 combined final fixed25ms versus dynamic proof results
+on:
+  push:
+    branches: [experiment/drnas-coop5-fixed-dynamic-probe-20261113]
+    paths: [.github/workflows/drnas-coop5-final-summary.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop5-summary-only
+  cancel-in-progress: false
+jobs:
+  verify_and_report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43521774874
+          pattern: coop5-shard-synthetic-*
+          github-token: ${{ github.token }}
+          path: coop5_downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43522130534
+          pattern: coop5-shard-real-*
+          github-token: ${{ github.token }}
+          path: coop5_downloads
+          merge-multiple: false
+      - name: Re-verify frozen source hashes and complete every paired result exactly once
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_coop5_report/aggregate.py
+          python3 -u research/drnas_coop5_report/aggregate.py | tee coop5_final.log
+          python3 - <<'PY'
+          import json,os
+          docs=[json.load(open(f'coop5_{c}_final/report.json')) for c in ('synthetic','real')]
+          assert docs[0]['sources']==21 and docs[0]['trial_count']==294
+          assert docs[1]['sources']==18 and docs[1]['trial_count']==252
+          lines=['## DRNAS COOP5: fixed25ms vs dynamic BCP probe (verified)','',
+            'Synthetic stress (21 originals ×2, cap 1s) and retrospective SAT2024 (18 eligible originals ×2, cap 3s). No blind holdout, no main promotion.','',
+            '| Dataset | Solver | Verified | PAR2 (s) | Probe cost (ms) | Probe pairs | Actual overrides |',
+            '|---|---|---:|---:|---:|---:|---:|']
+          for d in docs:
+            assert d['status']=='COMPLETE' and d['promotion'] is False
+            for name,v in d['overall'].items():
+              lines.append(f"| {d['cohort']} | {name} | {v['solved']}/{v['attempts']} | {v['PAR2_s']:.4f} | {v['probe_ms']:.4f} | {v['attempted_pairs']} | {v['actually_overrode']} |")
+          lines+=['','## Family-bootstrap confidence intervals']
+          for d in docs:
+            for k,v in d['comparisons'].items():
+              lines.append(f"- {d['cohort']} {k}: {v['gain_pct']:+.3f}% CI95={v['family_CI95_pct']}% ({v['families']} families)")
+          result='\n'.join(lines)+'\n'
+          print(result)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(result)
+          print('COOP5_FINAL_REPORT_PASS',json.dumps({d['cohort']:d['sources'] for d in docs}),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop5-fixed-dynamic-combined-final
+          retention-days: 60
+          path: |
+            coop5_real_final/report.json
+            coop5_synthetic_final/report.json
+            coop5_final.log
