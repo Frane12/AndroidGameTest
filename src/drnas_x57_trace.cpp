@@ -1964,7 +1964,14 @@ int run(int argc, char** argv) {
         if(!proof)throw std::runtime_error("proof flush failed");
     }
     const double solve_finish_elapsed=solver->elapsed();
-    if(!x57_dt_file.empty())solver->writeX57DecisionTrace(x57_dt_file,r);
+    if(!x57_dt_file.empty()) {
+        const double trace_write_start=solver->elapsed();
+        solver->writeX57DecisionTrace(x57_dt_file,r);
+        const double trace_write_end=solver->elapsed();
+        std::cerr<<"X57_TRACE_WRITE {\"solve_end_e2e_s\":"<<std::fixed<<std::setprecision(8)
+                 <<solve_finish_elapsed<<",\"trace_write_s\":"
+                 <<trace_write_end-trace_write_start<<"}\n";
+    }
     if (r==Result::SAT) {
         std::cout<<"s SATISFIABLE\n";
         for (int v=0;v<solver->nvars();++v) {
