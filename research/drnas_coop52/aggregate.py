@@ -77,9 +77,9 @@ def report(cohort):
     divergent=[]
     for (sha,rep),p in sorted(paired.items()):
         if len(p)!=len(ARMS):raise RuntimeError("missing source/rep arms")
-        if len({p[name]["accepted"] for name in
+        if (len({p[name]["accepted"] for name in
                ("Q025_ON","Q1_ON","Q5_ON","Q25_ON")})>1 or
-            p["ALGEBRA"]["accepted"]!=p["Q1_ON"]["accepted"]:
+            p["ALGEBRA"]["accepted"]!=p["Q1_ON"]["accepted"]):
             divergent.append({"sha256":sha,"rep":rep,
               "id":p["Q1_ON"]["id"],"family":p["Q1_ON"]["family"],
               "result":{name:p[name]["status"] for name in
