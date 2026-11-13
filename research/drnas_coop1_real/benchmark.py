@@ -171,8 +171,9 @@ def main():
  if a.cap<=0 or a.repeats<1:raise ValueError('invalid limits')
  arms=ARMS[:3] if a.native_only else ARMS
  if 'CryptoMiniSat' in arms:
-  h=subprocess.run([str(ROOT/'build/cryptominisat5'),'--help'],capture_output=True,text=True,check=True)
-  CMS_FRAT='--frat' in h.stdout
+  # Ubuntu 24.04 CryptoMiniSat emits ASCII FRAT to positional proof path.
+  # Its --help summary does not list this positional format.
+  CMS_FRAT=True
  cpu=min(os.sched_getaffinity(0));os.sched_setaffinity(0,{cpu})
  out=ROOT/a.out;out.mkdir(parents=True,exist_ok=False)
  preflight(out/'preflight',arms)
