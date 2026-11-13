@@ -58,7 +58,7 @@ def decode(name, blob):
             raise ValueError("oversized or incomplete bz2 member")
     else:
         raw=blob
-    if not 40 <= len(raw)<=MAX_RAW:
+    if not 10 <= len(raw)<=MAX_RAW:
         raise ValueError("source byte bound exceeded")
     return raw
 
@@ -156,7 +156,7 @@ def select(args):
                 name=e.filename
                 if e.is_dir() or not name.lower().endswith((".cnf",".cnf.xz",".cnf.gz",".cnf.bz2")):
                     continue
-                if not 80<=e.file_size<=4_000_000:
+                if not 20<=e.file_size<=4_000_000:
                     continue
                 family=official_family(name)
                 role=split_for_family(family,permanent)
