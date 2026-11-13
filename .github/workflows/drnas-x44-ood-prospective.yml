@@ -1,0 +1,135 @@
+name: DRNAS X4.4 OOD abstention prospective 1200 family test
+on:
+  push:
+    branches: [experiment/drnas-x44-ood-abstain-20261113]
+    paths:
+      - research/drnas_x44_ood.py
+      - tests/test_x44_ood.py
+      - .github/workflows/drnas-x44-ood-prospective.yml
+      - README_X44.md
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x44-ood-prospective
+  cancel-in-progress: true
+
+jobs:
+  freeze_fit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Python and deterministic generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_x44_ood.py tests/test_x44_ood.py
+          python3 -u tests/test_x44_ood.py
+      - name: Retrieve ONLY prior X4.3 source-measurement artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43349956892
+          github-token: ${{ github.token }}
+          pattern: x43-cycle1-*
+          path: x44_x43_training
+          merge-multiple: false
+      - name: Fit OOD gate on historical TRAIN and VALIDATION only, freeze new 1200 source SHA
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/drnas_x44_ood.py prepare --cycle1-dir x44_x43_training --out-dir x44_frozen | tee x44_frozen.log
+          test -s x44_frozen/model.json
+          test -s x44_frozen/frozen_manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x44-frozen-model-manifest
+          retention-days: 21
+          path: |
+            x44_frozen/model.json
+            x44_frozen/frozen_manifest.json
+            x44_frozen.log
+
+  eval:
+    needs: freeze_fit
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x44-frozen-model-manifest
+          path: .
+      - name: Compile standalone native DRNAS X4.1 and X3
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+      - name: Prospective frozen 1200 SHA, four fresh paired controls, same logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X44_SHARD_${{ matrix.shard }}_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x44_ood.py shard --shard ${{ matrix.shard }} --model-dir x44_frozen | tee x44_eval.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x44-eval-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            x44_stage/shard_${{ matrix.shard }}/report.json
+            x44_stage/shard_${{ matrix.shard }}/trials.jsonl
+
+  final_report:
+    needs: eval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x44-frozen-model-manifest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x44-eval-*
+          path: x44_eval_downloads
+          merge-multiple: false
+      - name: Independent frozen-SHA and per-family paired audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x44_ood.py finish --model-dir x44_frozen --shards-dir x44_eval_downloads --out-dir x44_final | tee x44_final.log
+      - name: Summarize novel-family OOD detection and verified solving
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x44_final/report.json"))
+          lines=["## DRNAS X4.4 — prospective 1200 generated SAT CNFs","",
+            f"Frozen manifest SHA: {d['manifest_sha256']}",
+            f"Detector threshold: {d['ood_threshold']:.4f} / abstention fallback: {d['fallback']}","",
+            "| Prospective split | Flagged OOD | CORE solved / PAR2 | ADAPT solved / PAR2 | X4.3 solved / PAR2 | X4.4 solved / PAR2 |",
+            "|---|---:|---|---|---|---|"]
+          for name,row in d['splits'].items():
+            rr=[f"{row[k]['SAT_verified']}/{row['sources']} / {row[k]['PAR2_s']:.2f}s" for k in ('CORE','ADAPT','X43','X44')]
+            lines.append(f"| {name} | {row['ood_flagged']}/{row['sources']} | "+" | ".join(rr)+" |")
+          lines.append("")
+          lines.append("Generated planted SAT only. New SHA and families were frozen before solver results. OOD detection and choice quality are separate questions.")
+          summary="\n".join(lines)+"\n"
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x44-1200-ood-prospective-final
+          retention-days: 21
+          path: |
+            x44_final/report.json
+            x44_final/paired_trials.jsonl
+            x44_final.log
