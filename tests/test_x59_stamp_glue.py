@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Isolated X5.8 correctness tests (no real benchmark sources used)."""
+"""Isolated X5.9 correctness tests (no real benchmark sources used)."""
 import json, os, pathlib, random, subprocess, sys, tempfile
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/"research"))
 import drnas_x55_cpu_real36 as B
-import drnas_x59_bcp_real36 as X
+import drnas_x59_stamp_glue_real36 as X
 
 def solve(binary,cnf,flag=False):
     proof=cnf.parent/(cnf.stem+("_on" if flag else "_off")+".drat")
