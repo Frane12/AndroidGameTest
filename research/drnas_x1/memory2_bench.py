@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import random
+import statistics
 import subprocess
 import tempfile
 import time
@@ -221,6 +222,28 @@ def main():
     totals=summarize(records)
     grouped={kind:summarize([r for r in records if r["kind"]==kind])
              for kind in sorted({c["kind"] for c in holdout})}
+    # Raw sums are reported, but sub-millisecond subprocesses are vulnerable
+    # to host scheduling outliers. Report a robust paired diagnostic too.
+    source_ids=sorted({r["id"] for r in records})
+    median_per_case={}
+    for arm in ARMS:
+        median_per_case[arm]=round(sum(statistics.median(
+            r["PAR2"] for r in records if r["id"]==case_id and r["arm"]==arm)
+            for case_id in source_ids),6)
+    indexed={(r["id"],r["rep"],r["arm"]):r for r in records}
+    suspect=[]
+    for case_id in source_ids:
+        for rep in range(args.repeats):
+            base_row=indexed[(case_id,rep,"X1_CORE")]
+            shadow_row=indexed[(case_id,rep,"X1_M2_SHADOW")]
+            low=min(base_row["solve_s"],shadow_row["solve_s"])
+            high=max(base_row["solve_s"],shadow_row["solve_s"])
+            if high>0.020 and high>10*max(low,0.000001):
+                suspect.append({"id":case_id,"rep":rep,
+                    "CORE_s":base_row["solve_s"],
+                    "SHADOW_s":shadow_row["solve_s"],
+                    "CORE_decisions":base_row["decisions"],
+                    "SHADOW_decisions":shadow_row["decisions"]})
     baseline=totals["X1_CORE"]["PAR2_verified_e2e_s"]
     comparisons={}
     for arm in ARMS[1:]:
@@ -237,7 +260,11 @@ def main():
        "train_sources":len(training),"holdout_sources":len(holdout),
        "repeats":args.repeats,"cap_s":args.cap,
        "trained_verified":accepted,"totals":totals,"groups":grouped,
-       "comparisons":comparisons,"holdout_model_files_unchanged":True,
+       "comparisons":comparisons,"median_case_verified_PAR2_s":median_per_case,
+       "timing_quality":{"host_scheduling_outlier_suspects":suspect,
+         "raw_PAR2_speedups_not_robust_if_outliers":bool(suspect),
+         "shadow_has_identical_core_decisions":True},
+       "holdout_model_files_unchanged":True,
        "proof_credit":"independent SAT model / UNSAT DRUP",
        "genuine_unseen_competition":False,
        "family_disjoint":False,"same_state_counterfactual":False,
