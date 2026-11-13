@@ -167,12 +167,16 @@ def record(src,arm,rep,temp):
             reported="UNSAT_UNVERIFIED";checker_status="no_proof"
             if proof.exists() and proof.stat().st_size>0:
                 tick=time.perf_counter()
-                ck=subprocess.run(["build/drat-trim",str(cnf),str(proof)],
-                    capture_output=True,text=True,timeout=12)
-                check_s=time.perf_counter()-tick
-                if ck.returncode==0 and "s VERIFIED" in ck.stdout:
-                    reported="UNSAT_CERTIFIED";checker_status="verified"
-                else:checker_status="unverified_or_rejected"
+                try:
+                    ck=subprocess.run(["build/drat-trim",str(cnf),str(proof)],
+                        capture_output=True,text=True,timeout=12)
+                    check_s=time.perf_counter()-tick
+                    if ck.returncode==0 and "s VERIFIED" in ck.stdout:
+                        reported="UNSAT_CERTIFIED";checker_status="verified"
+                    else:checker_status="unverified_or_rejected"
+                except subprocess.TimeoutExpired:
+                    check_s=time.perf_counter()-tick
+                    checker_status="checker_timeout"
         elif rc not in (0,):reported="PROCESS_ERROR"
     if arm in POLICY and not expired and rc in (0,10,20) and not x53:
         raise RuntimeError("Missing final X53 telemetry")
