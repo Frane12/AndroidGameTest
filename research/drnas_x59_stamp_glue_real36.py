@@ -15,7 +15,7 @@ ARMS=("X5_FROZEN","X59_OFF","X59_ON","KISSAT","CADICAL")
 BINS={"X5_FROZEN":"build/drnas-x5","X59_OFF":"build/drnas-x59","X59_ON":"build/drnas-x59",
       "KISSAT":"build/kissat","CADICAL":"build/cadical"}
 CHECKS={"DRAT":"build/drat-trim"}
-LABEL="X59_HOTWATCH"
+LABEL="X59_STAMP_LBD"
 def emit(tag, data):
     print(tag+" "+json.dumps(data,sort_keys=True,separators=(",",":")),flush=True)
 def save(path, thing):
@@ -30,7 +30,7 @@ def freeze():
     sources, proto=frozen_sources()
     paths={**BINS,**CHECKS}
     frozen={
-      "protocol":"DRNAS-X59-BCP-HOTWATCH-v1",
+      "protocol":"DRNAS-X59-CORE-LBD-STAMP-v1",
       "dataset":"SAT Competition 2024 REAL36 originals (retrospective only)",
       "source_run":43387395060,
       "source_manifest_sha256":proto["manifest_sha256"],
