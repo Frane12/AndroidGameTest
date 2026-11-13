@@ -31,6 +31,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 -S research/drnas_x1/memory2_bench.py --binary build/drnas-x1 --out x1_memory2_results --train 42 --holdout 30 --repeats 3 --cap 2.0 | tee x1_memory2_benchmark.log
+      - name: Inspect learned 16/64/256-step predictions and censored trajectories
+        run: |
+          set -euo pipefail
+          TRACE="$(find x1_memory2_results -maxdepth 1 -name 'holdout-*-X1_M2_ONLINE.jsonl' -type f | sort | tail -1)"
+          test -n "$TRACE"
+          python3 -S research/drnas_x1/memory2_inspect.py --policy x1_memory2_results/trained-memory2.txt --trace "$TRACE" --out x1_memory2_results/prediction-inspection.json | tee x1_memory2_inspection.log
+          python3 -S - <<'PYCODE'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('x1_memory2_results/prediction-inspection.json').read_text())
+          coverage=x['model']['coverage']
+          assert coverage['h16_arms_with_data'] and coverage['h64_arms_with_data'],coverage
+          assert x['sample_trace']['horizon_events']['16']['observed']>0
+          print('MEMORY2_COVERAGE_PASS',coverage)
+          PYCODE
       - name: Reject incompatible learned models
         run: |
           set -euo pipefail
@@ -51,6 +66,8 @@ jobs:
           path: |
             x1_memory2-regression.json
             x1_memory2_results/report.json
+            x1_memory2_results/prediction-inspection.json
+            x1_memory2_inspection.log
             x1_memory2_results/manifest.json
             x1_memory2_results/trials.jsonl
             x1_memory2_results/trained-memory1.txt
