@@ -221,7 +221,7 @@ public:
       }else{
         int v=-1;while(!heap.empty()){int t=pop();if(val[t]<0){v=t;break;}}
         if(v<0){model=val;for(auto& x:model)if(x<0)x=0;return 10;}
-        const int action=memory2?memory2->select(stats,trail.size(),dl(),budget.elapsed(),v):
+        const int action=memory2?memory2->select(stats,trail.size(),dl(),budget,v):
           (memory?memory->select(stats,trail.size(),dl(),budget.elapsed()):0);
         const int chosen=phase[v]^(action==1);
         limits.push_back(static_cast<int>(trail.size()));++stats.decisions;
