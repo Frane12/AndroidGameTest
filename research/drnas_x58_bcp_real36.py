@@ -11,10 +11,10 @@ import drnas_x55_cpu_real36 as B
 CAP=5.0
 REPS=2
 SHARDS=12
-ARMS=("X5_FROZEN","X58_OFF","X58_ON","KISSAT","CADICAL","CMS")
+ARMS=("X5_FROZEN","X58_OFF","X58_ON","KISSAT","CADICAL")
 BINS={"X5_FROZEN":"build/drnas-x5","X58_OFF":"build/drnas-x58","X58_ON":"build/drnas-x58",
-      "KISSAT":"build/kissat","CADICAL":"build/cadical","CMS":"build/cms"}
-CHECKS={"DRAT":"build/drat-trim","FRAT":"build/frat-rs"}
+      "KISSAT":"build/kissat","CADICAL":"build/cadical"}
+CHECKS={"DRAT":"build/drat-trim"}
 LABEL="X58_HOTWATCH"
 def emit(tag, data):
     print(tag+" "+json.dumps(data,sort_keys=True,separators=(",",":")),flush=True)
@@ -43,7 +43,7 @@ def freeze():
       "expected_trials":36*REPS*len(ARMS),
       "policy":"X58_OFF and X58_ON are the SAME binary. Only --x58-hotwatch changes. X5_FROZEN is distinct immutable reference.",
       "optimization":"Skip blocker-fast-path watch stores only when read and write indices are identical",
-      "safety":"SAT witness original CNF, UNSAT DRAT/FRAT independent verifier, crashes fail workflow",
+      "safety":"SAT witness original CNF, UNSAT independent DRAT verifier, crashes fail workflow",
       "publication":"retrospective diagnostic, no automatic promotion or holdout claim",
     }
     save("x58_freeze/protocol.json",frozen)
@@ -65,7 +65,7 @@ def run(src,arm,rep,td):
     elif arm=="CADICAL":
         cmd=[BINS[arm],"-q","--no-binary",str(cnf),str(proof)]
     else:
-        cmd=[BINS[arm],"--threads=1","--verb=0","--frat="+str(proof),str(cnf)]
+        raise RuntimeError("Unsupported benchmark arm: "+arm)
     rc,wall,killed,rss,cpu=B.run_process(cmd,out,err,usage,CAP+0.3)
     stdout=out.read_text(errors="replace");stderr=err.read_text(errors="replace")
     stats={};hot={}
@@ -89,13 +89,10 @@ def run(src,arm,rep,td):
             if proof.exists() and proof.stat().st_size>0:
                 started=time.perf_counter()
                 try:
-                    command=([CHECKS["FRAT"],"elab",str(proof),str(cnf),"-v"] if arm=="CMS"
-                             else [CHECKS["DRAT"],str(cnf),str(proof)])
+                    command=[CHECKS["DRAT"],str(cnf),str(proof)]
                     checked=subprocess.run(command,capture_output=True,text=True,timeout=15)
                     verify_s=time.perf_counter()-started
-                    verified=(checked.returncode==0 and
-                        (("VERIFIED" in checked.stdout.splitlines()) if arm=="CMS"
-                         else ("s VERIFIED" in checked.stdout)))
+                    verified=(checked.returncode==0 and "s VERIFIED" in checked.stdout)
                     if not verified:
                         raise RuntimeError("WRONG_UNSAT_PROOF arm="+arm+" sha="+src["sha256"]+
                                            " proof-log="+(checked.stdout+checked.stderr)[-350:])
@@ -221,7 +218,6 @@ def finish():
        "frozen_vs_on":("X5_FROZEN","X58_ON"),
        "kissat_vs_on":("KISSAT","X58_ON"),
        "cadical_vs_on":("CADICAL","X58_ON"),
-       "cms_vs_on":("CMS","X58_ON")
     }.items()}
     result={
       "status":"COMPLETE","promotion":False,"blind_holdout":False,
