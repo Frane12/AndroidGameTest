@@ -44,8 +44,9 @@ class RealLearn2Tests(unittest.TestCase):
                                "split":"train","family":"G"}]}
             (root/"old.json").write_text(json.dumps(old))
             (root/"state.json").write_text(json.dumps(state))
-            sha,sem,roles=M.prior_sets(root/"state.json",root/"old.json")
+            sha,sem,roles,blocked=M.prior_sets(root/"state.json",root/"old.json")
             self.assertEqual(roles,{"F":"holdout","G":"train"})
+            self.assertEqual(blocked,set())
             self.assertIn("a"*64,sha)
             self.assertIn("c"*64,sem)
             self.assertEqual(M.split_for_family("F",roles),"holdout")
