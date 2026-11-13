@@ -102,7 +102,18 @@ def main():
           'selection':'frozen before holdout, no holdout tuning'})
     cnf = args.out/'current.cnf'
     train = collect_pairs(binary, cohorts['train'], cnf, args.out/'train_pairs.jsonl')
+    # Checkpoint depth may be adjusted using TRAIN ONLY; never tune it on holdout.
+    first_labeled=sum(r['label'] is not None for r in train)
+    if first_labeled < 80:
+        X.DECISION=8
+        emit('CHECKPOINT_TRAIN_ONLY', {'old_decision':DECISION,'new_decision':X.DECISION,
+                                      'labeled_at_old':first_labeled})
+        train=collect_pairs(binary,cohorts['train'],cnf,args.out/'train_pairs.jsonl')
     validation = collect_pairs(binary, cohorts['validation'], cnf, args.out/'validation_pairs.jsonl')
+    protocol=json.loads((args.out/'protocol.json').read_text())
+    protocol['decision']=X.DECISION
+    protocol['checkpoint_selection']='16 else 8 if <80 complete train-only pairs at 16'
+    save(args.out/'protocol.json',protocol)
     emit('TRAIN_STATS', {'labeled':sum(r['label'] is not None for r in train),
                          'total':len(train), 'exclusions':dict(Counter(r['exclusion'] or 'labeled' for r in train))})
     model_set = fit(train)
@@ -232,7 +243,7 @@ def main():
     report={'status':'COMPLETE','namespace':NAMESPACE,'source_count':len(source_ids),
             'train':len(train),'validation':len(validation),
             'holdout':len(cohorts['holdout']),'repeats':args.repeats,
-            'decision':DECISION,'cap_s':args.cap,'model_sha256':frozen_sha,
+            'decision':X.DECISION,'cap_s':args.cap,'model_sha256':frozen_sha,
             'candidate':winner,'validation_accepted':accept,
             'deploy_policy':'gated' if accept else 'core',
             'holdout_effects_vs_core':comparisons,'primary_success':accept and comparisons['gated']['paired_formula_bootstrap95_pct'][0]>3,
