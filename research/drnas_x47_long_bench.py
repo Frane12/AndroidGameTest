@@ -176,6 +176,7 @@ def official_sources(count):
         picked=[family_pick[min(len(family_pick)-1,
                  round((j+.5)*len(family_pick)/count_candidates))]
                 for j in range(count_candidates)]
+        random.Random(20261113).shuffle(picked)  # size-stratified, outcome-blind
         out=[]
         for member in picked:
             if len(out)>=count:break
