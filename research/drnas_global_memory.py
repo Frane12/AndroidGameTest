@@ -37,6 +37,7 @@ ARTIFACT_HINTS = re.compile(
     r"drnas|x4[0-9]|ltm|sat|solver|bench|summary|result|trial|report|r(?:28|29|153|160|190|194)",
     re.IGNORECASE,
 )
+REPORT_HINTS = ("summary", "report", "result", "metrics", "manifest", "stats", "audit", "model")
 REPORT_NAMES = {
     "report.json", "summary.json", "final_summary.json", "training_report.json",
     "cost_report.json", "guard_report.json", "php5_aggregate.json",
@@ -272,17 +273,23 @@ def role_for_manifest(manifest):
     return "holdout" if isinstance(manifest, dict) else "unknown"
 
 
+def recognized_report(name):
+    return name in REPORT_NAMES or (
+        name.endswith(".json") and any(k in name for k in REPORT_HINTS)
+    )
+
+
 def import_report(db, artifact_id, run_id, path, obj):
     if not isinstance(obj, (dict, list)):
         return 0
     payload = json.dumps(obj, sort_keys=True, separators=(",", ":"))
     if len(payload) > MAX_MEMBER_BYTES:
         return 0
-    db.execute("""
+    cur = db.execute("""
       INSERT OR IGNORE INTO reports VALUES (?,?,?,?,?,?)
       """, (artifact_id, path, run_id, sha256(payload.encode()),
             PurePosixPath(path).name, payload))
-    return 1
+    return cur.rowcount
 
 
 def import_pair_rows(db, artifact_id, run_id, member_path, rows, manifest):
@@ -348,6 +355,8 @@ def import_zip(db, artifact_id, run_id, payload):
     trial_rows = 0
     with zipfile.ZipFile(io.BytesIO(payload)) as z:
         content = {}
+        # Bound total memory even if one compressed ZIP contains huge members.
+        extracted_bytes = 0
         for member in z.infolist():
             if member.is_dir() or member.file_size > MAX_MEMBER_BYTES:
                 continue
@@ -355,11 +364,15 @@ def import_zip(db, artifact_id, run_id, payload):
             if ".." in path.parts or path.is_absolute():
                 continue
             name = path.name.lower()
-            if (name in REPORT_NAMES or name == "trials.jsonl"):
+            if recognized_report(name) or name == "trials.jsonl":
+                if len(content)>=36 or extracted_bytes+member.file_size>12*1024*1024:
+                    continue
                 try:
-                    content[str(path)] = z.read(member).decode("utf-8")
+                    decoded=z.read(member).decode("utf-8")
                 except (UnicodeError, ValueError, RuntimeError):
                     continue
+                content[str(path)]=decoded
+                extracted_bytes+=member.file_size
         manifests = {}
         for path, value in content.items():
             if PurePosixPath(path).name.lower() != "manifest.json":
@@ -371,7 +384,7 @@ def import_zip(db, artifact_id, run_id, payload):
             except ValueError:
                 continue
         for path, value in content.items():
-            if path.endswith(".json") and PurePosixPath(path).name.lower() in REPORT_NAMES:
+            if path.endswith(".json") and recognized_report(PurePosixPath(path).name.lower()):
                 try:
                     reports += import_report(db, artifact_id, run_id, path, json.loads(value))
                 except ValueError:
@@ -514,6 +527,21 @@ def import_legacy(db, archive, latest_path):
 
 def stats(db, sync):
     count = lambda query: db.execute(query).fetchone()[0]
+    tables={x[0] for x in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}
+    def optional_count(table,query):
+        return count(query) if table in tables else 0
+    continual=optional_count("continual_experiences",
+        "SELECT COUNT(*) FROM continual_experiences")
+    sealed_sources=optional_count("sealed_global_sources",
+        "SELECT COUNT(*) FROM sealed_global_sources")
+    sealed_trials=optional_count("sealed_global_trials",
+        "SELECT COUNT(*) FROM sealed_global_trials")
+    cycles=optional_count("global_learning_events",
+        "SELECT COUNT(*) FROM global_learning_events")
+    promoted_cycles=optional_count("global_learning_events",
+        "SELECT COUNT(*) FROM global_learning_events WHERE promoted=1")
     artifact_states = dict(db.execute(
         "SELECT import_state,COUNT(*) FROM artifacts GROUP BY import_state"
     ).fetchall())
@@ -538,17 +566,24 @@ def stats(db, sync):
             "SELECT COUNT(*) FROM legacy_experiences WHERE split='validation'"
         ),
         "eligible_training_sources": count("SELECT COUNT(*) FROM eligible_training"),
+        "continual_training_sources": continual,
+        "total_allowed_training_sources": count("SELECT COUNT(*) FROM eligible_training")+continual,
+        "fresh_sealed_holdout_sources": sealed_sources,
+        "fresh_sealed_trial_rows": sealed_trials,
+        "completed_learning_cycles": cycles,
         "sealed_legacy_reports": count("SELECT COUNT(*) FROM sealed_reports"),
         "stored_model_versions": count("SELECT COUNT(*) FROM model_registry")
             + count("SELECT COUNT(*) FROM legacy_checkpoints"),
-        "promoted_models": 0,
+        "promoted_models": count("SELECT COUNT(*) FROM model_registry WHERE promotion_status='champion'"),
+        "historical_promotions": promoted_cycles,
         "artifact_scan_complete": get_meta(db, "artifact_full_scan_complete", "0") == "1",
         "new_this_sync": sync,
         "safety": {
-            "benchmark_artifacts": "evidence_only; never train automatically",
+            "benchmark_artifacts": "evidence_only; every run is indexed, compatible JSON reports and trials parsed",
             "legacy_training": "only explicit original split=train and no holdout source overlap",
+            "continual_training": "only fresh verified paired train-labelled sources feed X47 training; never benchmark holdout",
             "claim_verification": "workflow-reported claims, not an independent reproof",
-            "promotion": "disabled until fresh locked validation clears acceptance criteria",
+            "promotion": "automatic champion registration only after locked fresh 80-source holdout and strict paired/regression gate; native executable unchanged",
         },
     }
 
