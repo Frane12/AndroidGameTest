@@ -1,0 +1,44 @@
+name: DRNAS MATH OMEGA4.2 independent source XOR extraction regression
+on:
+  push:
+    branches: [experiment/drnas-math-omega42-20261113]
+    paths:
+      - .github/workflows/drnas-math-omega42-extractor-audit.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: omega42-independent-extractor-regression
+  cancel-in-progress: false
+jobs:
+  source_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compile independent original-CNF source extractor
+        run: |
+          set -euo pipefail
+          mkdir -p omega42-extractor
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            research/omega42_source_rows.cpp -o omega42-extractor/omega42_rows
+          omega42-extractor/omega42_rows selftest | tee omega42-extractor/selftest.log
+          grep -q 'contradictory_both_parities_canonical=1' omega42-extractor/selftest.log
+          sha256sum research/omega42_source_rows.cpp omega42-extractor/omega42_rows \
+            | tee omega42-extractor/source-pins.txt
+      - name: Independent mask enumerator against 320 source-CNF instances
+        run: |
+          set -euo pipefail
+          python3 -u research/omega42_extractor_regression.py \
+            --exporter omega42-extractor/omega42_rows \
+            --output omega42-extractor/report.json \
+            | tee omega42-extractor/regression.log
+          grep -q '"status": "PASS"' omega42-extractor/regression.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: omega42-extractor-independent-regression
+          retention-days: 30
+          if-no-files-found: warn
+          path: omega42-extractor/
