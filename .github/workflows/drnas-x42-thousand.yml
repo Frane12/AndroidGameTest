@@ -1,0 +1,156 @@
+name: DRNAS X4.2 native 1000 family-disjoint training observations
+on:
+  push:
+    branches: [experiment/drnas-x42-thousand-20261113]
+    paths:
+      - research/drnas_x42_1000.py
+      - research/drnas_x42_finish.py
+      - tests/test_x42_manifest.py
+      - .github/workflows/drnas-x42-thousand.yml
+      - README_X42.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x42-thousand-single-20261113
+  cancel-in-progress: false
+jobs:
+  native_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native X4.1 and verify its policy is unchanged
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          python3 tests/test_x41.py --cases 2800
+      - name: Freeze 1000-source manifest, family holdout and generator audit
+        run: |
+          set -euo pipefail
+          python3 tests/test_x42_manifest.py
+          python3 research/drnas_x42_1000.py --shard 0 --dry-run | tee x42_manifest_audit.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x42-source-audit
+          retention-days: 21
+          path: x42_manifest_audit.log
+  collect_1000:
+    needs: native_audit
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone C++20 observer (never links reference solvers)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          { git rev-parse HEAD; g++ --version | head -1; grep '^model name' /proc/cpuinfo | head -1 || true; } > x42_versions.txt
+      - name: Exactly 250 independently generated original CNFs per shard, 3s cap
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X42_SHARD_${{ matrix.shard }}_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x42_1000.py --shard ${{ matrix.shard }} --shards 4 --cap 3.0 | tee x42_shard.log
+      - name: Stage compact verified data, do not upload huge formulas or individual traces
+        if: always()
+        run: |
+          mkdir -p x42_artifact
+          cp -f drnas_x42_results/shard_${{ matrix.shard }}/report.json x42_artifact/report.json 2>/dev/null || true
+          cp -f drnas_x42_results/shard_${{ matrix.shard }}/trials.jsonl x42_artifact/trials.jsonl 2>/dev/null || true
+          cp -f drnas_x42_results/shard_${{ matrix.shard }}/transitions.jsonl x42_artifact/transitions.jsonl 2>/dev/null || true
+          cp -f drnas_x42_results/frozen_manifest.json x42_artifact/frozen_manifest.json 2>/dev/null || true
+          cp -f x42_versions.txt x42_artifact/x42_versions.txt 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x42-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          compression-level: 6
+          path: x42_artifact/
+  aggregate:
+    needs: collect_1000
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x42-shard-*
+          path: x42_downloads
+          merge-multiple: false
+      - name: Audit exactly 1000 unique SHA and 600/200/200 family split; score offline models
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x42_finish.py --artifact-dir x42_downloads --out x42_aggregate | tee x42_aggregate.log
+      - name: Report results without treating structure as SAT distance
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os,json,pathlib
+          p=pathlib.Path('x42_aggregate/report.json')
+          if not p.exists():raise SystemExit('No complete report generated')
+          r=json.loads(p.read_text());lines=['## DRNAS X4.2 — 1000 distinct generated CNF original inputs','',
+              '**Not 1000 industrial/competition originals.** Source families disjoint, no outcome filtering, 3s cap on one pinned CPU per runner.','',
+              '| Split | All | SAT verified | 0.05–3s | <0.05s | Unknown | PAR2 s |',
+              '|---|---:|---:|---:|---:|---:|---:|']
+          for split,m in r['splits'].items():
+              lines.append(f"| {split} | {m['total']} | {m['completed']} | {m['target_band_50ms_3s']} | {m['under_50ms']} | {m['censored']} | {m['PAR2_s']:.3f} |")
+          lines+=['','One verified SAT formula = one training example, not its number of trace rows. UNKNOWN censored. Training entirely separate from validation and holdout.']
+          e=r['offline_cost_model']
+          if 'validation' in e:
+              for split in ('validation','holdout'):
+                  lines+=['',f"### {split} model diagnostics",'| Model | MAE (ms) | RMSE (ms) |','|---|---:|---:|']
+                  for model,metric in e[split].items():
+                      lines.append(f"| {model} | {metric['MAE_ms']} | {metric['RMSE_ms']} |")
+          lines+=['','A prediction on the current-branch path is **not** a causal estimate of alternatives. No learned driver was enabled.']
+          summary='\n'.join(lines)+'\n';print(summary)
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x42-thousand-final-compact
+          retention-days: 21
+          path: |
+            x42_aggregate/report.json
+            x42_aggregate/all_trials.jsonl
+            x42_aggregate.log
+  original_sat2024_audit:
+    needs: native_audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build independent X4.1 native solver
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          python3 -m venv .x42venv
+          .x42venv/bin/python -m pip install --disable-pip-version-check remotezip
+      - name: Separate REAL original retrospective SAT2024 cohort, fixed source-only 100 family selection
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .x42venv/bin/python -u research/drnas_x41_dataset.py --official --official-count 100 --official-cap 3.0 | tee x42_real_originals.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x42-real-original-SAT2024-audit
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x42_real_originals.log
+            drnas_x41_results/retrospective_SAT2024_original/frozen_manifest.json
+            drnas_x41_results/retrospective_SAT2024_original/trials.jsonl
+            drnas_x41_results/retrospective_SAT2024_original/report.json
