@@ -1,0 +1,157 @@
+name: DRNAS GATE REAL36 original SAT2024 applications 7 arms
+on:
+  push:
+    branches: [experiment/drnas-gate-real36-applications-20261113]
+    paths:
+      - research/gate_real36.py
+      - .github/workflows/drnas-gate-real36-applications.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-gate-real36-applications
+  cancel-in-progress: true
+jobs:
+  freeze_inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bounded HTTP reader dependency
+        run: python3 -m pip install requests==2.32.5
+      - name: Audit parser and require independently verified answers
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/gate_real36.py
+          python3 research/gate_real36.py selftest
+      - name: Download application-labelled originals and freeze 36 exact SHA before any benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_real36.py freeze | tee real36_freeze.log
+          cp real36_freeze.log real36_frozen/
+          git rev-parse HEAD > real36_frozen/experiment_commit.txt
+          tar -czf real36_inputs.tgz real36_frozen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-real36-inputs
+          retention-days: 21
+          path: real36_inputs.tgz
+  build_and_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unchanged native CORE ADAPTIVE X46 R2 R3
+        run: |
+          set -euo pipefail
+          python3 research/build_gate_r3.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_x46_gate30.cpp -o build/drnas-x46
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_gate_r2.cpp -o build/drnas-gate-r2
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_gate_r3.cpp -o build/drnas-gate-r3
+      - name: Build SHA-pinned Kissat CaDiCaL and drat-trim
+        run: |
+          set -euo pipefail
+          mkdir -p deps
+          pinned_checkout() {
+            local name="$1" owner="$2" sha="$3"
+            git init "deps/$name"
+            git -C "deps/$name" fetch --depth=1 "https://github.com/$owner/$name.git" "$sha"
+            git -C "deps/$name" checkout --detach FETCH_HEAD
+            test "$(git -C "deps/$name" rev-parse HEAD)" = "$sha"
+          }
+          pinned_checkout kissat arminbiere 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          pinned_checkout cadical arminbiere c60730422e758ef1cebe7aeddf2dda31c996bf04
+          pinned_checkout drat-trim marijnheule 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          (cd deps/kissat && ./configure && make -j2)
+          (cd deps/cadical && ./configure && make -j2)
+          (cd deps/drat-trim && make -j2)
+          cp deps/kissat/build/kissat build/kissat
+          cp deps/cadical/build/cadical build/cadical
+          cp deps/drat-trim/drat-trim build/drat-trim
+          {
+            git rev-parse HEAD
+            g++ --version | head -1
+            for name in kissat cadical drat-trim; do printf '%s ' "$name"; git -C "deps/$name" rev-parse HEAD; done
+            build/kissat --version
+            build/cadical --version
+          } > build/real36_versions.txt
+      - name: Exact small-oracle audit of all seven binaries and complete UNSAT certificate chain
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_real36.py selftest --native | tee build/real36_native_audit.log
+          sha256sum build/drnas-x41 build/drnas-x3 build/drnas-x46 build/drnas-gate-r2 build/drnas-gate-r3 build/kissat build/cadical build/drat-trim > build/REAL36_SHA256SUMS
+          tar -czf real36_binaries.tgz build/drnas-x41 build/drnas-x3 build/drnas-x46 build/drnas-gate-r2 build/drnas-gate-r3 build/kissat build/cadical build/drat-trim build/real36_versions.txt build/real36_native_audit.log build/REAL36_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-real36-native
+          retention-days: 21
+          path: real36_binaries.tgz
+  paired:
+    needs: [freeze_inputs, build_and_audit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real36-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real36-native
+          path: .
+      - name: Restore identical source files and binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Three original CNFs, three repetitions, seven serial arms on one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "REAL36_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/gate_real36.py shard --shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real36-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: real36_results/${{ matrix.shard }}/
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real36-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-real36-[0-9]*
+          path: real36_downloads
+          merge-multiple: false
+      - name: Verify all 756 paired outcomes and calculate formula-clustered intervals
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          python3 -u research/gate_real36.py finish | tee real36_final.log
+          cp real36_frozen/manifest.json real36_frozen/protocol.json real36_final/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real36-final
+          retention-days: 21
+          path: |
+            real36_final/
+            real36_final.log
