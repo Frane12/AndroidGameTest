@@ -22,7 +22,7 @@ def percentile(vals,frac):
     if not a:return 0.0
     return a[min(len(a)-1,max(0,int(frac*(len(a)-1))))]
 
-def fit(rows,epochs=65,ridge=.07):
+def fit(rows,epochs=65,ridge=.07,warm_model=None):
     data=[x for x in rows if x["label"] in CLASSES]
     if not data:raise ValueError("X44 no non-flat training examples")
     groups=defaultdict(list);fam_sources=defaultdict(set)
@@ -46,6 +46,17 @@ def fit(rows,epochs=65,ridge=.07):
              for w,r in zip(weights,data)]
     weightsum=sum(weights)
     coef=[0.]*(n+1)
+    if warm_model is not None:
+        if warm_model["feature_count"]!=n:
+            raise ValueError("warm start incompatible feature schema")
+        old=warm_model["coefficients"]
+        # Convert previous *unstandardized* logistic decision boundary into
+        # the new TRAINING-ONLY scaler. Before new gradient updates, this is
+        # mathematically equivalent to the previous policy.
+        coef[0]=old[0]+sum(old[j+1]*(means[j]-warm_model["mean"][j])/
+                           warm_model["scale"][j] for j in range(n))
+        for j in range(n):
+            coef[j+1]=old[j+1]*scales[j]/warm_model["scale"][j]
     for epoch in range(epochs):
         grad=[0.]*(n+1)
         for x,row,weight in zip(transformed,data,weights):
@@ -65,7 +76,7 @@ def fit(rows,epochs=65,ridge=.07):
         "threshold":.5,"margin":.075,
         "training_sources":len(groups),"training_families":sorted(fam_sources),
         "training_nonflat_events":len(data),"training_class_support":dict(Counter(r["label"] for r in data)),
-        "epochs":epochs,"ridge":ridge,
+        "epochs":epochs,"ridge":ridge,"warm_started":warm_model is not None,
         "no_active_solver_control":True,
         "independent_source_weighting":True,
         "training_families_balanced":True}
