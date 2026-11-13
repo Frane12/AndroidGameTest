@@ -85,3 +85,42 @@ def verify_sat(raw, log):
            for c in clauses):
         raise ValueError("Assignment fails original clauses")
     return {"verified": True, "assigned": len(assignment)}
+
+
+def verify_source_preserving_sat_view(original, sat_view):
+    """Independently check that SAT view retained every original source clause.
+
+    Allowed non-SAT metadata: DIMACS 'c' comments (including weighted/projected
+    annotations), separate 'w ' weight lines, and terminal SATLIB '%' marker.
+    Returns the semantic clause count, never a SAT/UNSAT verdict.
+    """
+    n, reference = parse_cnf(sat_view)
+    source_n = source_m = None
+    clause = []
+    original_clauses = []
+    for rawline in original.decode("ascii").splitlines():
+        line = rawline.strip()
+        if not line or line.startswith("c") or line.startswith("w "):
+            continue
+        if line.startswith("%"):
+            break
+        if line.startswith("p "):
+            parts = line.split()
+            if len(parts) != 4 or parts[1] != "cnf" or source_n is not None:
+                raise ValueError("Unsupported source header")
+            source_n, source_m = int(parts[2]), int(parts[3])
+            continue
+        if source_n is None:
+            raise ValueError("Missing original header")
+        for field in line.split():
+            lit = int(field)
+            if lit:
+                if abs(lit) > source_n:
+                    raise ValueError("Out-of-range original literal")
+                clause.append(lit)
+            else:
+                original_clauses.append(tuple(clause))
+                clause = []
+    if source_n != n or source_m != len(reference) or original_clauses != reference or clause:
+        raise ValueError("Not a clause-preserving SAT projection")
+    return {"source_clauses": len(reference), "source_vars": n}
