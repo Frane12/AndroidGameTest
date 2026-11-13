@@ -273,6 +273,27 @@ def sum_arm(rows):
             "protected_reused","live_learnt","live_used","live_unused")
     result["telemetry_totals"]={k:sum((r["x53"] or r["last_progress"]).get(k,0)
                                       for r in rows) for k in fields}
+    names=("analysis","select","reduce","proof","garbage_collect")
+    phases={}
+    for name in names:
+        calls=samples=sample_cpu_ns=0
+        for r in rows:
+            t=r["x55"] or r["x55_last_progress"]
+            calls+=t.get(name+"_calls",0)
+            samples+=t.get(name+"_samples",0)
+            sample_cpu_ns+=t.get(name+"_sample_cpu_ns",0)
+        phases[name]={"calls":calls,"samples":samples,
+                       "sample_cpu_ns":sample_cpu_ns,
+                       "systematic_extrapolated_cpu_s":round(128*sample_cpu_ns/1e9,6) if samples else None}
+    raw_bcp=result["bcp_binary_sample_cpu_ns"]+result["bcp_watch_sample_cpu_ns"]
+    result["cpu_sample_profile"]={
+        "bcp_binary_estimate_s":round(result["bcp_binary_sample_cpu_ns"]*1024/1e9,6),
+        "bcp_watch_estimate_s":round(result["bcp_watch_sample_cpu_ns"]*1024/1e9,6),
+        "bcp_sample_total_estimate_s":round(raw_bcp*1024/1e9,6),
+        "bcp_trail_samples":sum((r["x55"] or r["x55_last_progress"]).get("bcp_trail_samples",0) for r in rows),
+        "phase":phases,
+        "caution":"Systematic sampling; extrapolation not exact. Compare separate matched arms and avoid adding nested GC to reduction."
+    }
     return result
 
 
@@ -335,6 +356,8 @@ def finish():
             "Selection from small compressed official formulas, not representative of overall industrial SAT.",
             "X55 changes no CDCL policy; CPU sampling and watcher rotation are independently toggled.",
             "Phase times use systematic CPU samples and are not exact additive runtime partitions.",
+            "The optional CPU profiler overhead must be measured against the same X55 binary with profile disabled.",
+            "Hardware counters are conditional on perf_event permissions; absence of data means unavailable, not zero.",
             "Nested garbage-collection CPU samples overlap the larger reduction phase.",
             "Proof size limit is resource censoring, never an incorrect solver answer.",
             "Source-cluster bootstrap treats two repetitions as dependent.",
