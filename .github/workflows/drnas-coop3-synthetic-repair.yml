@@ -1,0 +1,61 @@
+name: DRNAS COOP3 synthetic gate retry from frozen binary
+on:
+  push:
+    branches: [experiment/drnas-coop3-adaptive-gate-20261113]
+    paths:
+      - .github/workflows/drnas-coop3-synthetic-repair.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop3-synthetic-repair-once
+  cancel-in-progress: false
+jobs:
+  synthetic_proof_benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43512234907
+          name: coop3-frozen
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore frozen binary and correct synthetic generator path
+        run: |
+          set -euo pipefail
+          tar -xzf coop3_frozen.tgz
+          sha256sum -c build/COOP3_BINARIES.sha256
+          cp research/drnas_coop1/synthetic.py research/drnas_coop3/synthetic.py
+          sha256sum research/drnas_coop1/synthetic.py research/drnas_coop3/synthetic.py
+          python3 -m py_compile research/drnas_coop3/synthetic_benchmark.py research/drnas_coop3/synthetic.py
+          git rev-parse HEAD > coop3_synthetic_git_sha.txt
+      - name: Paired six-arm 42-source synthetic stress with independent SAT and DRAT checks
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP3_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop3/synthetic_benchmark.py --cap 1 --repeats 2 --scale stress --out coop3_synthetic_gate | tee coop3_synthetic_gate.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open("coop3_synthetic_gate/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert all(v["attempts"]==84 for v in d["overall"].values())
+          assert d["promotion"] is False
+          assert "COOP3_GATE" in d["overall"]
+          assert d["overall"]["COOP3_GATE"]["gate_certified_lemmas"]==d["overall"]["COOP3_GATE"]["lemmas"]
+          print("COOP3_GATE_SYNTHETIC_FINAL",json.dumps(d["overall"],sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop3-synthetic-gate-final
+          retention-days: 60
+          path: |
+            coop3_synthetic_git_sha.txt
+            coop3_synthetic_gate.log
+            coop3_synthetic_gate/manifest.json
+            coop3_synthetic_gate/report.json
+            coop3_synthetic_gate/trials.jsonl
