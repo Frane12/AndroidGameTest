@@ -122,32 +122,39 @@ def sign_audit(models,rows):
         per[name]={**stats,
             "threeclass_model_accuracy":perf["model_accuracy"],
             "away_auc":D.away_auc(m["model"],rows)}
-    rng=random.Random(20261113001)
-    groups=defaultdict(list)
+    # Precompute the predictions ONCE. Repeating model inference inside a
+    # 2200x source bootstrap would turn a tiny postprocessor into a hot loop.
+    group=defaultdict(lambda:{"away":0,"toward":0,
+        "early_away":0,"early_toward":0,"long_away":0,"long_toward":0})
+    early=models["CYCLE3_EARLY20"];long=models["CYCLE3_90"]
     for row in rows:
-        if row["label"]=="flat":continue
-        groups[row["source_sha"]].append(row)
-    def balanced(grouped,name):
-        hit=Counter();count=Counter();m=models[name]
-        for row in grouped:
-            pred=MODEL.infer(m["model"],row["features"])
-            ratio=pred[0]/max(1e-9,pred[0]+pred[2])
-            guess="away" if ratio>=m["threshold"] else "toward"
-            count[row["label"]]+=1;hit[row["label"]]+=int(guess==row["label"])
-        if min(count.values())==0 or len(count)!=2:return None
-        return .5*(hit["away"]/count["away"]+hit["toward"]/count["toward"])
-    diffs=[]
+        truth=row["label"]
+        if truth=="flat":continue
+        sid=row["source_sha"];g=group[sid]
+        g[truth]+=1
+        for key,entry in (("early",early),("long",long)):
+            p=MODEL.infer(entry["model"],row["features"])
+            ratio=p[0]/max(1e-9,p[0]+p[2])
+            pred="away" if ratio>=entry["threshold"] else "toward"
+            g[key+"_"+truth]+=int(pred==truth)
+    rng=random.Random(20261113001)
+    sampled_differences=[]
     for _ in range(2200):
-        sample_ids=[ids[rng.randrange(len(ids))] for _ in ids]
-        sampled=[row for sid in sample_ids for row in groups[sid]]
-        x=balanced(sampled,"CYCLE3_EARLY20")
-        y=balanced(sampled,"CYCLE3_90")
-        if x is not None and y is not None:diffs.append(x-y)
-    diffs.sort()
+        source_ids=[ids[rng.randrange(len(ids))] for _ in ids]
+        na=nt=ea=et=la=lt=0
+        for sid in source_ids:
+            g=group[sid]
+            na+=g["away"];nt+=g["toward"]
+            ea+=g["early_away"];et+=g["early_toward"]
+            la+=g["long_away"];lt+=g["long_toward"]
+        if na and nt:
+            sampled_differences.append(.5*((ea-la)/na+(et-lt)/nt))
+    sampled_differences.sort()
     return {"by_arm":per,"holdout_support":dict(support),
         "early20_minus_90_balanced_sign_accuracy_formula95pct":[
-            round(diffs[int(.025*(len(diffs)-1))],5),
-            round(diffs[int(.975*(len(diffs)-1))],5)] if diffs else None,
+            round(sampled_differences[int(.025*(len(sampled_differences)-1))],5),
+            round(sampled_differences[int(.975*(len(sampled_differences)-1))],5)
+        ] if sampled_differences else None,
         "n_distinct_SAT_sources":len(ids),"replays_not_independent":True}
 
 def main():
