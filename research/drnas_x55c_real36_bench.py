@@ -25,6 +25,8 @@ B.CAP=CAP
 E.BIN["X55B_ROTATE_OFF"]="build/drnas-x55b"
 E.ARMS=DRNAS_ARMS
 E.PROFILED={"X55B_CONTROL_ON","X55B_ROTATE_ON"}
+# Restore frozen reference executables omitted by the X5.5 CPU-only module.
+B.BIN.update({"KISSAT":"build/kissat","CADICAL":"build/cadical"})
 
 def emit(key,obj):
     print(key+" "+json.dumps(obj,sort_keys=True,separators=(",",":")),flush=True)
