@@ -39,7 +39,7 @@ def main():
         for idx,(n,clauses) in enumerate(cases):
             cnf.write_text(f'p cnf {n} {len(clauses)}\n'+''.join(' '.join(map(str,c))+' 0\n' for c in clauses))
             truth=oracle(n,clauses);results={};at=1 if idx%2 else 4
-            for policy in ('core','sham','fixed','flip','learned','collect','collect_flip','original'):
+            for policy in ('core','sham','static','fixed','flip','learned','collect','collect_flip','original'):
                 cmd=[str(baseline if policy=='original' else binary),str(cnf),'--mode','core','--time','2','--stats','--branch-at',str(at)]
                 if policy!='original':cmd+=['--policy','collect' if policy=='collect_flip' else policy]
                 if policy in ('learned','sham'):cmd+=['--model',str(model)]
@@ -97,6 +97,19 @@ def main():
                 pol=result['policy'];score,_=X.predict(tree,pol['features'])
                 assert abs(score-pol['score'])<1e-8
                 assert pol['flipped']==X.choose(tree,pol['features'])
+        # Tree split exactly on a decimal-serialized feature: native inference
+        # must use the same value as training, not the higher-precision source.
+        c=X.make_case('grid_xor',0,'x47-feature-serialization-test');cnf.write_text(c['source'])
+        observed=X.run(binary,cnf,c,'collect',0,work_limit=X.WORK_LIMIT)
+        assert observed['reached']
+        threshold=observed['policy']['features'][0]
+        edge={**fake,'kind':'tree','bias':0.,'centers':[0.]*24,'scales':[1.]*24,
+              'weights':[[0,threshold,0,100.,0,100.,1.,1.,2.,2.]]*2}
+        X.write_model(model,edge)
+        result=X.run(binary,cnf,c,'tree',0,model=model,work_limit=X.WORK_LIMIT)
+        score,_=X.predict(edge,result['policy']['features'])
+        assert abs(score-result['policy']['score'])<1e-8
+        assert score==2.;checked+=2
         # Invalid models must fail closed.
         for bad in ('garbage','X471 15 2 nan 8','X471 14 2 0 8'):
             model.write_text(bad)
@@ -107,7 +120,7 @@ def main():
         assert not set(X.TRAIN)&set(X.VALIDATION)
         assert not set(X.TRAIN+X.VALIDATION)&set(X.HOLDOUT)
         assert reached>10
-    print('X47_TEST_PASS',json.dumps(dict(sources=len(cases)+36,solver_runs=checked,matched_interventions=matched,
+    print('X47_TEST_PASS',json.dumps(dict(sources=len(cases)+37,solver_runs=checked,matched_interventions=matched,
            independent_exhaustive_sources=len(cases),all_policy_paths_verified=True,original_core_unchanged=True)))
 
 

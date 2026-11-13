@@ -334,7 +334,19 @@ class Solver {
                 compare_baseline_literal_=baseline_lit;
                 bool flip=compare_flip_;
                 if(policy_!="core") {
-                    if(policy_!="flip") features_=preActionFeatures(v,baseline_lit);
+                    if(policy_!="flip") {
+                        features_=preActionFeatures(v,baseline_lit);
+                        // Training telemetry uses 12 significant decimal digits. Apply the
+                        // identical representation before inference: tiny differences at a
+                        // tree split must not select different Python/native branches.
+                        for(double& x:features_) {
+                            char buffer[64];
+                            const auto out=std::to_chars(buffer,buffer+64,x,std::chars_format::general,12);
+                            if(out.ec!=std::errc{}) throw std::runtime_error("feature serialization failed");
+                            const auto in=std::from_chars(buffer,out.ptr,x);
+                            if(in.ec!=std::errc{}) throw std::runtime_error("feature parse failed");
+                        }
+                    }
                     if(policy_=="static") flip=features_[6]>0.0;
                     if(policy_=="fixed") flip=features_[19]>0.0;
                     if(policy_=="flip") flip=true;
