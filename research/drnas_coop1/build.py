@@ -16,11 +16,22 @@ replace('namespace {\nusing Clock', '#include "../research/drnas_coop1/coop.hpp"
 replace('    void configureX5(','''    drnas_coop1::Engine coop_;
     int coop_hint_=-1;
     void configureCoop(const std::string& mode) { coop_.mode=mode; }
-    void initializeCoop() { coop_.initialize(n_); }
+    void initializeCoop() {
+        if (coop_.mode != "delayed") coop_.initialize(n_);
+        else coop_.disabled = n_ > 4096 || original_count_ > 12000;
+    }
     void reportCoop() const { coop_.report(); }
     Prop cooperate() {
         coop_hint_=-1;
         if(!coop_.enabled() || x46_clone_)return Prop{};
+        if (coop_.mode == "delayed" && coop_.activated_at_conflicts < 0) {
+            constexpr int64_t start_after_conflicts = 8;
+            if (stats_.conflicts < start_after_conflicts) return Prop{};
+            // Original clauses are the stable prefix. Reduction removes only learnt clauses.
+            for (int i = 0; i < original_count_; ++i) coop_.add(clauses_[i].lits);
+            coop_.activated_at_conflicts = stats_.conflicts;
+            coop_.initialize(n_);
+        }
         auto out=coop_.step(values_,stats_.decisions,stats_.conflicts,
             [&](const std::vector<int>& c){writeProofClause(c);});
         coop_hint_=out.hint;
@@ -50,7 +61,7 @@ replace('    void configureX5(','''    drnas_coop1::Engine coop_;
         return propagate(-1);
     }
     void configureX5(''')
-replace('        const int cid = storeClause(std::move(clean), false);','        coop_.add(clean);\n        const int cid = storeClause(std::move(clean), false);')
+replace('        const int cid = storeClause(std::move(clean), false);','        if(coop_.mode!="delayed") coop_.add(clean);\n        const int cid = storeClause(std::move(clean), false);')
 replace('''            p = propagate(-1);
             if (p.result == PropResult::TIMEOUT)''','''            p = propagate(-1);
             if (p.result == PropResult::OK) p=cooperate();
@@ -63,7 +74,7 @@ replace('''            int v = selectVariable();
             if (v == -1)''')
 replace('    std::string input, mode="trace", trace_file;', '    std::string input, mode="trace", trace_file,coop_mode="off";')
 replace('        else if (opt=="--x5-no-minimize")', '        else if (opt=="--coop1" && i+1<argc) coop_mode=argv[++i];\n        else if (opt=="--x5-no-minimize")')
-replace('    if (input.empty() || (mode!=', '    if(coop_mode!="off"&&coop_mode!="observe"&&coop_mode!="algebra"&&coop_mode!="on")throw std::runtime_error("invalid COOP1 mode");\n    if (input.empty() || (mode!=')
+replace('    if (input.empty() || (mode!=', '    if(coop_mode!="off"&&coop_mode!="observe"&&coop_mode!="algebra"&&coop_mode!="on"&&coop_mode!="delayed")throw std::runtime_error("invalid COOP1 mode");\n    if (input.empty() || (mode!=')
 replace('            solver->configureX5(', '            solver->configureCoop(coop_mode);\n            solver->configureX5(')
 replace('    solver->finishParsing();', '    solver->finishParsing();\n    solver->initializeCoop();')
 replace('    const Result r=solver->solve();', '    const Result r=solver->solve();\n    if(show_stats)solver->reportCoop();')

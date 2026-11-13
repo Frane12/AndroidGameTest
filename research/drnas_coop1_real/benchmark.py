@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Original SAT2024 application encodings; unchanged COOP1, no cross-instance training."""
+"""Original SAT2024 application encodings with immediate and delayed COOP1."""
 import argparse, collections, hashlib, json, lzma, os, pathlib, random, re, resource, signal, subprocess, sys, time
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'research/drnas_coop1'))
 from synthetic import model_ok
 ARCHIVE='https://zenodo.org/records/15095752/files/sat-competition-2024-main-benchmarks.zip?download=1'
-ARMS=['X5_NO_MIN','COOP_OFF','COOP_ALGEBRA','Kissat','CaDiCaL','CryptoMiniSat']
+ARMS=['X5_NO_MIN','COOP_OFF','COOP_ALGEBRA','COOP_DELAYED','Kissat','CaDiCaL','CryptoMiniSat']
 CMS_FRAT=False
-BINS={'X5_NO_MIN':'drnas-x5','COOP_OFF':'drnas-coop1','COOP_ALGEBRA':'drnas-coop1','Kissat':'kissat','CaDiCaL':'cadical','CryptoMiniSat':'cryptominisat5'}
+BINS={'X5_NO_MIN':'drnas-x5','COOP_OFF':'drnas-coop1','COOP_ALGEBRA':'drnas-coop1','COOP_DELAYED':'drnas-coop1','Kissat':'kissat','CaDiCaL':'cadical','CryptoMiniSat':'cryptominisat5'}
 CONTROLS={
 'asconhashv12_opt64_H5_M2-xEJ8F_m0_3_U5.c.cnf.xz':'e789f2a90e857bd26bbc9db1dea6d7e509e1391de3f7335e959f93c4fa57b9fc',
 'asconhashv12_opt64_H6_M2-PgbpwX_m0_4_U1.c.cnf.xz':'95ad2982de832de5b47f0c6dbe6be62bca36e809b2fa1d6b977770e123e4f455',
@@ -93,7 +93,7 @@ def collect(out,local=None):
 
 def command(arm,cnf,proof,cap):
  exe=str(ROOT/'build'/BINS[arm])
- if arm in ('X5_NO_MIN','COOP_OFF','COOP_ALGEBRA'):
+ if arm in ('X5_NO_MIN','COOP_OFF','COOP_ALGEBRA','COOP_DELAYED'):
   cmd=[exe,str(cnf),'--mode','core','--x5-no-minimize','--time',str(cap),'--stats','--proof',str(proof)]
   if arm!='X5_NO_MIN':cmd+=['--coop1',arm.removeprefix('COOP_').lower()]
   return cmd
@@ -171,7 +171,7 @@ def main():
  global CMS_FRAT
  ap=argparse.ArgumentParser();ap.add_argument('--out',default='coop1_real_results');ap.add_argument('--local-inputs');ap.add_argument('--native-only',action='store_true');ap.add_argument('--cap',type=float,default=5);ap.add_argument('--repeats',type=int,default=3);ap.add_argument('--active-only',action='store_true');a=ap.parse_args()
  if a.cap<=0 or a.repeats<1:raise ValueError('invalid limits')
- arms=ARMS[:3] if a.native_only else ARMS
+ arms=ARMS[:4] if a.native_only else ARMS
  if 'CryptoMiniSat' in arms:
   # Ubuntu 24.04 CryptoMiniSat emits ASCII FRAT to positional proof path.
   # Its --help summary does not list this positional format.

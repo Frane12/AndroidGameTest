@@ -52,6 +52,7 @@ class Engine {
     int passes=0,windows=0,affine_windows=0,nonaffine_windows=0,conditioned=0;
     int forced_parities=0,lemmas=0,proof_steps=0,hints=0,applied_hints=0,propagations=0,conflicts=0;
     int64_t last_dec=-1,last_conf=-1;
+    int64_t activated_at_conflicts=-1;
     double ms=0;bool disabled=false;
     bool enabled()const{return mode!="off"&&!disabled;}
     void add(const std::vector<int>& c){
@@ -183,7 +184,7 @@ class Engine {
     }
     void report()const{
         std::cerr<<"COOP1_STATS {\"mode\":\""<<mode<<"\",\"blocks\":"<<blocks.size()
-          <<",\"passes\":"<<passes<<",\"windows\":"<<windows<<",\"affine_windows\":"<<affine_windows
+          <<",\"activated_at_conflicts\":"<<activated_at_conflicts<<",\"passes\":"<<passes<<",\"windows\":"<<windows<<",\"affine_windows\":"<<affine_windows
           <<",\"nonaffine_windows\":"<<nonaffine_windows<<",\"conditioned\":"<<conditioned
           <<",\"forced_parities\":"<<forced_parities<<",\"lemmas\":"<<lemmas<<",\"proof_steps\":"<<proof_steps
           <<",\"hints\":"<<hints<<",\"applied_hints\":"<<applied_hints<<",\"propagations\":"<<propagations
