@@ -1,0 +1,127 @@
+name: DRNAS COOP5 original SAT real-only repaired SHA paired
+on:
+  push:
+    branches: [experiment/drnas-coop5-fixed-dynamic-probe-20261113]
+    paths: [.github/workflows/drnas-coop5-real-repair.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop5-original-real-repair-only
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        cohort: [real]
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43521424046
+          name: coop5-two-builds-and-safety
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        if: matrix.cohort == 'real'
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - name: Freeze binaries and original source checksums
+        run: |
+          set -euo pipefail
+          tar -xzf coop5_frozen.tgz
+          sha256sum -c build/COOP5_SHA256SUMS
+          python3 -m py_compile research/drnas_coop5/benchmark.py
+          if [[ "${{ matrix.cohort }}" == "real" ]]; then
+            tar -xzf real36_inputs.tgz
+            python3 - <<'PY'
+            import pathlib,sys
+            sys.path.insert(0,"research")
+            import drnas_x55_cpu_real36 as B
+            cases,_=B.official_manifest()
+            assert len(cases)==36 and len({c["sha256"] for c in cases})==36
+            print("COOP5_REAL36_SHA_RECHECK",len(cases))
+            PY
+          fi
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP5_ONE_LOGICAL_CPU=$CPU"
+      - name: Run proof-checked same-source 7-arm probe benchmark
+        run: |
+          set -euo pipefail
+          COHORT="${{ matrix.cohort }}"
+          SHARD="${{ matrix.shard }}"
+          if [[ "$COHORT" == "real" ]]; then CAP=3; else CAP=1; fi
+          OUT="coop5_shard_${{ matrix.cohort }}_${{ matrix.shard }}"
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop5/benchmark.py \
+            --cohort "$COHORT" --cap "$CAP" --repeats 2 --shards 3 --shard "$SHARD" --out "$OUT" \
+            | tee coop5_paired.log
+          echo "COOP5 Paired $COHORT shard $SHARD complete." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop5-shard-${{ matrix.cohort }}-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            coop5_shard_${{ matrix.cohort }}_${{ matrix.shard }}/
+            coop5_paired.log
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coop5-shard-*
+          path: coop5_downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43521774874
+          pattern: coop5-shard-synthetic-*
+          github-token: ${{ github.token }}
+          path: coop5_downloads
+          merge-multiple: false
+      - name: Validate all paired samples, aggregate PAR2 and probe costs
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_coop5/aggregate.py | tee coop5_final.log
+          python3 - <<'PY'
+          import json,os
+          docs=[json.load(open(f'coop5_{c}_final/report.json')) for c in ('synthetic','real')]
+          t=['## DRNAS COOP5 BCP probe fixed 25ms vs dynamic','',
+            'Frozen paired sources; original SAT witness + independent UNSAT DRAT verification. Retrospective development, no promotion.','',
+            '| Cohort | Arm | Verified | PAR2 (s) | Probe cost (ms) | Probe pairs | Actual VSIDS overrides |',
+            '|---|---|---:|---:|---:|---:|---:|']
+          for d in docs:
+            assert d['status']=='COMPLETE' and d['promotion'] is False
+            for arm,v in d['overall'].items():
+              t.append(f"| {d['cohort']} | {arm} | {v['solved']}/{v['attempts']} | {v['PAR2_s']:.4f} | {v['probe_ms']:.3f} | {v['attempted_pairs']} | {v['actually_overrode']} |")
+          t+=['','### Per-family confidence intervals']
+          for d in docs:
+            for k,v in d['comparisons'].items():
+              t.append(f"- {d['cohort']} {k}: {v['gain_pct']:+.3f}% (95% family bootstrap {v['family_CI95_pct']}%), families {v['families']}")
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(t)+'\n')
+          print('\n'.join(t))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop5-fixed-dynamic-paired-results
+          retention-days: 60
+          path: |
+            coop5_synthetic_final/report.json
+            coop5_real_final/report.json
+            coop5_final.log
