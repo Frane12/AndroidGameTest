@@ -1,0 +1,86 @@
+name: DRNAS X1 MEMORY2 2400 fresh formula confirmation
+on:
+  push:
+    branches: [experiment/drnas-x1-memory2-confirm2400-20261113]
+    paths:
+      - research/drnas_x1/**
+      - .github/workflows/drnas-x1-memory2-confirm2400.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x1-memory2-confirm2400
+  cancel-in-progress: false
+jobs:
+  preregistered_confirmation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native build and independent regression
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror research/drnas_x1/x1.cpp -o build/drnas-x1
+          python3 -S research/drnas_x1/test.py build/drnas-x1 --cases 500 --report x1_memory2-confirm-regression.json
+          sha256sum build/drnas-x1 research/drnas_x1/memory2_statpower_bench.py
+      - name: Precheck fresh holdout does not reuse 360-formula pilot
+        run: |
+          set -euo pipefail
+          python3 -S - <<'PYCODE'
+          import sys
+          sys.path.insert(0,'research/drnas_x1')
+          from memory2_statpower_bench import dataset,TEST_FAMILIES
+          old={x['sha256'] for x in dataset(TEST_FAMILIES,360,offset=0)}
+          new={x['sha256'] for x in dataset(TEST_FAMILIES,2400,offset=10000)}
+          assert len(old)==360 and len(new)==2400
+          assert not old.intersection(new),'pilot formula leaked into confirmation'
+          print('M2_CONFIRM_PRECHECK_PASS pilot=360 new=2400 overlapping_SHA=0')
+          PYCODE
+      - name: Predeclared online comparison 2400 independent CNFs times 3 repeats
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -S -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u -S research/drnas_x1/memory2_statpower_bench.py \
+            --binary build/drnas-x1 --out x1_confirm2400 \
+            --train 240 --holdout 2400 --holdout-offset 10000 \
+            --primary X1_M2_ONLINE --repeats 3 --cap 0.5 | tee x1_confirm2400.log
+      - name: Audit independent sample count, proof credit and preregistered CI
+        run: |
+          set -euo pipefail
+          python3 -S - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('x1_confirm2400')
+          manifest=json.loads((p/'manifest.json').read_text())
+          report=json.loads((p/'statistical-report.json').read_text())
+          assert manifest['pilot_informed_primary_selection']
+          assert manifest['holdout_generator_offset']==10000
+          assert report['primary_comparison']=='X1_M2_ONLINE vs X1_CORE'
+          assert report['n_distinct_test_formulas']==2400
+          assert report['n_distinct_families']==6
+          assert report['n_repeats_per_formula']==3
+          assert report['holdout_model_sha_unchanged']
+          assert all(v['rows']==7200 for v in report['arms'].values())
+          print('M2_CONFIRM_FINAL_AUDIT',json.dumps({
+              'primary':report['primary_comparison'],
+              'n_unique':2400,
+              'relative_improvement':report['comparisons']['X1_M2_ONLINE']['relative_PAR2_reduction'],
+              'formula_CI':report['comparisons']['X1_M2_ONLINE']['formula_cluster_bootstrap_95pct'],
+              'family_CI':report['comparisons']['X1_M2_ONLINE']['family_cluster_bootstrap_95pct'],
+              'predefined_5pct_criterion':report['primary_passed']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-memory2-confirm2400-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x1_memory2-confirm-regression.json
+            x1_confirm2400/manifest.json
+            x1_confirm2400/statistical-report.json
+            x1_confirm2400/trials.jsonl
+            x1_confirm2400/verified-memory2-policy.txt
+            x1_confirm2400/trace_*.jsonl
+            x1_confirm2400.log
