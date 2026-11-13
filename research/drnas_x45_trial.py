@@ -38,7 +38,7 @@ BUILD={
 }
 GROUPS={
     "eval_known": ["planted_uniform", "planted_local40"],
-    "eval_new_family": ["novel_hub16", "novel_widthmix", "novel_xor_duplicate"],
+    "eval_ood": ["novel_hub16", "novel_widthmix", "novel_xor_duplicate"],
 }
 
 
