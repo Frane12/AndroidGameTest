@@ -1,0 +1,91 @@
+name: DRNAS X4.5 LIVE frozen-model branch-polarity benchmark
+on:
+  push:
+    branches: [experiment/drnas-x45-live-frozen-model-20261113]
+    paths:
+      - src/drnas_x45_live.cpp
+      - research/drnas_x45_live_benchmark.py
+      - research/drnas_x45_frozen_28.json
+      - .github/workflows/drnas-x45-live-benchmark.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x45-live-frozen-one-benchmark
+  cancel-in-progress: true
+jobs:
+  online_paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone C++20 model-driven DRNAS solver (NO external SAT)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45_live.cpp -o build/drnas-x45-live
+          { git rev-parse HEAD; g++ --version | head -1; sha256sum research/drnas_x45_frozen_28.json; } > live_versions.txt
+      - name: Validate frozen model shape, and test one real model intervention
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,sys,pathlib,subprocess
+          sys.path.insert(0,'research')
+          import drnas_x45_live_benchmark as B
+          import drnas_x42_1000 as G
+          data=json.loads(pathlib.Path('research/drnas_x45_frozen_28.json').read_text())
+          assert len(data['features'])==len(data['centers'])==len(data['scales'])==28
+          assert len(data['weights'])==29
+          B.ROOT.mkdir(parents=True,exist_ok=True)
+          B.convert_model(data,B.ROOT/'smoke_model.txt')
+          G.SAMPLE_HASH='drnas-live-model-fresh-source-20261113-v1'
+          s=G.gen_source('planted_local40',361,B.ROOT/'smoke_cnfs')
+          cp=subprocess.run(['build/drnas-x45-live',s['path'],'--mode','core','--time','2',
+                             '--checkpoint','32','--model-file',str(B.ROOT/'smoke_model.txt'),'--stats'],
+                             capture_output=True,text=True,timeout=4)
+          assert cp.returncode==10,(cp.returncode,cp.stderr[-800:])
+          assert B.OLD.check_witness(pathlib.Path(s['path']),cp.stdout,s['nvars'])
+          line=next(x for x in cp.stderr.splitlines() if x.startswith('X45_STATS '))
+          assert json.loads(line[10:])['model_applications']==1
+          print('LIVE_MODEL_SMOKE_PASS')
+          PY
+      - name: 100 fresh generated CNFs x 2 repeats, frozen X45 model vs same native CORE
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "LIVE_X45_ONE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x45_live_benchmark.py \
+            --per-family 10 --reps 2 --cap 0.8 --checkpoint 32 \
+            --model-json research/drnas_x45_frozen_28.json | tee x45_live.log
+      - name: Print paired verified PAR2 and solved report, include caveats
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('drnas_x45_live_results/fresh_report.json'))
+          lines=['## Native DRNAS X4.5 — frozen-model ONLINE benchmark','',
+                 '100 fresh generated SAT CNFs (not industrial); 2 repetitions; cap 0.8 s; one CPU; verified original witnesses.',
+                 'The X4.5 policy acts at exactly one fixed decision; full solver and feature time charged.',
+                 '','| Arm | SAT verified | verified PAR2 (s) | total E2E (s) |',
+                 '|---|---:|---:|---:|']
+          for arm,name in [('core','CORE'),('model','Frozen X4.5 model')]:
+              a=r['totals'][arm]
+              lines.append(f"| {name} | {a['SAT_verified']}/{a['runs']} | {a['PAR2_s']:.4f} | {a['E2E_s']:.4f} |")
+          lines += ['',f"Model vs core PAR2 reduction: {r['model_vs_core_PAR2_reduction_pct']:.3f}% (negative is regression); paired 95% formula-bootstrap mean delta CI: {r['paired_model_minus_core_par2_s_bootstrap_ci_95pct']} seconds",
+                    'The result does not establish general improvement. The previously reported offline holdout was negative; model is not enabled by default.']
+          summary='\n'.join(lines)+'\n';print(summary)
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x45-online-frozen-model-results
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            live_versions.txt
+            x45_live.log
+            drnas_x45_live_results/fresh_report.json
+            drnas_x45_live_results/fresh_trials.jsonl
+            drnas_x45_live_results/fresh_manifest.json
