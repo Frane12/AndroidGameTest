@@ -1,0 +1,13 @@
+# X5.2 proof-deletion A/B
+
+Separate source derived from frozen X5 (full minimization). `--x52-proof-deletions` emits an ASCII DRAT deletion before marking an existing learned clause deleted. No change to branch selection, clause retention, minimization or restart policy. Default is OFF. Frozen controls and the running X5.1 experiment remain unchanged.
+
+Correctness checks compare X5, X5.2 OFF and X5.2 DELETE on 149 cases / 447 runs: independent truth tables, SAT witnesses, 279 independently verified UNSAT proofs, exact conflict/decision/propagation/restart counts, and identical proof addition streams after removing deletion lines. The tests exercise 124128 deletions across completed proofs, including the cardinality formula that previously exhausted its verification budget. A deliberately false proof must be rejected. Initial local timings were noisy and are not performance evidence.
+
+Benchmark: 24 prespecified fresh synthetic instances (8 each cardinality, XOR and uniform random 4-SAT), plus the previously seen cardinality formula as a separately reported diagnostic replay. The committed protocol contains exact hashes. Four arms (frozen X5, X5.2 OFF, X5.2 DELETE, frozen Kissat), three repetitions, one logical CPU per solver, randomized arm order, 5-second solve-plus-independent-verification budget: 300 trials. No formula screening or policy tuning. Source families are shared templates, not industrial/generalization evidence.
+
+The OFF arm separates compiler/layout changes from deletion logging. Search/addition-stream equivalence is checked for all available completed native pairs. Timeout prefixes are not required to match, since logging overhead can change how much work fits into a deadline. Source-bootstrap comparisons apply only to the fresh cohort. Known replay is never counted as fresh validation.
+
+Solver and checker are timed independently. A pidfd waits without timeout polling quantization; timeout kills each process group. Peak RSS is retained for completed solver/checker processes and explicitly missing on killed processes. Proof byte counts, deletion counts and addition-stream hashes are audit metadata collected after timed certification. Kissat proof deletion counts are unavailable because its proof may be binary. A proof with deletion records can contain MORE bytes while leaving fewer active clauses for verification.
+
+All completed answers must be verified, otherwise fail closed; timeout or unverified results receive PAR2=10. Report preserves raw timing, censored checker timeouts, proof sizes, checker RSS and the first-repetition replay proofs. No automatic promotion or cap increase.

@@ -1,0 +1,96 @@
+name: DRNAS X5.2 proof deletion A-B fresh24 and known replay
+on:
+  push:
+    branches: [experiment/drnas-x52-proof-deletions-20261113]
+    paths: [.github/workflows/drnas-x52-proof-deletions.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x52-proof-deletions
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Compile candidate and verify frozen controls
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          g++ --version
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x52.cpp -o build/drnas-x52
+          python3 -m py_compile research/drnas_x52_bench.py research/drnas_x52_report.py tests/test_x52.py
+      - name: Independently verify proofs and exact search and addition streams
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x52.py | tee build/test_x52.log
+          sha256sum build/drnas-x52 src/drnas_x52.cpp experiments/drnas_x52/protocol.json > build/x52_sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-x52-verified-binaries
+          retention-days: 30
+          path: build/
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x52-verified-binaries
+          path: build
+      - name: Paired 5s E2E solve and independent verification
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/x52_sha256.txt
+          python3 -u research/drnas_x52_bench.py --out x52_${{ matrix.shard }} \
+            --shards 3 --shard ${{ matrix.shard }} | tee x52_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x52-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            x52_${{ matrix.shard }}/
+            x52_${{ matrix.shard }}.log
+  report:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x52-shard-*
+          path: results
+      - name: Validate all 300 trials and separate known replay from fresh24
+        run: |
+          set -euo pipefail
+          python3 research/drnas_x52_report.py --root results --out x52_summary.json | tee x52_summary.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x52-final
+          retention-days: 30
+          path: |
+            x52_summary.json
+            x52_summary.log
