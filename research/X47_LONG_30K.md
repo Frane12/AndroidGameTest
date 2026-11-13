@@ -1,7 +1,7 @@
 # X4.7 LONG: 30,000 sources, twelve training cycles, persistent memory
 
 The native solver is unchanged from `8a0aaae94d07cb9b4bef4b5c385f7ad29f3420dd`.
-SHA256 `3151815338420a2d6070300ba0858c36194ff095256543cab1ed97da6f1bfece`.
+SHA256 `9c78f45aa54a2556fb9f22e490a200b77e70a4360245d998c4dc96bd0b684ab3`.
 This tests whether substantially more experience improves the existing single
 polarity intervention at decision four, with the same two bounded BCP probes and
 24 features. This is a research experiment, not a claim of positive learning.
