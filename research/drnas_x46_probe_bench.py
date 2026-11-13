@@ -36,7 +36,7 @@ def emit(tag,obj):
 def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None,guard_file=None):
     cmd=[str(binary),str(cnf),"--mode","core","--time",str(cap),"--branch-at",str(k),"--stats"]
     if arm=="FLIP":cmd.append("--flip-branch")
-    elif arm.startswith("X46_") or arm=="SHADOW_8":
+    elif arm.startswith("X46_") or arm in ("SHADOW_8",X47_ARM):
         n=8 if arm in ("SHADOW_8",LEARNED_ARM,X47_ARM) else int(arm.split("_")[1])
         cmd+=["--x46-conflicts",str(n),"--x46-probe-ms",str(probe_ms)]
         if arm=="SHADOW_8":cmd.append("--x46-shadow")
@@ -88,7 +88,7 @@ def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None,guard_file=None):
                 raise AssertionError("probe shadow mode wrong")
             if probe["probe_pair_wall_ms"]<0:
                 raise AssertionError("negative probe time")
-            if arm.startswith("X46_") and pre["reached"]:
+            if (arm.startswith("X46_") or arm==X47_ARM) and pre["reached"] and probe["triggered"] and not probe["shadow"]:
                 desired=(-pre["baseline_literal"] if probe["recommend_flip"] else pre["baseline_literal"])
                 if pre["actual_literal"]!=desired:raise AssertionError("probe recommendation not applied")
         elif pre["reached"] and not probe["skipped"]:
