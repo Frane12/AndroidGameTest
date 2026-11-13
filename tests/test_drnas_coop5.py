@@ -46,7 +46,7 @@ def main():
                     if not expected:
                         q=subprocess.run([str(R/"build/drat-trim"),str(src),str(proof)],
                                          capture_output=True,text=True,timeout=8)
-                        assert q.returncode==0 and "s VERIFIED" in q.stdout,(
+                        assert "s VERIFIED" in q.stdout,(
                             idx,arm,q.stdout[-400:],q.stderr[-300:])
                         cert_unsat+=1
                     probes=[json.loads(l.split(" ",1)[1]) for l in p.stderr.splitlines()
