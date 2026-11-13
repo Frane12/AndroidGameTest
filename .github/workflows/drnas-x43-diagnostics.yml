@@ -1,0 +1,65 @@
+name: DRNAS X4.3 diagnose why more training hurts
+on:
+  push:
+    branches: [experiment/drnas-x43-training-diagnostics-20261113]
+    paths:
+      - research/drnas_x43_*.py
+      - research/drnas_x42_convergence_cycles.py
+      - src/drnas_x41.cpp
+      - .github/workflows/drnas-x43-diagnostics.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x43-training-audit-20261113
+  cancel-in-progress: false
+jobs:
+  reproduce_training_regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile reference native solver and run correctness checks
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          python3 -u tests/test_x41.py --cases 400 | tee x43_diagnose_regression.log
+          python3 -m py_compile research/drnas_x43_diagnostics.py
+      - name: Reproduce three training cohorts and diagnose class drift and model saturation
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x43_diagnostics.py \
+            --binary build/drnas-x41 --out x43_diagnose \
+            --per-family-per-cycle 24 --validation-per-family 24 --cap 1.5 \
+            | tee x43_diagnose.log
+      - name: Assert no unseen holdout leakage and full cycle coverage
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('x43_diagnose/report.json').read_text())
+          assert report['prior_holdout_not_evaluated']
+          assert len(report['three_cycles'])==3
+          assert [x['cumulative']['distinct_sources'] for x in report['three_cycles']]==[96,192,288]
+          assert all(x['fixed_model']['validation']['source_count']==24 for x in report['three_cycles'])
+          assert len(report['third_cycle_ablations'])==8
+          print('X43_DIAGNOSTIC_AUDIT_PASS',json.dumps({
+              'validation_losses':[x['fixed_model']['validation']['model_logloss_formula_mean'] for x in report['three_cycles']],
+              'best_third_epoch':min(report['third_cycle_ablations'],key=lambda x:x['validation_logloss'])['name']
+          },sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x43-training-diagnostics
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x43_diagnose_regression.log
+            x43_diagnose.log
+            x43_diagnose/report.json
+            x43_diagnose/train_labeled.jsonl
+            x43_diagnose/validation_labeled.jsonl
