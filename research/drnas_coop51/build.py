@@ -72,13 +72,13 @@ rep('''        ++coop5_recommend_;
     '''        ++coop5_recommend_;
         if(coop51_hybrid_ && depth==320)++coop51_deep_advice_;
         coop5Adjust(true);''')
-rep('''                 <<(coop5_dynamic_?"dynamic":"fixed")
+rep(r'''                 <<(coop5_dynamic_?"dynamic":"fixed")
                  <<"\",\"mode\":\""<<coop5_mode_''',
-    '''                 <<(coop51_hybrid_?"hybrid":(coop5_dynamic_?"dynamic":"fixed"))
+    r'''                 <<(coop51_hybrid_?"hybrid":(coop5_dynamic_?"dynamic":"fixed"))
                  <<"\",\"mode\":\""<<coop5_mode_''')
-rep('''                 <<",\"total_implied\":"<<coop5_total_implied_
+rep(r'''                 <<",\"total_implied\":"<<coop5_total_implied_
                  <<"}\n";''',
-    '''                 <<",\"total_implied\":"<<coop5_total_implied_
+    r'''                 <<",\"total_implied\":"<<coop5_total_implied_
                  <<",\"hybrid_deep_pairs\":"<<coop51_forced_deep_
                  <<",\"hybrid_shallow_pairs\":"<<coop51_shallow_
                  <<",\"hybrid_deep_recommend\":"<<coop51_deep_advice_
