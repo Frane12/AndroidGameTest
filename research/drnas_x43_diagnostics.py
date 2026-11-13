@@ -162,7 +162,7 @@ def main():
             model=MODEL.fit(train_records,epochs=epochs,ridge=ridge)
             train=MODEL.evaluate(model,train_records)
             val=MODEL.evaluate(model,val_records)
-            sign=choose_threshold(model,val)
+            sign=choose_threshold(model,val_records)
             row={"name":name,"epochs":epochs,"ridge":ridge,
                 "train_logloss":train["model_logloss_formula_mean"],
                 "validation_logloss":val["model_logloss_formula_mean"],
