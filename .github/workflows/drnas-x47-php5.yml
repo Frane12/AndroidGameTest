@@ -1,0 +1,168 @@
+name: DRNAS X4.7 PHP5 64 fresh Pigeonhole UNSAT 5s
+
+on:
+  push:
+    branches: [experiment/drnas-x47-longer-120-20261113]
+    paths:
+      - .github/workflows/drnas-x47-php5.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-x47-php5-64-frozen
+  cancel-in-progress: false
+
+jobs:
+  php5_shards:
+    name: Pigeonhole UNSAT shard ${{ matrix.shard }} / 3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          run-id: 43363483258
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Compile unchanged native solver and verify identical frozen model
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o drnas-x47-php5
+          python3 -m py_compile research/drnas_x47_long_bench.py research/drnas_x47_php5_bench.py
+          (cd frozen && sha256sum -c x47long_frozen_sha256.txt)
+      - name: Run 16 fresh Pigeonhole CNFs x 5 arms x 2 repeats cap 5 seconds
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x47_php5_bench.py \
+            --binary drnas-x47-php5 --cohort synthetic \
+            --out php5_shard_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 \
+            --synthetic-count 64 --source-offset 1500000 \
+            --cap 5.0 --repeats 2 \
+            --model frozen/x47long_training/frozen_cost_model.txt \
+            --guard frozen/x47long_training/frozen_risk_guard.txt \
+            | tee php5_shard_${{ matrix.shard }}.log
+      - name: Confirm 16 fresh SHA, independent PHP UNSAT structural certification and paired results
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          d=Path('php5_shard_${{ matrix.shard }}')
+          m=json.loads((d/'manifest.json').read_text())
+          r=json.loads((d/'report.json').read_text())
+          rows=[json.loads(x) for x in (d/'trials.jsonl').read_text().splitlines()]
+          assert m['original_sources']==16 and m['repeats']==2 and m['cap_s']==5.0
+          assert r['original_sources']==16 and r['total_trials']==160
+          assert len({x['sha256'] for x in m['originals']})==16
+          assert all(x['cert']=='PHP_STRUCTURAL_CORE' and x['family']=='php_structural_unsat' for x in m['originals'])
+          assert len(rows)==160
+          assert all(r['all_arms'][a]['trials']==32 for a in m['arms'])
+          assert all(not (x['status'] in ('SAT','UNSAT') and not x['verified']) for x in rows)
+          print('X47_PHP5_SHARD_AUDIT',m['shard'],json.dumps(r['all_arms'],sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-php5-shard-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            php5_shard_${{ matrix.shard }}/manifest.json
+            php5_shard_${{ matrix.shard }}/report.json
+            php5_shard_${{ matrix.shard }}/trials.jsonl
+            php5_shard_${{ matrix.shard }}.log
+
+  aggregate:
+    name: PHP5 aggregate verified PAR2 plus wins losses confidence
+    runs-on: ubuntu-24.04
+    needs: [php5_shards]
+    if: always()
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x47-php5-shard-*
+          path: results
+      - name: Aggregate SHA-distinct paired original formulas with source-level bootstrap
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_long_aggregate.py --root results --out php5_aggregate.json | tee php5_aggregate.log
+          python3 - <<'PYCODE'
+          import json
+          import math
+          from collections import defaultdict
+          from pathlib import Path
+          r=json.loads(Path('php5_aggregate.json').read_text())['synthetic']
+          assert r['original_sources']==64 and r['source_families']==1
+          assert r['total_trials']==640 and r['completed_shards']==4
+          assert all(a['trials']==128 for a in r['by_arm'].values())
+          bysha=defaultdict(lambda:defaultdict(list))
+          holes={}
+          for mf in Path('results').rglob('manifest.json'):
+              m=json.loads(mf.read_text())
+              assert m['cap_s']==5.0
+              for f in m['originals']:
+                  assert f['sha256'] not in holes
+                  holes[f['sha256']]=5+(f['source_id']%4)
+              for line in mf.with_name('trials.jsonl').read_text().splitlines():
+                  x=json.loads(line)
+                  bysha[x['sha256']][x['arm']].append(x)
+          assert len(holes)==len(bysha)==64
+          wins=losses=ties=material_wins=material_losses=0
+          strata=defaultdict(lambda: {'sources':0,'core_PAR2':0.,'learned_PAR2':0.,'wins':0,'losses':0,'ties':0})
+          for sha, arms in bysha.items():
+              assert len(arms['CORE'])==len(arms['X46_LEARNED_8'])==2
+              c=sum(x['PAR2'] for x in arms['CORE'])
+              l=sum(x['PAR2'] for x in arms['X46_LEARNED_8'])
+              d=c-l
+              h=holes[sha]
+              s=strata[h]
+              s['sources']+=1
+              s['core_PAR2']+=c
+              s['learned_PAR2']+=l
+              if abs(d)<1e-9:
+                  ties+=1;s['ties']+=1
+              elif d>0:
+                  wins+=1;s['wins']+=1
+              else:
+                  losses+=1;s['losses']+=1
+              if d>0.01*c:material_wins+=1
+              if d< -0.01*c:material_losses+=1
+          n=wins+losses
+          exact_sign_p=min(1.,2*sum(math.comb(n,k) for k in range(min(wins,losses)+1))/(2**n)) if n else 1.
+          summary={'sources':64,'trials':640,'cap_s':5.0,
+                   'core_PAR2':r['by_arm']['CORE']['verified_PAR2_s'],
+                   'learned_PAR2':r['by_arm']['X46_LEARNED_8']['verified_PAR2_s'],
+                   'learned_comparison':r['comparison']['X46_LEARNED_8'],
+                   'all_comparisons':r['comparison'],
+                   'by_arm':r['by_arm'],
+                   'formula_wins':wins,'formula_losses':losses,'formula_ties':ties,
+                   'wins_over_1pct':material_wins,'losses_over_1pct':material_losses,
+                   'sign_test_two_sided_p':exact_sign_p,
+                   'by_holes':dict(sorted(strata.items())),
+                   'unit':'64 original source SHA, not 128 correlated repeats',
+                   'caveat':'Retrospective family-selected synthetic PHP only; not independent industrial SAT evidence'}
+          Path('php5_detailed_summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print('X47_PHP5_64_FINAL',json.dumps(summary,sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-php5-64-summary
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            php5_aggregate.json
+            php5_aggregate.log
+            php5_detailed_summary.json
