@@ -203,7 +203,7 @@ def main():
          work_limit=X.WORK_LIMIT,overhead_proxy_prop=PROXY,
          gate_thresholds=GATE_THRESHOLDS,gain_thresholds=GAIN_THRESHOLDS,conflict_floors=CONFLICT_FLOORS,
          validation_acceptance='at least 5 real flips and >= CORE solved, fewer total propagations, >=2 families improve, paired formula bootstrap lower95 >2%',
-         holdout='open once after freeze, no retraining',
+         holdout_policy='open once after freeze, no retraining',
          evidence='generated synthetic SAT with independently checked witness; constructed UNSAT separate'))
     cnf=args.out/'current.cnf'
     train=collect(binary,cnf,cohorts['train'],args.out/'train_pairs.jsonl')
