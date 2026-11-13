@@ -1,0 +1,82 @@
+name: DRNAS X4.9 ZERO PROBE CDCL gate SAT and UNSAT
+on:
+  push:
+    branches: [experiment/drnas-x49-zero-probe-gate-20261113]
+    paths:
+      - src/drnas_x49.cpp
+      - research/drnas_x49.py
+      - research/x49_models.py
+      - research/drnas_x49_unsat.py
+      - tests/test_x49.py
+      - .github/workflows/drnas-x49-zero-probe.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x49-zero-probe-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Native compilation and independent truth-table SAT/UNSAT checks
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/drnas_x49.py research/x49_models.py research/drnas_x49_unsat.py tests/test_x49.py
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x48.cpp -o build/drnas-x48
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x49.cpp -o build/drnas-x49
+          python -u tests/test_x49.py --cases 100 | tee x49_smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x49-smoke
+          path: x49_smoke.log
+          if-no-files-found: ignore
+          retention-days: 14
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Compile frozen X4.9 without external solver modifications
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x49.cpp -o build/drnas-x49
+      - name: Train and freeze before SAT holdout with E2E PAR2 and true overhead
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x49.py --binary build/drnas-x49 --out x49_results --per-family 40 --cap 0.8 --repeats 3 | tee x49_benchmark.log
+      - name: Independent analytic UNSAT pigeonhole holdout using frozen model
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x49_unsat.py --binary build/drnas-x49 --frozen x49_results/freeze.json --out x49_unsat_results --count 24 --cap 0.8 --repeats 2 | tee x49_unsat.log
+      - name: Upload source manifest, exact runs, selected model, SAT and UNSAT evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x49-zero-probe-evidence
+          path: |
+            x49_results/
+            x49_unsat_results/
+            x49_benchmark.log
+            x49_unsat.log
+          if-no-files-found: ignore
+          retention-days: 30
