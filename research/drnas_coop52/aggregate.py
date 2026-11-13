@@ -71,6 +71,21 @@ def report(cohort):
       "FIXED_vs_Q1":("FIXED_ON","Q1_ON"),
       "DYNAMIC_vs_Q1":("DYNAMIC_ON","Q1_ON")
     }
+    # Paired, source-specific status changes; no post-hoc instance filtering.
+    paired=collections.defaultdict(dict)
+    for row in rows:paired[(row["sha256"],row["rep"])][row["arm"]]=row
+    divergent=[]
+    for (sha,rep),p in sorted(paired.items()):
+        if len(p)!=len(ARMS):raise RuntimeError("missing source/rep arms")
+        if len({p[name]["accepted"] for name in
+               ("Q025_ON","Q1_ON","Q5_ON","Q25_ON")})>1 or
+            p["ALGEBRA"]["accepted"]!=p["Q1_ON"]["accepted"]:
+            divergent.append({"sha256":sha,"rep":rep,
+              "id":p["Q1_ON"]["id"],"family":p["Q1_ON"]["family"],
+              "result":{name:p[name]["status"] for name in
+                 ("ALGEBRA","FIXED_ON","HYBRID_ON","Q025_ON","Q1_ON","Q5_ON","Q25_ON")},
+              "accepted":{name:p[name]["accepted"] for name in
+                 ("ALGEBRA","FIXED_ON","HYBRID_ON","Q025_ON","Q1_ON","Q5_ON","Q25_ON")}})
     d={"status":"COMPLETE","cohort":cohort,"sources":n,
        "trial_count":len(rows),"one_logical_cpu":True,
        "cap_s":manifests[0]["cap_s"],"arms":list(ARMS),"overall":stats,
