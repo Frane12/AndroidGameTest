@@ -1,0 +1,79 @@
+name: DRNAS MATH OMEGA4 live GF2 CDCL partial-trail pilot
+on:
+  push:
+    branches: [experiment/drnas-math-omega4-20261113]
+    paths:
+      - .github/workflows/drnas-math-omega4.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math-omega4-one-development-pilot
+  cancel-in-progress: false
+
+jobs:
+  source_proof_live_pilot:
+    name: One-CPU actual CaDiCaL CDCL live/shadow/clean source-certified test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen 40 previously seen original CNFs and pinned baselines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42809444478 -R Frane12/AndroidGameTest -n xorabc2-frozen40-cpp-kissat-cms -D .
+          test -s mre_xorabc2/manifest.json
+          test -s mre_equiv9/manifest.json
+          test -s built/bin/kissat_4_0_4
+          python3 -m py_compile research/omega4_benchmark.py
+          sha256sum mre_xorabc2/manifest.json built/bin/kissat_4_0_4
+      - name: Native independently-certified XOR exporter
+        run: |
+          set -euo pipefail
+          mkdir -p mre_omega4/bin
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            research/drnas_xorabc3_source_rows.cpp -o mre_omega4/bin/omega4_rows
+          mre_omega4/bin/omega4_rows selftest | tee mre_omega4/extractor-selftest.log
+          grep -q '^XORABC3_SELFTEST_PASS' mre_omega4/extractor-selftest.log
+      - name: Build and pin CaDiCaL 2.1.0 and proof-safe live GF2 bridge
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/omega4-cadical
+          cd /tmp/omega4-cadical
+          git checkout -q rel-2.1.0
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/mre_omega4/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src \
+            "$GITHUB_WORKSPACE/research/omega4_live_gf2.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_omega4/bin/omega4_bridge"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum mre_omega4/bin/omega4_bridge mre_omega4/bin/omega4_rows \
+            research/omega4_live_gf2.cpp | tee mre_omega4/binary-pins.txt
+      - name: Independent exhaustive 3-row proof, conflict, backtrack and shadow regression
+        run: |
+          set -euo pipefail
+          mre_omega4/bin/omega4_bridge selftest | tee mre_omega4/native-selftest.log
+          grep -q '^OMEGA4_SELFTEST_PASS ' mre_omega4/native-selftest.log
+      - name: One logical CPU serial original 40-development-source stratified pilot
+        run: |
+          set -euo pipefail
+          python3 -u research/omega4_benchmark.py --cap 3.0 \
+            | tee mre_omega4/pilot.log
+          grep -q '^OMEGA4_FINAL ' mre_omega4/pilot.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-OMEGA4-REAL-CDCL-SOURCE-PROOF-PILOT
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_omega4/*.json
+            mre_omega4/*.log
+            mre_omega4/*-pins.txt
+            mre_omega4/cadical-source-commit.txt
