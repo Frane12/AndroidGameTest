@@ -1,0 +1,57 @@
+name: DRNAS COOP5 two-build fixed25ms vs adaptive probe preflight
+on:
+  push:
+    branches: [experiment/drnas-coop5-fixed-dynamic-probe-20261113]
+    paths:
+      - .github/workflows/drnas-coop5-preflight.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop5-fixed-dynamic-preflight
+  cancel-in-progress: false
+jobs:
+  test_two_builds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43515153402
+          name: coop4-frozen
+          github-token: ${{ github.token }}
+          path: .
+      - name: Original frozen X5/DRAT restore; compile both solver builds
+        run: |
+          set -euo pipefail
+          tar -xzf coop4_frozen.tgz
+          sha256sum -c build/COOP4_BINARIES.sha256
+          python3 -m py_compile research/drnas_coop5/build.py tests/test_drnas_coop5.py
+          python3 research/drnas_coop5/build.py | tee coop5_compile.log
+          test -x build/drnas-coop5-fixed
+          test -x build/drnas-coop5-dynamic
+          sha256sum build/drnas-coop5-fixed build/drnas-coop5-dynamic build/drnas-x5 build/drat-trim > build/COOP5_SHA256SUMS
+          git rev-parse HEAD > COOP5_GIT_SHA
+      - name: Exhaustive 3-bit SAT oracle and independent RUP/DRAT with both builds
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP5_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop5.py | tee coop5_safety.log
+          tar -czf coop5_frozen.tgz \
+            build/drnas-coop5-fixed build/drnas-coop5-dynamic \
+            build/drnas-x5 build/drat-trim build/COOP5_SHA256SUMS COOP5_GIT_SHA
+          echo 'COOP5_PREP complete: TWO compiled binaries, independent SAT+UNSAT proof, frozen X5, no main promotion' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop5-two-builds-and-safety
+          retention-days: 60
+          path: |
+            coop5_frozen.tgz
+            coop5_compile.log
+            coop5_safety.log
+            COOP5_GIT_SHA
+            build/COOP5_SHA256SUMS
