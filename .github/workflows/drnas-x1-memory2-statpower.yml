@@ -1,0 +1,75 @@
+name: DRNAS MEMORY2 statistical power 600 CNFs family-disjoint
+on:
+  push:
+    branches: [experiment/drnas-x1-memory2-statpower-20261113]
+    paths:
+      - research/drnas_x1/**
+      - .github/workflows/drnas-x1-memory2-statpower.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x1-memory2-statpower-20261113
+  cancel-in-progress: false
+jobs:
+  family_disjoint_statistical_benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact native X1 and audit small SAT/UNSAT
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror research/drnas_x1/x1.cpp -o build/drnas-x1
+          python3 -S research/drnas_x1/test.py build/drnas-x1 --cases 500 --report x1_memory2-statpower-regression.json
+          sha256sum build/drnas-x1 research/drnas_x1/x1_memory2.hpp research/drnas_x1/memory2_statpower_bench.py
+      - name: Run 240 training + 360 family-disjoint holdout CNFs times 3 seeds and 4 arms
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -S -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u -S research/drnas_x1/memory2_statpower_bench.py \
+            --binary build/drnas-x1 --out x1_statpower --train 240 --holdout 360 --repeats 3 --cap 0.5 \
+            | tee x1_statpower.log
+      - name: Validate source-disjoint and paired statistical report
+        run: |
+          set -euo pipefail
+          python3 -S - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path("x1_statpower")
+          manifest=json.loads((p/"manifest.json").read_text())
+          result=json.loads((p/"statistical-report.json").read_text())
+          tr={s["sha256"] for s in manifest["sources"] if s["split"]=="train"}
+          te={s["sha256"] for s in manifest["sources"] if s["split"]=="holdout"}
+          assert not tr.intersection(te)
+          assert len(te)==360 and len(tr)==240
+          assert result["n_distinct_test_formulas"]==360
+          assert result["n_distinct_families"]==6
+          assert result["n_repeats_per_formula"]==3
+          assert result["holdout_model_sha_unchanged"]
+          for a,x in result["arms"].items():
+              assert x["rows"]==1080,(a,x)
+          print("M2_STATPOWER_VALID",json.dumps({
+              "n_independent_formulas":360,
+              "holdout_families":6,
+              "primary_significant":result["primary_passed"],
+              "primary_ci":result["comparisons"]["X1_M2_FROZEN"]["formula_cluster_bootstrap_95pct"],
+              "family_ci":result["comparisons"]["X1_M2_FROZEN"]["family_cluster_bootstrap_95pct"],
+              "power_n_estimate":result["comparisons"]["X1_M2_FROZEN"]["approx_n_for_80pct_power_at_target_effect"]
+          },sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-memory2-statpower-600-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x1_memory2-statpower-regression.json
+            x1_statpower/manifest.json
+            x1_statpower/statistical-report.json
+            x1_statpower/trials.jsonl
+            x1_statpower/verified-memory2-policy.txt
+            x1_statpower/trace_*.jsonl
+            x1_statpower.log
