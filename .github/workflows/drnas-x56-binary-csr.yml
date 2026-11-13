@@ -1,0 +1,175 @@
+name: DRNAS X5.6 original-binary CSR BCP paired REAL36
+on:
+  push:
+    branches: [experiment/drnas-x56-binary-csr-20261113]
+    paths:
+      - .github/workflows/drnas-x56-binary-csr.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x56-binary-csr-20261113
+  cancel-in-progress: true
+
+jobs:
+  validate_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Recover SHA-verified official original SAT2024 CNFs and pinned external solvers
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Compile frozen X5.5b and X5.6 CSR with identical optimization flags
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x55b.cpp -o build/drnas-x55b
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x56.cpp -o build/drnas-x56
+          python3 -m py_compile research/drnas_x56_csr_real36.py tests/test_x56_binary_csr.py
+          sha256sum build/drnas-x55b build/drnas-x56 build/kissat build/cadical build/drat-trim > build/X56_BINARIES.sha256
+          git rev-parse HEAD > build/X56_COMMIT
+          g++ --version | head -1 > build/X56_COMPILER
+      - name: Exact SAT UNSAT oracle / DRAT and 1680 static binary edge CSR equivalence
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X56_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_x56_binary_csr.py | tee build/X56_SELFTEST.log
+      - name: Freeze source SHA and compared binary hashes before real workload
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x56_csr_real36.py freeze | tee build/X56_FREEZE.log
+          tar -czf x56_frozen.tgz \
+            build/drnas-x55b build/drnas-x56 build/X56_BINARIES.sha256 \
+            build/X56_COMMIT build/X56_COMPILER build/X56_SELFTEST.log \
+            build/X56_FREEZE.log x56_freeze/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x56-verified-frozen-binaries
+          retention-days: 30
+          path: x56_frozen.tgz
+
+  paired:
+    needs: validate_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x56-verified-frozen-binaries
+          path: .
+      - name: Restore SHA-frozen inputs, original controls, and exact X56 binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          tar -xzf x56_frozen.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/X56_BINARIES.sha256
+      - name: Paired original SAT2024 E2E CSR A/B, one logical CPU, independent SAT DRAT
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X56_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x56_csr_real36.py shard --shard ${{ matrix.shard }} \
+             | tee x56_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x56-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          path: x56_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x56-verified-frozen-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x56-shard-*
+          path: x56_downloads
+          merge-multiple: false
+      - name: Independently audit 360 complete paired original CNF attempts, no missing or duplicated trials
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x56_frozen.tgz
+          python3 -u research/drnas_x56_csr_real36.py finish | tee x56_final.log
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x56_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert all(v["attempts"]==72 for v in d["overall"].values())
+          out=["## DRNAS X5.6 — original binary CSR on 36 SAT2024 CNFs x 2 repeats",
+               "Five serial arms, 10s solve limit. Retrospective evaluation, not a new blind holdout.",
+               "All SAT witnessed, all credited UNSAT independently DRAT certified.","",
+               "| Arm | Verified /72 | PAR2 ↓ | CPU (s) | MaxRSS KiB | CSR active runs |",
+               "|---|---:|---:|---:|---:|---:|"]
+          for a,v in d["overall"].items():
+              out.append(f"| {a} | {v['solved']} | {v['PAR2_s']:.2f} | {v['cpu_s']:.2f} | {v['rss_max_kib']} | {v['CSR_active_runs']} |")
+          out+=["", "### Source-cluster 95% intervals"]
+          for k,comp in d["comparisons"].items():
+              v=comp["PAR2"]
+              out.append(f"- {k}: delta right-minus-left {v.get('delta_right_minus_left')} s, CI {v.get('cluster_bootstrap95')}")
+          out+=["", "No main merge or promotion without certified gain and independent family-held-out test."]
+          result="\n".join(out)+"\n"
+          print(result)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fd:fd.write(result)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x56-original-csr-real36-final
+          retention-days: 30
+          path: |
+            x56_final/report.json
+            x56_final/paired_trials.jsonl
+            x56_final.log
+            x56_freeze/protocol.json
