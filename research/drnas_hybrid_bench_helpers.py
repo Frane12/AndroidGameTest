@@ -159,6 +159,8 @@ def run(c,arm,rep):
     elif arm=="LTM9_NATIVE":
         cmd=[exe,c["path"],"--mode","LTM8_KEEP50","--time",str(CAP),
              "--seed",str(rep+1),"--policy","1.0,0.85"]
+    elif arm=="CryptoMiniSat":
+        cmd=[exe,"--threads=1",c["path"]]
     else:
         cmd=[exe,c["path"]]
     def limited():
@@ -192,10 +194,10 @@ def run(c,arm,rep):
     elif rc in (0,124,-24,-9,-15):
         status="UNKNOWN"
     else:
-        raise RuntimeError(f"Unexpected exit={rc} arm={arm} case={c['sha256']} stderr={err[-200:]}")
+        status="ERROR"
     certified=status in ("SAT_VERIFIED","UNSAT_GF2_VERIFIED")
     reported=certified or status=="UNSAT_UNVERIFIED"
-    return dict(arm=arm,origin=c["origin"],family=c["family"],
+    return dict(returncode=rc,stderr_tail=err[-300:] if status=="ERROR" else "", arm=arm,origin=c["origin"],family=c["family"],
                 index=c["index"],rep=rep,sha256=c["sha256"],
                 status=status,e2e_s=round(elapsed,6),
                 PAR2_verified_s=round(elapsed if certified else 2*CAP,6),
@@ -216,6 +218,7 @@ def report(rows):
           UNSAT_GF2_verified=sum(r["status"]=="UNSAT_GF2_VERIFIED" for r in subset),
           UNSAT_unverified=sum(r["status"]=="UNSAT_UNVERIFIED" for r in subset),
           abstain=sum(r["status"]=="ABSTAIN" for r in subset),
+          errors=sum(r["status"]=="ERROR" for r in subset),
           timeout_unknown=sum(r["status"]=="UNKNOWN" for r in subset),
           PAR2_verified_s=round(sum(r["PAR2_verified_s"] for r in subset),6),
           PAR2_reported_s=round(sum(r["PAR2_reported_s"] for r in subset),6),
