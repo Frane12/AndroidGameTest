@@ -22,7 +22,7 @@ import tempfile
 import time
 import zipfile
 
-FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3","community3","xor_ring","graph_k4_unsat")
+FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3","community3","xor_ring","graph_k4_unsat","planted4_dense","xor_bridge","mixed_sparse_23")
 WINDOWS=((1,8),(9,16),(17,128))
 
 def emit(tag, obj):
@@ -31,7 +31,7 @@ def emit(tag, obj):
 def build_case(family,i):
     rng=random.Random(0x46020261113+100003*FAMILIES.index(family)+7919*i)
     clauses=[]
-    n=18 if family in ("sparse4","sparse3","community3","xor_ring","graph_k4_unsat") else 12+(i%6)
+    n=18 if family in ("sparse4","sparse3","community3","xor_ring","graph_k4_unsat","planted4_dense","xor_bridge","mixed_sparse_23") else 12+(i%6)
     target=[None]+[bool(rng.randrange(2)) for _ in range(n)]
     def planted_clause(k):
         vs=rng.sample(range(1,n+1),k)
@@ -93,6 +93,28 @@ def build_case(family,i):
             if not any((x>0)==aux[abs(x)-12] for x in clause):
                 clause[0]*=-1
             clauses.append(clause)
+    elif family=="planted4_dense":
+        clauses=[planted_clause(4) for _ in range(6*n)]
+        clauses.extend(planted_clause(3) for _ in range(2*n))
+    elif family=="xor_bridge":
+        # Two overlapping planted XOR chains linked by three-variable rows.
+        for v in range(1,n-1):
+            vs=(v,v+1,v+2)
+            rhs=sum(target[x] for x in vs)%2
+            for bits in itertools.product((0,1),repeat=3):
+                if sum(bits)%2!=rhs:
+                    clauses.append([(-x if b else x) for x,b in zip(vs,bits)])
+        for _ in range(4):
+            vs=rng.sample(range(1,n+1),3)
+            rhs=sum(target[x] for x in vs)%2
+            for bits in itertools.product((0,1),repeat=3):
+                if sum(bits)%2!=rhs:
+                    clauses.append([(-x if b else x) for x,b in zip(vs,bits)])
+        clauses.extend(planted_clause(3) for _ in range(n))
+    elif family=="mixed_sparse_23":
+        clauses=[planted_clause(2) for _ in range(2*n)]
+        clauses.extend(planted_clause(3) for _ in range(n))
+        clauses.extend(planted_clause(4) for _ in range(n//2))
     elif family=="planted_xor":
         for _ in range(n+4):
             vs=rng.sample(range(1,n+1),3)
