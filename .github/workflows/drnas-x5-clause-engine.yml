@@ -1,0 +1,178 @@
+name: DRNAS X5 conflict minimization memory engine verified holdout
+on:
+  push:
+    branches: [experiment/drnas-x5-clause-engine-20261113]
+    paths:
+      - .github/workflows/drnas-x5-clause-engine.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x5-clause-engine
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned proof checkers and one-thread references
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          bash research/drnas_x5_build_refs.sh
+      - name: Compile isolated candidate and exact frozen controls
+        run: |
+          set -euo pipefail
+          python3 research/drnas_x5_prepare.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x5.cpp -o build/drnas-x5
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/frozen-core
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/frozen-proof.cpp -o build/frozen-proof
+          gcc -O2 -Wall -Wextra -Werror research/drnas_x5_time.c -o build/timed
+          python3 -m py_compile research/drnas_x5_bench.py research/drnas_x5_report.py tests/test_x5.py
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+      - name: Exhaustive truth tables, witnesses, independent proofs, GC and baseline parity
+        run: python3 -u tests/test_x5.py | tee build/correctness.log
+      - name: Check every reference proof interface on nontrivial SAT and UNSAT
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_bench.py --out build/reference-smoke \
+            --count 6 --offset 5500000 --repeats 1 --cap 3 \
+            --arms CORE,X46_LEARNED,X5,Kissat,CaDiCaL,CMS \
+            --kissat build/kissat --cadical build/cadical --cms build/cms > build/reference-smoke.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('build/reference-smoke/report.json').read_text())
+          assert all(r['totals'][arm]['UNSAT']>=1 for arm in r['totals'])
+          print(r['totals'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-build-audit
+          retention-days: 30
+          path: |
+            build/correctness.log
+            build/test_x5_result.json
+            build/reference-smoke*
+            build/frat-Cargo.lock
+            build/reference_versions.txt
+            build/reference_sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          retention-days: 30
+          path: |
+            build/drnas-x5
+            build/frozen-core
+            build/frozen-proof
+            build/timed
+            build/drat-trim
+            build/frat-rs
+            build/kissat
+            build/cadical
+            build/cms
+            build/frat-Cargo.lock
+            build/reference_versions.txt
+            build/reference_sha256.txt
+  synthetic:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          path: build
+      - name: Prepare the identical binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+      - name: 96 new original CNFs across six families, nine arms, two repetitions, 5s E2E
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_bench.py --out x5_synthetic_${{ matrix.shard }} \
+            --count 96 --offset 6100000 --cap 5 --repeats 2 --shards 4 --shard ${{ matrix.shard }} \
+            --arms CORE,X46_LEARNED,X5,X5_NO_MIN,X5_RETAIN,X5_RESTART,Kissat,CaDiCaL,CMS \
+            --kissat build/kissat --cadical build/cadical --cms build/cms \
+            | tee x5_synthetic_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-synthetic-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            x5_synthetic_${{ matrix.shard }}/
+            x5_synthetic_${{ matrix.shard }}.log
+  official:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          path: build
+      - name: Prepare reference libraries and source archive access
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          pip install remotezip==0.12.3
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+      - name: 12 SHA-distinct original SAT2024 sources, proof checked, retrospective
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_bench.py --out x5_official --official \
+            --count 12 --offset 6200000 --cap 5 --repeats 2 \
+            --arms CORE,X46_LEARNED,X5,Kissat,CaDiCaL,CMS \
+            --kissat build/kissat --cadical build/cadical --cms build/cms \
+            | tee x5_official.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-official
+          retention-days: 30
+          path: |
+            x5_official/
+            x5_official.log
+  report:
+    needs: [synthetic, official]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x5-synthetic-*
+          path: results
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-official
+          path: results/official
+      - name: Refuse incomplete results, cluster by source SHA, enforce promotion criteria
+        run: |
+          set -euo pipefail
+          python3 research/drnas_x5_report.py --root results --out x5_final.json --synthetic 96 --official 12 | tee x5_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-final
+          retention-days: 30
+          path: |
+            x5_final.json
+            x5_final.log
