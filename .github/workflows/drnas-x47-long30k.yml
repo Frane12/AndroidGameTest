@@ -1,0 +1,181 @@
+name: DRNAS X4.7 LONG 30000 persistent memory 12 cycles
+on:
+  push:
+    branches: ['experiment/drnas-x47-long30k-memory-20261113']
+    paths:
+      - research/drnas_x47_long.py
+      - research/x47_long_models.py
+      - research/data/x47_original_tree.txt
+      - tests/test_x47_long.py
+      - .github/workflows/drnas-x47-long30k.yml
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Fresh namespace required after a completed holdout'
+        default: X47-LONG-30K-v1
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x47-persistent-memory-writer
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+  X47_NAMESPACE: ${{ inputs.namespace || 'X47-LONG-30K-v1' }}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Compile unchanged native engines
+        run: |
+          echo '3151815338420a2d6070300ba0858c36194ff095256543cab1ed97da6f1bfece  src/drnas_x47.cpp' | sha256sum -c -
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x47.cpp -o build/drnas-x47
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+      - name: Correctness and complete small pipeline
+        run: |
+          set -euo pipefail
+          python -u tests/test_x47.py --cases 400 | tee correctness.log
+          python -u research/drnas_x47_long.py collect --per-regime 12 --namespace x47long-smoke --shards 1 --out smoke_inputs/collect-0
+          python -u research/drnas_x47_long.py train --per-regime 12 --namespace x47long-smoke --inputs smoke_inputs --out smoke_models
+          python -u tests/test_x47_long.py --inputs smoke_inputs --models smoke_models
+          python -u research/drnas_x47_long.py evaluate --per-regime 12 --namespace x47long-smoke --models smoke_models --shards 1 --out smoke_inputs/eval-0
+          python -u research/drnas_x47_long.py finish --per-regime 12 --namespace x47long-smoke --models smoke_models --inputs smoke_inputs --out smoke_final
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47long-correctness
+          path: |
+            correctness.log
+            smoke_models/
+            smoke_final/
+          retention-days: 90
+  collect:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - run: |
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x47.cpp -o build/drnas-x47
+      - name: Serial matched-state collection on one logical CPU
+        run: python -u research/drnas_x47_long.py collect --namespace "$X47_NAMESPACE" --shard ${{ matrix.shard }} --shards 8 --out collect-${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collect-${{ matrix.shard }}
+          path: collect-${{ matrix.shard }}/
+          retention-days: 90
+  train:
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-x47-memory-store-20261113
+          path: memory_store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: collect-*
+          path: inputs
+      - name: Twelve cycles with periodic validation pruning and durable checkpoints
+        env:
+          X47_MEMORY_STORE: ${{ github.workspace }}/memory_store
+        run: python -u research/drnas_x47_long.py train --namespace "$X47_NAMESPACE" --cycles 12 --inputs inputs --out models
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47long-frozen-models
+          path: models/
+          retention-days: 90
+  evaluate:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - run: |
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x47.cpp -o build/drnas-x47
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47long-frozen-models
+          path: models
+      - name: Frozen held-out comparisons on one logical CPU
+        run: python -u research/drnas_x47_long.py evaluate --namespace "$X47_NAMESPACE" --models models --cap 0.08 --repeats 3 --shards 6 --shard ${{ matrix.shard }} --out eval-${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ matrix.shard }}
+          path: eval-${{ matrix.shard }}/
+          retention-days: 90
+  report:
+    needs: evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-x47-memory-store-20261113
+          path: memory_store
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47long-frozen-models
+          path: models
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: eval-*
+          path: inputs
+      - name: Paired formula and family uncertainty; seal test results away from training
+        env:
+          X47_MEMORY_STORE: ${{ github.workspace }}/memory_store
+        run: python -u research/drnas_x47_long.py finish --namespace "$X47_NAMESPACE" --models models --inputs inputs --out final
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47long-final
+          path: final/
+          retention-days: 90
