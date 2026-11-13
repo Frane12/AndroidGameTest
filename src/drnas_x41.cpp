@@ -65,11 +65,11 @@ struct Entry {
 
 class Solver {
   public:
-    explicit Solver(int n, std::string mode, double seconds, Clock::time_point started)
+    explicit Solver(int n, std::string mode, double seconds, Clock::time_point started, bool trace_trail=false)
         : n_(n), mode_(std::move(mode)),
           use_backdoor_(false),
           use_depth_(false),
-          trace_enabled_(mode_ == "trace"),
+          trace_enabled_(mode_ == "trace"), trace_trail_(trace_trail),
           watches_(2 * static_cast<size_t>(n)),
           binary_implications_(2 * static_cast<size_t>(n)),
           values_(n, 0), phase_(n, 1), levels_(n, 0), reasons_(n, -1),
@@ -352,6 +352,15 @@ class Solver {
             snap(record.before);
             fd<<",\"after\":";
             snap(record.after);
+            if (trace_trail_) {
+                auto write_trail=[&](const std::vector<int>& lit){
+                    fd<<"[";
+                    for (size_t k=0;k<lit.size();++k){if(k)fd<<",";fd<<lit[k];}
+                    fd<<"]";
+                };
+                fd<<",\"trail_before\":";write_trail(record.trail_before);
+                fd<<",\"trail_after\":";write_trail(record.trail_after);
+            }
             const int bcp_units=std::max(0, record.after.assigned-record.before.assigned-1);
             // *Logic*: every counted unit follows from the current assumptions
             // and CNF; an assumption-relative conflict is NOT a global UNSAT proof.
@@ -390,6 +399,7 @@ class Solver {
     const bool use_backdoor_;
     const bool use_depth_;
     const bool trace_enabled_;
+    const bool trace_trail_;
     struct Snapshot {
         int64_t decisions=0, conflicts=0, learnt=0, propagations=0;
         int assigned=0, level=0, long_open=0;
@@ -401,6 +411,7 @@ class Solver {
         int decision_literal=0;
         bool conflict=false;
         Snapshot before,after;
+        std::vector<int> trail_before,trail_after;
     };
     static constexpr size_t MAX_TRACE_ROWS=512;
     std::vector<TraceRecord> trace_records_;
@@ -480,11 +491,12 @@ class Solver {
     void beginTransition(int literal) {
         if (!trace_enabled_) return;
         const int64_t d=stats_.decisions;
-        if (d>16 && (d&(d-1))!=0 && d%4096!=0) return;
+        if ((!trace_trail_ || d>128) && d>16 && (d&(d-1))!=0 && d%4096!=0) return;
         trace_pending_=true;
         trace_pending_row_=TraceRecord{};
         trace_pending_row_.decision_literal=literal;
         trace_pending_row_.before=snapshot();
+        if (trace_trail_) trace_pending_row_.trail_before=trail_;
         ++stats_.trace_samples_total;
     }
     void endTransition(bool conflict) {
@@ -492,6 +504,7 @@ class Solver {
         trace_pending_=false;
         trace_pending_row_.conflict=conflict;
         trace_pending_row_.after=snapshot();
+        if (trace_trail_) trace_pending_row_.trail_after=trail_;
         stats_.trace_conflicts+=conflict;
         stats_.trace_implied+=std::max(0,trace_pending_row_.after.assigned-trace_pending_row_.before.assigned-1);
         if (trace_records_.size()<MAX_TRACE_ROWS) trace_records_.push_back(trace_pending_row_);
@@ -836,15 +849,16 @@ int run(int argc, char** argv) {
     const auto process_start=Clock::now();
     std::string input, mode="trace", trace_file;
     double seconds=5.0;
-    bool show_stats=false;
+    bool show_stats=false, trace_trail=false;
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
         else if (opt=="--time" && i+1<argc) seconds=std::stod(argv[++i]);
         else if (opt=="--transitions" && i+1<argc) trace_file=argv[++i];
         else if (opt=="--stats") show_stats=true;
+        else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--help") {
-            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path]\n";
+            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)]\n";
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -853,6 +867,8 @@ int run(int argc, char** argv) {
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
+    if (trace_trail && (mode!="trace" || trace_file.empty()))
+        throw std::runtime_error("--trace-trail requires trace mode and --transitions");
     std::ifstream fd(input);
     if (!fd) throw std::runtime_error("cannot open CNF: "+input);
     int declared_vars=-1, declared_clauses=-1;
@@ -875,7 +891,8 @@ int run(int argc, char** argv) {
                 word!="p" || fmt!="cnf" || declared_vars<0 || declared_vars>20000000 ||
                 declared_clauses<0 || (header>>extra))
                 throw std::runtime_error("invalid DIMACS header");
-            solver.emplace(declared_vars,mode,seconds,process_start);
+            if (trace_trail && declared_vars>18) throw std::runtime_error("--trace-trail only supported for at most 18 variables");
+            solver.emplace(declared_vars,mode,seconds,process_start,trace_trail);
             continue;
         }
         if (!solver) throw std::runtime_error("missing DIMACS header");
