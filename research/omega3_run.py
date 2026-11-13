@@ -202,24 +202,46 @@ def detector(raw):
             "card_s": t2 - t1, "math_s": time.perf_counter() - begin}
 
 
-def timeout_raise(signum, frame):
-    raise TimeoutError("proof cost cap")
+def _proof_worker(raw, sender):
+    """Isolated detector process; parent can enforce a real wall-time cap."""
+    try:
+        sender.send(detector(raw))
+    except BaseException as e:
+        try:
+            sender.send({"status": "UNKNOWN", "mode": "DETECTOR_ERROR",
+                         "error": str(e), "proof": None})
+        except Exception:
+            pass
+    finally:
+        sender.close()
 
 
 def bounded_detector(raw, budget):
+    """No async SIGALRM races: fork isolated worker, include fork in cost."""
+    import multiprocessing
     begin = time.perf_counter()
-    handler = signal.signal(signal.SIGALRM, timeout_raise)
-    signal.setitimer(signal.ITIMER_REAL, max(0.01, budget))
+    ctx = multiprocessing.get_context("fork")  # GitHub Ubuntu x86_64
+    reader, writer = ctx.Pipe(duplex=False)
+    process = ctx.Process(target=_proof_worker, args=(raw, writer), daemon=True)
     try:
-        row = detector(raw)
-    except TimeoutError:
-        row = {"status": "UNKNOWN", "mode": "PROOF_TIMEOUT", "proof": None}
-    except (AssertionError, MemoryError, ValueError) as e:
-        row = {"status": "UNKNOWN", "mode": "DETECTOR_ERROR",
-               "error": str(e), "proof": None}
+        process.start()
+        writer.close()
+        if reader.poll(max(0.01, budget)):
+            try:
+                row = reader.recv()
+            except EOFError:
+                row = {"status": "UNKNOWN", "mode": "WORKER_EOF", "proof": None}
+        else:
+            row = {"status": "UNKNOWN", "mode": "PROOF_TIMEOUT", "proof": None}
+    except (OSError, ValueError) as e:
+        row = {"status": "UNKNOWN", "mode": "WORKER_ERROR", "error": str(e), "proof": None}
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, handler)
+        if process.is_alive():
+            process.terminate()
+        if process.pid is not None:
+            process.join(timeout=.10)
+        reader.close()
+        writer.close()
     row["wall_s"] = time.perf_counter() - begin
     return row
 
