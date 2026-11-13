@@ -1,0 +1,74 @@
+name: DRNAS TINY24 16-48 variables 0.5s frozen one-core comparison
+on:
+  push:
+    branches: [experiment/drnas-x5-tiny24-20261113]
+    paths: [.github/workflows/drnas-x5-tiny24.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x5-tiny24
+  cancel-in-progress: false
+jobs:
+  tiny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Reuse exact frozen binaries and proof checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+      - name: 24 smaller CNFs, 7 arms, 3 repetitions, half-second inclusive cap
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_tiny24.py --out tiny24 --count 24 \
+            --offset 8200000 --cap .5 --repeats 3 \
+            --arms CORE,X46_LEARNED,X5,X5_NO_MIN,Kissat,CaDiCaL,CMS \
+            --kissat build/kissat --cadical build/cadical --cms build/cms \
+            | tee tiny24.log
+      - name: Validate all pairs and summarize source-clustered uncertainty
+        run: |
+          set -euo pipefail
+          python3 research/drnas_x5_report.py --root tiny24 --out tiny24_final.json --synthetic 24 --official 0 > tiny24_final.log
+          python3 - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          m=json.loads(Path('tiny24/manifest.json').read_text())
+          r=json.loads(Path('tiny24/report.json').read_text())
+          rows=[json.loads(l) for l in Path('tiny24/trials.jsonl').read_text().splitlines()]
+          assert len(rows)==504 and len({s['sha256'] for s in m['sources']})==24
+          assert max(s['nvars'] for s in m['sources'])<=48
+          result={'sources':24,'repeats':3,'trials':504,'cap_s':.5,
+              'variables_range':[min(s['nvars'] for s in m['sources']),max(s['nvars'] for s in m['sources'])],
+              'clauses_range':[min(s['nclauses'] for s in m['sources']),max(s['nclauses'] for s in m['sources'])],
+              'totals':r['totals'],'by_family':r['by_family'],
+              'timing':{a:{'solve_sum_s':sum(x['solve_s'] for x in rows if x['arm']==a),
+                          'check_sum_s':sum(x['check_s'] for x in rows if x['arm']==a),
+                          'median_solve_ms':1000*statistics.median(x['solve_s'] for x in rows if x['arm']==a)} for a in m['arms']},
+              'note':'Synthetic tiny inputs, not industrial evidence. Process launch and proof checking can dominate.'}
+          Path('tiny24_summary.json').write_text(json.dumps(result,indent=2)+'\n')
+          print('TINY24_FINAL',json.dumps(result,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-tiny24-half-second-results
+          retention-days: 30
+          path: |
+            tiny24/
+            tiny24.log
+            tiny24_final.json
+            tiny24_final.log
+            tiny24_summary.json
