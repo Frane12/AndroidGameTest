@@ -1,0 +1,288 @@
+name: DRNAS REAL-LEARN1 original CNF family-isolated learning
+on:
+  push:
+    branches: [experiment/drnas-real-learn1-20261113]
+    paths: [.github/workflows/drnas-real-learn1.yml, research/drnas_real_learn1.py, tests/test_drnas_real_learn1.py]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: real-learn1-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  REAL_CAP: '3'
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Build exact native engines and run safety tests
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x52.cpp -o build/drnas-x52
+          test -x build/frozen-proof && test -x build/drnas-x5
+          test -x build/drat-trim && test -x build/timed
+          python3 -m py_compile research/drnas_real_learn1.py
+          python3 -m unittest discover -s tests -p test_drnas_real_learn1.py -v
+          python3 -u tests/test_x52.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real1-native
+          retention-days: 90
+          path: build/drnas-x52
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lock 120 original SAT Competition 2024 CNFs by source SHA and family
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 -u research/drnas_x52_prepare.py --count 120 --out real1_source
+          python3 -u research/drnas_real_learn1.py split --sources real1_source --count 120 --out real1_splits.json
+          python3 - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          m=json.loads(Path('real1_splits.json').read_text())
+          assert m['source_count']==120 and m['family_count']>=15
+          assert all(hashlib.sha256((Path('real1_source')/s['file']).read_bytes()).hexdigest()==s['sha256'] for s in m['sources'])
+          print('REAL1_SOURCE_LOCK_PASS',m['split_counts'],m['split_families'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real1-originals
+          retention-days: 90
+          path: |
+            real1_source/
+            real1_splits.json
+  train:
+    needs: [build, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-native
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-originals
+          path: input
+      - name: Two repeats and three verified arms on TRAIN and VALIDATION only
+        run: |
+          set -euo pipefail
+          cp candidate/drnas-x52 build/drnas-x52
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_real_learn1.py bench --mode train \
+            --sources input/real1_source --split-manifest input/real1_splits.json \
+            --out real1_train_${{ matrix.shard }} --shard ${{ matrix.shard }} --shards 4 \
+            --cap "$REAL_CAP" --repeats 2 | tee train_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1-train-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            real1_train_${{ matrix.shard }}/
+            train_${{ matrix.shard }}.log
+  fit:
+    needs: [prepare, train]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-originals
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1-train-*
+          path: train_data
+      - name: TRAIN-only fit; one-pass validation gate; freeze model
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_real_learn1.py fit \
+            --split-manifest input/real1_splits.json --train-data train_data \
+            --out fitted/real1_policy.json
+          sha256sum fitted/real1_policy.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real1-fitted
+          retention-days: 90
+          path: fitted/
+  holdout:
+    needs: [build,prepare,fit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-native
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-originals
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-fitted
+          path: frozen
+      - name: Evaluate frozen model and original references on unseen families
+        run: |
+          set -euo pipefail
+          cp candidate/drnas-x52 build/drnas-x52
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_real_learn1.py bench --mode holdout \
+            --sources input/real1_source --split-manifest input/real1_splits.json \
+            --model frozen/real1_policy.json --out real1_holdout_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 --cap "$REAL_CAP" --repeats 2 \
+            | tee holdout_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1-holdout-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            real1_holdout_${{ matrix.shard }}/
+            holdout_${{ matrix.shard }}.log
+  report:
+    needs: [holdout]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-originals
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-fitted
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1-holdout-*
+          path: holdout_data
+      - name: Compute source-clustered paired PAR2 confidence and correctness
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_real_learn1.py report \
+            --split-manifest input/real1_splits.json --model frozen/real1_policy.json \
+            --holdout-data holdout_data --out real1_final.json | tee real1_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1-final
+          retention-days: 90
+          path: |
+            real1_final.json
+            real1_final.log
+  persist:
+    needs: [report]
+    if: ${{ needs.report.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn1-data-20261113
+          path: durable
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-originals
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-fitted
+          path: fitted
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1-final
+          path: outcome
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1-train-*
+          path: train_data
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1-holdout-*
+          path: holdout_data
+      - name: Preserve separate verified train/validation/holdout evidence permanently
+        env:
+          REAL_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,json,gzip
+          from pathlib import Path
+          root=Path('durable/research/memory/real_learn1/runs')/os.environ['REAL_RUN']
+          root.mkdir(parents=True,exist_ok=False)
+          copies={'splits.json':'input/real1_splits.json','policy.json':'fitted/real1_policy.json',
+                  'final_report.json':'outcome/real1_final.json'}
+          for name,path in copies.items(): (root/name).write_bytes(Path(path).read_bytes())
+          groups={'train':[],'validation':[],'holdout':[]}
+          for folder in ('train_data','holdout_data'):
+              for p in sorted(Path(folder).rglob('trials.jsonl')):
+                  for line in p.read_text().splitlines():
+                      if line: 
+                          row=json.loads(line);groups[row['split']].append(row)
+          allowed={s:{r['sha256'] for r in json.loads((root/'splits.json').read_text())['sources']
+                      if r['split']==s} for s in groups}
+          for split,rows in groups.items():
+              assert {r['sha256'] for r in rows}==allowed[split]
+              data=('\n'.join(json.dumps(r,sort_keys=True,separators=(',',':')) for r in rows)+'\n').encode()
+              (root/(split+'.jsonl.gz')).write_bytes(gzip.compress(data,compresslevel=9,mtime=0))
+          print('REAL1_DURABLE_EVIDENCE',str(root),{k:len(v) for k,v in groups.items()})
+          PY
+          git -C durable config user.name 'github-actions[bot]'
+          git -C durable config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C durable add research/memory/real_learn1/runs
+          git -C durable commit -m "memory(real-learn1): preserve separated certified train and holdout evidence"
+          git -C durable push origin HEAD:experiment/drnas-real-learn1-data-20261113
+          echo REAL1_DURABLE_PERSISTED
