@@ -6,6 +6,7 @@ sys.path.insert(0,str(ROOT/'research/drnas_coop1'))
 from synthetic import model_ok
 ARCHIVE='https://zenodo.org/records/15095752/files/sat-competition-2024-main-benchmarks.zip?download=1'
 ARMS=['X5_NO_MIN','COOP_OFF','COOP_ALGEBRA','Kissat','CaDiCaL','CryptoMiniSat']
+CMS_FRAT=False
 BINS={'X5_NO_MIN':'drnas-x5','COOP_OFF':'drnas-coop1','COOP_ALGEBRA':'drnas-coop1','Kissat':'kissat','CaDiCaL':'cadical','CryptoMiniSat':'cryptominisat5'}
 CONTROLS={
 'asconhashv12_opt64_H5_M2-xEJ8F_m0_3_U5.c.cnf.xz':'e789f2a90e857bd26bbc9db1dea6d7e509e1391de3f7335e959f93c4fa57b9fc',
@@ -101,7 +102,7 @@ def command(arm,cnf,proof,cap):
 
 def run(case,cs,arm,rep,out,cap):
  cnf=out/'cnf'/(case['sha256']+'.cnf');stem=f'{case["id"]:03}_{rep}_{arm}'
- proof=out/(stem+'.drat');usage=out/(stem+'.usage');cmd=command(arm,cnf,proof,cap)
+ proof=out/(stem+('.frat' if arm=='CryptoMiniSat' and CMS_FRAT else '.drat'));usage=out/(stem+'.usage');cmd=command(arm,cnf,proof,cap)
  measured=['/usr/bin/time','-f','%U %S %M','-o',str(usage),*cmd] if pathlib.Path('/usr/bin/time').exists() else cmd
  before=resource.getrusage(resource.RUSAGE_CHILDREN);start=time.perf_counter()
  p=subprocess.Popen(measured,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
@@ -119,9 +120,10 @@ def run(case,cs,arm,rep,out,cap):
  elif not killed and rc==20:
   status='UNSAT'
   try:
-   check=subprocess.run([str(ROOT/'build/drat-trim'),str(cnf),str(proof)],capture_output=True,text=True,timeout=60)
+   check_cmd=([str(ROOT/'build/frat-rs'),'elab',str(proof),'-m',str(cnf),str(out/(stem+'.lrat')),'-v'] if arm=='CryptoMiniSat' and CMS_FRAT else [str(ROOT/'build/drat-trim'),str(cnf),str(proof)])
+   check=subprocess.run(check_cmd,capture_output=True,text=True,timeout=60)
    (out/(stem+'.verification')).write_text(check.stdout+check.stderr)
-   if 's VERIFIED' not in check.stdout:raise RuntimeError(('INVALID_PROOF',stem,check.stdout[-1000:]))
+   if check.returncode!=0 or not any(line.strip() in ('s VERIFIED','VERIFIED') for line in check.stdout.splitlines()):raise RuntimeError(('INVALID_PROOF',stem,check.stdout[-1000:]))
    verified=True
   except subprocess.TimeoutExpired:
    status='UNSAT_UNVERIFIED';(out/(stem+'.verification')).write_text('CHECKER_TIMEOUT_60s\n')
@@ -164,15 +166,19 @@ def preflight(out,arms):
  print('COOP1_REAL_PREFLIGHT PASS',flush=True)
 
 def main():
+ global CMS_FRAT
  ap=argparse.ArgumentParser();ap.add_argument('--out',default='coop1_real_results');ap.add_argument('--local-inputs');ap.add_argument('--native-only',action='store_true');ap.add_argument('--cap',type=float,default=5);ap.add_argument('--repeats',type=int,default=3);ap.add_argument('--active-only',action='store_true');a=ap.parse_args()
  if a.cap<=0 or a.repeats<1:raise ValueError('invalid limits')
  arms=ARMS[:3] if a.native_only else ARMS
+ if 'CryptoMiniSat' in arms:
+  h=subprocess.run([str(ROOT/'build/cryptominisat5'),'--help'],capture_output=True,text=True,check=True)
+  CMS_FRAT='--frat' in h.stdout
  cpu=min(os.sched_getaffinity(0));os.sched_setaffinity(0,{cpu})
  out=ROOT/a.out;out.mkdir(parents=True,exist_ok=False)
  preflight(out/'preflight',arms)
  cases=collect(out,a.local_inputs)
  if a.active_only:cases=[c for c in cases if c['cohort']=='active_simon']
- manifest={'source':'SAT Competition 2024 Main original CNF bytes','archive':ARCHIVE,'selection':'All archive Simon r16..r21 entries, based only on filename/round count; plus 4 SHA-pinned large controls. Local mode only includes previously downloaded members.','known_blind':False,'training':'none; every trial a fresh process; ordinary CDCL clause learning enabled in all arms','local_subset':bool(a.local_inputs),'cpu':cpu,'arms':arms,'active_cap_s':a.cap,'active_repeats':a.repeats,'control_cap_s':1,'control_repeats':1,'metric':'Verified PAR2 uses solver wall time including startup, parse, proof emission, excluding independent checking (reported separately). Missed cap/unknown/unverified=2*cap. Do not pool cohorts with different caps.','cases':cases,'binaries':{b:hashlib.sha256((ROOT/'build'/b).read_bytes()).hexdigest() for b in sorted(set(BINS[x] for x in arms)|{'drat-trim'})}}
+ manifest={'source':'SAT Competition 2024 Main original CNF bytes','archive':ARCHIVE,'selection':'All archive Simon r16..r21 entries, based only on filename/round count; plus 4 SHA-pinned large controls. Local mode only includes previously downloaded members.','known_blind':False,'cms_proof_format':('FRAT verified through LRAT' if CMS_FRAT else 'DRAT or not included'),'training':'none; every trial a fresh process; ordinary CDCL clause learning enabled in all arms','local_subset':bool(a.local_inputs),'cpu':cpu,'arms':arms,'active_cap_s':a.cap,'active_repeats':a.repeats,'control_cap_s':1,'control_repeats':1,'metric':'Verified PAR2 uses solver wall time including startup, parse, proof emission, excluding independent checking (reported separately). Missed cap/unknown/unverified=2*cap. Do not pool cohorts with different caps.','cases':cases,'binaries':{b:hashlib.sha256((ROOT/'build'/b).read_bytes()).hexdigest() for b in sorted(set(BINS[x] for x in arms)|{'drat-trim'}|({'frat-rs'} if CMS_FRAT else set()))}}
  (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
  print('COOP1_REAL_START',json.dumps({k:manifest[k] for k in ('cpu','arms','active_cap_s','active_repeats','control_cap_s','control_repeats')}),flush=True)
  rows=[];answers={}
