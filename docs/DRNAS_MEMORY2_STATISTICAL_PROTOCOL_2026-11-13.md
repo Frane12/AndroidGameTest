@@ -61,3 +61,44 @@ outside these synthetic source distributions.
 
 A larger sample reduces uncertainty. It does not force a positive result,
 prove a new complexity theorem, or ensure learned structural understanding.
+
+
+## Confirmatory results (completed; run 43344048820)
+
+- Verification: all four arms **7,200/7,200** original-CNF results certified:
+  5,763 SAT and 1,437 UNSAT; no correctness disagreement.
+- Frozen policy learned on 240 separate training formulas, with no change in
+  saved policy bytes throughout the confirmatory holdout.
+- New holdout: 2,400 unique source SHA hashes, six holdout generator
+  families (400 each), no SHA overlap with the original pilot 360.
+- Total verification-bearing holdout measurements: **28,800**.
+
+| Arm | Verified end-to-end PAR2 | Relative change vs CORE |
+| --- | ---: | ---: |
+| X1_CORE | 27.076665 s | baseline |
+| X1_M2_SHADOW | 28.326951 s | 4.6176% slower |
+| X1_M2_FROZEN | 28.384510 s | 4.8302% slower |
+| X1_M2_ONLINE (preregistered primary) | 29.847541 s | **10.2334% slower** |
+
+Primary MEMORY2_ONLINE relative PAR2 reduction = **−10.2334%**. Paired
+formula-bootstrap 95% confidence interval: **[−17.7159%, −3.6497%]**.
+Family-cluster bootstrap 95% interval: **[−13.0151%, −6.8724%]**.
+Exploratory one-sided sign-flip p-value **0.999** for the hypothesized
+positive improvement. The predefined **+5%** improvement criterion **FAILS**.
+
+Every one of the six holdout families showed online regression: binary2 −9.15%,
+cardinality −12.83%, graph4 −11.94%, planted4 −7.02%, rand4 −15.32%, and
+xor_chain −3.45% relative PAR2 reduction. The frozen policy mostly adds
+overhead instead of changing search, and the online policy adds further
+regression. The shadow control suggests some of the observed delay arises
+from instrumentation/trace accounting rather than useful branch selection.
+
+**Interpretation:** This result is a valuable negative experiment. It gives
+evidence that the current heuristic's learned proxies are insufficient for a
+faster solver under this **synthetic** distribution. It does not refute the
+more general idea of learning future-potential relations and cannot
+generalize to all SAT Competition problems.
+
+Run: https://github.com/Frane12/AndroidGameTest/actions/runs/43344048820
+Artifact: drnas-memory2-confirm2400-compact, including source manifest, policy,
+all paired trial rows, confidence report, and selected episode traces.
