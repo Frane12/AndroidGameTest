@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 
-FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat")
+FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3")
 WINDOWS=((1,8),(9,16),(17,128))
 
 def emit(tag, obj):
@@ -30,7 +30,7 @@ def emit(tag, obj):
 def build_case(family,i):
     rng=random.Random(0x46020261113+100003*FAMILIES.index(family)+7919*i)
     clauses=[]
-    n=12+(i%6)
+    n=18 if family in ("sparse4","sparse3") else 12+(i%6)
     target=[None]+[bool(rng.randrange(2)) for _ in range(n)]
     def planted_clause(k):
         vs=rng.sample(range(1,n+1),k)
@@ -42,6 +42,16 @@ def build_case(family,i):
         clauses=[planted_clause(3) for _ in range(5*n)]
     elif family=="planted_2sat":
         clauses=[planted_clause(2) for _ in range(6*n)]
+    elif family in ("sparse4","sparse3"):
+        width=4 if family=="sparse4" else 3
+        clauses=[planted_clause(width) for _ in range(n)]
+        covered={abs(l) for c in clauses for l in c}
+        for v in range(1,n+1):
+            if v not in covered:
+                c=[v]+rng.sample([x for x in range(1,n+1) if x!=v],width-1)
+                c=[x*rng.choice((-1,1)) for x in c]
+                if not any((x>0)==target[abs(x)] for x in c):c[0]*=-1
+                clauses.append(c)
     elif family=="planted_xor":
         for _ in range(n+4):
             vs=rng.sample(range(1,n+1),3)
@@ -96,7 +106,6 @@ def exact_models(n,clauses):
 def permute(n,clauses,rng,cycle):
     p=[0]+list(range(1,n+1))
     if cycle:
-        rng.shuffle(p[1:])  # Do not rely on slice in-place; set explicitly.
         target=list(range(1,n+1))
         rng.shuffle(target)
         p=[0]+target
