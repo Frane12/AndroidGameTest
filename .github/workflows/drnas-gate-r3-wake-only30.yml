@@ -1,0 +1,151 @@
+name: DRNAS GATE-R3 wake-only30 strict conflict ablation 600 CNF
+on:
+  push:
+    branches: [experiment/drnas-gate-r3-wake-only30-20261113]
+    paths:
+      - research/build_gate_r3.py
+      - research/gate_r3_trial.py
+      - tests/test_gate_r3.cpp
+      - tests/test_gate_r3_report.py
+      - README_GATE_R3.md
+      - .github/workflows/drnas-gate-r3-wake-only30.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gate-r3-wake-only30-one-workflow
+  cancel-in-progress: true
+jobs:
+  freeze_and_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile immutable X46 and R2 controls plus isolated R3 variants
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/build_gate_r3.py research/gate_r3_trial.py tests/test_gate_r3_report.py
+          python3 research/build_gate_r3.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_x46_gate30.cpp -o build/drnas-x46
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_gate_r2.cpp -o build/drnas-gate-r2
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_gate_r3.cpp -o build/drnas-gate-r3
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror tests/test_gate_r2.cpp -o build/test-gate-r2
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror tests/test_gate_r3.cpp -o build/test-gate-r3
+          sha256sum build/drnas-x41 build/drnas-x3 build/drnas-x46 build/drnas-gate-r2 build/drnas-gate-r3 > build/SHA256SUMS
+      - name: Audit isolated wake semantics and 600 exact-oracle native runs
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_r3_trial.py selftest | tee gate_r3_selftest.log
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43362264215
+          github-token: ${{ github.token }}
+          name: gate-r2-frozen
+          path: prior/r2
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43359541383
+          github-token: ${{ github.token }}
+          name: x46-gate30-frozen
+          path: prior/x46
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43356913822
+          github-token: ${{ github.token }}
+          name: x45-frozen-1200-SHA
+          path: prior/x45
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43354771381
+          github-token: ${{ github.token }}
+          name: x44-frozen-model-manifest
+          path: prior/x44
+      - name: Freeze new SHA and protocol, test full report before evaluation
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/gate_r3_trial.py freeze --prior-dir prior | tee gate_r3_freeze.log
+          python3 -u tests/test_gate_r3_report.py | tee gate_r3_report_selftest.log
+          cp gate_r3_selftest.log gate_r3_freeze.log gate_r3_report_selftest.log gate_r3_frozen/
+          { git rev-parse HEAD; g++ --version | head -1; } > gate_r3_frozen/versions.txt
+          python3 - <<'PY'
+          import tarfile,sys
+          sys.path.insert(0,'research')
+          from gate_r3_trial import CODE
+          with tarfile.open('build/source_bundle.tgz','w:gz') as bundle:
+              for path in CODE: bundle.add(path,arcname=path)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-r3-frozen
+          retention-days: 21
+          path: gate_r3_frozen/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-r3-native
+          retention-days: 21
+          path: build/
+  paired:
+    needs: freeze_and_audit
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-r3-frozen
+          path: gate_r3_frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-r3-native
+          path: build
+      - name: Verify identical binaries and run six native arms on one logical CPU
+        run: |
+          set -euo pipefail
+          sha256sum -c build/SHA256SUMS
+          chmod +x build/drnas-x41 build/drnas-x3 build/drnas-x46 build/drnas-gate-r2 build/drnas-gate-r3
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "GATER3_SINGLE_LOGICAL_CPU $CPU SHARD ${{ matrix.shard }}"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/gate_r3_trial.py shard --shard ${{ matrix.shard }} | tee gate_r3_run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-r3-wake30-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: gate_r3_stage/
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-r3-frozen
+          path: gate_r3_frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-r3-wake30-*
+          path: gate_r3_downloads
+          merge-multiple: false
+      - name: Audit all paired results and formula-clustered uncertainty
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_r3_trial.py finish | tee gate_r3_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-r3-wake30-final
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            gate_r3_final/
+            gate_r3_final.log
