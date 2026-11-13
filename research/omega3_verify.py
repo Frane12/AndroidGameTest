@@ -100,7 +100,7 @@ def verify_source_preserving_sat_view(original, sat_view):
     original_clauses = []
     for rawline in original.decode("ascii").splitlines():
         line = rawline.strip()
-        if not line or line.startswith("c") or line.startswith("w "):
+        if not line or line.startswith("c") or (line.startswith("w ") or line.startswith("w\t")):
             continue
         if line.startswith("%"):
             break
