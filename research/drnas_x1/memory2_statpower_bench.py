@@ -131,12 +131,12 @@ def make_formula(family,i):
             "sha256":hashlib.sha256(text.encode()).hexdigest(),"nvars":n,
             "clauses":len(normalized)}
 
-def dataset(families,total):
+def dataset(families,total,offset=0):
     if total%len(families):raise ValueError("source count must be divisible by family count")
     each=total//len(families)
     data=[]
     for f in families:
-        for i in range(each):
+        for i in range(offset,offset+each):
             data.append(make_formula(f,i))
     rng=random.Random(2026111309);rng.shuffle(data)
     return data
@@ -193,6 +193,8 @@ def main():
     p.add_argument("--holdout",type=int,default=360)
     p.add_argument("--repeats",type=int,default=3)
     p.add_argument("--cap",type=float,default=0.5)
+    p.add_argument("--holdout-offset",type=int,default=0)
+    p.add_argument("--primary",choices=ARMS[1:],default="X1_M2_FROZEN")
     args=p.parse_args()
     if args.repeats<3 or args.train<60 or args.holdout<200 or args.cap<0.2:
         raise ValueError("insufficient predeclared statistical sample")
@@ -200,8 +202,10 @@ def main():
     args.out.mkdir(parents=True,exist_ok=False)
     if hasattr(os,"sched_setaffinity"):
         os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+    if args.holdout>=1800 and args.holdout_offset<1000:
+        raise ValueError("confirmatory holdout must use fresh non-pilot generator indices")
     train=dataset(TRAIN_FAMILIES,args.train)
-    holdout=dataset(TEST_FAMILIES,args.holdout)
+    holdout=dataset(TEST_FAMILIES,args.holdout,offset=args.holdout_offset)
     all_cases=train+holdout
     if len({c["sha256"] for c in all_cases})!=len(all_cases):
         raise RuntimeError("duplicate generated CNF SHA; no independent-sample claim")
@@ -212,7 +216,10 @@ def main():
        "train_families":TRAIN_FAMILIES,"holdout_families":TEST_FAMILIES,
        "train_unique":len(train),"holdout_unique":len(holdout),
        "repeats":args.repeats,"cap_s":args.cap,
-       "primary_comparison":"X1_M2_FROZEN vs X1_CORE",
+       "primary_comparison":args.primary+" vs X1_CORE",
+       "pilot_informed_primary_selection":args.primary=="X1_M2_ONLINE",
+       "holdout_generator_offset":args.holdout_offset,
+       "confirmation_dataset_not_reusing_pilot_indices":args.holdout_offset>=1000,
        "target_relative_PAR2_improvement":0.05,
        "independence_unit":"distinct SHA of original CNF; seeds repeated within formula",
        "proofs":"independent SAT witness / UNSAT DRUP checker",
@@ -281,7 +288,7 @@ def main():
             raise RuntimeError("holdout contaminated persistent learned state")
     with (args.out/"trials.jsonl").open("w") as o:
         for row in trials:o.write(json.dumps(row,sort_keys=True)+"\n")
-    report=significance.compute(trials,"X1_M2_FROZEN",target=.05)
+    report=significance.compute(trials,args.primary,target=.05)
     report["train_unique"]=len(train)
     report["training_promoted_verified"]=accepted
     report["holdout_unique"]=len(holdout)
@@ -291,7 +298,8 @@ def main():
         json.dumps(report,indent=2,sort_keys=True)+"\n")
     emit("M2_POWER_FINAL",{"train":len(train),"holdout":len(holdout),
          "primary_passed":report["primary_passed"],
-         "stats":report["comparisons"]["X1_M2_FROZEN"],
+         "stats":report["comparisons"][args.primary],
+         "primary_arm":args.primary,
          "by_arm":report["arms"],
          "caveat":report["limits"]})
 
