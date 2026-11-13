@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Offline REAL2 material/learning safety tests. No remote archive access."""
 import argparse
+import contextlib
+import io
 import gzip
 import hashlib
 import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"research"))
 import drnas_real_learn2_material as M
@@ -22,6 +25,32 @@ class RealLearn2Tests(unittest.TestCase):
         self.assertEqual((d["nvars"],d["nclauses"],d["n_literals"],d["max_width"]),(3,2,3,2))
         other=b"c renamed\np cnf 3 2\n1   -2   0\n3 0\n"
         self.assertEqual(d["semantic_sha"],M.validate_complete_dimacs(other)["semantic_sha"])
+    def test_previous_material2_is_blocked_and_emitted(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/"material.json"
+            sample={"sha256":"d"*64,"archive_path":"from_prior/case000.cnf"}
+            path.write_text(json.dumps({"sources":[sample]}))
+            raw,semantic,roles,blocked=M.prior_sets(None,None,path)
+            self.assertIn(sample["sha256"],raw)
+            self.assertEqual(semantic,set())
+            self.assertEqual(roles,{})
+            self.assertIn(M.official_family(sample["archive_path"]),blocked)
+        buffer=io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            M.emit("REAL2_COMPLETE_MATERIAL",{"selected":2,"target":3})
+        tag,data=buffer.getvalue().strip().split(" ",1)
+        self.assertEqual(tag,"REAL2_COMPLETE_MATERIAL")
+        self.assertEqual(json.loads(data),{"selected":2,"target":3})
+
+    def test_select_passes_previous_material2_to_prior_sets(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)
+            args=argparse.Namespace(count=80,shards=1,out=p/"prepared",
+                state=None,real1_splits=None,previous_material2=None)
+            with patch.object(M,"ARCHIVES",{}):
+                with self.assertRaisesRegex(RuntimeError,"no remote original"):
+                    M.select(args)
+
     def test_truncated_missing_zero_rejected(self):
         for raw in (b"p cnf 3 2\n1 0\n2 3\n",
                     b"p cnf 3 2\n1 0\n2 0\n3 0\n",

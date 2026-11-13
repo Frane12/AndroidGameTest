@@ -34,6 +34,9 @@ TIER_TARGETS = {"small": .65, "medium": .25, "large": .10}
 def h(x):
     return hashlib.sha256(x).hexdigest()
 
+def emit(tag, payload):
+    print(f"{tag} {json.dumps(payload, sort_keys=True)}", flush=True)
+
 def split_for_family(family, existing):
     if family in existing:
         return existing[family]
@@ -148,7 +151,8 @@ def order_entries(items):
 def select(args):
     if args.count<60 or args.shards<1 or args.out.exists():
         raise ValueError("invalid count/shards or existing destination")
-    old_sha,old_sem,permanent=prior_sets(args.state,args.real1_splits)
+    old_sha,old_sem,permanent,blocked=prior_sets(
+        args.state,args.real1_splits,args.previous_material2)
     raw_items=[]
     connections={}
     errors={}
