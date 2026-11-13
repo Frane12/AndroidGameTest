@@ -110,6 +110,37 @@ class MemoryTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM eligible_training").fetchone()[0], 0)
             self.assertEqual(M.import_legacy(self.db, archive, latest)["state"], "unchanged")
 
+    def test_generic_named_report_and_learning_counters(self):
+        manifest={"originals":[{"sha256":self.sha1,"family":"test"}],
+                  "cohort":"synthetic"}
+        with io.BytesIO() as binary:
+            with zipfile.ZipFile(binary,"w",zipfile.ZIP_DEFLATED) as z:
+                z.writestr("out/manifest.json",json.dumps(manifest))
+                z.writestr("out/2026_new_solver_summary.json",
+                           json.dumps({"PAR2":3.0,"arm":"X5"}))
+            reports,trials=M.import_zip(self.db,5,22,binary.getvalue())
+        self.assertEqual(reports,2)
+        self.assertEqual(trials,0)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM reports").fetchone()[0],2)
+        self.db.execute("""
+          CREATE TABLE continual_experiences(source_sha TEXT)
+        """)
+        self.db.execute("INSERT INTO continual_experiences VALUES (?)",(self.sha2,))
+        self.db.execute("""
+          CREATE TABLE sealed_global_sources(source_sha TEXT)
+        """)
+        self.db.execute("INSERT INTO sealed_global_sources VALUES (?)",(self.sha1,))
+        self.db.execute("""
+          CREATE TABLE global_learning_events(promoted INTEGER)
+        """)
+        self.db.execute("INSERT INTO global_learning_events VALUES (0)")
+        s=M.stats(self.db,{"mode":"unit_test"})
+        self.assertEqual(s["continual_training_sources"],1)
+        self.assertEqual(s["fresh_sealed_holdout_sources"],1)
+        self.assertEqual(s["completed_learning_cycles"],1)
+        self.assertEqual(s["promoted_models"],0)
+
     def test_invalid_sha_and_unverified_not_trusted(self):
         self.assertFalse(M.valid_sha("not a SHA"))
         self.assertIsNone(M.safe_num(float("nan")))
