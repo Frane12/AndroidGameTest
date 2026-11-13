@@ -18,7 +18,7 @@ rep('    int coop_hint_=-1;', '''    int coop_hint_=-1;
     int64_t audit_selected_=0,audit_overrides_=0,audit_stale_applied_=0;
     int64_t audit_phase_opposite_=0,audit_phase_comparable_=0;
     void configureCoop4HintFresh(bool yes){audit_fresh_=yes;}''')
-rep('    void reportCoop() const { coop_.report(); }','''    void reportCoop() const {
+rep('    void reportCoop() const { coop_.report(); }',r'''    void reportCoop() const {
         coop_.report();
         std::cerr<<"COOP4_HINT_AUDIT {\"fresh\":"<<(audit_fresh_?"true":"false")
                  <<",\"proposals\":"<<audit_proposals_
@@ -28,7 +28,7 @@ rep('    void reportCoop() const { coop_.report(); }','''    void reportCoop() c
                  <<",\"overrides\":"<<audit_overrides_
                  <<",\"stale_overrides\":"<<audit_stale_applied_
                  <<",\"phase_comparable\":"<<audit_phase_comparable_
-                 <<",\"phase_opposite_small_branch\":"<<audit_phase_opposite_<<"}\\n";
+                 <<",\"phase_opposite_small_branch\":"<<audit_phase_opposite_<<"}\n";
     }''')
 rep('''        coop_hint_=out.hint;
         for(auto& c:out.clauses){''','''        coop_hint_=out.hint;
