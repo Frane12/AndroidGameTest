@@ -1,0 +1,46 @@
+name: DRNAS COOP4 instruction audit consolidated result only
+on:
+  push:
+    branches: [experiment/drnas-coop4-instruction-audit-20261113]
+    paths: [.github/workflows/drnas-coop4-audit-summary-only.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43518533912
+          name: coop4-hint-audit-synthetic
+          github-token: ${{ github.token }}
+          path: syn
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43518533912
+          name: coop4-hint-audit-real
+          github-token: ${{ github.token }}
+          path: real
+      - name: Aggregate original independently verified results and report wrong hints
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          files=('syn/audit_synthetic/report.json','real/audit_real/report.json')
+          docs=[json.load(open(f)) for f in files]
+          assert {d['cohort'] for d in docs}=={'synthetic','real'}
+          lines=['## DRNAS COOP4 real CDCL guidance audit','','Historical/synthetic development, not blind. SAT models and DRAT proofs checked.','','| Cohort | Policy | Verified | PAR2 (s) | Overrides VSIDS | Stale overrides | Phase chooses larger local side |','|---|---|---:|---:|---:|---:|---:|']
+          for d in docs:
+            assert d['status']=='COMPLETE' and d['promotion'] is False
+            assert d['overall']['ON_FRESH']['stale_overrides']==0
+            for a,v in d['overall'].items():
+              lines.append(f"| {d['cohort']} | {a} | {v['verified']}/{v['n']} | {v['PAR2']:.4f} | {v['overrides']} | {v['stale_overrides']} | {v['phase_opposite_small_branch']}/{v['phase_comparable']} |")
+          text='\n'.join(lines)+'\n'
+          print(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(text)
+          print('COOP4_INSTRUCTION_AUDIT_FINAL '+json.dumps({d['cohort']:d['overall'] for d in docs},sort_keys=True))
+          PY
