@@ -2,6 +2,7 @@
 // CORE path remains identical to X4.7; gated action is opt-in, one checkpoint only.
 // Original implementation. No external SAT solver is linked or invoked.
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <bit>
 #include <charconv>
