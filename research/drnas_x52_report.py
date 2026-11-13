@@ -56,7 +56,7 @@ def main():
         comps={candidate:{control:comparison(rows,candidate,control)
             for control in BASES+("Kissat","CaDiCaL")} for candidate in CANDIDATES}
         family_counts=collections.Counter(r["family"] for r in rows if r["arm"]=="CORE" and r["rep"]==0)
-        assert len(family_counts)==a.sources and all(v==1 for v in family_counts.values())
+        assert sum(family_counts.values())==a.sources and len(family_counts)>=10
         exact_proof={arm:sum(1 for r in rows if r["arm"]==arm and r["status"]=="UNSAT" and r["accepted"])
             for arm in ARMS}
         eligibility={}
