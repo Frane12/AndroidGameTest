@@ -267,9 +267,13 @@ struct X1Memory2 {
       pending.pop_front();
     if(pending.size()>128)throw std::runtime_error("MEMORY2 pending horizon bound violated");
   }
-  int select(const Stats& s,size_t trail,int depth,double elapsed,int variable){
+  int select(const Stats& s,size_t trail,int depth,const Budget& budget,int variable){
     if(!enabled)return 0;
-    const Snapshot now=snapshot(s,trail,depth,elapsed);
+    // The hot decision loop uses constant-time memory: timestamp and evaluate
+    // delayed horizons only once per bounded decision block.
+    if(active&&s.decisions-current.before.decisions<static_cast<uint64_t>(interval))
+      return current.action;
+    const Snapshot now=snapshot(s,trail,depth,budget.elapsed());
     if(active&&now.decisions-current.before.decisions>=static_cast<uint64_t>(interval))
       close(now);
     observe(now,false);
