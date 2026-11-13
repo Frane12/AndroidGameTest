@@ -1,0 +1,49 @@
+name: DRNAS XOR bounded components source-proof diagnostic
+on:
+  push:
+    branches: [experiment/drnas-xor-component-proof-20261113]
+    paths: [.github/workflows/drnas-xor-component-proof.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xor-component-proof
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-real-crypto-xor-original
+          run-id: 43435404147
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Build and validate XOR proof checker
+        run: |
+          set -euo pipefail
+          mkdir -p compiled
+          g++ -O2 -std=c++17 research/drnas_xor_component.cpp -o compiled/xor_component_study
+          sha256sum compiled/xor_component_study > compiled/component.sha256
+          python3 -m py_compile research/drnas_xor_component_study.py research/drnas_xor_component_selftest.py
+          python3 research/drnas_xor_component_selftest.py
+      - name: Process small XOR components and verify source proofs
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_xor_component_study.py | tee xor-component.log
+          grep -q '^XOR_COMPONENT_FINAL ' xor-component.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-xor-component-source-proofs
+          path: |
+            xor-component.log
+            xor_component_study/
+            compiled/component.sha256
+          retention-days: 60
+          if-no-files-found: warn
