@@ -1,0 +1,139 @@
+name: DRNAS GLOBAL MEMORY periodic evidence sync and historic backfill
+
+on:
+  push:
+    branches:
+      - main
+      - experiment/drnas-global-memory-20261113
+    paths:
+      - research/drnas_global_memory.py
+      - tests/test_drnas_global_memory.py
+      - .github/workflows/drnas-global-memory.yml
+  schedule:
+    - cron: '21 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      deep_backfill:
+        description: Scan older historical GitHub artifact pages
+        type: boolean
+        default: false
+  workflow_run:
+    workflows:
+      - DRNAS X4.7 PHP5 64 fresh Pigeonhole UNSAT 5s
+      - DRNAS X4.7 FAST5 24 fresh CNFs 5s cap
+      - DRNAS X4.7 LONG hard4 matched cost replication 64 x 10s
+      - DRNAS X4.7 LONG official SAT2024 SHA deduplicated retry
+      - DRNAS X4.7 LONG 30000 persistent memory 12 cycles
+      - DRNAS X4.7 LONG 120 larger harder CNFs original SAT2024
+      - DRNAS X4.5 Native repeated counterfactual 300 CNFs
+      - DRNAS R29 PURE NATIVE 100 diagnostic 0.5 1 2 3s
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: drnas-global-memory-single-writer
+  cancel-in-progress: false
+
+jobs:
+  sync_evidence:
+    name: DRNAS shared SQLite memory with SHA, splits and historical records
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Check out trusted importer source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out persistent data-only global memory branch
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-global-memory-store-20261113
+          path: global_store
+          persist-credentials: true
+
+      - name: Check out immutable earlier X47 30K training archive
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-x47-memory-store-20261113
+          path: legacy_store
+          persist-credentials: false
+
+      - name: Validate database integrity and holdout isolation before access
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_global_memory.py
+          python3 -m unittest discover -s tests -p test_drnas_global_memory.py -v
+
+      - name: Scan all known historical runs and import eligible evidence archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEEP: ${{ inputs.deep_backfill }}
+        run: |
+          set -euo pipefail
+          if [[ -f global_store/research/memory/global/global.sqlite.gz ]]; then
+            RUN_PAGES=6
+            ARTIFACT_PAGES=30
+            DOWNLOAD_BUDGET=70
+          else
+            RUN_PAGES=110
+            ARTIFACT_PAGES=180
+            DOWNLOAD_BUDGET=140
+          fi
+          if [[ "$DEEP" == "true" ]]; then
+            RUN_PAGES=110
+            ARTIFACT_PAGES=180
+            DOWNLOAD_BUDGET=200
+          fi
+          python3 -u research/drnas_global_memory.py \
+            --store global_store/research/memory/global/global.sqlite.gz \
+            --summary drnas_global_summary.json \
+            --legacy legacy_store/research/memory/x47/memory.sqlite.gz \
+            --legacy-latest legacy_store/research/memory/x47/latest.json \
+            --run-pages "$RUN_PAGES" \
+            --artifact-pages "$ARTIFACT_PAGES" \
+            --max-downloads "$DOWNLOAD_BUDGET" \
+            | tee drnas_global_sync.log
+
+      - name: Persist snapshot to independent memory branch (no model deployment)
+        run: |
+          set -euo pipefail
+          git -C global_store config user.name 'github-actions[bot]'
+          git -C global_store config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C global_store add research/memory/global/global.sqlite.gz research/memory/global/latest.json
+          if git -C global_store diff --cached --quiet; then
+            echo 'DRNAS_GLOBAL_MEMORY_NO_CHANGES'
+          else
+            git -C global_store commit -m "memory(global): synchronize verified-claim evidence, legacy splits and GitHub run index"
+            git -C global_store push origin HEAD:experiment/drnas-global-memory-store-20261113
+            echo "DRNAS_GLOBAL_MEMORY_PERSISTED branch=experiment/drnas-global-memory-store-20261113"
+          fi
+
+      - name: Show live summary
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          d=json.load(open("drnas_global_summary.json"))
+          print("DRNAS_GLOBAL_PERSIST_SUMMARY",json.dumps({
+            k:d[k] for k in [
+              "runs_indexed","artifacts_indexed","report_documents",
+              "observation_rows","independent_observation_sources",
+              "legacy_train_sources","legacy_validation_sources",
+              "eligible_training_sources","sealed_legacy_reports",
+              "stored_model_versions","promoted_models","artifact_states"]
+          },sort_keys=True))
+          PYCODE
+
+      - name: Publish compact audit metadata and importer log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-global-memory-sync-audit
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            drnas_global_summary.json
+            drnas_global_sync.log
