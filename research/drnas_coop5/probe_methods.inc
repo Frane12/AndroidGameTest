@@ -110,7 +110,7 @@
                               (better_implied>=6 && better_long>=0);
         const double score=2.0*better_long+0.12*better_implied;
         const bool recommend=confident && score>=2.4 &&
-              (normal.completed && guided.completed ||
+              ((normal.completed && guided.completed) ||
                (better_long>=3 && better_implied>=4));
         if(!recommend) {
             ++coop5_rejected_;
