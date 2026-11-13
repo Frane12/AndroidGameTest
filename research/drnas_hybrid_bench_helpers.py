@@ -20,6 +20,7 @@ BIN={
  "R28_NATIVE":"./compiled/r28_gf2",
  "R153_NATIVE":"./compiled/r153",
  "DRNAS_HYBRID":"./compiled/r153_ltm9",
+ "DRNAS_GATED":"./compiled/r153_ltm9_gated",
  "LTM7_NATIVE":"./mre_atlas23/bin/drnas_ltm9",
  "LTM9_NATIVE":"./mre_atlas23/bin/drnas_ltm9",
  "Kissat":"./compiled/kissat",
@@ -150,7 +151,7 @@ def run(c,arm,rep):
     if arm in ("R28_NATIVE","R153_NATIVE"):
         # NO kissat fallback! These historical frontends otherwise exec Kissat.
         cmd=[exe,c["path"],"/no-such-kissat-fallback-native-audit"]
-    elif arm=="DRNAS_HYBRID":
+    elif arm in ("DRNAS_HYBRID","DRNAS_GATED"):
         cmd=[exe,c["path"],str(pathlib.Path("./mre_atlas23/bin/drnas_ltm9").resolve())]
     elif arm=="LTM7_NATIVE":
         cmd=[exe,c["path"],"--mode","LTM7_SELECT","--time",str(CAP),
@@ -178,7 +179,7 @@ def run(c,arm,rep):
             raise RuntimeError(f"INVALID SAT original witness for {arm} {c['sha256']}")
         status="SAT_VERIFIED"
     elif rc==20:
-        if arm in ("R28_NATIVE","R153_NATIVE") or (arm=="DRNAS_HYBRID" and "c R28_UNSAT_CERT " in out):
+        if arm in ("R28_NATIVE","R153_NATIVE") or (arm in ("DRNAS_HYBRID","DRNAS_GATED") and "c R28_UNSAT_CERT " in out):
             if not verify_gf2_unsat(c,out):
                 raise RuntimeError(f"INVALID GF2 UNSAT source certificate: {arm} {c['sha256']}")
             status="UNSAT_GF2_VERIFIED"
@@ -201,10 +202,10 @@ def run(c,arm,rep):
                 PAR2_reported_s=round(elapsed if reported else 2*CAP,6),
                 standalone_native=arm not in ("Kissat","CaDiCaL","CryptoMiniSat"),
                 independent_GF2_UNSAT=bool(status=="UNSAT_GF2_VERIFIED"),
-                stats=metrics(out) if arm in ("LTM9_NATIVE","LTM7_NATIVE","DRNAS_HYBRID") else {},
+                stats=metrics(out) if arm in ("LTM9_NATIVE","LTM7_NATIVE","DRNAS_HYBRID","DRNAS_GATED") else {},
                 route=(next((line for line in out.splitlines()
                              if line.startswith("c R28_ROUTE ")), "")[:180]
-                       if arm in ("R28_NATIVE","R153_NATIVE","DRNAS_HYBRID") else ""))
+                       if arm in ("R28_NATIVE","R153_NATIVE","DRNAS_HYBRID","DRNAS_GATED") else ""))
 
 def report(rows):
     total={}
