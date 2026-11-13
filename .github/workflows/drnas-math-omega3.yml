@@ -1,0 +1,149 @@
+name: DRNAS MATH OMEGA3 frozen external 300 proof audit
+on:
+  push:
+    branches:
+      - experiment/drnas-math-omega3-20261113
+    paths:
+      - .github/workflows/drnas-math-omega3.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math-omega3-first-pass
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CryptoMiniSat reference
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          command -v cryptominisat5
+          dpkg-query -W cryptominisat
+          sha256sum "$(command -v cryptominisat5)"
+      - name: Restore previously frozen Kissat 4.0.4 from R194
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 42386841737
+          name: r194-source-binary-pins
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: frozen-archive
+      - name: Assert exact Kissat binary and source pins
+        run: |
+          set -euo pipefail
+          tar -xzf frozen-archive/r194-source-locked38-and-binaries.tar.gz
+          echo 'c96ebe32a7e333a02acad462679a0bbfbeeec54a7f9210421c4c0c8d53bbf95f  built/bin/kissat_4_0_4' | sha256sum -c -
+          test "$(built/bin/kissat_4_0_4 --version)" = "4.0.4"
+          python3 -m py_compile research/omega3_run.py research/omega3_verify.py
+      - name: Certified cross-theory selftest and near-miss regression
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research python3 - <<'PY'
+          from omega3_run import detector
+          from omega3_verify import verify_unsat, parse_cnf
+          def pack(rows):
+              return ('p cnf 3 '+str(len(rows))+'\n'+''.join(' '.join(map(str,c))+' 0\n' for c in rows)).encode()
+          xor=[]
+          for mask in range(8):
+              if mask.bit_count()%2 == 1:
+                  xor.append([(-v if mask>>i&1 else v) for i,v in enumerate((1,2,3))])
+          exact_one=[[1,2,3],[-1,-2],[-1,-3],[-2,-3]]
+          unsat=pack(xor+exact_one)
+          r=detector(unsat)
+          assert r['status']=='UNSAT',r
+          assert verify_unsat(unsat,r['proof'])['verified']
+          near=pack(xor+exact_one[:-1])
+          assert detector(near)['status']=='UNKNOWN'
+          print('OMEGA3_SOURCE_CERT_SELFTEST PASS')
+          PY
+      - name: Run frozen mathematical gate and matched Kissat / CryptoMiniSat baselines
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=research
+          python3 -u research/omega3_run.py \
+            --manifest research/omega3_frozen_300.json \
+            --shard ${{ matrix.shard }} --shards 6 \
+            --out omega3-results --cap 2.0 --proof-cap 0.20 \
+            --kissat "$PWD/built/bin/kissat_4_0_4" \
+            --cms "$(command -v cryptominisat5)" | tee omega3-shard-${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: omega3-results-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            omega3-results/*.json
+            omega3-results/*.jsonl
+            omega3-shard-${{ matrix.shard }}.log
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: omega3-results-*
+          path: omega3-artifacts
+      - name: Global SHA deduplication and prospective paired report
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections,glob,json,pathlib
+          paths=sorted(glob.glob('omega3-artifacts/omega3-results-*/results.jsonl'))
+          if len(paths)!=6:raise SystemExit('Missing shard results: '+str(paths))
+          rows=[]
+          for path in paths:
+              rows += [json.loads(l) for l in open(path) if l.strip()]
+          unique=[];seen={};duplicates=[];skips=[]
+          for row in rows:
+              if 'arms' not in row:skips.append(row);continue
+              sha=row['sha256']
+              if sha in seen:
+                  duplicates.append([seen[sha]['path'],row['path']]);continue
+              seen[sha]=row;unique.append(row)
+          def score(block):
+              res={'n':len(block),'reported_par2':{},'verified_par2':{},'statuses':{}}
+              for arm in ('OMEGA3','KISSAT','CMS'):
+                  res['reported_par2'][arm]=sum(r['arms'][arm]['par2_reported'] for r in block)
+                  res['verified_par2'][arm]=sum(r['arms'][arm]['par2_verified'] for r in block)
+                  res['statuses'][arm]=dict(collections.Counter(r['arms'][arm]['status'] for r in block))
+              return res
+          comparisons=[]
+          for r in unique:
+              sts={a:r['arms'][a]['status'] for a in ('OMEGA3','KISSAT','CMS')}
+              sat=any(st=='SAT_VERIFIED' for st in sts.values())
+              unsat=any(st.startswith('UNSAT') for st in sts.values())
+              if sat and unsat:comparisons.append({'source':r['sha256'],'statuses':sts})
+          families=collections.defaultdict(list)
+          for r in unique:families[r['family']].append(r)
+          report={'selected':300,'retrieved_rows':len(rows),'valid_unique':len(unique),
+                  'source_skips':len(skips),'source_sha_duplicates':duplicates,
+                  'disagreements_SAT_vs_UNSAT':comparisons,
+                  'overall':score(unique),
+                  'validation':score([r for r in unique if r['split']=='validation']),
+                  'holdout':score([r for r in unique if r['split']=='holdout']),
+                  'families':{k:score(v) for k,v in sorted(families.items())},
+                  'limitations':'Known source repositories contain purposeful/related CNF cohorts. Only original-CNF independently certified UNSAT counts as proof; no baseline DRAT/LRAT checker in this workflow.'}
+          pathlib.Path('omega3-aggregate.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print('OMEGA3_AGGREGATE',json.dumps({k:v for k,v in report.items() if k!='families'},sort_keys=True),flush=True)
+          if comparisons:raise SystemExit('Critical solver/model disagreement')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: omega3-frozen-aggregate
+          retention-days: 30
+          path: omega3-aggregate.json
