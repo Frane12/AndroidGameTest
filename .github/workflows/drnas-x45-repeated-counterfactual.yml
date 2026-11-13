@@ -1,0 +1,137 @@
+name: DRNAS X4.5 Native repeated counterfactual 300 CNFs
+on:
+  push:
+    branches: [experiment/drnas-x45-causal-features-repeats-20261113]
+    paths:
+      - src/drnas_x45.cpp
+      - tests/test_x45.py
+      - research/drnas_x45_counterfactual.py
+      - .github/workflows/drnas-x45-repeated-counterfactual.yml
+      - README_X45.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x45-repeated-counterfactual-one-workflow
+  cancel-in-progress: true
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build X44 control and X45 independent native C++20 (no APK)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x44.cpp -o build/drnas-x44
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45.cpp -o build/drnas-x45
+          { git rev-parse HEAD; g++ --version | head -1; } > x45_versions.txt
+      - name: Exhaustive truth-table and state-feature invariance audit
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x45.py | tee x45_test.log
+      - name: Freeze original generated SHA manifest and source-family splits
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x45_counterfactual.py freeze | tee x45_freeze.log
+          sha256sum drnas_x45_results/manifest.json | awk '{print $1}' > x45_manifest_sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x45-frozen-manifest
+          retention-days: 21
+          path: |
+            x45_versions.txt
+            x45_test.log
+            x45_freeze.log
+            x45_manifest_sha.txt
+            drnas_x45_results/manifest.json
+  repeated:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x45-frozen-manifest
+          path: .
+      - name: Build X45 pure C++20 observational intervention solver
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45.cpp -o build/drnas-x45
+      - name: 30 deterministic CNFs each, 5 states, 3 repeats per polarity, cap 2.5 s
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X45_SHARD_${{ matrix.shard }}_ONE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x45_counterfactual.py shard --shard ${{ matrix.shard }} --shards 10 --cap 2.5 --manifest-sha "$(cat x45_manifest_sha.txt)" | tee x45_shard.log
+      - name: Compact results; no raw CNF or huge logs
+        if: always()
+        run: |
+          mkdir -p x45_stage
+          cp -f drnas_x45_results/shard_${{ matrix.shard }}/report.json x45_stage/report.json 2>/dev/null || true
+          cp -f drnas_x45_results/shard_${{ matrix.shard }}/baselines.jsonl x45_stage/baselines.jsonl 2>/dev/null || true
+          cp -f drnas_x45_results/shard_${{ matrix.shard }}/pairs.jsonl x45_stage/pairs.jsonl 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x45-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x45_stage/
+  aggregate:
+    needs: repeated
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x45-frozen-manifest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x45-shard-*
+          path: x45_shards
+          merge-multiple: false
+      - name: SHA, matched-state, repeated label and validation-first model audit
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x45_counterfactual.py aggregate --shard-dir x45_shards --shards 10 --cap 2.5 --manifest-sha "$(cat x45_manifest_sha.txt)" | tee x45_final.log
+      - name: Report complete, censored, feature-cost and holdout intervals
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open('drnas_x45_results/final/report.json'))
+          lines=['## DRNAS X4.5: repeated matched-state decision counterfactuals','',
+             '300 GENERATED planted SAT CNFs; 3 repeats per polarity, exact SHA and matched prestate; not a competition benchmark.',
+             '', '| Split | Sources | Matched states | Fully solved 3x2 | Robust differences | Censored |',
+             '|---|---:|---:|---:|---:|---:|']
+          for k,v in x['splits'].items():
+              lines.append(f"| {k} | {v['sources']} | {v['matched_states']} | {v['complete_three_repeats']} | {v['robust_differences']} | {v['censored_or_incomplete']} |")
+          y=x['shadow_learning'];lines.extend(['',f"Model status: {y['status']}; NO live policy promotion."])
+          if 'holdout' in y:
+              lines.append(f"Selected features: {y['selected_variant']}; holdout post-decision time gain with identical instrumentation: {y['holdout']['signed_time_gain_pct']}%; estimated net with feature computation: {y['holdout']['estimated_net_gain_pct']}%; 95% formula-bootstrap CI: {y['holdout_95pct_formula_bootstrap_net_gain_ci']}")
+          lines.extend(['', 'Only all-six-SAT pairs receive exact duration labels; incomplete pairs are censored. No causal global distance to solution, no inference of online speedup. Generator families have been used previously: not globally blind.'])
+          summary='\n'.join(lines)+'\n';print(summary)
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x45-final-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x45_final.log
+            drnas_x45_results/final/report.json
+            drnas_x45_results/final/frozen_model.json
