@@ -1,0 +1,170 @@
+name: DRNAS STRESS resume official32 with persistent X46 memory audit
+on:
+  push:
+    branches: [experiment/drnas-x47-stress-resume-memory-20261113]
+    paths:
+      - research/drnas_x47_stress_resume.py
+      - .github/workflows/drnas-x47-stress-resume-memory.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-stress-resume-official32-memory
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  LC_ALL: C
+
+jobs:
+  restore_and_select:
+    name: Restore saved X46 weights, audit two cold starts, freeze 32 originals
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47-stress-binary-bundle
+          run-id: 43367322651
+          github-token: ${{ github.token }}
+          path: bundle
+      - name: Check immutable binaries and demonstrate persistent model reload
+        run: |
+          set -euo pipefail
+          (cd bundle && sha256sum -c SHA256SUMS)
+          chmod +x bundle/bin/*
+          python3 -m py_compile research/drnas_x47_stress_resume.py
+          python3 research/drnas_x47_stress_resume.py selftest
+          python3 research/drnas_x47_stress_resume.py audit --bundle bundle --out memory-restore.json
+      - name: Select bounded SHA-distinct original sources before any solver outcome
+        run: |
+          set -euo pipefail
+          python3 -m venv .archive-venv
+          .archive-venv/bin/pip install remotezip==0.12.6
+          .archive-venv/bin/pip freeze > archive-loader-versions.txt
+          .archive-venv/bin/python -u research/drnas_x47_stress_resume.py select --out resumed_sources | tee source-selection.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x47-stress-resume-selection
+          retention-days: 21
+          path: |
+            resumed_sources/
+            memory-restore.json
+            archive-loader-versions.txt
+            source-selection.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: x47-stress-resume-preflight-failure
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            memory-restore.json
+            resumed_sources/selection.json
+            source-selection.log
+
+  official:
+    name: Official retrospective shard ${{ matrix.shard }} of 4
+    needs: restore_and_select
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47-stress-binary-bundle
+          run-id: 43367322651
+          github-token: ${{ github.token }}
+          path: bundle
+      - uses: actions/download-artifact@v4
+        with:
+          name: x47-stress-resume-selection
+          path: selection
+      - name: Restore exact same binaries, model and guard
+        run: |
+          set -euo pipefail
+          (cd bundle && sha256sum -c SHA256SUMS)
+          chmod +x bundle/bin/*
+      - name: Eight original CNFs, seven arms, two repeats, 15s and 1536 MiB limits
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_stress_resume.py run \
+            --bundle bundle --sources selection/resumed_sources \
+            --shard ${{ matrix.shard }} --out stress-official-${{ matrix.shard }} \
+            | tee stress-official-${{ matrix.shard }}.log
+      - name: Verify source count and prohibit uncertified UNSAT solved credit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('stress-official-${{ matrix.shard }}')
+          s=json.loads((p/'summary.json').read_text())
+          assert s['sources']==8 and s['runs']==112 and s['errors']==0
+          assert all(v['runs']==16 for v in s['arms'].values())
+          rows=[json.loads(x) for x in (p/'trials.jsonl').read_text().splitlines()]
+          for r in rows:
+              if r['status']=='UNSAT':assert not r['verified'] and r['PAR2']==30
+              if r['arm']=='X46_LEARNED_8' and r['status'] not in ('TIMEOUT','RESOURCE_OR_PROCESS_FAILURE'):
+                  assert r['persistent_model_loaded'] is True
+          print('X47_RESUMED_SHARD_AUDIT_PASS',s['shard'],s['sources'],s['runs'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47-stress-resumed-official-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            stress-official-${{ matrix.shard }}/
+            stress-official-${{ matrix.shard }}.log
+
+  report:
+    name: Reuse completed 3072 synthetic sources and combine official recovery
+    needs: [restore_and_select,official]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x47-stress-data-synthetic-*
+          run-id: 43367322651
+          github-token: ${{ github.token }}
+          path: all-results/previous-synthetic
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x47-stress-resumed-official-*
+          path: all-results/resumed-official
+          merge-multiple: false
+      - name: Aggregate without double counting any original trial
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_stress.py aggregate --root all-results --out stress-resumed-full-report.json | tee stress-resumed-full-report.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('stress-resumed-full-report.json').read_text())
+          assert r['complete_expected_cohorts']
+          assert r['cohorts']['synthetic']['paired_complete_sources']==3072
+          assert r['cohorts']['official_retrospective']['paired_complete_sources']==32
+          assert sum(v['runs'] for c in r['cohorts'].values() for v in c['totals'].values())==43456
+          print('X47_STRESS_3104_COMPLETE_WITH_SAVED_MEMORY',43456)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x47-stress-3104-resumed-report
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            stress-resumed-full-report.json
+            stress-resumed-full-report.log
