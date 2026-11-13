@@ -1,0 +1,129 @@
+name: DRNAS LOCAL vs GLOBAL frozen cross-formula policy original SAT holdout
+on:
+  push:
+    branches: [experiment/drnas-local-global-real-ab-20261113]
+    paths:
+      - .github/workflows/drnas-local-global-real-ab.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-local-global-real-paired
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-candidate
+          run-id: 43405148962
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Confirm exact engine, original model and no training labels from holdout
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          test -x build/frozen-proof
+          test -x build/drnas-x5
+          test -x build/drat-trim
+          python3 -m py_compile research/drnas_real_material2.py research/drnas_real_train2.py research/drnas_local_global_real_ab.py
+          python3 -m unittest discover -s tests -p test_drnas_local_global_real_ab.py -v
+          python3 - <<'PY'
+          import json,sys
+          from pathlib import Path
+          sys.path.insert(0,"research")
+          import drnas_local_global_real_ab as A
+          f=Path("candidate/policy.json")
+          rule=A.verify_candidate(json.loads(f.read_text()))
+          print("GLOBAL_DIAGNOSTIC_MODEL",json.dumps({
+            "sha256":A.sha(f),"rule":rule,"promoted":False,
+            "allowed":"diagnostic holdout only"},sort_keys=True))
+          PY
+  paired:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material
+          run-id: 43405148962
+          github-token: ${{ github.token }}
+          path: material
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-candidate
+          run-id: 43405148962
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Matched same logical CPU and CNF for native LOCAL GLOBAL and SHAM
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_local_global_real_ab.py bench \
+            --material material --candidate candidate/policy.json \
+            --out paired_${{ matrix.shard }} --shard ${{ matrix.shard }} --shards 4 \
+            --source-run 43405148962 | tee paired_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-local-global-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            paired_${{ matrix.shard }}/
+            paired_${{ matrix.shard }}.log
+  report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-local-global-shard-*
+          path: paired_results
+      - name: Aggregate source-family bootstrap 95 percent and verified PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_local_global_real_ab.py report \
+            --root paired_results --shards 4 \
+            --out local_global_result.json | tee local_global_report.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-local-vs-global-final
+          retention-days: 90
+          path: |
+            local_global_result.json
+            local_global_report.log
