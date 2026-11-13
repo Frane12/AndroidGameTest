@@ -1,0 +1,114 @@
+name: DRNAS X4.6 costed short-probe polarity controller
+on:
+  push:
+    branches: [experiment/drnas-x46-short-probes-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x45_matched_branches.py
+      - research/drnas_x46_probe_bench.py
+      - .github/workflows/drnas-x46-probes.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x46-one-runner
+  cancel-in-progress: false
+jobs:
+  exact_native_probes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile X4.6 with strict diagnostics and audit old native core
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x46
+          python3 -m py_compile research/drnas_x46_probe_bench.py
+          python3 -u tests/test_x41.py --cases 400 | tee x46_core_regression.log
+          sha256sum build/drnas-x41 src/drnas_x41.cpp research/drnas_x46_probe_bench.py
+      - name: Check invalid probe invocation rejected
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' > x46_option_test.cnf
+          set +e
+          build/drnas-x46 x46_option_test.cnf --mode core --time 1 --x46-conflicts 9 --branch-at 1 > x46_invalid.out 2>&1
+          code="$?"
+          set -e
+          test "$code" -ne 0
+          grep -q "X46 conflicts must be 8, 32 or 128" x46_invalid.out
+          build/drnas-x46 x46_option_test.cnf --mode core --time 1 --branch-at 1 --x46-conflicts 8 --x46-shadow --stats > x46_shadow.out 2> x46_shadow.err
+          grep -q X46_PROBE x46_shadow.err
+      - name: Smoke audit cloned states and externally verified results
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_smoke \
+            --per-family 3 --repeats 2 --cap 0.8 --index-offset 400000 --probe-ms 1.5 \
+            | tee x46_smoke.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          j=json.loads(Path('x46_smoke/report.json').read_text())
+          assert j['distinct_original_sources']==21
+          assert j['matched_checkpoint_pairs']>30
+          assert j['all_continuations_verified']
+          assert all(j['by_arm'][arm]['verified']==j['matched_checkpoint_pairs'] for arm in j['by_arm'])
+          print('X46_SMOKE_PASS',j['matched_checkpoint_pairs'])
+          PYCODE
+      - name: Verify 112 new originals and six arms with 3 repetitions
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_large \
+            --per-family 16 --repeats 3 --cap 0.8 --index-offset 500000 --probe-ms 1.5 \
+            | tee x46_large.log
+      - name: Audit verified PAR2 source hashes and clones costs
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('x46_large')
+          manifest=json.loads((p/'manifest.json').read_text())
+          report=json.loads((p/'report.json').read_text())
+          rows=[json.loads(x) for x in (p/'trials.jsonl').read_text().splitlines()]
+          assert report['distinct_original_sources']==112
+          assert len({x['sha256'] for x in manifest['sources']})==112
+          assert report['source_family_count']==7
+          assert report['attempted_checkpoint_pairs']==112*4*3
+          assert report['matched_checkpoint_pairs']==len(rows)//6
+          assert report['matched_checkpoint_pairs']>200
+          assert report['all_continuations_verified']
+          assert len(rows)==6*report['matched_checkpoint_pairs']
+          assert {x['arm'] for x in rows}==set(manifest['arms'])
+          assert all(x['verified'] for x in rows)
+          assert any(x['probe_triggered'] for x in rows if x['arm'].startswith('X46'))
+          for arm in manifest['arms']:
+              assert report['by_arm'][arm]['verified']==report['matched_checkpoint_pairs']
+          print('X46_VERIFIED_ENDTOEND_AUDIT',json.dumps({
+            'independent_sources':112,
+            'matched_pairs':report['matched_checkpoint_pairs'],
+            'all_verified':True,
+            'main_vs_8probe':report['comparisons_vs_CORE']['X46_8'],
+            'full':report['by_arm']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x46-costed-paired-probes
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x46_core_regression.log
+            x46_smoke.log
+            x46_smoke/report.json
+            x46_smoke/manifest.json
+            x46_smoke/trials.jsonl
+            x46_large.log
+            x46_large/report.json
+            x46_large/manifest.json
+            x46_large/trials.jsonl
