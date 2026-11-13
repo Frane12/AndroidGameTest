@@ -1,0 +1,61 @@
+name: DRNAS large real XOR structure diagnostic
+on:
+  push:
+    branches: [experiment/drnas-xor-large-diagnostic-20261113]
+    paths: [.github/workflows/drnas-xor-large-diagnostic.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xor-large-diagnostic
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-real-crypto-xor-original
+          run-id: 43435404147
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Compile diagnostic and check simple XOR patterns
+        run: |
+          set -euo pipefail
+          mkdir -p compiled
+          g++ -O2 -std=c++17 research/drnas_xor_large_diagnostic.cpp -o compiled/xor_structure_diagnostic
+          sha256sum compiled/xor_structure_diagnostic > compiled/diagnostic.sha256
+          python3 -m py_compile research/drnas_xor_large_diagnostic.py
+          python3 - <<'PY'
+          import json, pathlib, subprocess, tempfile
+          with tempfile.TemporaryDirectory() as d:
+              for name,data,blocks,covered,comps in [
+                  ('xor','p cnf 2 2\n1 2 0\n-1 -2 0\n',1,2,1),
+                  ('ordinary','p cnf 3 1\n1 2 3 0\n',0,0,0),
+                  ('conflicting','p cnf 2 4\n1 2 0\n-1 -2 0\n1 -2 0\n-1 2 0\n',2,4,1)]:
+                  p=pathlib.Path(d)/(name+'.cnf')
+                  p.write_text(data)
+                  res=json.loads(subprocess.check_output(['./compiled/xor_structure_diagnostic',str(p)],text=True))
+                  assert (res['xor_blocks'],res['covered_clauses'],res['components'])==(blocks,covered,comps),res
+          print('XOR_DIAGNOSTIC_SELFTEST_PASS')
+          PY
+      - name: Profile frozen original inputs on one logical CPU
+        run: |
+          set -euo pipefail
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" python3 -u research/drnas_xor_large_diagnostic.py | tee xor-diagnostic.log
+          grep -q '^XOR_DIAG_FINAL ' xor-diagnostic.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-large-xor-structure-diagnostic
+          path: |
+            xor-diagnostic.log
+            xor_large_diagnostic/
+            compiled/diagnostic.sha256
+          retention-days: 60
+          if-no-files-found: warn
