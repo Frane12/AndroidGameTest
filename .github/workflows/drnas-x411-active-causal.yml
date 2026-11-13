@@ -1,0 +1,83 @@
+name: DRNAS X4.11 controlled active CDCL learning SAT UNSAT
+on:
+  push:
+    branches: [experiment/drnas-x411-active-causal-20261113]
+    paths:
+      - research/drnas_x411.py
+      - research/drnas_x411_unsat.py
+      - tests/test_x411.py
+      - .github/workflows/drnas-x411-active-causal.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x411-active-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Compile identical X4.10 native solver and independent SAT UNSAT truth-table smoke
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/drnas_x411.py research/drnas_x411_unsat.py tests/test_x411.py
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x49.cpp -o build/drnas-x49
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x410.cpp -o build/drnas-x410
+          python -u tests/test_x410.py --cases 100 | tee x411_original_smoke.log
+          python -u tests/test_x411.py --cases 24 | tee x411_active_smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x411-smoke-evidence
+          path: |
+            x411_original_smoke.log
+            x411_active_smoke.log
+          if-no-files-found: ignore
+          retention-days: 14
+  benchmark:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Compile unchanged X4.10 native CDCL for policy-only A/B comparison
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x410.cpp -o build/drnas-x410
+      - name: "X4.11 3s cap: matched counterfactual learning, active-policy validation and blind holdout"
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x411.py --binary build/drnas-x410 --out x411_results --per-family 48 --cap 3.0 --repeats 3 | tee x411_benchmark.log
+      - name: Constructed UNSAT with frozen active policy, passive control and forced flip
+        run: |
+          set -euo pipefail
+          python -u research/drnas_x411_unsat.py --binary build/drnas-x410 --frozen x411_results/freeze.json --out x411_unsat_results --count 32 --cap 3.0 --repeats 3 | tee x411_unsat.log
+      - name: Preserve source manifest, matched pairs, model and full holdout evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x411-controlled-evidence
+          path: |
+            x411_results/
+            x411_unsat_results/
+            x411_benchmark.log
+            x411_unsat.log
+          if-no-files-found: ignore
+          retention-days: 30
