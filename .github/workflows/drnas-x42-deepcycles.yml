@@ -1,0 +1,63 @@
+name: DRNAS X4.2 deep SAT convergence three-cycle diagnostic
+on:
+  push:
+    branches: [experiment/drnas-x42-deepcycles-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x42_convergence_cycles.py
+      - .github/workflows/drnas-x42-deepcycles.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x42-deepcycles-20261113
+  cancel-in-progress: false
+jobs:
+  deep_cycles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native X4.2 observer with strict compiler diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x42
+          python3 -m py_compile research/drnas_x42_convergence_cycles.py
+          sha256sum src/drnas_x41.cpp research/drnas_x42_convergence_cycles.py
+      - name: Independently audit unchanged solver logic
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x41.py --cases 300 | tee x42_deep_regression.log
+      - name: Three cycles over sparse SAT and UNSAT small-oracle controls
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x42_convergence_cycles.py \
+            --binary build/drnas-x42 --out x42_deep \
+            --per-family 8 --cycles 3 --cap 1.5 | tee x42_deep.log
+      - name: Validate exact progression and report the long-decision windows
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('x42_deep/summary.json').read_text())
+          assert p['independent_CNF_sources']==48
+          assert p['runs']==144
+          assert p['verified_sat']==120 and p['exhaustively_checked_unsat']==24
+          assert len(p['decision_windows'])==3
+          print('X42_DEEP_AUDIT_PASS',json.dumps(p['decision_windows'],sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x42-deepcycles-traces
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x42_deep_regression.log
+            x42_deep.log
+            x42_deep/summary.json
+            x42_deep/trajectories.jsonl
