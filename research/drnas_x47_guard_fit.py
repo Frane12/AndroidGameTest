@@ -143,8 +143,8 @@ def main():
     if frozen["version"]!="X46COST1":raise ValueError("X46 frozen cost model invalid")
     train=[r for r in samples if r["source_id"]%4!=0]
     validation=[r for r in samples if r["source_id"]%4==0]
-    if len({x["source"] for x in train})!=frozen["train_distinct_sources"]:
-        raise AssertionError("frozen model trained against different training sources")
+    if len({x["source"] for x in train if x["label"]!="equal_conflicts"})!=frozen["train_distinct_sources"]:
+        raise AssertionError("frozen model trained against different non-tied training sources")
     if not validation:raise AssertionError("validation absent")
     magnitude=estimate_magnitude(train)
     selected,menu=select_validation(validation,frozen,magnitude)
