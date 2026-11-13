@@ -44,6 +44,13 @@ def prepare(sources):
         s["cap_s"]=3.0 if i<50 else 5.0
     return ordered
 
+def counter_value(row, name):
+    """Read both original flat CDCL counters and nested R29/R30 telemetry."""
+    value=row.get(name)
+    if value is None:
+        value=row.get("counters", {}).get(name)
+    return value
+
 def score(rows):
     byarm={}
     for arm in ARMS:
@@ -58,9 +65,9 @@ def score(rows):
             PAR2_verified_s=round(sum(r["PAR2_verified_s"] for r in trials),6),
             PAR2_reported_s=round(sum(r["PAR2_reported_s"] for r in trials),6),
             e2e_s=round(sum(r["e2e_s"] for r in trials),6),
-            decisions_sum=sum(r["decisions"] or 0 for r in trials),
-            conflicts_sum=sum(r["conflicts"] or 0 for r in trials),
-            trials_with_cdcl_counters=sum(r["decisions"] is not None for r in trials))
+            decisions_sum=sum(counter_value(r,"decisions") or 0 for r in trials),
+            conflicts_sum=sum(counter_value(r,"conflicts") or 0 for r in trials),
+            trials_with_cdcl_counters=sum(counter_value(r,"decisions") is not None for r in trials))
     return byarm
 
 def compare(rows):
