@@ -98,7 +98,8 @@ def persist(args):
         groups[r["split"]].append(r)
     for split in groups:
         expected=sum(s["split"]==split for s in delta)
-        expected*=6 if split=="holdout" else 3
+        # Six holdout arms, two paired repetitions: 12 verified trial rows per original.
+        expected*=12 if split=="holdout" else 3
         if len(groups[split])!=expected:
             raise RuntimeError("one split missing paired trial rows")
     if any(r["effective_arm"]!="CORE" for r in groups["holdout"] if
