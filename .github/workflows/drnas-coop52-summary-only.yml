@@ -1,0 +1,68 @@
+name: DRNAS COOP5.2 verified below25ms quality budgets
+on:
+  push:
+    branches: [experiment/drnas-coop52-budget-quality-20261114]
+    paths: [.github/workflows/drnas-coop52-summary-only.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop52-summary-only
+  cancel-in-progress: false
+jobs:
+  verify_and_report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43526754231
+          pattern: coop52-shard-synthetic-*
+          github-token: ${{ github.token }}
+          path: coop52_downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43526754231
+          pattern: coop52-shard-real-*
+          github-token: ${{ github.token }}
+          path: coop52_downloads
+          merge-multiple: false
+      - name: Re-verify frozen source hashes and complete every paired result exactly once
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_coop52/aggregate.py
+          python3 -u research/drnas_coop52/aggregate.py | tee coop52_final.log
+          python3 - <<'PY'
+          import json,os
+          docs=[json.load(open(f'coop52_{c}_final/report.json')) for c in ('synthetic','real')]
+          assert docs[0]['sources']==21 and docs[0]['trial_count']==420
+          assert docs[1]['sources']==18 and docs[1]['trial_count']==360
+          lines=['## DRNAS COOP5.2: matched BCP quality and sub25ms budgets','',
+            'Synthetic stress 21 originals x2 and retrospective SAT2024 18 originals x2. Requested 25ms limit also respects existing dynamic 0.5 percent cap. No blind holdout or promotion.','',
+            '| Dataset | Solver | Verified | PAR2 (s) | Probe cost (ms) | Probe pairs | Actual overrides |',
+            '|---|---|---:|---:|---:|---:|---:|']
+          for d in docs:
+            assert d['status']=='COMPLETE' and d['promotion'] is False
+            for name,v in d['overall'].items():
+              lines.append(f"| {d['cohort']} | {name} | {v['solved']}/{v['attempts']} | {v['PAR2_s']:.4f} | {v['probe_ms']:.4f} | {v['attempted_pairs']} | {v['actually_overrode']} |")
+          lines+=['','## Family-bootstrap confidence intervals']
+          for d in docs:
+            for k,v in d['comparisons'].items():
+              lines.append(f"- {d['cohort']} {k}: {v['gain_pct']:+.3f}% CI95={v['family_CI95_pct']}% ({v['families']} families)")
+          result='\n'.join(lines)+'\n'
+          print(result)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(result)
+          print('COOP52_FINAL_REPORT_PASS',json.dumps({d['cohort']:d['sources'] for d in docs}),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop52-quality-budget-verified-final
+          retention-days: 60
+          path: |
+            coop52_real_final/report.json
+            coop52_synthetic_final/report.json
+            coop52_final.log
