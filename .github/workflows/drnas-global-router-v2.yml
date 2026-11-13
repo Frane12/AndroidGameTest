@@ -1,0 +1,172 @@
+name: DRNAS GLOBAL ROUTER V2 blind SAT2025 3 10 30s
+on:
+  push:
+    branches: [experiment/drnas-global-router-v2-20261113]
+    paths: [.github/workflows/drnas-global-router-v2.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-global-router-v2-blind-20261113
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Lock old X5 binaries and run isolated safety tests
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -m py_compile research/drnas_global_material2025.py research/drnas_global_router_v2.py
+          python3 -m unittest discover -s tests -p test_drnas_global_router_v2.py -v
+          python3 - <<'PY'
+          import json, os, sys, tempfile
+          from pathlib import Path
+          sys.path.insert(0,"research")
+          import drnas_real_train2 as T
+          os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          with tempfile.TemporaryDirectory() as d:
+              td=Path(d)
+              for name,clauses,truth in (("sat",[(1,)],True),("unsat",[(1,),(-1,)],False)):
+                  cnf=td/(name+".cnf")
+                  cnf.write_text("p cnf 1 %d\n"%len(clauses)+"".join(" ".join(map(str,c))+" 0\n" for c in clauses))
+                  for arm in ("X5_NO_MIN","X5","Kissat","CaDiCaL","CMS"):
+                      row=T.execute(arm,cnf,clauses,1,3.,td)
+                      assert row["accepted"] and row["verified"] and (row["status"]=="SAT")==truth,(arm,row)
+          print("ROUTER_V2_PREFLIGHT_PASS",json.dumps({"solvers":5,"cases":2,"one_cpu":True}))
+          PY
+  fit:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1m2-train-*
+          run-id: 43405148962
+          github-token: ${{ github.token }}
+          path: train
+      - name: Train structural two-feature router on historical TRAIN only
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_global_router_v2.py fit \
+            --train train --out model/policy.json | tee fit.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: router-v2-candidate
+          retention-days: 90
+          path: |
+            model/
+            fit.log
+  material:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect previously unused 2025 new-submission CNFs, independent of outcomes
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_global_material2025.py \
+            --count 64 --max-attempts 165 --out material | tee material.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: router-v2-sat2025-material
+          retention-days: 90
+          path: |
+            material/
+            material.log
+  paired:
+    needs: [fit, material]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: router-v2-candidate
+          path: model
+      - uses: actions/download-artifact@v4
+        with:
+          name: router-v2-sat2025-material
+          path: material_bundle
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-candidate
+          run-id: 43405148962
+          github-token: ${{ github.token }}
+          path: old
+      - name: Native + references paired verified 2025 originals at 3 10 and 30s
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_global_router_v2.py bench \
+            --material material_bundle/material \
+            --model model/model/policy.json \
+            --old-model old/policy.json \
+            --out shard_${{ matrix.shard }} --shard ${{ matrix.shard }} \
+            | tee shard_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: router-v2-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            shard_${{ matrix.shard }}/
+            shard_${{ matrix.shard }}.log
+  report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: router-v2-shard-*
+          path: paired_results
+      - name: Family-cluster 95pct bootstrap, 3 10 30s verified E2E PAR2, no promotion
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_global_router_v2.py report \
+            --results paired_results --out router_v2_result.json \
+            | tee router_v2_report.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: router-v2-blind-2025-final
+          retention-days: 90
+          path: |
+            router_v2_result.json
+            router_v2_report.log
