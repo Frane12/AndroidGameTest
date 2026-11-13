@@ -1,0 +1,140 @@
+name: DRNAS X4.6 frozen learned counterfactual cost policy
+on:
+  push:
+    branches: [experiment/drnas-x46-counterfactual-learned-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x45_matched_branches.py
+      - research/drnas_x46_probe_bench.py
+      - research/drnas_x46_cost_train.py
+      - .github/workflows/drnas-x46-learned.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x46-frozen-model-single-runner
+  cancel-in-progress: false
+jobs:
+  learn_and_verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile strict native X4.6 and independently regress SAT/UNSAT
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          ln -s drnas-x41 build/drnas-x46
+          python3 -m py_compile research/drnas_x46_probe_bench.py research/drnas_x46_cost_train.py
+          python3 -u tests/test_x41.py --cases 400 | tee x46_learned_regression.log
+          sha256sum build/drnas-x41 research/drnas_x46_cost_train.py
+      - name: Collect 84 new original formulas with paired full-cost labels
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_training --per-family 12 \
+            --repeats 2 --cap 0.8 --index-offset 600000 --probe-ms 1.5 \
+            | tee x46_training.log
+      - name: Fit source-disjoint supervised counterfactual cost model and freeze
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x46_cost_train.py \
+            --trials x46_training/trials.jsonl \
+            --model x46_training/frozen_cost_model.txt \
+            --report x46_training/learn_report.json | tee x46_learning.log
+          sha256sum x46_training/frozen_cost_model.txt > x46_model_sha256.txt
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('x46_training/learn_report.json').read_text())
+          assert r['train_sources']>=50 and r['validation_sources']>=15
+          assert r['heldout_formula_outcomes_not_seen']
+          assert r['validation_score']['nonflat_rows']>30
+          print('X46_LEARNED_MODEL_FROZEN',r['train_sources'],r['validation_sources'],r['threshold_selected_before_holdout'])
+          PYCODE
+      - name: Negative parser test and trained-model pilot on separate smoke sources
+        run: |
+          set -euo pipefail
+          printf 'p cnf 2 2\n1 2 0\n-1 2 0\n' > x46_learning_test.cnf
+          printf 'WRONG 12\n' > x46_corrupt_model.txt
+          set +e
+          build/drnas-x46 x46_learning_test.cnf --branch-at 1 --mode core --time 1 --x46-conflicts 8 --x46-model x46_corrupt_model.txt > x46_reject.log 2>&1
+          status="$?"
+          set -e
+          test "$status" -ne 10 -a "$status" -ne 20
+          grep -q "incompatible X46 learned model" x46_reject.log
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_learn_smoke \
+            --per-family 3 --repeats 2 --cap 0.8 --index-offset 620000 --probe-ms 1.5 \
+            --model-file x46_training/frozen_cost_model.txt | tee x46_learn_smoke.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('x46_learn_smoke/report.json').read_text())
+          assert r['matched_checkpoint_pairs']>=30
+          assert 'X46_LEARNED_8' in r['by_arm']
+          assert r['by_arm']['X46_LEARNED_8']['verified']==r['matched_checkpoint_pairs']
+          print('X46_LEARNED_SMOKE_PASS',r['matched_checkpoint_pairs'])
+          PYCODE
+      - name: Freeze model, evaluate 112 unseen sources with all 7 arms
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x46_probe_bench.py \
+            --binary build/drnas-x46 --out x46_learned_holdout \
+            --per-family 16 --repeats 3 --cap 0.8 --index-offset 700000 --probe-ms 1.5 \
+            --model-file x46_training/frozen_cost_model.txt | tee x46_learned_holdout.log
+          sha256sum -c x46_model_sha256.txt
+      - name: Audit independent original sources, matched states, PAR2, training separation
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib,json
+          from pathlib import Path
+          train=json.loads(Path('x46_training/manifest.json').read_text())
+          test=json.loads(Path('x46_learned_holdout/manifest.json').read_text())
+          report=json.loads(Path('x46_learned_holdout/report.json').read_text())
+          source_train={v['sha256'] for v in train['sources']}
+          source_test={v['sha256'] for v in test['sources']}
+          assert len(source_train)==84 and len(source_test)==112 and not source_train&source_test
+          assert report['all_continuations_verified']
+          assert report['distinct_original_sources']==112
+          assert report['matched_checkpoint_pairs']>=300
+          assert report['frozen_learned_cost_model']==hashlib.sha256(Path('x46_training/frozen_cost_model.txt').read_bytes()).hexdigest()
+          assert report['by_arm']['X46_LEARNED_8']['verified']==report['matched_checkpoint_pairs']
+          trials=[json.loads(x) for x in Path('x46_learned_holdout/trials.jsonl').read_text().splitlines()]
+          assert len(trials)==7*report['matched_checkpoint_pairs']
+          assert all(x['verified'] and x['pre_hash'] for x in trials)
+          assert all(x['learned_model'] for x in trials if x['arm']=='X46_LEARNED_8' and x['probe_triggered'])
+          print('X46_LEARNED_HOLDOUT_AUDIT',json.dumps({
+              'trained_sources':84,'fresh_holdout_sources':112,
+              'matched_pairs':report['matched_checkpoint_pairs'],
+              'learned':report['by_arm']['X46_LEARNED_8'],
+              'core':report['by_arm']['CORE'],
+              'CI':report['comparisons_vs_CORE']['X46_LEARNED_8']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x46-learned-cost-frozen-holdout
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x46_learned_regression.log
+            x46_training.log
+            x46_training/manifest.json
+            x46_training/report.json
+            x46_training/learn_report.json
+            x46_training/frozen_cost_model.txt
+            x46_training/frozen_cost_model.json
+            x46_model_sha256.txt
+            x46_learning.log
+            x46_learn_smoke.log
+            x46_learn_smoke/report.json
+            x46_learned_holdout.log
+            x46_learned_holdout/report.json
+            x46_learned_holdout/manifest.json
+            x46_learned_holdout/trials.jsonl
