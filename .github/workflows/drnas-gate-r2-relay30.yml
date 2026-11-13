@@ -1,0 +1,137 @@
+name: DRNAS GATE-R2 relay30 hysteresis cost 600 CNF
+on:
+  push:
+    branches: [experiment/drnas-gate-r2-relay30-20261113]
+    paths:
+      - src/drnas_gate_r2.hpp
+      - research/build_gate_r2.py
+      - research/gate_r2_trial.py
+      - tests/test_gate_r2.cpp
+      - README_GATE_R2.md
+      - .github/workflows/drnas-gate-r2-relay30.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gate-r2-relay30-one-workflow
+  cancel-in-progress: true
+jobs:
+  freeze_and_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unchanged controls and GATE-R2
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/build_gate_r2.py research/gate_r2_trial.py
+          python3 research/build_gate_r2.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45.cpp -o build/drnas-x45
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_x46_gate30.cpp -o build/drnas-x46
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_gate_r2.cpp -o build/drnas-gate-r2
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror tests/test_gate_r2.cpp -o build/test-gate-r2
+          sha256sum build/drnas-x41 build/drnas-x3 build/drnas-x45 build/drnas-x46 build/drnas-gate-r2 > build/SHA256SUMS
+      - name: Test relay, budget, exact SAT UNSAT and thirty category generators
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_r2_trial.py selftest | tee gate_r2_selftest.log
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43359541383
+          github-token: ${{ github.token }}
+          name: x46-gate30-frozen
+          path: prior/x46
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43356913822
+          github-token: ${{ github.token }}
+          name: x45-frozen-1200-SHA
+          path: prior/x45
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43354771381
+          github-token: ${{ github.token }}
+          name: x44-frozen-model-manifest
+          path: prior/x44
+      - name: Freeze new sources, constants and code before evaluation
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/gate_r2_trial.py freeze --prior-dir prior | tee gate_r2_freeze.log
+          cp gate_r2_selftest.log gate_r2_freeze.log gate_r2_frozen/
+          { git rev-parse HEAD; g++ --version | head -1; } > gate_r2_frozen/versions.txt
+          tar -czf build/source_bundle.tgz src/drnas_x41.cpp src/drnas_x3.cpp src/drnas_x45.cpp src/drnas_gate_r2.hpp research/build_x46_gate30.py research/x46_categories.py research/x46_gate30.py research/build_gate_r2.py research/gate_r2_trial.py tests/test_gate_r2.cpp README_GATE_R2.md .github/workflows/drnas-gate-r2-relay30.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-r2-frozen
+          retention-days: 21
+          path: gate_r2_frozen/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-r2-native
+          retention-days: 21
+          path: build/
+  paired:
+    needs: freeze_and_audit
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-r2-frozen
+          path: gate_r2_frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-r2-native
+          path: build
+      - name: Verify identical binaries and run six-arm paired trials
+        run: |
+          set -euo pipefail
+          sha256sum -c build/SHA256SUMS
+          chmod +x build/drnas-x41 build/drnas-x3 build/drnas-x45 build/drnas-x46 build/drnas-gate-r2
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "GATER2_SINGLE_LOGICAL_CPU $CPU SHARD ${{ matrix.shard }}"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/gate_r2_trial.py shard --shard ${{ matrix.shard }} | tee gate_r2_run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-r2-relay30-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: gate_r2_stage/
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-r2-frozen
+          path: gate_r2_frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-r2-relay30-*
+          path: gate_r2_downloads
+          merge-multiple: false
+      - name: Audit all 10800 results and paired uncertainty
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_r2_trial.py finish | tee gate_r2_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-r2-relay30-final
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            gate_r2_final/
+            gate_r2_final.log
