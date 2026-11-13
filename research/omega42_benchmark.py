@@ -64,9 +64,23 @@ def sat_model_check(raw, stdout):
                 vals[abs(v)]=v>0
     if not vals:raise ValueError("No model")
     for clause in clauses:
-        if not any(vals.get(abs(v),False)==(v>0) for v in clause):
+        if not any(abs(v) in vals and vals[abs(v)]==(v>0) for v in clause):
             raise ValueError("Model does not satisfy original")
     return True
+
+def sat_model_validator_selftest():
+    # Missing variables are UNKNOWN, never silently interpreted as False.
+    bad=b"p cnf 2 1\n-2 0\n"
+    try:
+        sat_model_check(bad,"v 1 0\n")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("UNASSIGNED_NEGATIVE_LITERAL_FALSIFIED_WITNESS_ACCEPTED")
+    assert sat_model_check(bad,"v -2 0\n")
+    good=b"p cnf 2 2\n1 0\n-2 0\n"
+    assert sat_model_check(good,"v 1 -2 0\n")
+
 
 def xor_cnf(rows,n=None,extra=()):
     if n is None:n=max(max(vs) for vs,_ in rows)
@@ -345,6 +359,7 @@ if __name__=="__main__":
     ap.add_argument("--cap",type=float,default=CAP)
     ap.add_argument("--reps",type=int,default=REPS)
     args=ap.parse_args()
+    sat_model_validator_selftest()
     if args.cmd=="shard":
         if not 0<=args.shard<SHARDS:raise ValueError("Bad shard")
         benchmark(args.shard,args.cap,args.reps)
