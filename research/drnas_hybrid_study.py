@@ -5,7 +5,7 @@ import drnas_hybrid_bench_helpers as B
 
 B.CAP=4.0
 B.REPS=2
-B.ARMS=('R153_NATIVE','LTM9_NATIVE','DRNAS_HYBRID','Kissat','CaDiCaL','CryptoMiniSat')
+B.ARMS=('R153_NATIVE','LTM9_NATIVE','DRNAS_HYBRID','DRNAS_GATED','Kissat','CaDiCaL','CryptoMiniSat')
 kind=os.environ['CLASS_STUDY']
 assert kind in ('xor','php')
 B.ROOT=pathlib.Path('class_study_'+kind); B.ROOT.mkdir(exist_ok=True)
