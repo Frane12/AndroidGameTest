@@ -308,7 +308,11 @@ class Solver {
                 next_decision==compare_at_) {
                 x46_probe_digest_=stateDigestAtDecision(v);
                 if ((timeout_s_>0.0 && elapsed()>0.55*timeout_s_) ||
-                    clauses_.size()>60000 || n_>2500) {
+                    clauses_.size()>60000 || n_>2500 ||
+                    (x47_enabled_ &&
+                     (n_<x47_min_vars_||original_count_<x47_min_clauses_||
+                      compare_at_>x47_max_k_))) {
+                    if(x47_enabled_)x47_gate_skipped_=true;
                     x46_skipped_=true;
                 } else {
                     x46_triggered_=true;
@@ -318,6 +322,16 @@ class Solver {
                     x46_probes_wall_ms_=std::chrono::duration<double,std::milli>(
                         Clock::now()-start).count();
                     bool want_flip=x46_model_loaded_?learnedAlternate(x46_base_,x46_alt_):preferAlternate(x46_base_,x46_alt_);
+                    if(x47_enabled_ && want_flip){
+                        const double prob=x46_model_probability_;
+                        x47_expected_saving_=prob*x47_avg_win_-
+                            (1-prob)*(x47_avg_regret_+x47_risk_weight_*x47_tail_regret_);
+                        if(prob<x47_probability_floor_||
+                            x47_expected_saving_<x47_min_expected_saving_) {
+                            want_flip=false;
+                            x47_rejected_after_probe_=true;
+                        }
+                    }
                     x46_chose_flip_=want_flip;
                     if (want_flip && !x46_shadow_)chosen_lit=-baseline_lit;
                 }
@@ -450,6 +464,31 @@ class Solver {
             throw std::runtime_error("unexpected trailing X46 model data");
         x46_model_loaded_=true;
     }
+    void loadX47Guard(const std::string& path) {
+        if(!x46_model_loaded_)throw std::runtime_error("X47 needs frozen X46 cost model");
+        std::ifstream input(path);
+        if(!input)throw std::runtime_error("X47 guard model missing");
+        std::string version;int format=0;
+        if(!(input>>version>>format) || version!="X47GUARD1"||format!=1)
+            throw std::runtime_error("incompatible X47 guard");
+        if(!(input>>x47_min_vars_>>x47_min_clauses_>>x47_max_k_>>
+             x47_probability_floor_>>x47_min_expected_saving_>>
+             x47_avg_win_>>x47_avg_regret_>>x47_tail_regret_>>x47_risk_weight_))
+            throw std::runtime_error("incomplete X47 guard");
+        if(x47_min_vars_<0||x47_min_vars_>20000000||x47_min_clauses_<0||
+           x47_min_clauses_>10000000||x47_max_k_<1||x47_max_k_>100000||
+           !std::isfinite(x47_probability_floor_)||x47_probability_floor_<.5||
+           x47_probability_floor_>1.0||
+           !std::isfinite(x47_min_expected_saving_)||x47_min_expected_saving_<0||
+           !std::isfinite(x47_avg_win_)||x47_avg_win_<0||
+           !std::isfinite(x47_avg_regret_)||x47_avg_regret_<0||
+           !std::isfinite(x47_tail_regret_)||x47_tail_regret_<0||
+           !std::isfinite(x47_risk_weight_)||x47_risk_weight_<0||
+           x47_risk_weight_>20)
+            throw std::runtime_error("invalid X47 risk guard bounds");
+        std::string extra;if(input>>extra)throw std::runtime_error("X47 guard trailing data");
+        x47_enabled_=true;
+    }
     void configureX46(int conflicts,bool shadow,double probe_ms) {
         if(conflicts!=8 && conflicts!=32 && conflicts!=128)
             throw std::runtime_error("X46 conflicts must be 8, 32 or 128");
@@ -464,6 +503,10 @@ class Solver {
     bool x46ChosenFlip() const{return x46_chose_flip_;}
     bool x46Shadow() const{return x46_shadow_;}
     bool x46ModelLoaded() const{return x46_model_loaded_;}
+    bool x47Enabled() const{return x47_enabled_;}
+    bool x47SkippedByGate() const{return x47_gate_skipped_;}
+    double x47PredictedNetConflicts() const{return x47_expected_saving_;}
+    bool x47RejectedAfterProbe() const{return x47_rejected_after_probe_;}
     double x46ModelProbability() const{return x46_model_probability_;}
     double x46ProbesWallMs() const{return x46_probes_wall_ms_;}
     uint64_t x46ProbesHash() const{return x46_probe_digest_;}
@@ -507,6 +550,11 @@ class Solver {
     bool x46_enabled_=false,x46_shadow_=false,x46_clone_=false;
     bool x46_triggered_=false,x46_skipped_=false,x46_chose_flip_=false;
     bool x46_model_loaded_=false;
+    bool x47_enabled_=false,x47_gate_skipped_=false,x47_rejected_after_probe_=false;
+    int x47_min_vars_=0,x47_min_clauses_=0,x47_max_k_=8;
+    double x47_probability_floor_=0.8,x47_min_expected_saving_=8;
+    double x47_avg_win_=0,x47_avg_regret_=0,x47_tail_regret_=0,x47_risk_weight_=1;
+    double x47_expected_saving_=-1;
     double x46_model_threshold_=0.75,x46_model_bias_=0.0,x46_model_probability_=-1.0;
     std::vector<double> x46_model_mean_,x46_model_scale_,x46_model_weight_;
     int x46_probe_conflict_cap_=0, x46_clone_conflict_cap_=0;
@@ -1068,7 +1116,7 @@ int run(int argc, char** argv) {
     bool show_stats=false, trace_trail=false, compare_flip=false,x46_shadow=false;
     int compare_at=0,x46_conflicts=0;
     double x46_probe_ms=1.5;
-    std::string x46_model_path;
+    std::string x46_model_path,x47_guard_path;
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -1082,8 +1130,9 @@ int run(int argc, char** argv) {
         else if (opt=="--x46-probe-ms" && i+1<argc) x46_probe_ms=std::stod(argv[++i]);
         else if (opt=="--x46-shadow") x46_shadow=true;
         else if (opt=="--x46-model" && i+1<argc) x46_model_path=argv[++i];
+        else if (opt=="--x47-guard" && i+1<argc) x47_guard_path=argv[++i];
         else if (opt=="--help") {
-            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE]\n";
+            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE]\n";
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -1096,6 +1145,8 @@ int run(int argc, char** argv) {
     if(x46_conflicts>0 && (compare_at<=0 || compare_flip))
         throw std::runtime_error("X46 short probes require --branch-at and no --flip-branch");
     if(!x46_model_path.empty() && x46_conflicts==0)throw std::runtime_error("--x46-model requires --x46-conflicts");
+    if(!x47_guard_path.empty() && (x46_model_path.empty()||x46_conflicts==0||x46_shadow))
+        throw std::runtime_error("--x47-guard requires active X46 model and short probes");
     if(x46_shadow && x46_conflicts==0)
         throw std::runtime_error("--x46-shadow requires --x46-conflicts");
     if (compare_at<0 || compare_at>100000)throw std::runtime_error("invalid --branch-at");
@@ -1127,6 +1178,7 @@ int run(int argc, char** argv) {
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x46_model_path.empty())solver->loadX46CostModel(x46_model_path);
+            if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
         }
         if (!solver) throw std::runtime_error("missing DIMACS header");
@@ -1175,6 +1227,10 @@ int run(int argc, char** argv) {
                  <<",\"shadow\":"<<(solver->x46Shadow()?"true":"false")
                  <<",\"recommend_flip\":"<<(solver->x46ChosenFlip()?"true":"false")
                  <<",\"learned_model\":"<<(solver->x46ModelLoaded()?"true":"false")
+                 <<",\"x47_enabled\":"<<(solver->x47Enabled()?"true":"false")
+                 <<",\"x47_preprobe_skipped\":"<<(solver->x47SkippedByGate()?"true":"false")
+                 <<",\"x47_rejected_after_probe\":"<<(solver->x47RejectedAfterProbe()?"true":"false")
+                 <<",\"x47_expected_net_conflicts\":"<<solver->x47PredictedNetConflicts()
                  <<",\"predicted_flip_probability\":"<<solver->x46ModelProbability()
                  <<",\"probe_pair_wall_ms\":"<<std::fixed<<std::setprecision(7)<<solver->x46ProbesWallMs()
                  <<",\"pre_state_digest\":\""<<std::hex<<solver->x46ProbesHash()<<std::dec
