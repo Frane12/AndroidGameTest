@@ -69,3 +69,51 @@ Artifacts retain protocol, formula manifest, matched pairs, frozen models,
 every timed trial, and the final report. Train-label digests make cross-host
 determinism auditable. Repeated execution is replication of this protocol,
 not an additional independent holdout.
+
+## Completed result, 2026-11-13
+
+[Corrected run 43359617323](https://github.com/Frane12/AndroidGameTest/actions/runs/43359617323)
+passed at commit `0762399efa4c6e95aabf621ffd517a176b56c3e0`.
+Correctness: 3,714 checked invocations on 441 sources, including 404 exhaustive
+truth-table sources, all policy modes, and the feature-serialization regression.
+
+The earlier run 43359405476 deliberately stopped on a Python/native score
+assertion. A feature rounded for training telemetry could fall on the opposite
+side of a tree threshold at native precision. The correction canonicalizes
+features to the same 12-significant-digit representation before inference.
+Partial runs were retained but excluded from final timing results. No model
+parameters, training labels or thresholds were tuned to the inspected failure.
+The corrected run repeated the same holdout; it is not a new blind test.
+
+Local and corrected GitHub training have identical label digest
+`dc03477a3590bbfc7d2c868ee6f08d028bc1ac70af91370a37e899256fadaa57`
+and identical frozen model SHAs. The deterministic work budget removed the
+previous machine-speed dependence in training inclusion on these hosts.
+
+Validation selected TREE as the primary policy; both learned thresholds were
+zero. 318/384 training pairs completed and were labeled; 48 were work-censored
+and 18 did not reach the intervention. Validation had 97 labeled and 47
+work-censored pairs. Every one of the 240 held-out paired continuations completed.
+
+| Policy | Holdout PAR2 s (720 trials) | Polarity changes | Propagations |
+| --- | ---: | ---: | ---: |
+| CORE | 2.746707 | 0 | 1,759,818 |
+| SHAM | 2.871337 | 0 | 1,759,818 |
+| STATIC | 2.796083 | 126 | 1,749,348 |
+| FIXED probe | 2.817688 | 345 | 1,783,395 |
+| RIDGE | 2.903836 | 222 | 1,885,158 |
+| TREE | 2.880880 | 525 | 1,794,708 |
+
+All policies verified 720/720 SAT trials. FIXED/RIDGE/TREE each used the shared
+failed-literal rule on 33 repeated decision occasions, counted separately.
+TREE had 1.983% more propagation work than CORE. Measured PAR2 improvement
+was -4.885%, 95% paired formula interval [-9.911%, +0.129%]. The predeclared
+10% improvement criterion failed. LOCAL execution also found no benefit.
+
+On the 163 nontrivial, fully observed matched-work pairs, TREE score AUC was
+0.487897, 95% formula interval [0.394688, 0.579340], and balanced accuracy
+0.503006. RIDGE AUC was 0.462843. Bounded unit-propagation features and this
+nonlinear model did not establish useful cross-family prediction.
+
+These tests remain small and generated; timings include startup and inference.
+The result is a negative experiment, not a promoted default solver policy.
