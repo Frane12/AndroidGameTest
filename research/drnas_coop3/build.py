@@ -67,7 +67,7 @@ replace('''            int v = selectVariable();
             }
             if (v == -1)''')
 replace('    std::string input, mode="trace", trace_file;', '    std::string input, mode="trace", trace_file,coop_mode="off";\n    bool coop_eager=false;')
-replace('        else if (opt=="--x5-no-minimize")', '        else if (opt=="--coop2" && i+1<argc) coop_mode=argv[++i];\n        else if (opt=="--coop2-eager") coop_eager=true;\n        else if (opt=="--x5-no-minimize")')
+replace('        else if (opt=="--x5-no-minimize")', '        else if (opt=="--coop3" && i+1<argc) coop_mode=argv[++i];\n        else if (opt=="--coop3-eager") coop_eager=true;\n        else if (opt=="--x5-no-minimize")')
 replace('    if (input.empty() || (mode!=', '    if(coop_mode!="off"&&coop_mode!="observe"&&coop_mode!="algebra"&&coop_mode!="on"&&coop_mode!="gate")throw std::runtime_error("invalid COOP3 mode");\n    if (input.empty() || (mode!=')
 replace('            solver->configureX5(', '            solver->configureCoop(coop_mode,coop_eager);\n            solver->configureX5(')
 replace('    solver->finishParsing();', '    solver->finishParsing();\n    solver->initializeCoop();')
