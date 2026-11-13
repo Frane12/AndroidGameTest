@@ -7,7 +7,8 @@ from __future__ import annotations
 import hashlib, itertools, json, random
 from pathlib import Path
 
-NAMESPACE = 'x46-gate30-prospective-20261113-v1'
+# Independent fresh-source replication of the predeclared X4.6 GATE30 protocol.
+NAMESPACE = 'x46-gate30-prospective-20261113-v2-independent-replication'
 SPECS = [
  ('random3_uniform','random_cnf'), ('random3_balanced','random_cnf'),
  ('random3_dense','random_cnf'), ('random3_polarity','random_cnf'),
