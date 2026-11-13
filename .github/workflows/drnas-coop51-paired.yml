@@ -1,0 +1,118 @@
+name: DRNAS COOP5.1 hybrid BCP vs frozen fixed and dynamic paired real SAT
+on:
+  push:
+    branches: [experiment/drnas-coop51-hybrid-probe-20261114]
+    paths: [.github/workflows/drnas-coop51-paired.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop51-hybrid-paired
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        cohort: [synthetic, real]
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43524169066
+          name: coop51-hybrid-frozen-safe
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        if: matrix.cohort == 'real'
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - name: Freeze original CNF SHA and exact solver hashes
+        run: |
+          set -euo pipefail
+          tar -xzf coop51_frozen.tgz
+          sha256sum -c build/COOP51_BINARIES.sha256
+          python3 -m py_compile research/drnas_coop51/benchmark.py research/drnas_coop51/aggregate.py
+          if [[ "${{ matrix.cohort }}" == "real" ]]; then
+            tar -xzf real36_inputs.tgz
+            python3 -c 'import sys;sys.path.insert(0,"research");import drnas_x55_cpu_real36 as B;v,_=B.official_manifest();assert len(v)==36;print("COOP51_REAL36_SHA_RECHECK",len(v))'
+          fi
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP51_SINGLE_LOGICAL_CPU=$CPU"
+      - name: Paired same-source 7-arm verified BCP probe benchmark
+        run: |
+          set -euo pipefail
+          COHORT="${{ matrix.cohort }}"
+          SHARD="${{ matrix.shard }}"
+          if [[ "$COHORT" == "real" ]]; then CAP=3; else CAP=1; fi
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop51/benchmark.py \
+            --cohort "$COHORT" --shard "$SHARD" --shards 3 --cap "$CAP" \
+            --repeats 2 --out "coop51_shard_${COHORT}_${SHARD}" | tee coop51_paired.log
+          echo "COOP51 $COHORT shard $SHARD complete" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop51-shard-${{ matrix.cohort }}-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            coop51_shard_${{ matrix.cohort }}_${{ matrix.shard }}/
+            coop51_paired.log
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coop51-shard-*
+          path: coop51_downloads
+          merge-multiple: false
+      - name: Reconcile every source SHA, proof-checked PAR2, and family bootstrap
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_coop51/aggregate.py | tee coop51_report.log
+          python3 - <<'PY'
+          import json,os
+          result=[json.load(open('coop51_'+c+'_final/report.json')) for c in ('synthetic','real')]
+          assert result[0]['sources']==21 and result[0]['trial_count']==294
+          assert result[1]['sources']==18 and result[1]['trial_count']==252
+          out=["## DRNAS COOP5.1 hybrid BCP probes","",
+            "SHA-frozen real SAT2024 retrospective and synthetic stress. Original SAT witnesses/UNSAT DRAT independently checked. No main promotion.","",
+            "| Cohort | Arm | Verified | PAR2 (s) | Probe ms | Pairs | Deep320 | Overrides |",
+            "|---|---|---:|---:|---:|---:|---:|---:|"]
+          for d in result:
+              assert d['status']=='COMPLETE' and not d['promotion']
+              for name,v in d['overall'].items():
+                  out.append(f"| {d['cohort']} | {name} | {v['solved']}/{v['attempts']} | {v['PAR2_s']:.4f} | {v['probe_ms']:.4f} | {v['attempted_pairs']} | {v['hybrid_deep_pairs']} | {v['actually_overrode']} |")
+          out+=["","### Family bootstrap confidence intervals"]
+          for d in result:
+              for label,v in d['comparisons'].items():
+                  out.append(f"- {d['cohort']} {label}: {v['gain_pct']:+.3f}% CI {v['family_CI95_pct']}%; families={v['families']}")
+          out+=["","### Source-level verified status differences"]
+          for d in result:
+              out.append(f"- {d['cohort']}: {json.dumps(d['source_outcome_differences'])}")
+          msg="\n".join(out)+"\n"
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          print('COOP51_FINAL_REPORT_PASS',json.dumps({d['cohort']:d['sources'] for d in result}))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop51-hybrid-fixed-dynamic-final
+          retention-days: 60
+          path: |
+            coop51_synthetic_final/report.json
+            coop51_real_final/report.json
+            coop51_report.log
