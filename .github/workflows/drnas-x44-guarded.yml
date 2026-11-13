@@ -1,0 +1,87 @@
+name: DRNAS X4.4 guarded direction learning and abstention
+on:
+  push:
+    branches: [experiment/drnas-x44-guarded-memory-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x42_convergence_cycles.py
+      - research/drnas_x43_premodel.py
+      - research/drnas_x43_preaction_bench.py
+      - research/drnas_x44_guard.py
+      - research/drnas_x44_benchmark.py
+      - .github/workflows/drnas-x44-guarded.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x44-guarded-single-run
+  cancel-in-progress: false
+jobs:
+  proof_safe_prediction:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unchanged native X4.2 solver and regress correctness
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          python3 -m py_compile research/drnas_x42_convergence_cycles.py research/drnas_x43_premodel.py research/drnas_x43_preaction_bench.py research/drnas_x44_guard.py research/drnas_x44_benchmark.py
+          python3 -u tests/test_x41.py --cases 500 | tee x44_regression.log
+          sha256sum build/drnas-x41 src/drnas_x41.cpp research/drnas_x44_guard.py research/drnas_x44_benchmark.py
+      - name: Genuine warm-start training, frozen calibration and new family holdout
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x44_benchmark.py \
+            --binary build/drnas-x41 --out x44_guarded \
+            --train-per-family 48 --validation-per-family 16 \
+            --holdout-per-family 32 --unsat-per-family 8 --cap 1.5 \
+            | tee x44_guarded.log
+      - name: Verify frozen-model, family split and independent counts
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('x44_guarded')
+          m=json.loads((p/'manifest.json').read_text())
+          r=json.loads((p/'report.json').read_text())
+          assert r['source_count']==496
+          assert r['training_sources']==288 and r['validation_sources']==64
+          assert r['holdout_original_sources']==128
+          assert r['unsat_exhaustive_sources']==16
+          assert r['all_native_original_runs']==1488
+          assert r['holdout_model_frozen'] and r['source_SHA_unique']
+          assert r['no_active_policy'] and r['no_solver_speedup_claim']
+          assert len(r['cycles'])==3
+          assert [x['training_distinct_sources'] for x in r['cycles']]==[96,192,288]
+          train=set(m['train_families'])
+          valid=set(m['validation_families'])
+          holdout=set(m['holdout_families'])
+          unsat=set(m['unsat_families'])
+          assert len(train)==6 and len(valid)==4 and len(holdout)==4 and len(unsat)==2
+          assert not (train&valid or train&holdout or train&unsat or valid&holdout or valid&unsat or holdout&unsat)
+          assert len({x['source_sha'] for x in m['sources']})==496
+          print('X44_INDEPENDENCE_AND_SAFETY_AUDIT_PASS',json.dumps({
+             'original_sources':496,'holdout_independent':128,
+             'model_selected_before_holdout':True,
+             'holdout_away_AUC':r['new_holdout']['away_auc_all_nonflat'],
+             'coverage':r['new_holdout']['coverage'],
+             'balanced_accuracy':r['new_holdout']['accepted_balanced_accuracy'],
+             'primary_status':r['status']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x44-guarded-learning-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x44_regression.log
+            x44_guarded.log
+            x44_guarded/manifest.json
+            x44_guarded/frozen_models.json
+            x44_guarded/report.json
+            x44_guarded/holdout_predictions.jsonl
