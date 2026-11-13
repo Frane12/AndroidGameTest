@@ -1,0 +1,83 @@
+name: DRNAS X4.3 pre-action direction three learning cycles
+on:
+  push:
+    branches: [experiment/drnas-x43-before-action-predictor-20261113]
+    paths:
+      - src/drnas_x41.cpp
+      - research/drnas_x42_convergence_cycles.py
+      - research/drnas_x43_premodel.py
+      - research/drnas_x43_preaction_bench.py
+      - .github/workflows/drnas-x43-preaction.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x43-preaction-20261113
+  cancel-in-progress: false
+jobs:
+  preaction_learning:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native observer and check unchanged correctness
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          python3 -m py_compile research/drnas_x42_convergence_cycles.py research/drnas_x43_premodel.py research/drnas_x43_preaction_bench.py
+          python3 -u tests/test_x41.py --cases 400 | tee x43_regression.log
+          sha256sum build/drnas-x41 research/drnas_x43_premodel.py research/drnas_x43_preaction_bench.py
+      - name: Three training cycles and ONE frozen unseen family holdout test
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x43_preaction_bench.py \
+            --binary build/drnas-x41 --out x43_preaction \
+            --train-per-family-per-cycle 24 \
+            --valid-per-family 24 --test-per-family 32 \
+            --unsat-per-family 8 --cap 1.5 \
+            | tee x43_preaction.log
+      - name: Audit family disjointness, reference baseline and true independent N
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path("x43_preaction")
+          m=json.loads((p/"manifest.json").read_text())
+          r=json.loads((p/"report.json").read_text())
+          train=set(m["training_families"]); val=set(m["validation_families"])
+          held=set(m["holdout_families"]); unsat=set(m["unsat_controls"])
+          assert not (train & val or train & held or held & val)
+          assert not ((train|held|val)&unsat)
+          assert r["original_formula_count"]==392
+          assert r["n_independent_holdout_formulas"]==64
+          assert r["all_observed_solver_replays"]==1176
+          assert r["unsat_controls"]["independently_exhaustive_checked_count"]==16
+          assert r["original_sha_overlap"]==r["replay_sha_overlap"]==0
+          assert len(r["learning_cycles"])==3
+          assert r["input_available_before_action_only"]
+          assert r["no_active_policy_intervention"]
+          assert r["holdout_formula_ci"]["test_sources"]==64
+          print("X43_AUDIT_PASS",json.dumps({
+             "status":r["status"],"training_cycles":3,"holdout_formulas":64,
+             "source_families_disjoint":True,
+             "holdout_logloss":r["holdout"]["model_logloss_formula_mean"],
+             "constant_logloss":r["holdout"]["constant_logloss_formula_mean"],
+             "formula_95pct_CI":r["holdout_formula_ci"]["formula_cluster_bootstrap95_logloss_improvement"]
+          },sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x43-preaction-cycles-compact
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x43_regression.log
+            x43_preaction.log
+            x43_preaction/manifest.json
+            x43_preaction/report.json
+            x43_preaction/frozen_predictor.json
+            x43_preaction/holdout_predictions.jsonl
