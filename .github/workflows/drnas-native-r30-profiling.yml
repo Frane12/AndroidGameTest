@@ -1,0 +1,78 @@
+name: DRNAS R30 isolated native CDCL diagnostics
+on:
+  push:
+    branches: [experiment/drnas-native-r30-profiling-20261113]
+    paths:
+      - .github/workflows/drnas-native-r30-profiling.yml
+      - research/drnas_r30_compile.py
+      - research/drnas_r30_diagnostics.py
+      - research/drnas_native_pure100.py
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Even number of original SAT2024 CNFs"
+        type: choice
+        options: ["12", "24", "50", "100"]
+        default: "12"
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r30-native-profile
+  cancel-in-progress: true
+jobs:
+  native_profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Python and archive reader
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential python3-venv
+          python3 -m venv .r30venv
+          .r30venv/bin/python -m pip install --disable-pip-version-check remotezip
+          git rev-parse HEAD > r30_commit.txt
+      - name: Compile isolated R30 profilers and native validity smoke
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_native_pure100.py research/drnas_r30_compile.py research/drnas_r30_diagnostics.py
+          python3 research/drnas_r30_compile.py
+          python3 research/drnas_r30_diagnostics.py --selftest
+      - name: Profile original SAT2024 formulas with one logical CPU
+        env:
+          R30_LIMIT: ${{ github.event.inputs.limit || '12' }}
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .r30venv/bin/python -u research/drnas_r30_diagnostics.py --limit "$R30_LIMIT" | tee r30.log
+      - name: Summarize verified PAR2 and CDCL timings
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          report=json.load(open('drnas_native_r30/report.json'))
+          lines=['## DRNAS R30 diagnostics','',
+            'Instrumented CDCL on original SAT2024, one CPU; this is not an uninstrumented speed record.','',
+            '| Arm | Verified | PAR2 s | Profiled | BCP s | Analyze s | Update s |',
+            '|---|---:|---:|---:|---:|---:|---:|']
+          for arm,t in report['totals'].items():
+              p=report['profiles'][arm]
+              seconds=p['totals_s']
+              lines.append(f"| {arm} | {t['solved_verified']} | {t['PAR2_verified_s']:.4f} | {p['trials_with_profile']} | {seconds['bcp_s']:.4f} | {seconds['analyze_s']:.4f} | {seconds['update_s']:.4f} |")
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as file:
+                  file.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-r30-native-cdcl-profile
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            r30_commit.txt
+            r30.log
+            drnas_native_r30/*.json
+            drnas_native_r30/*.jsonl
