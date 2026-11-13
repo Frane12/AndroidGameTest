@@ -1,0 +1,131 @@
+name: DRNAS X4.6 GATE30 600 CNF 30 profiles 3 repeats
+on:
+  push:
+    branches: [experiment/drnas-x46-gate30-20261113]
+    paths:
+      - research/build_x46_gate30.py
+      - research/x46_categories.py
+      - research/x46_gate30.py
+      - README_X46_GATE30.md
+      - .github/workflows/drnas-x46-gate30.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x46-gate30-one-workflow
+  cancel-in-progress: true
+jobs:
+  freeze_and_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact X45 source plus sparse and adaptive-cost gate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/build_x46_gate30.py research/x46_categories.py research/x46_gate30.py
+          python3 research/build_x46_gate30.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x45.cpp -o build/drnas-x45
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/drnas_x46_gate30.cpp -o build/drnas-x46
+          sha256sum build/drnas-x41 build/drnas-x3 build/drnas-x45 build/drnas-x46 > build/SHA256SUMS
+      - name: Validate native SAT and UNSAT against exhaustive small oracle; audit all category labels
+        run: |
+          set -euo pipefail
+          python3 -u research/x46_gate30.py selftest | tee x46_selftest.log
+      - name: Retrieve X45 frozen inputs for exclusion only
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43356913822
+          github-token: ${{ github.token }}
+          name: x45-frozen-1200-SHA
+          path: prior/x45
+      - name: Retrieve X44 frozen inputs for exclusion only
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43354771381
+          github-token: ${{ github.token }}
+          name: x44-frozen-model-manifest
+          path: prior/x44
+      - name: Freeze 600 new sources and policy fingerprints before evaluation
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/x46_gate30.py freeze --prior-dir prior | tee x46_freeze.log
+          cp x46_selftest.log x46_freeze.log x46_frozen/
+          tar -czf build/source_bundle.tgz src/drnas_x41.cpp src/drnas_x3.cpp src/drnas_x45.cpp research/build_x46_gate30.py research/x46_categories.py research/x46_gate30.py README_X46_GATE30.md .github/workflows/drnas-x46-gate30.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x46-gate30-frozen
+          retention-days: 21
+          path: x46_frozen/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x46-gate30-native
+          retention-days: 21
+          path: build/
+
+  paired:
+    needs: freeze_and_audit
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x46-gate30-frozen
+          path: x46_frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: x46-gate30-native
+          path: build
+      - name: Verify identical binaries and run paired trials on one logical CPU
+        run: |
+          set -euo pipefail
+          sha256sum -c build/SHA256SUMS
+          chmod +x build/drnas-x41 build/drnas-x3 build/drnas-x45 build/drnas-x46
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X46_SINGLE_LOGICAL_CPU $CPU SHARD ${{ matrix.shard }}"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/x46_gate30.py shard --shard ${{ matrix.shard }} | tee x46_run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x46-gate30-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x46_stage/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x46-gate30-frozen
+          path: x46_frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x46-gate30-*
+          path: x46_downloads
+          merge-multiple: false
+      - name: Audit 9000 results, 30 categories, PAR2, stable solves and clustered uncertainty
+        run: |
+          set -euo pipefail
+          python3 -u research/x46_gate30.py finish | tee x46_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x46-gate30-final
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            x46_final/
+            x46_final.log
