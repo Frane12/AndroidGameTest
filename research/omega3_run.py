@@ -291,7 +291,7 @@ def download_source(entry, commit, dest):
         if line.startswith("%"):
             stripped += 1
             break
-        if line.startswith("c") or line.startswith("w ") or not line:
+        if line.startswith("c") or (line.startswith("w ") or line.startswith("w\t")) or not line:
             stripped += 1
             continue
         source_lines.append(line)
