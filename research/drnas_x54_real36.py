@@ -155,7 +155,7 @@ def record(src,arm,rep,temp):
         if line.startswith("X53_STATS "):
             try:x53=json.loads(line.split(" ",1)[1])
             except json.JSONDecodeError:pass
-        if line.startswith("X54_PROGRESS "):
+        if line.startswith("X53_PROGRESS "):
             try:progress.append(json.loads(line.split(" ",1)[1]))
             except json.JSONDecodeError:pass
     reported="TIMEOUT" if expired else "UNKNOWN"
