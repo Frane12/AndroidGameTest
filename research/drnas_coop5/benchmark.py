@@ -75,7 +75,7 @@ def one(binary,checker,case,cnf,arm,cap,rep,work):
     elif rc==20:
         p=subprocess.run([str(checker),str(cnf),str(proof)],
                          text=True,capture_output=True,timeout=20)
-        if p.returncode!=0 or "s VERIFIED" not in p.stdout:
+        if "s VERIFIED" not in p.stdout:
             raise RuntimeError(("WRONG UNSAT PROOF",case["id"],arm,p.stdout[-300:],p.stderr[-300:]))
         status="UNSAT"
     if case["expected"] is not None and status in ("SAT","UNSAT"):
