@@ -177,10 +177,19 @@ def quantile_sample(rows, per_family=200):
     chosen=[]
     for family in sorted(buckets):
         rr=sorted(buckets[family],key=lambda x:x["sha256"])
-        n=min(per_family,len(rr))
-        if n:
-            chosen.extend(rr[min(len(rr)-1,int((i+.5)*len(rr)/n))]
-                          for i in range(n))
+        # Recent train-only observations receive guaranteed representation.
+        # Historic evidence is sampled, NEVER erased or downgraded.
+        recent=sorted(
+            (r for r in rr if str(r.get("meta",{}).get("run_id","")).isdigit()),
+            key=lambda r:(int(r["meta"]["run_id"]),r["sha256"]),reverse=True)
+        recent=recent[:min(len(recent),max(8,per_family//3))]
+        recent_sha={r["sha256"] for r in recent}
+        historic=[r for r in rr if r["sha256"] not in recent_sha]
+        slots=min(per_family-len(recent),len(historic))
+        chosen.extend(recent)
+        if slots:
+            chosen.extend(historic[min(len(historic)-1,int((i+.5)*len(historic)/slots))]
+                          for i in range(slots))
     return chosen
 
 def compatible_rows(db):
