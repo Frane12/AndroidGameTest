@@ -141,6 +141,29 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(s["completed_learning_cycles"],1)
         self.assertEqual(s["promoted_models"],0)
 
+    def test_generic_artifact_from_drnas_run_is_recovered(self):
+        blob=io.BytesIO()
+        with zipfile.ZipFile(blob,"w",zipfile.ZIP_DEFLATED) as z:
+            z.writestr("eval-0/run_summary.json",json.dumps({"benchmark":"DRNAS","PAR2":3.}))
+        class FakeGH:
+            def artifact_zip(self,artifact_id):
+                self.seen=artifact_id
+                return blob.getvalue()
+        gh=FakeGH()
+        self.db.execute("INSERT INTO runs(run_id,name) VALUES (?,?)",
+                        (99,"DRNAS X47 Native native test"))
+        self.db.execute("""
+            INSERT INTO artifacts(artifact_id,run_id,name,size_bytes,created_at,expired,import_state)
+            VALUES (?,?,?,?,?,?,?)
+        """,(8,99,"eval-0",len(blob.getvalue()),"2026-11-13T00:00:00Z",0,"unrelated"))
+        imported=M.ingest_artifacts(self.db,gh,1)
+        self.assertEqual(imported["downloaded"],1)
+        self.assertEqual(imported["reports"],1)
+        self.assertEqual(gh.seen,8)
+        self.assertEqual(self.db.execute(
+            "SELECT import_state FROM artifacts WHERE artifact_id=8"
+        ).fetchone()[0],"parsed")
+
     def test_invalid_sha_and_unverified_not_trusted(self):
         self.assertFalse(M.valid_sha("not a SHA"))
         self.assertIsNone(M.safe_num(float("nan")))
