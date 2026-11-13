@@ -56,9 +56,9 @@ rep('''        ++coop5_recommend_;
 '''        ++coop5_recommend_;
         ++coop52_strong_accepted_;
         if(coop51_hybrid_ && depth==320)++coop51_deep_advice_;''')
-rep('''                 <<",\"cadence_final\":"<<coop5_gap_
+rep(r'''                 <<",\"cadence_final\":"<<coop5_gap_
                  <<"}\\n";''',
-'''                 <<",\"cadence_final\":"<<coop5_gap_
+r'''                 <<",\"cadence_final\":"<<coop5_gap_
                  <<",\"quality_unmatched_rejected\":"<<coop52_unmatched_rejected_
                  <<",\"quality_strong_rejected\":"<<coop52_strong_rejected_
                  <<",\"quality_accepted\":"<<coop52_strong_accepted_
