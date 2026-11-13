@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """15 untouched originals per GBD family; periodic telemetry is a separate arm."""
-import argparse,collections,hashlib,json,lzma,gzip,bz2,os,random,signal,subprocess,tempfile,time
+import argparse,collections,hashlib,json,lzma,gzip,bz2,os,random,signal,subprocess,tempfile,time,shutil
 from pathlib import Path
 import drnas_x5_bench as B
 from drnas_x5_report import comparison
@@ -10,6 +10,64 @@ ARMS=['X5_NO_MIN','CORE','Kissat','CaDiCaL','CMS','X5_DIAG']
 
 def dump(p,data):p.write_text(json.dumps(data,indent=2,sort_keys=True)+'\n')
 def records(p):return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+
+def parse_diagnostic_stderr(stderr,killed):
+    """Only an unterminated final record after our SIGKILL may be incomplete.
+
+    Complete malformed records and malformed records on normal exit stay fatal.
+    Keep all prior complete progress; never manufacture or zero missing counters.
+    """
+    telemetry=[];stats={};extra={};truncated=[]
+    lines=stderr.splitlines(keepends=True)
+    prefixes=('X5_PROGRESS ','X41_STATS ','X5_STATS ')
+    for index,line in enumerate(lines):
+        prefix=next((p for p in prefixes if line.startswith(p)),None)
+        tail=killed and index==len(lines)-1 and not line.endswith(('\n','\r'))
+        if prefix:
+            try:record=json.loads(line[len(prefix):])
+            except json.JSONDecodeError:
+                if not tail:raise
+                truncated.append({'prefix':prefix.strip(),'bytes':len(line.encode()),
+                    'sha256':hashlib.sha256(line.encode()).hexdigest()})
+                continue
+            if prefix=='X5_PROGRESS ':telemetry.append(record)
+            elif prefix=='X41_STATS ':stats=record
+            else:extra=record
+        elif tail and line and any(p.startswith(line) for p in prefixes):
+            truncated.append({'prefix':'partial_tag','bytes':len(line.encode()),
+                'sha256':hashlib.sha256(line.encode()).hexdigest()})
+    assert telemetry,'diagnostic solver produced no complete progress records'
+    return telemetry,stats,extra,truncated
+
+def retained_pairs(root,manifest):
+    """Retain only whole six-arm (source, repetition) groups from matching inputs."""
+    if root is None:return [],{}
+    old=json.loads((root/'manifest.json').read_text())
+    for key in ('cohort','family','count','repeats','cap','arms','shard','shards',
+                'source_manifest_sha256','candidate_sha256','diagnostic_source_sha256','binary_sha256','sources'):
+        assert old[key]==manifest[key],('resume identity mismatch',key)
+    rr=records(root/'trials.jsonl');seen=set();groups=collections.defaultdict(list)
+    source_ids={s['sha256']:s['source_id'] for s in manifest['sources']}
+    for r in rr:
+        key=(r['sha256'],r['rep'],r['arm'])
+        assert key not in seen and r['sha256'] in source_ids and r['rep'] in (0,1) and r['arm'] in ARMS
+        assert r['family']==manifest['family'] and r['shard']==manifest['shard']
+        assert r['source_id']==source_ids[r['sha256']]
+        assert not r['accepted'] or r['verified'] and r['e2e_s']<=manifest['cap']
+        seen.add(key);groups[key[:2]].append(r)
+    retained=[]
+    for group in groups.values():
+        if {r['arm'] for r in group}==set(ARMS):
+            for r in group:
+                if r['arm']=='X5_DIAG':
+                    path=root/'telemetry'/f"{r['sha256']}_{r['rep']}.jsonl"
+                    events=records(path)
+                    assert events and events[-1]==r['last_progress'] and len(events)==r['progress_samples']
+                retained.append({**r,'measurement_run_id':r.get('measurement_run_id','43390611380'),
+                                 'retained_from_prior_run':True})
+    return retained,{'origin_run':'43390611380','retained_trials':len(retained),
+                     'retained_complete_pairs':len(retained)//len(ARMS),
+                     'partial_group_trials_not_mixed':len(rr)-len(retained)}
 
 def prepare(a):
     from remotezip import RemoteZip
@@ -28,7 +86,7 @@ def prepare(a):
             B.emit('FAMILY15_DOWNLOAD',{'completed':i+1,'total':75,'family':s['family'],'bytes':len(raw)})
     dump(a.out/'source_manifest.json',manifest)
 
-def diagnostic(source,cnf,td,a):
+def diagnostic(source,cnf,td,a,raw_stderr_path=None):
     proof=td/'diag.drat';rss=td/'rss.txt'
     proof.unlink(missing_ok=True);rss.unlink(missing_ok=True)
     start=time.monotonic();status='TIMEOUT';verified=False;killed=False
@@ -54,12 +112,10 @@ def diagnostic(source,cnf,td,a):
                 assert verified,('invalid diagnostic proof',source['sha256'],q.stdout[-500:])
             except subprocess.TimeoutExpired:pass
     check=time.monotonic()-check_start;total=time.monotonic()-start;accepted=verified and total<=a.cap
-    telemetry=[];stats={};extra={}
-    for line in stderr.splitlines():
-        if line.startswith('X5_PROGRESS '):telemetry.append(json.loads(line[12:]))
-        if line.startswith('X41_STATS '):stats=json.loads(line[10:])
-        if line.startswith('X5_STATS '):extra=json.loads(line[9:])
-    assert telemetry, 'diagnostic solver produced no progress records'
+    # Preserve raw evidence before parsing, including a partial final write.
+    # Artifact I/O stays outside the already captured E2E solver/check budget.
+    if raw_stderr_path is not None:raw_stderr_path.write_text(stderr)
+    telemetry,stats,extra,truncated=parse_diagnostic_stderr(stderr,killed)
     for left,right in zip(telemetry,telemetry[1:]):
         assert right['elapsed_s']>=left['elapsed_s']
         assert right['conflicts']>=left['conflicts'] and right['propagations']>=left['propagations']
@@ -69,14 +125,14 @@ def diagnostic(source,cnf,td,a):
        'maxrss_kib':last['maxrss_kib'],'conflicts':stats.get('conflicts',last['conflicts']),
        'decisions':stats.get('decisions',last['decisions']),'x5':extra,'killed_by_budget':killed,
        'progress_samples':len(telemetry),'last_progress':last,'partial_counters':killed,
-       'diagnostic_timing_only':True}
+       'diagnostic_timing_only':True,'truncated_tail_records':truncated}
     return r,telemetry
 
 def bench(a):
     manifest=json.loads(SOURCE_MANIFEST.read_text());family=manifest['families'][a.shard]
     cases=[s for s in manifest['sources'] if s['family']==family];assert len(cases)==15
     os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
-    a.out.mkdir(parents=True,exist_ok=False);(a.out/'telemetry').mkdir()
+    a.out.mkdir(parents=True,exist_ok=False);(a.out/'telemetry').mkdir();(a.out/'raw_stderr').mkdir()
     for s in cases:
         cnf=a.sources/(s['sha256']+'.cnf');assert B.sha(cnf)==s['sha256']
     m={'cohort':'original_SAT2024_retrospective','family':family,'count':15,'repeats':2,'cap':a.cap,
@@ -86,20 +142,35 @@ def bench(a):
        'binary_sha256':{name:B.sha(ROOT/'build'/name) for name in ('drnas-x5','x5-telemetry','frozen-proof','kissat','cadical','cms','drat-trim','frat-rs')},
        'sources':cases,'no_learning':True,'cache':False,
        'telemetry':'Separate diagnostic arm; uninstrumented X5_NO_MIN remains the performance candidate. Flush every ~1 s at safe observation points and at search start/finish.'}
-    dump(a.out/'manifest.json',m);rows=[]
+    resume_root=getattr(a,'resume_root',None)
+    rows,resume=retained_pairs(resume_root,m)
+    done={(r['sha256'],r['rep']) for r in rows}
+    m['resume']=resume;m['stderr_parser_version']='strict-killed-final-tail-v2'
+    dump(a.out/'manifest.json',m)
+    if resume_root:
+        for r in rows:
+            if r['arm']=='X5_DIAG':
+                name=f"{r['sha256']}_{r['rep']}.jsonl"
+                shutil.copy2(resume_root/'telemetry'/name,a.out/'telemetry'/name)
+    B.emit('FAMILY15_RESUME',{'family':family,**resume,'new_trials':180-len(rows)})
     with tempfile.TemporaryDirectory() as tmp,(a.out/'trials.jsonl').open('w') as log:
+        for r in rows:log.write(json.dumps(r,sort_keys=True)+'\n')
+        log.flush()
         for i,s in enumerate(cases):
             cnf=(a.sources/(s['sha256']+'.cnf')).resolve()
             source={**s,'content':cnf.read_text(),'cert':'ORIGINAL_PROOF_REQUIRED'}
             for rep in range(2):
+                if (s['sha256'],rep) in done:continue
                 order=ARMS.copy();random.Random(151113+s['source_id']*31+rep).shuffle(order)
                 for arm in order:
                     if arm=='X5_DIAG':
-                        r,telemetry=diagnostic(source,cnf,Path(tmp),a)
+                        r,telemetry=diagnostic(source,cnf,Path(tmp),a,
+                            a.out/'raw_stderr'/f"{s['sha256']}_{rep}.txt")
                         path=a.out/'telemetry'/f"{s['sha256']}_{rep}.jsonl"
                         path.write_text(''.join(json.dumps(t,sort_keys=True)+'\n' for t in telemetry))
                     else:r=B.run(arm,source,cnf,Path(tmp),a)
-                    r.update(sha256=s['sha256'],family=family,rep=rep,source_id=s['source_id'],shard=a.shard)
+                    r.update(sha256=s['sha256'],family=family,rep=rep,source_id=s['source_id'],shard=a.shard,
+                             measurement_run_id=os.getenv('GITHUB_RUN_ID','local'),retained_from_prior_run=False)
                     rows.append(r);log.write(json.dumps(r,sort_keys=True)+'\n');log.flush();B.emit('FAMILY15_TRIAL',r)
             B.emit('FAMILY15_PROGRESS',{'family':family,'completed':i+1,'sources':15,'totals':B.summarize(rows,ARMS)})
     report={'family':family,'sources':15,'trials':len(rows),'totals':B.summarize(rows,ARMS)}
@@ -127,13 +198,16 @@ def report(a):
                 'diagnostic_partial_totals':totals,
                 'telemetry_trials':len(diag),'telemetry_timeouts':sum(r.get('killed_by_budget',False) for r in rr)}
     result={'sources':75,'per_family':15,'trials':900,'cap_s':mm[0]['cap'],
-       'overall':section(rows),
+       'overall':section(rows),'retained_trials':sum(r.get('retained_from_prior_run',False) for r in rows),
+       'truncated_tail_records':sum(len(r.get('truncated_tail_records',[])) for r in rows),
        'by_family':{f:section([r for r in rows if r['family']==f]) for f in sorted({r['family'] for r in rows})},
        'limits':['Official original inputs, retrospective evaluation; not a new globally blind holdout.',
                  'Selection by source family and compressed file size only; no solved-outcome screening.',
                  'Diagnostic per-function clocks add overhead; X5_DIAG is not a speed candidate.',
                  'Timeout counters are last flushed observations, not zero and not final full-budget counts.',
                  'A periodic sample may be delayed by a long operation; sampling gap is visible in the retained JSONL.',
+                 'After a watchdog kill only an incomplete final stderr JSON record may be skipped; complete earlier samples and raw stderr are retained.',
+                 'Resume retains complete six-arm pairs on matching binaries/inputs; incomplete pairs are rerun together on one runner.',
                  'No global learning, cache, tuning, promotion or merge in this diagnostic cycle.']}
     dump(a.out,result);B.emit('FAMILY15_REPORT',result)
 
@@ -141,6 +215,7 @@ def main():
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest='cmd',required=True)
     q=sub.add_parser('prepare');q.add_argument('--out',type=Path,required=True)
     q=sub.add_parser('bench');q.add_argument('--out',type=Path,required=True);q.add_argument('--sources',type=Path,required=True)
+    q.add_argument('--resume-root',type=Path)
     q.add_argument('--shard',type=int,required=True);q.add_argument('--cap',type=float,default=15)
     q.add_argument('--checker',type=Path,default=ROOT/'build/drat-trim');q.add_argument('--frat',type=Path,default=ROOT/'build/frat-rs')
     q.add_argument('--kissat',default='build/kissat');q.add_argument('--cadical',default='build/cadical');q.add_argument('--cms',default='build/cms')

@@ -39,3 +39,9 @@ The report fails closed on incomplete source/arm/repetition coverage and shows
 per-family PAR2, solved counts, paired bootstrap by original SHA, and telemetry.
 This experiment diagnoses the next single optimization; it does not merge or
 promote one automatically.
+
+## Recovery from interrupted stderr writes
+
+Run 43390611380 stopped in telemetry JSON parsing after budget enforcement. Recovery reuses exactly its inputs and diagnostic binary and the same frozen solver binaries. Only malformed, unterminated final records after an external timeout kill may be skipped; their byte count and SHA256 are audited. Raw stderr is saved before parsing. All prior complete samples remain intact, and complete malformed records still fail.
+
+Recovery retains only complete six-arm groups for one formula and repetition, validating source, binary, cap and telemetry identities. Incomplete groups are rerun together on one runner; original artifacts remain available. Each result records its originating run. All 900 trials are still required. The original workflow is manual-only during recovery to prevent duplicate launches.
