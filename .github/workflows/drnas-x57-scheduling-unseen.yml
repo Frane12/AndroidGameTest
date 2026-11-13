@@ -1,0 +1,175 @@
+name: DRNAS X5.7 CHB scheduling fresh-original SAT2024 VSIDS LRB
+on:
+  push:
+    branches: [experiment/drnas-x57-scheduling-unseen-20261113]
+    paths:
+      - .github/workflows/drnas-x57-scheduling-unseen.yml
+      - research/drnas_x57_sched_unseen.py
+      - tests/test_x57_sched_selection.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x57-scheduling-unseen-20261113
+  cancel-in-progress: true
+
+jobs:
+  freeze_official_sources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-strict-final
+          github-token: ${{ github.token }}
+          path: real36_previous
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43418696306
+          name: x57-validated-frozen-binaries
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore frozen exact X5.7 policies and reference solvers
+        run: |
+          set -euo pipefail
+          tar -xzf x57_frozen.tgz
+          tar -xzf real36_binaries.tgz
+          test -s real36_previous/real36_final/manifest.json
+          sha256sum build/drnas-x55b build/drnas-x57 build/kissat build/cadical build/drat-trim
+          python3 -m py_compile research/drnas_x57_sched_unseen.py tests/test_x57_sched_selection.py
+      - name: Offline outcome-blind official source selection selftest
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x57_sched_selection.py | tee x57_sched_selection_selftest.log
+      - name: Frozen CHB LRB VSIDS independent SAT and DRAT smoke
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X57_SCHED_SINGLE_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_x57_chb_lrb.py | tee x57_sched_chb_lrb_smoke.log
+      - name: Install range-fetch dependency in isolated environment
+        run: |
+          set -euo pipefail
+          python3 -m venv .x57schedvenv
+          .x57schedvenv/bin/python -m pip install --disable-pip-version-check remotezip
+          .x57schedvenv/bin/python -m pip show remotezip | grep -E '^(Name|Version):'
+      - name: Freeze new original scheduling CNFs by metadata BEFORE any solver
+        run: |
+          set -euo pipefail
+          .x57schedvenv/bin/python -u research/drnas_x57_sched_unseen.py prepare | tee x57_sched_source_preflight.log
+          python3 -u research/drnas_x57_sched_unseen.py freeze | tee x57_sched_freeze.log
+          sha256sum build/drnas-x57 build/kissat build/cadical build/drat-trim > build/X57_SCHED_BINARIES.sha256
+          git rev-parse HEAD > build/X57_SCHED_COMMIT.txt
+          sha256sum x57_sched_unseen/manifest.json x57_sched_unseen/protocol.json
+          tar -czf x57_sched_source_binaries.tgz \
+            x57_sched_unseen \
+            build/drnas-x57 build/kissat build/cadical build/drat-trim \
+            build/X57_SCHED_BINARIES.sha256 build/X57_SCHED_COMMIT.txt \
+            x57_sched_source_preflight.log x57_sched_freeze.log \
+            x57_sched_selection_selftest.log x57_sched_chb_lrb_smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x57-scheduling-official-frozen-sources
+          retention-days: 30
+          path: x57_sched_source_binaries.tgz
+
+  paired:
+    needs: freeze_official_sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x57-scheduling-official-frozen-sources
+          path: .
+      - name: Recover 20 original SAT2024 CNFs, hashed metadata and exact pinned solvers
+        run: |
+          set -euo pipefail
+          tar -xzf x57_sched_source_binaries.tgz
+          sha256sum -c build/X57_SCHED_BINARIES.sha256
+          test -s x57_sched_unseen/manifest.json
+      - name: Five-arm serial original SAT benchmark with independent SAT/UNSAT checks
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X57_SCHED_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x57_sched_unseen.py shard --shard ${{ matrix.shard }} \
+             | tee x57_sched_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x57sched-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          path: x57_sched_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x57-scheduling-official-frozen-sources
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x57sched-shard-*
+          path: x57_sched_downloads
+          merge-multiple: false
+      - name: Audit all 200 trials and original source SHA, zero wrong SAT/UNSAT
+        run: |
+          set -euo pipefail
+          tar -xzf x57_sched_source_binaries.tgz
+          sha256sum -c build/X57_SCHED_BINARIES.sha256
+          python3 -u research/drnas_x57_sched_unseen.py finish | tee x57_sched_final.log
+          python3 - <<'PY'
+          import json,os
+          j=json.load(open("x57_sched_final/report.json"))
+          assert j["status"]=="COMPLETE"
+          assert all(v["attempts"]==40 for v in j["groups"]["all"]["arms"].values())
+          out=["## DRNAS X5.7 — CHB scheduling-like original SAT2024 new-to-REAL36 test",
+               "20 original SHA-frozen sources; 2 repetitions; 5 solvers; 15s cap; 200 paired trials.",
+               "New only relative to previous X57 REAL36. Not a globally blind benchmark.",
+               ""]
+          for group,section in j["groups"].items():
+              out+=["### "+group+" ("+str(section["source_count"])+" original formulas)",
+                     "| Solver | Verified | SAT | UNSAT | PAR2 seconds ↓ |",
+                     "|---|---:|---:|---:|---:|"]
+              for arm,v in section["arms"].items():
+                  out.append(f"| {arm} | {v['solved']}/{v['attempts']} | {v['SAT_verified']} | {v['UNSAT_certified']} | {v['PAR2_s']:.3f} |")
+              diff=section["CHB_minus_VSIDS"]
+              out.append(f"CHB-VSIDS ΔPAR2={diff.get('delta_candidate_minus_reference_s')} s; source-cluster CI={diff.get('source_cluster_bootstrap95')}")
+              out.append("")
+          out+=["All credited SAT/UNSAT independently checked. No promotion; no change to main."]
+          s="\n".join(out)+"\n"
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x57-scheduling-unseen-final
+          retention-days: 30
+          path: |
+            x57_sched_final/report.json
+            x57_sched_final/paired_trials.jsonl
+            x57_sched_final.log
+            x57_sched_unseen/manifest.json
+            x57_sched_unseen/protocol.json
