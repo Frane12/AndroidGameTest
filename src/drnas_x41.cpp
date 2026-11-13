@@ -317,7 +317,7 @@ class Solver {
                     x46_alt_=shortProbeBranch(-baseline_lit);
                     x46_probes_wall_ms_=std::chrono::duration<double,std::milli>(
                         Clock::now()-start).count();
-                    bool want_flip=preferAlternate(x46_base_,x46_alt_);
+                    bool want_flip=x46_model_loaded_?learnedAlternate(x46_base_,x46_alt_):preferAlternate(x46_base_,x46_alt_);
                     x46_chose_flip_=want_flip;
                     if (want_flip && !x46_shadow_)chosen_lit=-baseline_lit;
                 }
@@ -427,6 +427,29 @@ class Solver {
             fd<<"}\n";
         }
     }
+    void loadX46CostModel(const std::string& path) {
+        std::ifstream input(path);
+        if(!input)throw std::runtime_error("cannot open X46 learned model");
+        std::string version;int dimensions=0;
+        if(!(input>>version>>dimensions)||version!="X46COST1"||dimensions!=12)
+            throw std::runtime_error("incompatible X46 learned model");
+        if(!(input>>x46_model_threshold_>>x46_model_bias_)||
+           !std::isfinite(x46_model_threshold_)||x46_model_threshold_<0.5||
+           x46_model_threshold_>0.99||!std::isfinite(x46_model_bias_))
+            throw std::runtime_error("invalid X46 model threshold");
+        x46_model_mean_.clear();x46_model_scale_.clear();x46_model_weight_.clear();
+        for(int i=0;i<dimensions;++i) {
+            double u=0,s=0,w=0;
+            if(!(input>>u>>s>>w)||!std::isfinite(u)||!std::isfinite(s)||
+                !std::isfinite(w)||s<1e-8||s>1e6||std::abs(w)>100)
+                throw std::runtime_error("corrupt X46 learned model");
+            x46_model_mean_.push_back(u);x46_model_scale_.push_back(s);
+            x46_model_weight_.push_back(w);
+        }
+        std::string extra;if(input>>extra)
+            throw std::runtime_error("unexpected trailing X46 model data");
+        x46_model_loaded_=true;
+    }
     void configureX46(int conflicts,bool shadow,double probe_ms) {
         if(conflicts!=8 && conflicts!=32 && conflicts!=128)
             throw std::runtime_error("X46 conflicts must be 8, 32 or 128");
@@ -440,6 +463,8 @@ class Solver {
     bool x46Skipped() const{return x46_skipped_;}
     bool x46ChosenFlip() const{return x46_chose_flip_;}
     bool x46Shadow() const{return x46_shadow_;}
+    bool x46ModelLoaded() const{return x46_model_loaded_;}
+    double x46ModelProbability() const{return x46_model_probability_;}
     double x46ProbesWallMs() const{return x46_probes_wall_ms_;}
     uint64_t x46ProbesHash() const{return x46_probe_digest_;}
     const BranchProbeCost& x46Base() const{return x46_base_;}
@@ -481,6 +506,9 @@ class Solver {
     // checkpoint decision; never used to assert clauses, SAT, or UNSAT.
     bool x46_enabled_=false,x46_shadow_=false,x46_clone_=false;
     bool x46_triggered_=false,x46_skipped_=false,x46_chose_flip_=false;
+    bool x46_model_loaded_=false;
+    double x46_model_threshold_=0.75,x46_model_bias_=0.0,x46_model_probability_=-1.0;
+    std::vector<double> x46_model_mean_,x46_model_scale_,x46_model_weight_;
     int x46_probe_conflict_cap_=0, x46_clone_conflict_cap_=0;
     int x46_clone_decision_cap_=0;
     double x46_probe_wall_ms_=1.5,x46_probes_wall_ms_=0.0;
@@ -675,6 +703,30 @@ class Solver {
             cp.stats_.conflicts-x46_clone_origin_conflicts_,
             cp.stats_.decisions-x46_clone_origin_decisions_,
             cp.stats_.propagations-stats_.propagations,ms};
+    }
+    bool learnedAlternate(const BranchProbeCost& normal,
+                          const BranchProbeCost& flipped) {
+        const double nc=static_cast<double>(normal.conflicts);
+        const double fc=static_cast<double>(flipped.conflicts);
+        const double nd=static_cast<double>(normal.decisions);
+        const double fd=static_cast<double>(flipped.decisions);
+        const double np=static_cast<double>(normal.propagations);
+        const double fp=static_cast<double>(flipped.propagations);
+        const std::vector<double> features={
+            std::log1p(nc),std::log1p(fc),std::log1p(nd),std::log1p(fd),
+            std::log1p(np),std::log1p(fp),
+            (nc-fc)/(nc+fc+1.0),(nd-fd)/(nd+fd+1.0),(np-fp)/(np+fp+1.0),
+            normal.result==10?1.0:0.0,flipped.result==10?1.0:0.0,
+            std::log1p(static_cast<double>(compare_at_))};
+        double value=x46_model_bias_;
+        for(size_t i=0;i<features.size();++i) {
+            const double z=std::clamp((features[i]-x46_model_mean_[i])/
+                                    x46_model_scale_[i],-5.0,5.0);
+            value+=z*x46_model_weight_[i];
+        }
+        value=std::clamp(value,-40.0,40.0);
+        x46_model_probability_=1.0/(1.0+std::exp(-value));
+        return x46_model_probability_>x46_model_threshold_;
     }
     static bool preferAlternate(const BranchProbeCost& normal,
                                 const BranchProbeCost& flip) {
@@ -1016,6 +1068,7 @@ int run(int argc, char** argv) {
     bool show_stats=false, trace_trail=false, compare_flip=false,x46_shadow=false;
     int compare_at=0,x46_conflicts=0;
     double x46_probe_ms=1.5;
+    std::string x46_model_path;
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -1028,8 +1081,9 @@ int run(int argc, char** argv) {
         else if (opt=="--x46-conflicts" && i+1<argc) x46_conflicts=std::stoi(argv[++i]);
         else if (opt=="--x46-probe-ms" && i+1<argc) x46_probe_ms=std::stod(argv[++i]);
         else if (opt=="--x46-shadow") x46_shadow=true;
+        else if (opt=="--x46-model" && i+1<argc) x46_model_path=argv[++i];
         else if (opt=="--help") {
-            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow]\n";
+            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE]\n";
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -1041,6 +1095,7 @@ int run(int argc, char** argv) {
     if (compare_flip && compare_at==0)throw std::runtime_error("--flip-branch requires --branch-at");
     if(x46_conflicts>0 && (compare_at<=0 || compare_flip))
         throw std::runtime_error("X46 short probes require --branch-at and no --flip-branch");
+    if(!x46_model_path.empty() && x46_conflicts==0)throw std::runtime_error("--x46-model requires --x46-conflicts");
     if(x46_shadow && x46_conflicts==0)
         throw std::runtime_error("--x46-shadow requires --x46-conflicts");
     if (compare_at<0 || compare_at>100000)throw std::runtime_error("invalid --branch-at");
@@ -1071,6 +1126,7 @@ int run(int argc, char** argv) {
             if (trace_trail && declared_vars>18) throw std::runtime_error("--trace-trail only supported for at most 18 variables");
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
+            if(!x46_model_path.empty())solver->loadX46CostModel(x46_model_path);
             continue;
         }
         if (!solver) throw std::runtime_error("missing DIMACS header");
