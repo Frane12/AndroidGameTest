@@ -1,0 +1,207 @@
+name: DRNAS X4.3 native 3000 CNF two sequential learning cycles
+on:
+  push:
+    branches: [experiment/drnas-x43-two-pass-3000-20261113]
+    paths:
+      - research/drnas_x43_two_cycle.py
+      - tests/test_x43_two_cycle.py
+      - .github/workflows/drnas-x43-two-cycle-3000.yml
+      - README_X43.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-x43-two-cycle-3000-one-workflow
+  cancel-in-progress: true
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone native DRNAS X3 and X4.1, no APK
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+          { git rev-parse HEAD; g++ --version | head -1; } > x43_versions.txt
+      - name: Validate native witnesses and forbid holdout leakage
+        run: |
+          set -euo pipefail
+          python3 tests/test_x43_two_cycle.py
+      - name: Freeze 3000 exactly distinct SHA before cycle 1
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x43_two_cycle.py freeze | tee x43_manifest.log
+          test "$(wc -l < drnas_x43_results/frozen_manifest.json)" -eq 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x43-frozen-3000-manifest
+          retention-days: 21
+          path: |
+            x43_manifest_sha.txt
+            x43_manifest.log
+            x43_versions.txt
+            drnas_x43_results/frozen_manifest.json
+  cycle1:
+    needs: freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x43-frozen-3000-manifest
+          path: .
+      - name: Compile independent DRNAS X4.1 and X3
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+      - name: Cycle 1 - learn from EXACT frozen sources, trace and paired controls
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X43_C1_SHARD_${{ matrix.shard }}_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x43_two_cycle.py cycle1 --shard ${{ matrix.shard }} --shards 12 --cap 3 --manifest-sha "$(cat x43_manifest_sha.txt)" | tee x43_cycle1.log
+      - name: Compact source/phase1 artifact
+        if: always()
+        run: |
+          mkdir -p x43_stage
+          cp -f drnas_x43_results/cycle1_${{ matrix.shard }}/report.json x43_stage/report.json 2>/dev/null || true
+          cp -f drnas_x43_results/cycle1_${{ matrix.shard }}/trials.jsonl x43_stage/trials.jsonl 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x43-cycle1-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x43_stage/
+  learn_and_freeze:
+    needs: cycle1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x43-cycle1-*
+          path: x43_cycle1_downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x43-frozen-3000-manifest
+          path: .
+      - name: Fit global source-only router on TRAIN; select threshold on VALIDATION
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x43_two_cycle.py fit --cycle1-dir x43_cycle1_downloads --model-dir x43_model --manifest-sha "$(cat x43_manifest_sha.txt)" | tee x43_model_frozen.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x43-frozen-trained-policy
+          retention-days: 21
+          path: |
+            x43_model/model.json
+            x43_model/memo.jsonl
+            x43_model_frozen.log
+  cycle2:
+    needs: learn_and_freeze
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x43-frozen-trained-policy
+          path: .
+      - name: Compile standalone native reference and adaptive cores
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x3.cpp -o build/drnas-x3
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o build/drnas-x41
+      - name: Cycle 2 - SAME 3000 SHA, rotated controls, frozen learned route, explicit SHA memo arm
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X43_C2_SHARD_${{ matrix.shard }}_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x43_two_cycle.py cycle2 --shard ${{ matrix.shard }} --shards 12 --cap 3 --model-dir x43_model | tee x43_cycle2.log
+      - name: Compact paired results only (no large CNF/trace uploads)
+        if: always()
+        run: |
+          mkdir -p x43_stage
+          cp -f drnas_x43_results/cycle2_${{ matrix.shard }}/report.json x43_stage/report.json 2>/dev/null || true
+          cp -f drnas_x43_results/cycle2_${{ matrix.shard }}/trials.jsonl x43_stage/trials.jsonl 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x43-cycle2-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x43_stage/
+  final_report:
+    needs: cycle2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x43-cycle1-*
+          path: x43_cycle1_downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x43-cycle2-*
+          path: x43_cycle2_downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: x43-frozen-trained-policy
+          path: .
+      - name: Independently audit exact 3000 source SHA pairings, matched repeated arms and holdout isolation
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x43_two_cycle.py finish --cycle1-dir x43_cycle1_downloads --cycle2-dir x43_cycle2_downloads --model-dir x43_model --out x43_final | tee x43_final.log
+      - name: Publish verified PAR2 and solved comparisons
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('x43_final/report.json'))
+          lines=['## DRNAS X4.3 — 3000 identical SHA, full two-cycle native test','',
+            '**Generated planted SAT CNFs**, not authentic SAT competition originals. First cycle trained a global source-only router on TRAIN families; its threshold was picked on VALIDATION. Second cycle uses the **exact same CNFs**, so same-source replay is not unseen evaluation.','',
+            '| Split | Arm | SAT solved | Verified PAR2 (s) | Total E2E (s) |',
+            '|---|---|---:|---:|---:|']
+          for split,v in r['split_results'].items():
+            for key in ('cycle1_core','cycle1_adaptive','cycle1_trace','cycle2_core','cycle2_adaptive','cycle2_learned','cycle2_memo_same_SHA'):
+              x=v[key]
+              lines.append(f"| {split} | {key} | {x['SAT_verified']}/{x['sources']} | {x['PAR2_s']:.3f} | {x['total_E2E_s']:.3f} |")
+            lines.append(f"- {split}: learned choices {v['learned_choices']}, trace rows {v['trace_samples']}, labeled {v['future_labeled_trace_samples']}")
+          lines.extend(['',f"Frozen router: **{r['model']['policy']}**",'',
+            '**Interpretation:** compare cycle2 learned to cycle2 controls (matched CPU and SHA). Cycle1 vs cycle2 baseline detects ordinary repeat/warm-up effects. SHA-memo arm is an intentionally leaky reference, not generalization. Training cost not amortized by single re-run.'])
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+            with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x43-3000-two-cycle-final
+          retention-days: 21
+          path: |
+            x43_final/report.json
+            x43_final/paired_trials.jsonl
+            x43_final.log
