@@ -1,0 +1,114 @@
+name: DRNAS GATE REAL3 diagnosis unchanged binaries 5s versus 30s
+on:
+  push:
+    branches: [experiment/drnas-gate-real3-diagnosis-30s-20261113]
+    paths:
+      - research/gate_real3_diagnosis.py
+      - .github/workflows/drnas-gate-real3-diagnosis.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gate-real3-diagnosis-30s
+  cancel-in-progress: false
+jobs:
+  freeze_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          github-token: ${{ github.token }}
+          name: gate-real36-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          github-token: ${{ github.token }}
+          name: gate-real36-native
+          path: .
+      - name: Restore original files and immutable binaries; no recompilation or retuning
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 -m py_compile research/gate_real3_diagnosis.py
+          python3 research/gate_real3_diagnosis.py selftest
+          python3 -u research/gate_real3_diagnosis.py freeze | tee real3_freeze.log
+          cp real3_freeze.log build/REAL36_SHA256SUMS build/real36_versions.txt real3_frozen/
+          tar -czf real3_context.tgz real3_frozen real36_frozen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-real3-context
+          retention-days: 21
+          path: real3_context.tgz
+  paired:
+    needs: freeze_audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real3-context
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          github-token: ${{ github.token }}
+          name: gate-real36-native
+          path: .
+      - name: Check frozen binaries and run one formula-repeat pair on one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf real3_context.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          echo "REAL3_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/gate_real3_diagnosis.py shard --shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real3-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: real3_stage/${{ matrix.shard }}/
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real3-context
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-real3-[0-9]*
+          path: real3_downloads
+          merge-multiple: false
+      - name: Audit all 126 records and publish cap-specific paired diagnostics
+        run: |
+          set -euo pipefail
+          tar -xzf real3_context.tgz
+          python3 -u research/gate_real3_diagnosis.py finish | tee real3_final.log
+          cp real3_frozen/manifest.json real3_frozen/protocol.json real3_frozen/REAL36_SHA256SUMS real3_frozen/real36_versions.txt real3_final/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real3-diagnosis-final
+          retention-days: 21
+          path: |
+            real3_final/
+            real3_final.log
