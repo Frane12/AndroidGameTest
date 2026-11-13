@@ -74,7 +74,7 @@ def bootstrap(data,rule,reps=3000):
             "independent_sources":len(keys)}
 
 def fit(args):
-    m, splits=L.checked_manifest(args.split_manifest)
+    m, splits=L.checked_manifest(argparse.Namespace(split_manifest=args.split_manifest))
     rows,manifests=L.load_trials(args.train_data)
     if any(x["stage"]!="train" or x["cap"]!=CAP_S or
            tuple(x["arms"])!=L.TRAIN_ARMS or x["repeats"]!=1 for x in manifests):
