@@ -1,0 +1,68 @@
+name: DRNAS COOP1 exact Walsh affine CDCL synthetic
+on:
+  push:
+    branches: [experiment/drnas-coop1-synthetic-20261113]
+    paths:
+      - '.github/workflows/drnas-coop1-synthetic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-coop1-synthetic
+  cancel-in-progress: false
+jobs:
+  synthetic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile exact frozen baseline and experimental build
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/drat-trim.c -o build/drat-trim.c
+          gcc -O2 build/drat-trim.c -o build/drat-trim
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x5.cpp -o build/drnas-x5
+          python3 research/drnas_coop1/build.py | tee build/build.log
+          git rev-parse HEAD > build/GIT_COMMIT
+          g++ --version | head -n1 > build/COMPILER
+          sha256sum build/drnas-coop1 build/drnas-x5 build/drat-trim > build/SHA256SUMS
+      - name: Independent truth table and proof checks
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_drnas_coop1.py | tee build/safety.log
+      - name: Paired 42 larger synthetic formulas x 2 x 5 arms on one logical CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_coop1/benchmark.py --cap 1 --repeats 2 --scale stress | tee build/benchmark.log
+      - name: Results summary
+        run: |
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open('coop1_results/report.json'))
+          assert d['status']=='COMPLETE'
+          assert all(v['attempts']==84 for v in d['overall'].values())
+          lines=['## DRNAS COOP1 synthetic mechanism test','',
+                 '42 CNFs, 7 families, 2 repetitions, 1 s cap. SAT models and UNSAT proofs independently checked. Synthetic results do not establish real-formula speedup.','',
+                 '| Arm | Verified within cap | PAR2 sum (s) | Added lemmas | Branch changes |',
+                 '|---|---:|---:|---:|---:|']
+          for k,v in d['overall'].items():
+              lines.append(f"| {k} | {v['accepted']}/84 | {v['PAR2_s']:.4f} | {v['lemmas']} | {v['applied_hints']} |")
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-coop1-synthetic-build-and-results
+          retention-days: 60
+          path: |
+            build/drnas-coop1
+            build/drnas_coop1.cpp
+            build/drnas-x5
+            build/drat-trim
+            build/*.json
+            build/*.log
+            build/GIT_COMMIT
+            build/COMPILER
+            build/SHA256SUMS
+            coop1_results/
