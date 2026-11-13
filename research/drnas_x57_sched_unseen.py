@@ -81,8 +81,8 @@ def select_zip_members(members,old):
     # Scheduling-adjacent fallback fills missing slots from genuinely named
     # scheduling groups. If too few exist, reserve remaining slots for controls;
     # the manifest reports true counts and never labels controls as scheduling.
-    extra=sorted((e,cat) for cat,v in schedule.items() for e in v
-                 if e.filename not in chosen_names)
+    extra=[(e,cat) for cat,v in schedule.items() for e in v
+           if e.filename not in chosen_names]
     extra.sort(key=lambda t:(h((str(SELECTION_SEED)+t[0].filename).encode()),t[0].filename))
     for e,cat in extra:
         if len(chosen)>=12:break
