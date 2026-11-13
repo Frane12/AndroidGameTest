@@ -52,7 +52,6 @@ def predict(model,features):
 def choose(model,features):
     if features is None:return False
     if len(features)!=NF:return False
-    if len(features)!=NF:return False
     score,ood=predict(model,features)
     return not ood and score>model['threshold']
 
