@@ -57,13 +57,13 @@ rep('''        ++coop5_recommend_;
         ++coop52_strong_accepted_;
         if(coop51_hybrid_ && depth==320)++coop51_deep_advice_;''')
 rep(r'''                 <<",\"cadence_final\":"<<coop5_gap_
-                 <<"}\\n";''',
+                 <<"}\n";''',
 r'''                 <<",\"cadence_final\":"<<coop5_gap_
                  <<",\"quality_unmatched_rejected\":"<<coop52_unmatched_rejected_
                  <<",\"quality_strong_rejected\":"<<coop52_strong_rejected_
                  <<",\"quality_accepted\":"<<coop52_strong_accepted_
                  <<",\"quality_conflict_rejected\":"<<coop52_conflict_rejected_
-                 <<"}\\n";''')
+                 <<"}\n";''')
 rep('''    std::string input, mode="trace", trace_file,coop_mode="off",coop4_policy="keep",coop5_mode="off";''',
 '''    std::string input, mode="trace", trace_file,coop_mode="off",coop4_policy="keep",coop5_mode="off";
     double coop52_budget_ms=25.0;''')
