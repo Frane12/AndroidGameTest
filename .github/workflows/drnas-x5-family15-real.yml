@@ -1,0 +1,146 @@
+name: DRNAS X5 REAL FAMILY15 five families 15s telemetry
+on:
+  push:
+    branches: [experiment/drnas-x5-family15-real-20261113]
+    paths:
+      - .github/workflows/drnas-x5-family15-real.yml
+      - research/drnas_x5_family15.py
+      - research/drnas_x5_telemetry.py
+      - tests/test_x5_telemetry.py
+      - experiments/drnas_x5/family15_sources.json
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x5-family15-real
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  LC_ALL: C
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Check frozen source and build separate telemetry binary
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          python3 -m pip install remotezip==0.12.3
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 research/drnas_x5_telemetry.py
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror build/x5-telemetry.cpp -o build/x5-telemetry
+          python3 -u tests/test_x5_telemetry.py | tee telemetry_selftest.log
+          sha256sum build/x5-telemetry build/x5-telemetry.cpp > build/telemetry_sha256.txt
+      - name: Download precisely the 75 precommitted original CNFs and verify every SHA
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_family15.py prepare --out family15_sources | tee family15_sources.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-family15-inputs
+          retention-days: 30
+          path: |
+            family15_sources/
+            family15_sources.log
+            telemetry_selftest.log
+            build/x5-telemetry
+            build/x5-telemetry.cpp
+            build/telemetry_sha256.txt
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-family15-inputs
+          path: .
+      - name: Verify reference identity on each runner
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c build/telemetry_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+      - name: Fifteen original formulas in one family with two serial paired repetitions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_family15.py bench \
+            --sources family15_sources --out family15_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --cap 15 | tee family15_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-family15-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            family15_${{ matrix.shard }}/
+            family15_${{ matrix.shard }}.log
+  report:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x5-family15-shard-*
+          path: results
+      - name: Require all 900 trials and report independent proof checked PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_family15.py report --root results --out family15_report.json | tee family15_report.log
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('family15_report.json'))
+          lines=['# X5 FAMILY15: original SAT2024', '', '75 original formulas, 15 per family, 15 s E2E cap, 2 repeats, 900 trials.',
+            'X5_DIAG is a separately timed observational arm; X5_NO_MIN is the unchanged performance candidate.', '']
+          for name,section in [('overall',r['overall']),*r['by_family'].items()]:
+              lines += [f'## {name}', '', '| Arm | Verified solved | PAR2 s |', '|---|---:|---:|']
+              for arm,v in section['totals'].items():
+                  lines.append(f"| {arm} | {v['solved']}/{v['trials']} | {v['PAR2_s']:.4f} |")
+              lines += ['', 'Diagnostic counters at the last flushed observations:', json.dumps(section['diagnostic_partial_totals']), '']
+          open(os.environ['GITHUB_STEP_SUMMARY'],'w').write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-family15-final
+          retention-days: 30
+          path: |
+            family15_report.json
+            family15_report.log
