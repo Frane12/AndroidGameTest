@@ -1,0 +1,361 @@
+name: DRNAS REAL2 COMPLETE CNF cumulative six-hour refresh
+on:
+  push:
+    branches: [experiment/drnas-real-learn2-sixhour-20261113]
+    paths:
+      - .github/workflows/drnas-real-learn2.yml
+      - research/drnas_real_learn2_material.py
+      - research/drnas_real_learn2_fit.py
+      - research/drnas_real2_refresh_nonce.json
+      - tests/test_drnas_real_learn2.py
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: drnas-real2-guarded-serial
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  REAL_CAP: '15'
+  REAL_COUNT: '320'
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Pin references, compile native engine, test full-source learning contracts
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q remotezip
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x52.cpp -o build/drnas-x52
+          python3 -m py_compile research/drnas_real_learn2_material.py research/drnas_real_learn2_fit.py
+          python3 -m unittest discover -s tests -p test_drnas_real_learn1.py -v
+          python3 -m unittest discover -s tests -p test_drnas_real_learn2.py -v
+          python3 -u tests/test_x52.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-native
+          retention-days: 12
+          path: build/drnas-x52
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn2-data-20261113
+          path: previous
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn1-data-20261113
+          path: real1_memory
+          persist-credentials: false
+      - name: Acquire complete 2023+2024 originals, semantic dedup, and permanent split locks
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q remotezip
+          python3 -u research/drnas_real_learn2_material.py \
+            --count "$REAL_COUNT" --shards 8 --max-raw-bytes 650000000 \
+            --state previous/research/memory/real_learn2/catalog.json \
+            --real1-splits real1_memory/research/memory/real_learn1/runs/43400089150/splits.json \
+            --out prepared | tee real2_material.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('prepared/material_report.json').read_text())
+          assert d['selected']>=160
+          assert min(d['split_counts'].values())>=10
+          print("REAL2_SOURCE_LOCK",d)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-meta
+          retention-days: 12
+          path: |
+            prepared/real2_splits.json
+            prepared/catalog_delta.json
+            prepared/material_report.json
+            real2_material.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-0
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_0/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-1
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_1/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-2
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_2/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-3
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_3/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-4
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_4/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-5
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_5/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-6
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_6/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-input-7
+          retention-days: 12
+          compression-level: 4
+          path: prepared/shard_7/
+  train:
+    needs: [build, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-native
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-input-${{ matrix.shard }}
+          path: input
+      - name: Full native run: complete CNFs, SAT witnesses and independent UNSAT DRAT
+        run: |
+          set -euo pipefail
+          cp native/drnas-x52 build/drnas-x52
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_real_learn1.py bench --mode train \
+            --sources input/real2_source --split-manifest input/real2_splits.json \
+            --out real2_train_${{ matrix.shard }} --shard ${{ matrix.shard }} --shards 8 \
+            --cap "$REAL_CAP" --repeats 1 | tee train_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real2-train-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            real2_train_${{ matrix.shard }}/
+            train_${{ matrix.shard }}.log
+  fit:
+    needs: [train]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn2-data-20261113
+          path: previous
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-meta
+          path: meta
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real2-train-*
+          path: training
+      - name: Fit cumulative TRAIN-only policy and gate once against fresh VALIDATION
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_real_learn2_fit.py \
+            --split-manifest meta/real2_splits.json \
+            --train-data training \
+            --prior previous/research/memory/real_learn2/runs \
+            --catalog previous/research/memory/real_learn2/catalog.json \
+            --engine-source src/drnas_x52.cpp \
+            --out fit/real2_policy.json | tee fit.log
+          sha256sum fit/real2_policy.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-frozen-policy
+          retention-days: 60
+          path: |
+            fit/
+            fit.log
+  holdout:
+    needs: [build, prepare, fit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-native
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-input-${{ matrix.shard }}
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-frozen-policy
+          path: frozen
+      - name: Lock frozen policy and compare with Kissat, CaDiCaL and all native references
+        run: |
+          set -euo pipefail
+          cp native/drnas-x52 build/drnas-x52
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_real_learn1.py bench --mode holdout \
+            --sources input/real2_source --split-manifest input/real2_splits.json \
+            --model frozen/fit/real2_policy.json \
+            --out real2_holdout_${{ matrix.shard }} --shard ${{ matrix.shard }} --shards 8 \
+            --cap "$REAL_CAP" --repeats 2 | tee holdout_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real2-holdout-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            real2_holdout_${{ matrix.shard }}/
+            holdout_${{ matrix.shard }}.log
+  report:
+    needs: [holdout]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-meta
+          path: meta
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-frozen-policy
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real2-holdout-*
+          path: holdout
+      - name: Report all source-clustered paired 95 percent intervals and reject regressions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_real_learn1.py report \
+            --split-manifest meta/real2_splits.json \
+            --model frozen/fit/real2_policy.json \
+            --holdout-data holdout --out real2_final.json | tee real2_final.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real2-final
+          retention-days: 90
+          path: |
+            real2_final.json
+            real2_final.log
+  persist:
+    needs: [report]
+    if: ${{ needs.report.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn2-data-20261113
+          path: durable
+          persist-credentials: true
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn1-data-20261113
+          path: original
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-meta
+          path: meta
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-frozen-policy
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: real2-final
+          path: outcome
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real2-train-*
+          path: training
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real2-holdout-*
+          path: holdout
+      - name: Append fresh source proof evidence, protect holdout, and publish cumulative counters
+        env:
+          REAL_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_real_learn2_persist.py \
+            --root durable/research/memory/real_learn2 \
+            --run-id "$REAL_RUN" \
+            --delta meta/catalog_delta.json --material meta/material_report.json \
+            --splits meta/real2_splits.json \
+            --policy frozen/fit/real2_policy.json --report outcome/real2_final.json \
+            --train-dir training --holdout-dir holdout \
+            --old-splits original/research/memory/real_learn1/runs/43400089150/splits.json \
+            --engine-source src/drnas_x52.cpp
+          git -C durable config user.name 'github-actions[bot]'
+          git -C durable config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C durable add research/memory/real_learn2
+          git -C durable commit -m "memory(real2): append new full-CNF verified train evidence and sealed holdout"
+          git -C durable push origin HEAD:experiment/drnas-real-learn2-data-20261113
+          echo REAL2_DURABLE_STORED
