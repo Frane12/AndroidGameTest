@@ -1,0 +1,90 @@
+name: DRNAS COOP1 original Simon XOR application test
+on:
+  push:
+    branches: [experiment/drnas-coop1-real-xor-20261113]
+    paths: [.github/workflows/drnas-coop1-real-xor.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-coop1-real-xor
+  cancel-in-progress: false
+jobs:
+  original_crypto:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile unchanged frozen X5 and COOP1 with reference solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical cryptominisat
+          mkdir -p build
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/drat-trim.c -o build/drat-trim.c
+          gcc -O2 build/drat-trim.c -o build/drat-trim
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x5.cpp -o build/drnas-x5
+          python3 research/drnas_coop1/build.py | tee build/build.log
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/coop1-kissat
+          git -C /tmp/coop1-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/coop1-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/coop1-kissat && ./configure && make -j2 > /tmp/coop1-kissat-build.log)
+          cp /tmp/coop1-kissat/build/kissat build/kissat
+          cp /usr/bin/cadical build/cadical
+          cp /usr/bin/cryptominisat5 build/cryptominisat5
+          git rev-parse HEAD > build/GIT_COMMIT
+          g++ --version > build/COMPILER
+          dpkg-query -W cadical cryptominisat > build/REFERENCE_PACKAGES
+          build/kissat --version > build/KISSAT_VERSION
+          sha256sum build/drnas-coop1 build/drnas-x5 build/drat-trim build/kissat build/cadical build/cryptominisat5 > build/SHA256SUMS
+          python3 -m venv .cooprealenv
+          .cooprealenv/bin/pip install remotezip==0.12.3
+          .cooprealenv/bin/pip freeze > build/python-packages.txt
+      - name: Original CNFs, proof preflight, serial paired comparison on one CPU
+        run: |
+          set -euo pipefail
+          .cooprealenv/bin/python -m py_compile research/drnas_coop1_real/benchmark.py
+          .cooprealenv/bin/python -u research/drnas_coop1_real/benchmark.py --cap 5 --repeats 3 | tee build/real-benchmark.log
+          grep -q '^COOP1_REAL_FINAL ' build/real-benchmark.log
+      - name: Summarize active tests separately from size-gate controls
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path('coop1_real_results/report.json')
+          if not p.exists():
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('Benchmark incomplete: inspect logs and retained artifact. No speedup claim.\n')
+          else:
+              d=json.loads(p.read_text());m=json.load(open('coop1_real_results/manifest.json'))
+              lines=['## Original application CNFs: COOP1 real XOR diagnostic','',
+              'Original SAT Competition 2024 bytes, SHA256 recorded. All Simon r16–r21 members available in the archive; 3 repetitions, 5 s cap. Four large Ascon/MD5/AES controls: 1 repetition, 1 s cap, module size-gated off. Each solver uses one logical CPU. Cold processes; no cross-instance training. SAT models and UNSAT proofs checked.','',
+              'Development test of reduced-round cipher encodings; not blind holdout, full-strength cryptanalysis, or a general industrial speedup result. Timings include startup, parsing, solving and proof emission. Independent checking is separate.','']
+              for group,arms in d['cohorts'].items():
+                  lines += ['### '+group,'','| Arm | Verified within cap | PAR2 sum (s) | Added lemmas |','|---|---:|---:|---:|']
+                  for k,v in arms.items():lines.append(f"| {k} | {v['accepted']}/{v['attempts']} | {v['PAR2_s']:.6f} | {v['lemmas']} |")
+                  lines.append('')
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-coop1-original-real-xor
+          retention-days: 60
+          path: |
+            build/drnas-coop1
+            build/drnas_coop1.cpp
+            build/drnas-x5
+            build/drat-trim
+            build/kissat
+            build/cadical
+            build/cryptominisat5
+            build/*.log
+            build/*.txt
+            build/GIT_COMMIT
+            build/COMPILER
+            build/REFERENCE_PACKAGES
+            build/KISSAT_VERSION
+            build/SHA256SUMS
+            coop1_real_results/
