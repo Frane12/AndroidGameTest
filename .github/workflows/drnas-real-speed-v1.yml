@@ -1,0 +1,271 @@
+name: DRNAS REAL-SPEED v1 six-hour monitored development
+
+on:
+  push:
+    branches: [experiment/drnas-real-speed-v1-sixhour-20261113]
+    paths:
+      - .github/workflows/drnas-real-speed-v1.yml
+      - research/drnas_real_speed_v1.py
+      - tests/test_drnas_real_speed_v1.py
+      - research/real_speed_v1/trigger.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: drnas-real-speed-v1-guarded
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  REAL_SPEED_COUNT: '160'
+  REAL_SPEED_CAP: '5'
+  REAL_SPEED_VERIFY_CAP: '10'
+  REAL_SPEED_REPEATS: '2'
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: 01 / Lock SHA, compile candidate and verify research contracts
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x52.cpp -o build/drnas-x52
+          python3 -m py_compile research/drnas_real_speed_v1.py research/drnas_real_learn2_material.py
+          python3 -m unittest discover -s tests -p test_drnas_real_speed_v1.py -v
+          python3 -u research/drnas_real_speed_v1.py freeze \
+            --out freeze/freeze.json --cap "$REAL_SPEED_CAP" \
+            --verify-cap "$REAL_SPEED_VERIFY_CAP" --repeats "$REAL_SPEED_REPEATS"
+          echo 'SPEED_STAGE preflight VERIFIED' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-speed-v1-frozen
+          retention-days: 90
+          path: |
+            freeze/freeze.json
+            build/drnas-x52
+
+  material:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-speed-v1-data-20261113
+          path: speed_prior
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn2-data-20261113
+          path: real2_prior
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn1-data-20261113
+          path: real1_prior
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material-audit
+          run-id: 43405148962
+          github-token: ${{ github.token }}
+          path: material2_audit
+      - name: 02 / Merge previous identities and acquire new original CNFs
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q remotezip
+          python3 -u research/drnas_real_speed_v1.py merge-state \
+            --real2-state real2_prior/research/memory/real_learn2/catalog.json \
+            --speed-state speed_prior/research/memory/real_speed_v1/catalog.json \
+            --out combined_state.json
+          python3 -u research/drnas_real_learn2_material.py \
+            --count "$REAL_SPEED_COUNT" --shards 8 --max-raw-bytes 450000000 \
+            --state combined_state.json \
+            --real1-splits real1_prior/research/memory/real_learn1/runs/43400089150/splits.json \
+            --previous-material2 material2_audit/material/manifest.json \
+            --out prepared | tee speed_material.log
+          python3 -u research/drnas_real_speed_v1.py stage \
+            --prepared prepared --out dev | tee speed_stage.log
+          echo 'SPEED_STAGE material LOCKED; holdout CNF excluded from benchmark artifact' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-speed-v1-meta
+          retention-days: 90
+          path: |
+            prepared/real2_splits.json
+            prepared/catalog_delta.json
+            prepared/material_report.json
+            dev/manifest.json
+            combined_state.json
+            speed_material.log
+            speed_stage.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real-speed-v1-dev-input
+          retention-days: 30
+          compression-level: 4
+          path: dev/
+
+  paired:
+    needs: [preflight, material]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real-speed-v1-frozen
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: real-speed-v1-dev-input
+          path: dev
+      - name: 03 / Shard ${{ matrix.shard }} serial single-CPU paired verified real SAT
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptominisat
+          chmod +x build/*
+          cp frozen/build/drnas-x52 build/drnas-x52
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_real_speed_v1.py bench \
+            --input dev --freeze frozen/freeze/freeze.json \
+            --cap "$REAL_SPEED_CAP" --verify-cap "$REAL_SPEED_VERIFY_CAP" \
+            --repeats "$REAL_SPEED_REPEATS" \
+            --shard ${{ matrix.shard }} --shards 8 \
+            --out results/shard_${{ matrix.shard }} \
+            | tee shard_${{ matrix.shard }}.log
+          echo 'SPEED_STAGE paired shard=${{ matrix.shard }} VERIFIED' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-speed-v1-shard-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            results/shard_${{ matrix.shard }}/
+            shard_${{ matrix.shard }}.log
+
+  report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real-speed-v1-dev-input
+          path: dev
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real-speed-v1-shard-*
+          path: results
+      - name: 04 / Audit all paired trials and family-cluster PAR2 intervals
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_real_speed_v1.py report \
+            --input dev --results results --out final/report.json \
+            | tee speed_report.log
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open("final/report.json"))
+          lines=["## REAL-SPEED v1 DEVELOPMENT ONLY","",
+                 "| Solver | Verified | Distinct | SAT | UNSAT | PAR2 (s) |",
+                 "|---|---:|---:|---:|---:|---:|"]
+          for a,v in r["totals"].items():
+              lines.append(f"| {a} | {v['verified']} | {v['distinct_verified']} | {v['SAT']} | {v['UNSAT']} | {v['PAR2_s']:.3f} |")
+          lines+=["","Holdout is sealed, not executed. No production promotion."]
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:out.write("\n".join(lines)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-speed-v1-final
+          retention-days: 90
+          path: |
+            final/report.json
+            speed_report.log
+
+  persist:
+    needs: [material, report]
+    if: ${{ needs.report.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-speed-v1-data-20261113
+          path: durable
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: real-speed-v1-meta
+          path: meta
+      - uses: actions/download-artifact@v4
+        with:
+          name: real-speed-v1-final
+          path: outcome
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real-speed-v1-shard-*
+          path: results
+      - name: 05 / Append audited results to data branch, never main
+        env:
+          SPEED_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          cp meta/dev/manifest.json input/manifest.json
+          python3 -u research/drnas_real_speed_v1.py persist \
+            --root durable/research/memory/real_speed_v1 --run-id "$SPEED_RUN" \
+            --catalog-delta meta/prepared/catalog_delta.json \
+            --material meta/prepared/material_report.json \
+            --splits meta/prepared/real2_splits.json \
+            --report outcome/final/report.json \
+            --results results --input input | tee speed_persist.log
+          git -C durable config user.name 'github-actions[bot]'
+          git -C durable config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C durable add research/memory/real_speed_v1
+          git -C durable commit -m "memory(real-speed): archive verified development cycle $SPEED_RUN"
+          git -C durable push origin HEAD:experiment/drnas-real-speed-v1-data-20261113
+          echo 'SPEED_STAGE persist SUCCESS; main untouched; blind holdout sealed' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-speed-v1-persistence-log
+          retention-days: 90
+          path: speed_persist.log
