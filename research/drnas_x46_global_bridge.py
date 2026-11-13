@@ -109,7 +109,7 @@ def stage(args):
             report["heldout_formula_outcomes_not_seen"] and report["train_sources"]>=50
             and report["validation_sources"]>=15 and report["validation_score"]["nonflat_rows"]>30):
         raise RuntimeError("X46 training protocol audit failed")
-    if man["source_generation_index_offset"]!=1500000:
+    if man["source_generation_index_offset"]!=args.index_offset or not 1500000<=args.index_offset<2000000:
         raise RuntimeError("X46 source namespace drift")
     if man["frozen_learned_model_sha256"] is not None:
         raise RuntimeError("X46 training must not load another candidate on this first cycle")
@@ -122,7 +122,9 @@ def stage(args):
     manifest_sha={v["sha256"] for v in man["sources"]}
     if len(manifest_sha)!=84 or set(ids)!=manifest_sha:
         raise RuntimeError("training SHA identity does not match manifest")
-    if not all(row["verified"] for row in rows) or len(rows)!=len(man["arms"])*len(samples):
+    if (not all(row["verified"] for row in rows) or
+        len(rows)%len(man["arms"])!=0 or
+        sum(row["arm"]=="X46_8" and row["probe_triggered"] for row in rows)!=len(samples)):
         raise RuntimeError("unverified full continuation, missing matched pair, or duplicated arm")
     train={sha for sha in ids if ids[sha][0]%4!=0}
     val=manifest_sha-train
@@ -197,7 +199,8 @@ def finalize(args):
         report["distinct_original_sources"]!=112 or
         report["matched_checkpoint_pairs"]<300 or
         man["frozen_learned_model_sha256"]!=args.model_sha or
-        man["source_generation_index_offset"]!=1600000 or
+        man["source_generation_index_offset"]!=args.index_offset or
+        not 2000000<=args.index_offset<2500000 or
         len({s["sha256"] for s in man["sources"]})!=112):
         raise RuntimeError("sealed X46 holdout validation failed")
     trials=load_records(args.trials)
@@ -270,6 +273,8 @@ def main():
             for key in ("manifest","trials","report","summary"):
                 s.add_argument("--"+key,type=Path,required=True)
             s.add_argument("--model-sha",required=True)
+        if name in ("stage","finalize"):
+            s.add_argument("--index-offset",type=int,required=True)
     args=a.parse_args()
     {"stage":stage,"export":export,"finalize":finalize}[args.cmd](args)
 
