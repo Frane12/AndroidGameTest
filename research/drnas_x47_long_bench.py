@@ -169,35 +169,42 @@ def official_sources(count):
         # or exclusively huge. Do not inspect outcomes for selection.
         if len(family_pick)<count:
             raise RuntimeError(f"official archive has {len(family_pick)} eligible families, need {count}")
-        picked=[family_pick[min(len(family_pick)-1,round((j+.5)*len(family_pick)/count))]
-                for j in range(count)]
-        if len({x.filename for x in picked})!=count:
-            raise AssertionError("duplicate retrospective archive source")
+        # Predefined extra candidate reserve: keep the source selection
+        # independent of solver outcomes even when a candidate is too large,
+        # not valid DIMACS, or inaccessible through a ranged request.
+        count_candidates=min(len(family_pick),max(5*count,80))
+        picked=[family_pick[min(len(family_pick)-1,
+                 round((j+.5)*len(family_pick)/count_candidates))]
+                for j in range(count_candidates)]
         out=[]
-        for i,member in enumerate(picked):
-            data=z.read(member)
+        for member in picked:
+            if len(out)>=count:break
+            try:
+                data=z.read(member)
+            except (OSError,ValueError,EOFError) as error:
+                emit("X47_OFFICIAL_SKIP",{"entry":member.filename,
+                    "reason":"archive_range_read_failed","error":str(error)[:90]})
+                continue
             if member.filename.endswith(".xz"):data=lzma.decompress(data)
             elif member.filename.endswith(".gz"):data=gzip.decompress(data)
             elif member.filename.endswith(".bz2"):data=bz2.decompress(data)
             if not(100<=len(data)<=18000000):
-                raise RuntimeError("official source outside bounded raw file size")
-            try:data.decode("ascii")
-            except UnicodeError as e:raise RuntimeError("unexpected non-ASCII DIMACS") from e
+                continue
+            try:text=data.decode("ascii")
+            except UnicodeError:continue
             sha=hashlib.sha256(data).hexdigest()
-            # Runtime CNF parse is the real native source parser. Check
-            # DIMACS header and original model separately below.
-            text=data.decode("ascii")
             header=[line.split() for line in text.splitlines() if line.lstrip().startswith("p cnf ")]
-            if len(header)!=1 or len(header[0])!=4:
-                raise RuntimeError("invalid official DIMACS header")
-            n=int(header[0][2]);clauses=int(header[0][3])
-            if n<1 or n>30000 or clauses<1 or clauses>900000:
-                raise RuntimeError("official CNF exceeds experiment resource limits")
+            if len(header)!=1 or len(header[0])!=4:continue
+            try:n=int(header[0][2]);clauses=int(header[0][3])
+            except ValueError:continue
+            if n<1 or n>30000 or clauses<1 or clauses>900000:continue
             out.append({"kind":"official_retrospective","family":official_family(member.filename),
-                "source_id":i,"nvars":n,"nclauses":clauses,
+                "source_id":len(out),"nvars":n,"nclauses":clauses,
                 "cert":"OFFICIAL_UNSAT_UNVERIFIED","content":text,
                 "archive_path":member.filename,"archive_url":OFFICIAL_ARCHIVE,
                 "sha256":sha,"filename":f"official_{i:02d}.cnf"})
+        if len(out)<count:
+            raise RuntimeError(f"only {len(out)}/{count} official bounded sources matched, no solver outcome filtering")
         if len({x["sha256"] for x in out})!=count:
             raise AssertionError("duplicate official original SHA")
         return out
