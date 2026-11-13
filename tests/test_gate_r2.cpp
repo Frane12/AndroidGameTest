@@ -22,8 +22,11 @@ int main() {
     assert(g.state()==GateR2::State::Sleep);
     const auto switches=g.counters().switches;
     // A conflict wake cannot bypass the cost check or change state on denial.
-    assert(g.due(g.next(),1000,true));
-    assert(!g.affordable(g.next(),1000,0.01,1.0,0.01,true));
+    const auto denied_at=g.next();
+    assert(g.due(denied_at,1000,true));
+    assert(!g.affordable(denied_at,1000,0.01,1.0,0.01,true));
+    for(int offset=1;offset<=31;++offset)
+        assert(!g.due(denied_at+offset,1000,true));
     assert(g.state()==GateR2::State::Sleep);
     assert(g.counters().switches==switches);
     assert(!g.affordable(g.next(),1000,0.81,1.0,0.0,true));

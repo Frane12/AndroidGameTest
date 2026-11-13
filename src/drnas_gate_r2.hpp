@@ -23,11 +23,15 @@ public:
     bool due(int64_t decisions, int64_t conflicts, bool adaptive) {
         ++c_.calls;
         shock_pending_=adaptive && state_==State::Sleep &&
-            decisions>=last_probe_+256 && conflicts>=last_conflicts_+128;
+            decisions>=last_probe_+256 && decisions>=last_shock_check_+256 &&
+            conflicts>=last_conflicts_+128;
         if (decisions<next_ && !shock_pending_) {
             ++c_.skipped_schedule;
             return false;
         }
+        // Even a denied wake gets a refractory interval: no clock polling
+        // on every subsequent decision while an old shock remains true.
+        if (shock_pending_) last_shock_check_=decisions;
         return true;
     }
     // Predicted cost is reserved before entry. A round can exceed its estimate;
@@ -120,7 +124,7 @@ private:
     State state_=State::Check;
     Counters c_;
     bool adaptive_=true, shock_pending_=false;
-    int64_t next_=64, last_probe_=0, last_conflicts_=0;
+    int64_t next_=64, last_probe_=0, last_conflicts_=0, last_shock_check_=0;
     int state_observations_=0, sleep_stride_=512;
     double usefulness_=0.5, cost_ewma_=0.000020, max_overshoot_=0.0;
     int stride() const {
