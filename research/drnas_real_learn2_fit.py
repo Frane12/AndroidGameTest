@@ -18,7 +18,7 @@ import drnas_real_learn1 as L
 MODEL_VERSION="DRNAS-REAL-LEARN2-v1"
 CAP_S=15.0
 
-def load_prior(root, current_sources, catalog, cap):
+def load_prior(root, current_sources, catalog, cap, engine_sha=None):
     if not root or not root.exists():
         return [],0
     rows=[];sha=set();count=0
@@ -26,7 +26,7 @@ def load_prior(root, current_sources, catalog, cap):
     for path in sorted(root.glob("*/train.jsonl.gz")):
         run=path.parent
         audit=json.loads((run/"training_audit.json").read_text())
-        if audit["protocol"]!=MODEL_VERSION or audit["cap_s"]!=cap:
+        if audit["protocol"]!=MODEL_VERSION or audit["cap_s"]!=cap or (engine_sha is not None and audit.get("engine_sha")!=engine_sha):
             raise RuntimeError("incompatible prior training source")
         with gzip.open(path,"rt",encoding="utf-8") as fd:
             data=[json.loads(line) for line in fd if line.strip()]
@@ -89,7 +89,8 @@ def fit(args):
     if set(fresh_validation)!={r["sha256"] for r in splits["validation"]}:
         raise RuntimeError("validation split corrupted")
     catalog=json.loads(args.catalog.read_text()) if args.catalog and args.catalog.exists() else {"sources":[]}
-    prior_rows, cycles=load_prior(args.prior,current,catalog,CAP_S)
+    engine_sha=hashlib.sha256(args.engine_source.read_bytes()).hexdigest()
+    prior_rows, cycles=load_prior(args.prior,current,catalog,CAP_S,engine_sha)
     prior=L.source_metrics(prior_rows,"train") if prior_rows else {}
     if set(prior)&set(current_train):
         raise RuntimeError("previous/current SHA overlap")
@@ -150,4 +151,5 @@ if __name__=="__main__":
     p.add_argument("--prior",type=Path)
     p.add_argument("--catalog",type=Path)
     p.add_argument("--out",type=Path,required=True)
+    p.add_argument("--engine-source",type=Path,required=True)
     fit(p.parse_args())
