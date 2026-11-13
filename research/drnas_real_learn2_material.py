@@ -20,6 +20,7 @@ from remotezip import RemoteZip
 from drnas_x47_long_bench import OFFICIAL_ARCHIVE, official_family
 
 ARCHIVES = {
+    "historical": "https://zenodo.org/records/15125952/files/sc02to24.zip?download=1",
     "2024": OFFICIAL_ARCHIVE,
     "2023": "https://zenodo.org/records/11426992/files/sat-competition-2023-main-benchmarks.zip?download=1",
 }
@@ -103,8 +104,8 @@ def validate_complete_dimacs(raw):
     return {"nvars":n,"nclauses":m,"semantic_sha":semantic.hexdigest(),
             "n_literals":total_lits,"max_width":max_width}
 
-def prior_sets(prior_state, prior_real1):
-    seen_sha=set();seen_sem=set();family_roles={}
+def prior_sets(prior_state, prior_real1, prior_material2=None):
+    seen_sha=set();seen_sem=set();family_roles={};blocked_families=set()
     if prior_real1:
         initial=json.loads(Path(prior_real1).read_text())
         for r in initial["sources"]:
@@ -122,7 +123,14 @@ def prior_sets(prior_state, prior_real1):
             if fam in family_roles and family_roles[fam]!=role:
                 raise ValueError("cross-cycle family split leakage")
             family_roles[fam]=role
-    return seen_sha,seen_sem,family_roles
+    if prior_material2 and Path(prior_material2).is_file():
+        material=json.loads(Path(prior_material2).read_text())
+        for r in material.get("sources",[]):
+            seen_sha.add(r["sha256"])
+            # Older MATERIAL2 canonical identity uses a different digest schema.
+            if r.get("archive_path"):
+                blocked_families.add(official_family(r["archive_path"]))
+    return seen_sha,seen_sem,family_roles,blocked_families
 
 def order_entries(items):
     # Family round robin, small first inside each family; deterministic.
@@ -159,6 +167,8 @@ def select(args):
                 if not 20<=e.file_size<=4_000_000:
                     continue
                 family=official_family(name)
+                if family in blocked:
+                    continue
                 role=split_for_family(family,permanent)
                 raw_items.append({"year":year,"name":name,"zip_size":e.file_size,
                                   "family":family,"split":role,"tier":tier(e.file_size),
@@ -270,6 +280,7 @@ def main():
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--state",type=Path)
     p.add_argument("--real1-splits",type=Path)
+    p.add_argument("--previous-material2",type=Path)
     p.add_argument("--shards",type=int,default=8)
     p.add_argument("--max-raw-bytes",type=int,default=650_000_000)
     a=p.parse_args()
