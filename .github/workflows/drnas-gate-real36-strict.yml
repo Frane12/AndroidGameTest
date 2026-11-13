@@ -1,0 +1,117 @@
+name: DRNAS GATE REAL36 STRICT applications no random mixtures
+on:
+  push:
+    branches: [experiment/drnas-gate-real36-strict-20261113]
+    paths:
+      - research/gate_real36.py
+      - research/gate_real36_strict.py
+      - .github/workflows/drnas-gate-real36-strict.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-gate-real36-applications
+  cancel-in-progress: true
+jobs:
+  freeze_and_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bounded HTTP reader
+        run: python3 -m pip install requests==2.32.5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          github-token: ${{ github.token }}
+          name: gate-real36-native
+          path: .
+      - name: Reuse already audited identical native binaries without recompilation
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 -m py_compile research/gate_real36.py research/gate_real36_strict.py
+          python3 research/gate_real36.py selftest --native | tee real36_strict_audit.log
+      - name: Freeze 36 original application CNFs with conservative provenance filter
+        run: |
+          set -euo pipefail
+          python3 -u research/gate_real36_strict.py freeze | tee real36_strict_freeze.log
+          cp real36_strict_freeze.log real36_strict_audit.log build/real36_versions.txt real36_frozen/
+          git rev-parse HEAD > real36_frozen/experiment_commit.txt
+          tar -czf real36_inputs.tgz real36_frozen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-real36-inputs
+          retention-days: 21
+          path: real36_inputs.tgz
+  paired:
+    needs: freeze_and_audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real36-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          github-token: ${{ github.token }}
+          name: gate-real36-native
+          path: .
+      - name: Restore frozen original CNFs and SHA-checked native binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Seven serial arms, three repeats, original CNF answers independently checked
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "REAL36_STRICT_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/gate_real36_strict.py shard --shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real36-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: real36_results/${{ matrix.shard }}/
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gate-real36-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gate-real36-[0-9]*
+          path: real36_downloads
+          merge-multiple: false
+      - name: Verify 756 outcomes and report PAR2 per shard and family
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          python3 -u research/gate_real36_strict.py finish | tee real36_strict_final.log
+          cp real36_frozen/manifest.json real36_frozen/protocol.json real36_frozen/real36_versions.txt real36_final/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-real36-strict-final
+          retention-days: 21
+          path: |
+            real36_final/
+            real36_strict_final.log
