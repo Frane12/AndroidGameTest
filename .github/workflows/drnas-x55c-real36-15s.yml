@@ -1,0 +1,173 @@
+name: DRNAS X5.5c REAL36 15s paired CPU and BCP verification
+on:
+  push:
+    branches: [experiment/drnas-x55c-real36-15s-20261113]
+    paths:
+      - .github/workflows/drnas-x55c-real36-15s.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x55c-real36-15s-20261113
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: SHA-check archived REAL36 original CNFs and pinned reference binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Compile X54 and X55b with exactly matching optimization settings
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x54.cpp -o build/drnas-x54
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x55b.cpp -o build/drnas-x55b
+          python3 -m py_compile research/drnas_x55c_real36_bench.py research/drnas_x55b_batched_real12.py research/drnas_x55_cpu_real36.py tests/test_x55b_batched_profile.py
+          sha256sum build/drnas-x54 build/drnas-x55b build/kissat build/cadical build/drat-trim > build/X55C_BINARIES.sha256
+          git rev-parse HEAD > build/X55C_COMMIT.txt
+          g++ --version | head -1 > build/X55C_COMPILER.txt
+      - name: Exact small SAT UNSAT oracle and DRAT verification
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u tests/test_x55b_batched_profile.py | tee build/X55C_SELFTEST.log
+      - name: Freeze all 36 original SHAs and eight-arm paired protocol
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x55c_real36_bench.py freeze | tee build/X55C_FREEZE.log
+          tar -czf x55c_frozen.tgz \
+            build/drnas-x54 build/drnas-x55b build/X55C_BINARIES.sha256 \
+            build/X55C_COMMIT.txt build/X55C_COMPILER.txt build/X55C_SELFTEST.log \
+            build/X55C_FREEZE.log x55c_freeze/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x55c-frozen-binaries
+          retention-days: 21
+          path: x55c_frozen.tgz
+
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x55c-frozen-binaries
+          path: .
+      - name: Check immutable source and binary hashes on every runner
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          tar -xzf x55c_frozen.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/X55C_BINARIES.sha256
+      - name: Eight serial paired arms per original, 15s cap, one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X55C_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x55c_real36_bench.py shard --shard ${{ matrix.shard }} | tee x55c_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x55c-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x55c_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x55c-frozen-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x55c-shard-*
+          path: x55c_downloads
+          merge-multiple: false
+      - name: Validate all 576 original paired runs and independent SAT/UNSAT certifications
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x55c_frozen.tgz
+          python3 -u research/drnas_x55c_real36_bench.py finish | tee x55c_final.log
+          python3 - <<'PY'
+          import json,os
+          j=json.load(open("x55c_final/report.json"))
+          assert j["status"]=="COMPLETE"
+          assert all(v["attempts"]==72 for v in j["overall"].values())
+          out=["## DRNAS X5.5c — REAL36 15s, 576 paired runs",
+               "All 36 original SAT2024 CNFs, two repeats, eight arms. Retrospective, not new blind holdout.",
+               "", "| Solver | Verified /72 | PAR2 ↓ | Process CPU (s) | CPU propagation estimate (s) |",
+               "|---|---:|---:|---:|---:|"]
+          for arm,v in j["overall"].items():
+              estimate=v["propagate_cpu_estimate_s"] if v["sample_plausibility"] else "N/A"
+              out.append(f"| {arm} | {v['solved']} | {v['PAR2_s']:.2f} | {v['process_cpu_s']:.2f} | {estimate} |")
+          out+=["", "### Source-cluster confidence intervals"]
+          for name,v in j["comparisons"].items():
+              x=v["PAR2"]
+              out.append(f"- {name}: ΔPAR2 = {x['delta_right_minus_left']:+.4f}s; 95% CI = {x['bootstrap95']}")
+          out+=["", "CPU profiling overhead, compiler effect and rotation are separately compared. No automatic promotion."]
+          s="\n".join(out)+"\n"
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x55c-real36-15s-final
+          retention-days: 21
+          path: |
+            x55c_final/report.json
+            x55c_final/trials.jsonl
+            x55c_final.log
+            x55c_freeze/protocol.json
