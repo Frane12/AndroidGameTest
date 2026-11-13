@@ -1,0 +1,169 @@
+name: DRNAS X5.2 ORIGINAL100 learned-clause retention LBD recent pressure
+on:
+  push:
+    branches: [experiment/drnas-x52-retention-20261113]
+    paths: [.github/workflows/drnas-x52-original100.yml]
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: End-to-end solver and proof cap in seconds
+        required: true
+        default: '5'
+        type: choice
+        options: ['5', '30']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x52-original100-${{ github.ref }}-${{ inputs.cap || '5' }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Pin frozen X5 CORE and external reference binaries
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x52.cpp -o build/drnas-x52
+          python3 -m py_compile research/drnas_x52_bench.py research/drnas_x52_prepare.py research/drnas_x52_report.py tests/test_x52.py
+          sha256sum src/drnas_x52.cpp build/drnas-x52 > build/x52-identity.sha256
+      - name: Exhaustive truth-table SAT checks and independent UNSAT DRAT verification
+        run: |
+          set -euo pipefail
+          python3 -u tests/test_x52.py | tee build/test_x52.log
+          test -f build/test_x52_result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-x52-validated-candidate
+          retention-days: 30
+          path: |
+            build/drnas-x52
+            build/x52-identity.sha256
+            build/test_x52.log
+            build/test_x52_result.json
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lock 100 original SAT Competition 2024 CNFs without inspecting solver results
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip
+          python3 -u research/drnas_x52_prepare.py --count 100 --out x52_original100 | tee x52_prepare.log
+          python3 - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          root=Path("x52_original100")
+          m=json.loads((root/"source_manifest.json").read_text())
+          assert len(m["sources"])==100
+          assert len({s["sha256"] for s in m["sources"]})==100
+          assert len({s["family"] for s in m["sources"]})==100
+          assert all(hashlib.sha256((root/s["file"]).read_bytes()).hexdigest()==s["sha256"] for s in m["sources"])
+          print("X52_SOURCE_AUDIT_PASS",len(m["sources"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-x52-original100-frozen-source-bytes
+          retention-days: 30
+          path: |
+            x52_original100/
+            x52_prepare.log
+  paired:
+    needs: [build, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    env:
+      BENCH_CAP: ${{ inputs.cap || '5' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x52-validated-candidate
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x52-original100-frozen-source-bytes
+          path: input
+      - name: Check all pinned source SHA and candidate and original references
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          cp candidate/drnas-x52 build/drnas-x52
+          chmod +x build/drnas-x52
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          root=Path("input/x52_original100")
+          m=json.loads((root/"source_manifest.json").read_text())
+          assert len(m["sources"])==100
+          for s in m["sources"]:
+              assert hashlib.sha256((root/s["file"]).read_bytes()).hexdigest()==s["sha256"]
+          PY
+      - name: Matched one CPU 8 arm two repeat original CNF E2E and certified proofs
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x52_bench.py --out x52_shard_${{ matrix.shard }} --count 100 \
+            --local-sources input/x52_original100 --source-manifest input/x52_original100/source_manifest.json \
+            --shards 10 --shard ${{ matrix.shard }} --repeats 2 --cap "$BENCH_CAP" \
+            --arms CORE,X5_NO_MIN,X5,X52_LBD,X52_RECENT,X52_PRESSURE,Kissat,CaDiCaL \
+            --kissat build/kissat --cadical build/cadical \
+            | tee x52_shard_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x52-results-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            x52_shard_${{ matrix.shard }}/
+            x52_shard_${{ matrix.shard }}.log
+  report:
+    needs: [build, prepare, paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BENCH_CAP: ${{ inputs.cap || '5' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x52-results-*
+          path: x52_results
+      - name: Fail closed on missing trial shards and publish source-clustered CI
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x52_report.py --root x52_results --out x52_final.json \
+            --sources 100 --shards 10 --repeats 2 --caps "$BENCH_CAP" | tee x52_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x52-original100-final-report
+          retention-days: 30
+          path: |
+            x52_final.json
+            x52_final.log
