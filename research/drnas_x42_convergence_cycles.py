@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 
-FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3")
+FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3","community3","xor_ring","graph_k4_unsat")
 WINDOWS=((1,8),(9,16),(17,128))
 
 def emit(tag, obj):
@@ -30,7 +30,7 @@ def emit(tag, obj):
 def build_case(family,i):
     rng=random.Random(0x46020261113+100003*FAMILIES.index(family)+7919*i)
     clauses=[]
-    n=18 if family in ("sparse4","sparse3") else 12+(i%6)
+    n=18 if family in ("sparse4","sparse3","community3","xor_ring","graph_k4_unsat") else 12+(i%6)
     target=[None]+[bool(rng.randrange(2)) for _ in range(n)]
     def planted_clause(k):
         vs=rng.sample(range(1,n+1),k)
@@ -52,6 +52,46 @@ def build_case(family,i):
                 c=[x*rng.choice((-1,1)) for x in c]
                 if not any((x>0)==target[abs(x)] for x in c):c[0]*=-1
                 clauses.append(c)
+    elif family=="community3":
+        # Planted 3-SAT with distinct, weakly bridged variable communities.
+        for g in range(3):
+            group=list(range(6*g+1,6*g+7))
+            for _ in range(18):
+                vs=rng.sample(group,3)
+                clause=[v*rng.choice((-1,1)) for v in vs]
+                if not any((x>0)==target[abs(x)] for x in clause):
+                    clause[rng.randrange(3)]*=-1
+                clauses.append(clause)
+        clauses.extend(planted_clause(3) for _ in range(2*n))
+    elif family=="xor_ring":
+        # A closed overlapping parity network, encoded exactly as CNF.
+        for v in range(1,n+1):
+            vs=(v,v%n+1,(v+1)%n+1)
+            required=sum(target[x] for x in vs)%2
+            for bits in itertools.product((0,1),repeat=3):
+                if sum(bits)%2!=required:
+                    clauses.append([(-x if b else x) for x,b in zip(vs,bits)])
+        clauses.extend(planted_clause(3) for _ in range(n))
+    elif family=="graph_k4_unsat":
+        # K4 cannot be properly 3-colored. Six auxiliary variables vary the CNF.
+        target=None
+        colors=3
+        node=lambda v,k:3*v+k+1
+        for v in range(4):
+            cols=[node(v,k) for k in range(colors)]
+            clauses.append(cols)
+            for a,b in itertools.combinations(cols,2):
+                clauses.append([-a,-b])
+        for v in range(4):
+            for w in range(v+1,4):
+                for k in range(colors):clauses.append([-node(v,k),-node(w,k)])
+        aux=[None]+[bool(rng.randrange(2)) for _ in range(6)]
+        for _ in range(30):
+            vs=rng.sample(range(13,19),3)
+            clause=[v*rng.choice((-1,1)) for v in vs]
+            if not any((x>0)==aux[abs(x)-12] for x in clause):
+                clause[0]*=-1
+            clauses.append(clause)
     elif family=="planted_xor":
         for _ in range(n+4):
             vs=rng.sample(range(1,n+1),3)
@@ -117,6 +157,27 @@ def transform_model(mask,permutation):
     for original in range(1,len(permutation)):
         if mask>>(original-1)&1:
             result|=1<<(permutation[original]-1)
+    return result
+
+def cnf_digest(n,clauses):
+    content=f"p cnf {n} {len(clauses)}\n"+"".join(
+        " ".join(map(str,c))+" 0\n" for c in clauses)
+    return hashlib.sha256(content.encode()).hexdigest()
+
+def original_shas_from_prior_cycles():
+    """Recreate the *prior* 48 source CNFs' three replay SHA values.
+
+    Prior cohort used the first six families, generator indices 0..7 and
+    same permuter. Fresh instances use index >=10000 and new generator seeds.
+    """
+    result=set()
+    for family in FAMILIES[:6]:
+        for index in range(8):
+            source=build_case(family,index)
+            for cycle in range(3):
+                modified,_=permute(source["n"],source["clauses"],
+                    random.Random(9900+index*71+FAMILIES.index(family)*13+cycle*147),cycle)
+                result.add(cnf_digest(source["n"],modified))
     return result
 
 def write_dimacs(path,n,clauses):
@@ -241,21 +302,28 @@ def main():
     parser.add_argument("--per-family",type=int,default=8)
     parser.add_argument("--cycles",type=int,default=3)
     parser.add_argument("--cap",type=float,default=1.5)
+    parser.add_argument("--offset",type=int,default=0)
+    parser.add_argument("--exclude-prior",action="store_true")
     args=parser.parse_args()
-    if args.per_family<3 or args.cycles!=3 or args.cap<0.2:
+    if args.per_family<3 or args.cycles!=3 or args.cap<0.2 or args.offset<0:
         raise ValueError("expect at least 3 per family and exactly 3 search cycles")
     args.out.mkdir(parents=True,exist_ok=False)
     all_rows=[]
+    previously_used=original_shas_from_prior_cycles() if args.exclude_prior else set()
+    if args.exclude_prior and args.offset<10000:
+        raise ValueError("fresh holdout needs generator index offset >=10000")
     with tempfile.TemporaryDirectory(prefix="x42-") as td:
         root=Path(td)
         for family in FAMILIES:
-            for i in range(args.per_family):
+            for i in range(args.offset,args.offset+args.per_family):
                 case=build_case(family,i)
                 models=exact_models(case["n"],case["clauses"])
                 if case["has_planted_witness"] and not models:raise AssertionError("planted SAT missing")
-                if family=="php_unsat" and models:raise AssertionError("PHP construction not UNSAT")
+                if family in ("php_unsat","graph_k4_unsat") and models:raise AssertionError("constructed UNSAT cohort not UNSAT")
                 for cycle in range(args.cycles):
                     row=analyze_run(case,cycle,args.binary,root,args.cap,models)
+                    if row["sha256"] in previously_used:
+                        raise AssertionError("fresh source SHA repeats previous 48-case cohort")
                     all_rows.append(row)
                     emit("X42_CYCLE",{"family":family,"id":i,"cycle":cycle,
                         "status":row["status"],"transitions":row["transitions"],
@@ -292,9 +360,58 @@ def main():
     comparisons=[e for e in sat_events if e["delta_p"] is not None and e["delta_p"]!=0
                  and e["sampled_delta_satisfied"]!=0]
     agrees=sum((e["delta_p"]>0)==(e["sampled_delta_satisfied"]>0) for e in comparisons)
-    report={"protocol":"X4.2 exact small-CNF retrospective search-direction diagnostic",
+    family_summary={}
+    for family in FAMILIES:
+        selected=[r for r in all_rows if r["family"]==family]
+        direction=Counter(e["direction"] for r in selected if r["status"]=="SAT" for e in r["path"])
+        family_summary[family]={
+            "distinct_formulas":args.per_family,
+            "runs":len(selected),
+            "verified_sat":sum(r["status"]=="SAT" for r in selected),
+            "exhaustive_unsat":sum(r["status"]=="UNSAT" for r in selected),
+            "toward":direction["toward"],"away":direction["away"],"flat":direction["flat"]
+        }
+    # The cheap signal is observed AFTER an action and is NOT a before-action
+    # prediction. Bootstrap by mathematical source, not by correlated steps.
+    by_source=defaultdict(list)
+    for row in all_rows:
+        if row["status"]!="SAT":continue
+        for e in row["path"]:
+            if e["delta_p"] is not None and abs(e["delta_p"])>1e-12 and e["sampled_delta_satisfied"]!=0:
+                by_source[(row["family"],row["base_id"])].append((
+                    int((e["delta_p"]>0)==(e["sampled_delta_satisfied"]>0)),
+                    int(e["delta_p"]>0)))
+    eligible=[v for values in by_source.values() for v in values]
+    if eligible:
+        observed_agreement=sum(x[0] for x in eligible)/len(eligible)
+        always_toward=sum(x[1] for x in eligible)/len(eligible)
+        rng=random.Random(20261113)
+        source_groups=list(by_source.values())
+        differences=[]
+        for _ in range(1500):
+            sampled=[source_groups[rng.randrange(len(source_groups))] for _ in source_groups]
+            flat=[x for group in sampled for x in group]
+            differences.append((sum(x[0] for x in flat)-sum(x[1] for x in flat))/len(flat))
+        differences.sort()
+        signal_audit={
+            "eligible_nonflat_events":len(eligible),
+            "post_action_proxy_accuracy":round(observed_agreement,5),
+            "always_toward_accuracy":round(always_toward,5),
+            "paired_difference_proxy_minus_naive":round(observed_agreement-always_toward,5),
+            "formula_cluster_bootstrap_95pct_difference":[round(differences[37],5),round(differences[1462],5)],
+            "post_action_observation_not_a_pre_action_prediction":True,
+            "source_cluster_n":len(source_groups)
+        }
+    else:
+        signal_audit={"eligible_nonflat_events":0,"status":"no assessable signal"}
+    report={"protocol":"X4.2 fresh small-CNF retrospective search-direction diagnostic",
         "independent_CNF_sources":len(FAMILIES)*args.per_family,
         "3_isomorphic_replay_cycles":True,
+        "fresh_source_generator_offset":args.offset,
+        "overlap_with_prior_48_source_cycles":0 if args.exclude_prior else None,
+        "new_mathematical_families":["community3","xor_ring","graph_k4_unsat"],
+        "family_summary":family_summary,
+        "proxy_heldout_sign_audit":signal_audit,
         "replays_are_not_independent_formulas":True,
         "runs":len(all_rows),"verified_sat":sum(r["status"]=="SAT" for r in all_rows),
         "exhaustively_checked_unsat":sum(r["status"]=="UNSAT" for r in all_rows),
