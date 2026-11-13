@@ -116,6 +116,30 @@ class Solver {
     const char* x53PolicyName() const {
         return x53_policy_==0?"baseline":x53_policy_==1?"glue":"utility";
     }
+    void enableX53Progress(bool enabled) { x53_progress_=enabled; }
+    void emitX53Progress() {
+        if(!x53_audit_ || !x53_progress_ || probing_ || x46_clone_) return;
+        if((++x53_progress_checks_ & 4095) != 0) return;
+        const double t=elapsed();
+        if(t<x53_next_progress_s_) return;
+        x53_next_progress_s_=t+1.0;
+        std::cerr<<"X53_PROGRESS {\"elapsed_s\":"<<t
+            <<",\"policy\":\""<<x53PolicyName()
+            <<"\",\"conflicts\":"<<stats_.conflicts
+            <<",\"decisions\":"<<stats_.decisions
+            <<",\"learnt\":"<<stats_.learnt
+            <<",\"removed\":"<<stats_.reduce_removed
+            <<",\"watch_entries\":"<<stats_.x53_bcp_watch
+            <<",\"dead_watch_entries\":"<<stats_.x53_bcp_dead_watch
+            <<",\"blocker_hits\":"<<stats_.x53_bcp_blocker
+            <<",\"long_literal_checks\":"<<stats_.x53_bcp_long_scan
+            <<",\"reason_uses\":"<<stats_.x53_reason_uses
+            <<",\"analysis_uses\":"<<stats_.x53_analysis_uses
+            <<",\"deleted_unused\":"<<stats_.x53_deleted_never_used
+            <<",\"deleted_used\":"<<stats_.x53_deleted_previously_used
+            <<"}\n";
+        std::cerr.flush();
+    }
     void enableProofDeletes(bool enabled){proof_deletes_enabled_=enabled;}
     int64_t proofDeleteCount() const{return proof_delete_count_;}
     void writeProofDeletion(const std::vector<int>& lits) {
@@ -611,6 +635,9 @@ class Solver {
     bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;
     int x53_policy_=0;
     bool x53_audit_=false;
+    bool x53_progress_=false;
+    int64_t x53_progress_checks_=0;
+    double x53_next_progress_s_=1.0;
     bool proof_deletes_enabled_=false;
     int64_t proof_delete_count_=0;
     std::ostream* proof_=nullptr; // externally owned; speculative clones cannot log
@@ -943,6 +970,7 @@ class Solver {
         Prop ret;
         while (qhead_ < static_cast<int>(trail_.size())) {
             const int p = trail_[qhead_++];
+            emitX53Progress();
             if (probing_) ++stats_.horizon_inspections; else ++stats_.propagations;
             if (x53_audit_ && !probing_ && !x46_clone_) ++stats_.x53_bcp_trail;
             // Binary implications are an O(1) edge traversal, not general watches.
@@ -1372,6 +1400,7 @@ int run(int argc, char** argv) {
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool proof_deletes_enabled=false;
+    bool x53_progress=false;
     int x53_policy=-1;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
     for (int i=1;i<argc;++i) {
@@ -1381,6 +1410,7 @@ int run(int argc, char** argv) {
         else if (opt=="--transitions" && i+1<argc) trace_file=argv[++i];
         else if (opt=="--proof" && i+1<argc) proof_path=argv[++i];
         else if (opt=="--x52-proof-deletions") proof_deletes_enabled=true;
+        else if (opt=="--x53-progress") x53_progress=true;
         else if (opt=="--x53-policy" && i+1<argc) {
             const std::string p=argv[++i];
             if(p=="baseline") x53_policy=0;
@@ -1403,7 +1433,7 @@ int run(int argc, char** argv) {
         else if (opt=="--x46-model" && i+1<argc) x46_model_path=argv[++i];
         else if (opt=="--x47-guard" && i+1<argc) x47_guard_path=argv[++i];
         else if (opt=="--help") {
-            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts] [--x52-proof-deletions] [--x53-policy baseline|glue|utility]\n";
+            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts] [--x52-proof-deletions] [--x53-policy baseline|glue|utility] [--x53-progress]\n";
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -1457,6 +1487,7 @@ int run(int argc, char** argv) {
                                 proof_path.empty()?nullptr:&proof);
             solver->enableProofDeletes(proof_deletes_enabled);
             if(x53_policy>=0) solver->configureX53(x53_policy);
+            solver->enableX53Progress(x53_progress);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
