@@ -387,9 +387,10 @@ def import_zip(db, artifact_id, run_id, payload):
 
 def ingest_artifacts(db, gh, budget):
     successes = failures = skipped = rows_imported = reports_imported = 0
+    last_progress = -1
     entries = db.execute("""
         SELECT artifact_id,run_id,name,size_bytes,expired
-        FROM artifacts WHERE import_state='pending'
+        FROM artifacts WHERE import_state IN ('pending','retry')
         ORDER BY created_at DESC,artifact_id DESC
     """).fetchall()
     for artifact_id, run_id, name, size, expired in entries:
@@ -423,7 +424,9 @@ def ingest_artifacts(db, gh, budget):
           """, (state, detail, UTC(), artifact_id))
         if state in ("expired", "oversized", "unrelated"):
             skipped += 1
-        if (successes + failures) % 20 == 0 and (successes + failures) > 0:
+        attempted = successes + failures
+        if attempted > 0 and attempted % 20 == 0 and attempted != last_progress:
+            last_progress = attempted
             db.commit()
             emit("DRNAS_GLOBAL_IMPORT_PROGRESS", {
                 "attempted": successes + failures, "trial_rows": rows_imported,
