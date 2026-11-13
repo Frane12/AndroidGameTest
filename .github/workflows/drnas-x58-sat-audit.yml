@@ -1,0 +1,154 @@
+name: DRNAS X5.8 SAT-only VSIDS RBSAT decision audit
+on:
+  push:
+    branches: [experiment/drnas-x58-sat-decision-audit-20261113]
+    paths:
+      - .github/workflows/drnas-x58-sat-audit.yml
+      - src/drnas_x58_sat_audit.cpp
+      - tests/test_x58_sat_only.py
+      - research/drnas_x58_sat_decision_rbsat.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x58-sat-decision-audit
+  cancel-in-progress: true
+
+jobs:
+  validate_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43434020900
+          name: x57-scheduling-official-frozen-sources
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore previously sealed official SAT2024 source SHA and frozen X57 native binaries
+        run: |
+          set -euo pipefail
+          tar -xzf x57_sched_source_binaries.tgz
+          sha256sum -c build/X57_SCHED_BINARIES.sha256
+          python3 -m py_compile tests/test_x58_sat_only.py research/drnas_x58_sat_decision_rbsat.py
+      - name: Compile X58 SAT-only diagnostic with frozen X57 algorithms
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG -g -fno-omit-frame-pointer src/drnas_x58_sat_audit.cpp -o build/drnas-x58
+          git rev-parse HEAD > build/X58_COMMIT.txt
+          g++ --version | head -1 > build/X58_COMPILER.txt
+          sha256sum build/drnas-x57 build/drnas-x58 build/kissat build/cadical build/drat-trim > build/X58_BINARIES.sha256
+      - name: 540 fixed-policy no-proof/proof/trace exact SAT UNSAT checks, independently certify UNSAT
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X58_SINGLE_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_x58_sat_only.py | tee build/X58_SELFTEST.log
+      - name: Freeze exact five original formula SHA and all binaries before test
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x58_sat_decision_rbsat.py freeze | tee build/X58_FREEZE.log
+          sha256sum x58_frozen/protocol.json x57_sched_unseen/manifest.json
+          tar -czf x58_validated_frozen.tgz \
+             x57_sched_unseen x58_frozen/protocol.json \
+             build/drnas-x57 build/drnas-x58 build/kissat build/cadical build/drat-trim \
+             build/X58_BINARIES.sha256 build/X58_COMMIT.txt build/X58_COMPILER.txt \
+             build/X58_SELFTEST.log build/X58_FREEZE.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x58-original-inputs-and-validated-binaries
+          retention-days: 30
+          path: x58_validated_frozen.tgz
+
+  paired:
+    needs: validate_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x58-original-inputs-and-validated-binaries
+          path: .
+      - name: Verify original source and binary hashes
+        run: |
+          set -euo pipefail
+          tar -xzf x58_validated_frozen.tgz
+          sha256sum -c build/X58_BINARIES.sha256
+      - name: Serial 11-arm SAT-only/proof/traced control, fixed single logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X58_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x58_sat_decision_rbsat.py shard \
+             --shard ${{ matrix.shard }} | tee x58_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x58-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          path: x58_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x58-original-inputs-and-validated-binaries
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x58-shard-*
+          path: x58_downloads
+          merge-multiple: false
+      - name: Validate original SHA, all 110 trials, SAT proofs and first path divergences
+        run: |
+          set -euo pipefail
+          tar -xzf x58_validated_frozen.tgz
+          sha256sum -c build/X58_BINARIES.sha256
+          python3 -u research/drnas_x58_sat_decision_rbsat.py finish | tee x58_final.log
+          python3 - <<'PY'
+          import json,os
+          j=json.load(open("x58_final/report.json"))
+          assert j["status"]=="COMPLETE"
+          assert all(x["attempts"]==10 for x in j["overall"].values())
+          out=["## DRNAS X5.8 SAT-only, RBSAT-focused fixed decision audit",
+               "Five purposely selected previously evaluated original SAT2024 formulas; two reps; 11 arms; 25s cap.",
+               "SAT only credits independently checked original-CNF models. Without DRAT all UNSAT become UNKNOWN.",
+               "", "| Arm | Verified SAT /10 | Certified UNSAT /10 | PAR2 ↓ | Proof cap | Trace decisions |",
+               "|---|---:|---:|---:|---:|---:|"]
+          for a,v in j["overall"].items():
+              out.append(f"| {a} | {v['SAT_verified']} | {v['UNSAT_certified']} | {v['PAR2_s']:.3f} | {v['proof_file_limit']} | {v['traced_decision_rows']} |")
+          out+=["","### RBSAT (ID18)"]
+          rb=next(z for z in j["by_source"] if z["id"]==18)
+          for a,v in rb["arms"].items():
+              out.append(f"- {a}: verified SAT {v['SAT_verified']}/2; PAR2 {v['PAR2_s']:.3f}s")
+          out+=["","### First observed chosen-literal differences on RBSAT"]
+          for d in j["first_observed_divergences"]:
+              if d["id"]==18:out.append(f"- rep {d['rep']} VSIDS vs {d['vs']}: {d['divergence']}")
+          out+=["","No automatic promotion. This is retrospective debugging, NOT a blind speedup claim."]
+          summary="\n".join(out)+"\n"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x58-sat-audit-final
+          retention-days: 30
+          path: |
+            x58_final/report.json
+            x58_final/trials.jsonl
+            x58_final.log
+            x58_frozen/protocol.json
