@@ -95,7 +95,7 @@ def main():
                 arms={name:run(binary,cnf,name,args.cap,model if name in ('contextual','contextual_sham') else None) for name in order}
                 assert all(arm['policy']['probe_inspections']==0 for arm in arms.values())
                 if arms['core']['verified'] and arms['contextual_sham']['verified']:
-                    assert all(arms['core'][key]==arms['cheap_sham'][key]
+                    assert all(arms['core'][key]==arms['contextual_sham'][key]
                                for key in ('conflicts','decisions','propagations'))
                 row={'sha256':c['sha256'],'holes':c['holes'],'rep':rep,'arms':arms}
                 rows.append(row);stream.write(json.dumps(row,sort_keys=True)+'\n')
