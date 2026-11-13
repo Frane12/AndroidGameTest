@@ -1,0 +1,172 @@
+name: DRNAS X5.3 clause utility and watched BCP real36 paired
+on:
+  push:
+    branches: [experiment/drnas-x53-clause-utility-bcp-20261113]
+    paths:
+      - .github/workflows/drnas-x53-clause-utility.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x53-clause-utility-20261113
+  cancel-in-progress: true
+
+jobs:
+  audit_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore independently frozen original application CNFs and binaries
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+      - name: Compile pinned X52 BASE and X53 three-policy diagnostic core
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x52.cpp -o build/drnas-x52
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x53.cpp -o build/drnas-x53
+          python3 -m py_compile tests/test_x53_clause_utility.py research/drnas_x53_real36.py
+          sha256sum build/drnas-x52 build/drnas-x53 build/kissat build/cadical build/drat-trim > build/X53_SHA256SUMS
+          git rev-parse HEAD > build/X53_COMMIT
+          g++ --version | head -1 > build/X53_COMPILER
+      - name: Exact SAT UNSAT smoke with independent DRAT and identical baseline decisions
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u tests/test_x53_clause_utility.py | tee build/X53_SELFTEST.log
+      - name: Freeze official 36 SHA and compared binary hashes BEFORE solving
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x53_real36.py freeze | tee build/X53_FREEZE.log
+          tar -czf x53_binaries_protocol.tgz \
+            build/drnas-x52 build/drnas-x53 build/X53_SHA256SUMS \
+            build/X53_COMMIT build/X53_COMPILER build/X53_SELFTEST.log \
+            build/X53_FREEZE.log x53_freeze/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x53-frozen-binaries-protocol
+          retention-days: 21
+          path: x53_binaries_protocol.tgz
+
+  paired:
+    needs: audit_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x53-frozen-binaries-protocol
+          path: .
+      - name: Restore exact original inputs and immutable solver controls
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          tar -xzf x53_binaries_protocol.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          sha256sum -c build/X53_SHA256SUMS
+      - name: Six serial paired arms, three original CNFs per shard, two repetitions, one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "X53_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x53_real36.py shard --shard ${{ matrix.shard }} | tee x53_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x53-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: error
+          path: x53_shards/${{ matrix.shard }}/
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: x53-frozen-binaries-protocol
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x53-shard-*
+          path: x53_downloads
+          merge-multiple: false
+      - name: Re-audit 432 source SHA pairs and bootstrap source-grouped PAR2
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf x53_binaries_protocol.tgz
+          python3 -u research/drnas_x53_real36.py finish | tee x53_final.log
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("x53_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert all(v["attempts"]==72 for v in d["overall"].values())
+          out=["## DRNAS X5.3 — 36 original SAT2024 CNF × 2 repeats, 6 arms", "",
+               "No synthetic source generator. Three X53 policies have identical BCP code. No automatic promotion.", "",
+               "| Arm | Verified solved /72 | PAR2 seconds ↓ | Solver E2E seconds | Partial telemetry |",
+               "|---|---:|---:|---:|---:|"]
+          for arm,x in d["overall"].items():
+              out.append(f"| {arm} | {x['solved']} | {x['PAR2_s']:.2f} | {x['E2E_s']:.2f} | {x['telemetry_partial']} |")
+          out+=["", "## Matched source-cluster bootstrap"]
+          for name,x in d["comparisons"].items():
+              out.append(f"- {name} vs X53_BASE: ΔPAR2 {x['observed_PAR2_delta_s']:+.4f}s, bootstrap95 {x['95pct_cluster_bootstrap_delta_s']}")
+          out+=["", "UNSAT requires an independently checked original-CNF proof. Verification duration separate from solve PAR2.",
+                "This is retrospective REAL36 and does not justify production promotion."]
+          text="\n".join(out)+"\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(text)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x53-real36-final
+          retention-days: 21
+          path: |
+            x53_final/report.json
+            x53_final/paired_trials.jsonl
+            x53_final.log
+            x53_freeze/protocol.json
