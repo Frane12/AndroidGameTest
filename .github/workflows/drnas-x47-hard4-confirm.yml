@@ -1,0 +1,118 @@
+name: DRNAS X4.7 LONG hard4 matched cost replication 64 x 10s
+on:
+  push:
+    branches: [experiment/drnas-x47-longer-120-20261113]
+    paths:
+      - research/drnas_x47_hard4_confirm.py
+      - .github/workflows/drnas-x47-hard4-confirm.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x47-long-hard4-independent
+  cancel-in-progress: false
+
+jobs:
+  hard4_matrix:
+    name: Hard 4-SAT shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 43
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          run-id: 43363483258
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Verify model origin and compile identical solver
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o drnas-x47-long
+          python3 -m py_compile research/drnas_x47_hard4_confirm.py
+          (cd frozen && sha256sum -c x47long_frozen_sha256.txt)
+      - name: Run 16 new medium/hard 4-SAT CNFs x 2 reps x 5 arms, cap 10 seconds
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x47_hard4_confirm.py \
+            --binary drnas-x47-long --cohort synthetic \
+            --out x47_hard4_shard_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 --synthetic-count 64 \
+            --source-offset 1200000 --cap 10.0 --repeats 2 \
+            --model frozen/x47long_training/frozen_cost_model.txt \
+            --guard frozen/x47long_training/frozen_risk_guard.txt \
+            | tee x47_hard4_shard_${{ matrix.shard }}.log
+      - name: Check 16 independently unique original SHA and 160 paired trials
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          d=Path('x47_hard4_shard_${{ matrix.shard }}')
+          m=json.loads((d/'manifest.json').read_text())
+          r=json.loads((d/'report.json').read_text())
+          assert r['original_sources']==16 and r['total_trials']==160
+          assert len({x['sha256'] for x in m['originals']})==16
+          assert all(x['family']=='critical4_planted' for x in m['originals'])
+          assert all(r['all_arms'][a]['trials']==32 for a in m['arms'])
+          assert all(r['all_arms'][a]['UNSAT_unverified']==0 for a in m['arms'])
+          print('X47_HARD4_SHARD_PROVENANCE_PASS',m['shard'],r['all_arms'])
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-hard4-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_hard4_shard_${{ matrix.shard }}/manifest.json
+            x47_hard4_shard_${{ matrix.shard }}/report.json
+            x47_hard4_shard_${{ matrix.shard }}/trials.jsonl
+            x47_hard4_shard_${{ matrix.shard }}.log
+
+  hard4_total:
+    name: Hard4 independent-source aggregated PAR2 and paired CI
+    runs-on: ubuntu-24.04
+    needs: [hard4_matrix]
+    if: always()
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x47-hard4-shard-*
+          path: hard4_results
+      - name: Aggregate the 64 independent original source formulas
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_long_aggregate.py \
+            --root hard4_results --out x47_hard4_final_summary.json \
+            | tee x47_hard4_final_summary.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          j=json.loads(Path('x47_hard4_final_summary.json').read_text())
+          s=j['synthetic']
+          assert s['original_sources']==64 and s['total_trials']==640
+          assert s['source_families']==1
+          assert s['completed_shards']==4
+          print('X47_HARD4_COHORT_REPLICATION',json.dumps({
+              'N':64,'cap_s':10,
+              'arms':s['by_arm'],
+              'paired_ci':s['comparison']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-hard4-64-summary
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_hard4_final_summary.json
+            x47_hard4_final_summary.log
