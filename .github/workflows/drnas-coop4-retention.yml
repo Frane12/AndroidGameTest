@@ -1,0 +1,239 @@
+name: DRNAS COOP4 knowledge lifetime retention on real SAT2024 and synthetic
+
+on:
+  push:
+    branches: [experiment/drnas-coop4-retention-20261113]
+    paths:
+      - .github/workflows/drnas-coop4-retention.yml
+      - 'research/drnas_coop4/**'
+      - 'tests/test_drnas_coop4*.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop4-retention-experimental
+  cancel-in-progress: false
+
+jobs:
+  validate_and_freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: reference
+      - name: 01 / Restore original REAL36 and frozen competitor references
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          cp reference/* build/
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          chmod +x build/*
+      - name: 02 / Compile COOP4 once and validate off/on oracle with independent proof
+        run: |
+          set -euo pipefail
+          python3 research/drnas_coop4/build.py | tee coop4_compile.log
+          test -x build/drnas-coop4
+          python3 -m py_compile research/drnas_coop4/real36_benchmark.py research/drnas_coop4/synthetic_benchmark.py tests/test_drnas_coop4.py tests/test_drnas_coop4_delayed.py research/drnas_coop4/build.py
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP4_SINGLE_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop4.py | tee coop4_safety.log
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop4_delayed.py | tee coop4_delayed_safety.log
+          git rev-parse HEAD > COOP4_GIT_COMMIT
+          g++ --version | head -n1 > COOP4_COMPILER
+      - name: 03 / Freeze exact hashes, REAL36 source family and control binary
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_coop4/real36_benchmark.py freeze | tee coop4_freeze.log
+          sha256sum build/drnas-x5 build/drnas-coop4 build/kissat build/cadical build/drat-trim > build/COOP4_BINARIES.sha256
+          tar -czf coop4_frozen.tgz \
+            build/drnas-x5 build/drnas-coop4 build/kissat build/cadical \
+            build/drat-trim build/COOP4_BINARIES.sha256 \
+            coop4_freeze/protocol.json COOP4_GIT_COMMIT COOP4_COMPILER coop4_safety.log
+          echo 'COOP4_STAGE preflight COMPLETE original CNF only, no blind holdout, main unchanged' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-frozen
+          retention-days: 60
+          path: |
+            coop4_frozen.tgz
+            coop4_freeze.log
+            coop4_safety.log
+            COOP4_GIT_COMMIT
+            COOP4_COMPILER
+            coop4_compile.log
+            coop4_delayed_safety.log
+
+  paired:
+    needs: validate_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-frozen
+          path: .
+      - name: 04 / Verify binary and source hashes independently on every shard
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf coop4_frozen.tgz
+          sha256sum -c build/COOP4_BINARIES.sha256
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,"research")
+          sys.path.insert(0,"research/drnas_coop4")
+          import real36_benchmark as X
+          sources,_=X.frozen_sources()
+          assert len(sources)==36
+          print("COOP4_SHA_FROZEN_RECHECK",len(sources))
+          PY
+      - name: 05 / Paired nine-arm knowledge retention A-B on one logical CPU, shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP4_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop4/real36_benchmark.py shard --shard ${{ matrix.shard }} \
+             | tee coop4_shard.log
+          echo "COOP4_STAGE shard=${{ matrix.shard }} COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: coop4_shards/${{ matrix.shard }}/
+
+  synthetic_stress:
+    needs: validate_and_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-frozen
+          path: .
+      - name: Source-frozen synthetic KEEP vs 128 vs 1024 vs ADAPT
+        run: |
+          set -euo pipefail
+          tar -xzf coop4_frozen.tgz
+          sha256sum -c build/COOP4_BINARIES.sha256
+          cp research/drnas_coop1/synthetic.py research/drnas_coop4/synthetic.py
+          cmp research/drnas_coop1/synthetic.py research/drnas_coop4/synthetic.py
+          python3 -m py_compile research/drnas_coop4/synthetic_benchmark.py
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP4_SYNTHETIC_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop4/synthetic_benchmark.py --cap 1 --repeats 2 --scale stress --out coop4_synthetic_stress | tee coop4_synthetic.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open('coop4_synthetic_stress/report.json'))
+          assert d['status']=='COMPLETE'
+          assert all(v['attempts']==84 for v in d['overall'].values())
+          assert d['overall']['COOP4_KEEP']['lifetime_expired']==0
+          print('COOP4_SYNTHETIC_RETENTION_FINAL',json.dumps(d['overall'],sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-synthetic-stress-final
+          retention-days: 60
+          path: |
+            coop4_synthetic_stress/report.json
+            coop4_synthetic_stress/manifest.json
+            coop4_synthetic_stress/trials.jsonl
+            coop4_synthetic.log
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop4-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coop4-shard-*
+          path: coop4_downloads
+          merge-multiple: false
+      - name: 06 / Report all 648 trials, verified lifetime distributions and family CI
+        run: |
+          set -euo pipefail
+          tar -xzf real36_inputs.tgz
+          tar -xzf coop4_frozen.tgz
+          python3 -u research/drnas_coop4/real36_benchmark.py finish | tee coop4_final.log
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("coop4_final/report.json"))
+          assert d["status"]=="COMPLETE"
+          assert d["promotion"] is False and not d["blind_holdout"]
+          assert all(v["attempts"]==72 for v in d["overall"].values())
+          out=["## DRNAS COOP4 proven clause retention: KEEP/128/1024/ADAPT on 36 original SAT2024 x2",
+               "Same COOP4 executable OFF/ALGEBRA/KEEP/SHORT/LONG/ADAPT; all SAT models and UNSAT proofs independently checked. No promotion.","",
+               "| Arm | Verified /72 | SAT | UNSAT | PAR2 (s) | Inserted clauses | Reused clauses | Expired |",
+               "|---|---:|---:|---:|---:|---:|---:|---:|"]
+          for a,v in d["overall"].items():
+              out.append(f"| {a} | {v['verified']} | {v['SAT']} | {v['UNSAT']} | {v['PAR2_s']:.4f} | {v['lifetime_inserted']} | {v['lifetime_first_use']} | {v['lifetime_expired']} |")
+          out+=["","### Family-cluster bootstrap confidence intervals"]
+          for name,values in d["family_CI"].items():
+              out.append(f"- {name}: gain {100*values['relative_PAR2_reduction']:+.3f}% "+
+                         f"95% CI {[round(100*z,3) for z in values['family_bootstrap95']]}%, "+
+                         f"families={values['independent_families']}")
+          out+=["","Result is retrospective diagnostic only; no blind holdout or solver promotion."]
+          msg="\n".join(out)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop4-retention-real36-final
+          retention-days: 60
+          path: |
+            coop4_final/report.json
+            coop4_final/trials.jsonl
+            coop4_final.log
+            coop4_freeze/protocol.json
