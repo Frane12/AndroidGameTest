@@ -326,7 +326,7 @@ class Solver {
                 compare_reached_=true;
                 compare_pre_hash_=stateDigestAtDecision(v);
                 compare_baseline_literal_=baseline_lit;
-                chosen_lit=compare_flip_?-baseline_lit:baseline_lit;
+                if (compare_flip_) chosen_lit=-baseline_lit;
                 compare_actual_literal_=chosen_lit;
                 compare_prefix_conflicts_=stats_.conflicts;
                 compare_prefix_learnt_=stats_.learnt;
