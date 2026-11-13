@@ -3,6 +3,7 @@
 // Original implementation. No external SAT solver is linked or invoked.
 #include <algorithm>
 #include <chrono>
+#include <bit>
 #include <charconv>
 #include <string_view>
 #include <cmath>
@@ -65,11 +66,12 @@ struct Entry {
 
 class Solver {
   public:
-    explicit Solver(int n, std::string mode, double seconds, Clock::time_point started, bool trace_trail=false)
+    explicit Solver(int n, std::string mode, double seconds, Clock::time_point started, bool trace_trail=false, int compare_at=0, bool flip_sign=false)
         : n_(n), mode_(std::move(mode)),
           use_backdoor_(false),
           use_depth_(false),
           trace_enabled_(mode_ == "trace"), trace_trail_(trace_trail),
+          compare_at_(compare_at), compare_flip_(flip_sign),
           watches_(2 * static_cast<size_t>(n)),
           binary_implications_(2 * static_cast<size_t>(n)),
           values_(n, 0), phase_(n, 1), levels_(n, 0), reasons_(n, -1),
@@ -291,10 +293,24 @@ class Solver {
                 if (!verifyModel()) throw std::runtime_error("internal model verification failed");
                 return Result::SAT;
             }
+            const int64_t next_decision=stats_.decisions+1;
+            const int baseline_lit=phase_[v]*(v+1);
+            int chosen_lit=baseline_lit;
+            if(compare_at_>0 && next_decision==compare_at_) {
+                compare_reached_=true;
+                compare_pre_hash_=stateDigestAtDecision(v);
+                compare_baseline_literal_=baseline_lit;
+                chosen_lit=compare_flip_?-baseline_lit:baseline_lit;
+                compare_actual_literal_=chosen_lit;
+                compare_prefix_conflicts_=stats_.conflicts;
+                compare_prefix_learnt_=stats_.learnt;
+                compare_prefix_propagations_=stats_.propagations;
+                compare_prefix_elapsed_=elapsed();
+            }
             ++stats_.decisions;
-            beginTransition(phase_[v]*(v+1));
+            beginTransition(chosen_lit);
             newDecisionLevel();
-            if (!enqueue(phase_[v] * (v+1), -1)) {
+            if (!enqueue(chosen_lit, -1)) {
                 throw std::runtime_error("internal decision invariant violated");
             }
         }
@@ -385,6 +401,16 @@ class Solver {
             fd<<"}\n";
         }
     }
+    uint64_t comparePreHash() const{return compare_pre_hash_;}
+    bool compareReached() const{return compare_reached_;}
+    int compareAt() const{return compare_at_;}
+    bool compareFlipped() const{return compare_flip_;}
+    int compareBaselineLiteral() const{return compare_baseline_literal_;}
+    int compareActualLiteral() const{return compare_actual_literal_;}
+    int64_t comparePrefixConflicts() const{return compare_prefix_conflicts_;}
+    int64_t comparePrefixLearnt() const{return compare_prefix_learnt_;}
+    int64_t comparePrefixPropagations() const{return compare_prefix_propagations_;}
+    double comparePrefixElapsed() const{return compare_prefix_elapsed_;}
     int nvars() const { return n_; }
     int nclauses() const { return original_count_; }
     int assignment(int v) const { return !leaf_model_.empty() ? leaf_model_[v] : (values_[v] == 0 ? phase_[v] : values_[v]); }
@@ -400,6 +426,14 @@ class Solver {
     const bool use_depth_;
     const bool trace_enabled_;
     const bool trace_trail_;
+    const int compare_at_;
+    const bool compare_flip_;
+    bool compare_reached_=false;
+    uint64_t compare_pre_hash_=0;
+    int compare_baseline_literal_=0;
+    int compare_actual_literal_=0;
+    int64_t compare_prefix_conflicts_=0,compare_prefix_learnt_=0,compare_prefix_propagations_=0;
+    double compare_prefix_elapsed_=0.0;
     struct Snapshot {
         int64_t decisions=0, conflicts=0, learnt=0, propagations=0;
         int assigned=0, level=0, long_open=0;
@@ -517,6 +551,32 @@ class Solver {
     }
     static size_t litIndex(int lit) {
         return static_cast<size_t>((std::abs(lit)-1)*2 + (lit<0));
+    }
+    static uint64_t stateMix(uint64_t hash,uint64_t value){
+        hash ^= value; return hash * 1099511628211ULL;
+    }
+    uint64_t stateDigestAtDecision(int variable) const {
+        uint64_t hash=1469598103934665603ULL;
+        hash=stateMix(hash,static_cast<uint64_t>(n_));
+        hash=stateMix(hash,static_cast<uint64_t>(original_count_));
+        hash=stateMix(hash,static_cast<uint64_t>(stats_.decisions));
+        hash=stateMix(hash,static_cast<uint64_t>(stats_.conflicts));
+        hash=stateMix(hash,static_cast<uint64_t>(stats_.learnt));
+        hash=stateMix(hash,static_cast<uint64_t>(stats_.propagations));
+        hash=stateMix(hash,static_cast<uint64_t>(decisionLevel()));
+        hash=stateMix(hash,static_cast<uint64_t>(variable+1));
+        for(int x:trail_)hash=stateMix(hash,static_cast<uint64_t>(static_cast<int64_t>(x)));
+        for(int x:trail_lim_)hash=stateMix(hash,static_cast<uint64_t>(x));
+        for(int8_t x:phase_)hash=stateMix(hash,static_cast<uint64_t>(static_cast<int64_t>(x)));
+        for(double x:activity_)hash=stateMix(hash,std::bit_cast<uint64_t>(x));
+        hash=stateMix(hash,clauses_.size());
+        for(const Clause& c:clauses_) {
+            hash=stateMix(hash,c.lits.size());
+            hash=stateMix(hash,c.deleted?1:0);
+            hash=stateMix(hash,c.learnt?1:0);
+            for(int lit:c.lits)hash=stateMix(hash,static_cast<uint64_t>(static_cast<int64_t>(lit)));
+        }
+        return hash;
     }
     int decisionLevel() const { return static_cast<int>(trail_lim_.size()); }
     int value(int lit) const {
@@ -849,7 +909,8 @@ int run(int argc, char** argv) {
     const auto process_start=Clock::now();
     std::string input, mode="trace", trace_file;
     double seconds=5.0;
-    bool show_stats=false, trace_trail=false;
+    bool show_stats=false, trace_trail=false, compare_flip=false;
+    int compare_at=0;
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -857,8 +918,10 @@ int run(int argc, char** argv) {
         else if (opt=="--transitions" && i+1<argc) trace_file=argv[++i];
         else if (opt=="--stats") show_stats=true;
         else if (opt=="--trace-trail") trace_trail=true;
+        else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
+        else if (opt=="--flip-branch") compare_flip=true;
         else if (opt=="--help") {
-            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)]\n";
+            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch]\n";
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -867,6 +930,8 @@ int run(int argc, char** argv) {
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
+    if (compare_flip && compare_at==0)throw std::runtime_error("--flip-branch requires --branch-at");
+    if (compare_at<0 || compare_at>100000)throw std::runtime_error("invalid --branch-at");
     if (trace_trail && (mode!="trace" || trace_file.empty()))
         throw std::runtime_error("--trace-trail requires trace mode and --transitions");
     std::ifstream fd(input);
@@ -892,7 +957,7 @@ int run(int argc, char** argv) {
                 declared_clauses<0 || (header>>extra))
                 throw std::runtime_error("invalid DIMACS header");
             if (trace_trail && declared_vars>18) throw std::runtime_error("--trace-trail only supported for at most 18 variables");
-            solver.emplace(declared_vars,mode,seconds,process_start,trace_trail);
+            solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             continue;
         }
         if (!solver) throw std::runtime_error("missing DIMACS header");
@@ -931,6 +996,19 @@ int run(int argc, char** argv) {
     } else if (r==Result::UNSAT) std::cout<<"s UNSATISFIABLE\n";
     else std::cout<<"s UNKNOWN\n";
     solver->writeTransitions(trace_file,r,solve_finish_elapsed);
+    if(compare_at>0) {
+        std::cerr<<"X45_COMPARE {\"decision_index\":"<<solver->compareAt()
+                 <<",\"reached\":"<<(solver->compareReached()?"true":"false")
+                 <<",\"flip\":"<<(solver->compareFlipped()?"true":"false")
+                 <<",\"pre_state_digest\":\""<<std::hex<<solver->comparePreHash()<<std::dec
+                 <<"\",\"baseline_literal\":"<<solver->compareBaselineLiteral()
+                 <<",\"actual_literal\":"<<solver->compareActualLiteral()
+                 <<",\"prefix_conflicts\":"<<solver->comparePrefixConflicts()
+                 <<",\"prefix_learnt\":"<<solver->comparePrefixLearnt()
+                 <<",\"prefix_propagations\":"<<solver->comparePrefixPropagations()
+                 <<",\"prefix_elapsed_s\":"<<std::fixed<<std::setprecision(7)<<solver->comparePrefixElapsed()
+                 <<"}\n";
+    }
     if (show_stats) {
         const Stats& s=solver->stats();
         std::cerr<<"X41_STATS {\"mode\":\""<<solver->mode()<<"\",\"status\":\""
