@@ -63,3 +63,52 @@ Artifacts include the frozen manifest and protocol, all paired training and
 validation observations, the exact frozen model, per-formula holdout runs,
 matched holdout diagnostic pairs, and the final report. Repeating this exact
 manifest is a replication, not a fresh blind generalization test.
+
+## Completed result, 2026-11-13
+
+[GitHub Actions run 43357802267](https://github.com/Frane12/AndroidGameTest/actions/runs/43357802267)
+completed successfully at source commit `dfc38a07dc4f6c0ed6b18ad3bab855af89e7f1b7`.
+Independent correctness: 3,296 solver runs, 404 truth-table sources, 59 matched
+intervention checkpoints, all tested policy paths valid and CORE unchanged.
+
+Both the local run and the GitHub run selected the disabled-intervention
+threshold using validation only. All five policies solved all 720 held-out
+trials (240 original formulas, three repeats). No learned intervention was
+accepted. CORE and LEARNED each used exactly 322,641 propagations in total.
+
+GitHub holdout totals:
+
+| Policy | PAR2 seconds | Accepted interventions |
+| --- | ---: | ---: |
+| CORE | 2.056987 | 0 |
+| SHAM | 2.114356 | 0 |
+| FIXED | 2.071618 | 135 |
+| FLIP | 2.048247 | 720 |
+| LEARNED | 2.110799 | 0 |
+
+LEARNED vs CORE improvement was -2.616%, formula-cluster 95% interval
+[-2.898%, -2.288%]. This measures overhead on tiny generated formulas, not
+industrial SAT performance. The predeclared >10% success criterion failed.
+
+Read-only post-hoc analysis (`research/drnas_x45a_diagnose.py`) gives held-out
+ensemble-score AUC 0.4870, 95% formula-bootstrap interval [0.3963, 0.5784],
+on 159 pairs with a nontrivial verified continuation-work difference. The
+fixed disabled policy has balanced accuracy 0.5 by construction; its [0.5,0.5]
+bootstrap interval is not evidence that the underlying predictor is known
+exactly. Raw score AUC is the more informative discrimination diagnostic.
+
+A perfect-information selector of the cheaper observed polarity would reduce
+total propagation work by 22.043% on these held-out pairs. This is retrospective
+headroom, not an achieved speedup or evidence that pre-action features can
+recover that advantage cheaply.
+
+Local execution agrees on failure of the learned policy (score AUC 0.4921,
+no interventions, 3.716% measured overhead). The two fits are not bit-identical:
+wall-time censoring admitted 340 local vs 359 GitHub training pairs. Both
+followed the same frozen protocol, with no holdout-driven retuning. Future
+training should use a deterministic search-work budget to reduce this bias.
+
+Next experiment should keep the matched continuation label, add bounded
+polarity-specific propagation features, test nonlinear feature interactions,
+and use new harder family-separated formulas. Current holdout evidence must
+be treated as development data after this analysis.
