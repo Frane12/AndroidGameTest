@@ -203,7 +203,7 @@ def official_sources(count):
                 "source_id":len(out),"nvars":n,"nclauses":clauses,
                 "cert":"OFFICIAL_UNSAT_UNVERIFIED","content":text,
                 "archive_path":member.filename,"archive_url":OFFICIAL_ARCHIVE,
-                "sha256":sha,"filename":f"official_{i:02d}.cnf"})
+                "sha256":sha,"filename":f"official_{len(out):02d}.cnf"})
         if len(out)<count:
             raise RuntimeError(f"only {len(out)}/{count} official bounded sources matched, no solver outcome filtering")
         if len({x["sha256"] for x in out})!=count:
