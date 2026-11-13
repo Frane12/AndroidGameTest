@@ -87,7 +87,7 @@ def main():
     elif a.local_sources:
         cases=[]
         for f in sorted(a.local_sources.glob('*.cnf'))[:a.count]:
-            text=f.read_text();h=next(l.split() for l in text.splitlines() if l.startswith('p cnf '))
+            text=f.read_bytes().decode('ascii');h=next(l.split() for l in text.splitlines() if l.startswith('p cnf '))
             cases.append({'content':text,'nvars':int(h[2]),'nclauses':int(h[3]),'sha256':sha(f),'family':f.stem,'cert':'UNVERIFIED','source_path':str(f)})
     else:
         assert a.count%6==0
