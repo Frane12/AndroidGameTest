@@ -402,15 +402,18 @@ def ingest_artifacts(db, gh, budget):
     successes = failures = skipped = rows_imported = reports_imported = 0
     last_progress = -1
     entries = db.execute("""
-        SELECT artifact_id,run_id,name,size_bytes,expired
-        FROM artifacts WHERE import_state IN ('pending','retry')
-        ORDER BY created_at DESC,artifact_id DESC
+        SELECT a.artifact_id,a.run_id,a.name,a.size_bytes,a.expired,r.name
+        FROM artifacts a LEFT JOIN runs r ON r.run_id=a.run_id
+        WHERE a.import_state IN ('pending','retry') OR
+          (a.import_state='unrelated' AND r.name LIKE 'DRNAS %')
+        ORDER BY a.created_at DESC,a.artifact_id DESC
     """).fetchall()
-    for artifact_id, run_id, name, size, expired in entries:
+    for artifact_id, run_id, name, size, expired, run_name in entries:
         if expired:
             state, detail = "expired", "GitHub artifact expired"
-        elif not ARTIFACT_HINTS.search(name or ""):
-            state, detail = "unrelated", "Non-benchmark archive name"
+        elif not (ARTIFACT_HINTS.search(name or "") or
+                  (run_name or "").lower().startswith("drnas ")):
+            state, detail = "unrelated", "Not a DRNAS benchmark artifact"
         elif size is None or size > MAX_ZIP_BYTES:
             state, detail = "oversized", "ZIP exceeds 18 MiB safety cap"
         elif successes + failures >= budget:
