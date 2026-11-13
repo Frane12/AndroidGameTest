@@ -104,6 +104,14 @@ def init_tables(db):
             source_sha TEXT PRIMARY KEY, namespace TEXT NOT NULL,
             family TEXT NOT NULL, audit_status TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS sealed_global_trials (
+            namespace TEXT NOT NULL, source_sha TEXT NOT NULL,
+            family TEXT NOT NULL, arm TEXT NOT NULL,
+            rep INTEGER NOT NULL, status TEXT NOT NULL,
+            verified INTEGER NOT NULL, par2_s REAL NOT NULL,
+            conflicts INTEGER, decisions INTEGER,
+            PRIMARY KEY(namespace,source_sha,arm,rep)
+        );
         CREATE TABLE IF NOT EXISTS global_learning_events (
             namespace TEXT PRIMARY KEY, started_at TEXT NOT NULL,
             model_sha TEXT, promoted INTEGER NOT NULL,
@@ -287,7 +295,13 @@ def run_fresh_holdout(db, engine, X, candidate_path, champion_path, run_id,
                         wrong+=1
                     one[name]=got
                 for name in names:
-                    rvals[sha][name].append(one[name])
+                    got=one[name]
+                    rvals[sha][name].append(got)
+                    db.execute("""
+                        INSERT INTO sealed_global_trials VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """,(namespace,sha,case["family"],name,rep,got["status"],
+                         int(bool(got.get("verified"))),float(got["PAR2"]),
+                         got.get("conflicts"),got.get("decisions")))
             db.execute("""
                 INSERT INTO sealed_global_sources VALUES (?,?,?,?)
                 """,(sha,namespace,case["family"],"new_nonreusable_sealed_holdout"))
@@ -414,20 +428,22 @@ def main():
             VALUES (?,?,?,?,?)
         """,(args.run_id,report["generated_at"],model_sha,int(passed),
              json.dumps(report,sort_keys=True)))
-        db.execute("""
-            INSERT INTO model_registry(namespace,run_id,source_commit,stage,model_hash,
-                                       model_json,claimed_deployment_allowed,promotion_status,reason)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(namespace) DO UPDATE SET
-              run_id=excluded.run_id,source_commit=excluded.source_commit,
-              stage=excluded.stage,model_hash=excluded.model_hash,
-              model_json=excluded.model_json,
-              claimed_deployment_allowed=excluded.claimed_deployment_allowed,
-              promotion_status=excluded.promotion_status,reason=excluded.reason
-        """,(MODEL_NAMESPACE,args.run_id,os.environ.get("GITHUB_SHA",""),
-             "sealed-fresh-holdout",model_sha,json.dumps(cand,sort_keys=True),
-             int(passed),"champion" if passed else "candidate_rejected",
-             json.dumps(reasons)))
+        # Do not overwrite the last passing champion with a rejected candidate.
+        if passed or incumbent is None:
+            db.execute("""
+                INSERT INTO model_registry(namespace,run_id,source_commit,stage,model_hash,
+                                           model_json,claimed_deployment_allowed,promotion_status,reason)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(namespace) DO UPDATE SET
+                  run_id=excluded.run_id,source_commit=excluded.source_commit,
+                  stage=excluded.stage,model_hash=excluded.model_hash,
+                  model_json=excluded.model_json,
+                  claimed_deployment_allowed=excluded.claimed_deployment_allowed,
+                  promotion_status=excluded.promotion_status,reason=excluded.reason
+            """,(MODEL_NAMESPACE,args.run_id,os.environ.get("GITHUB_SHA",""),
+                 "sealed-fresh-holdout",model_sha,json.dumps(cand,sort_keys=True),
+                 int(passed),"champion" if passed else "candidate_rejected",
+                 json.dumps(reasons)))
         db.commit()
         (args.out/"report.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
         (args.out/"candidate_x47.json").write_text(json.dumps(cand,indent=2,sort_keys=True)+"\n")
