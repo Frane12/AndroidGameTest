@@ -1,0 +1,55 @@
+name: DRNAS COOP5.1 hybrid periodic deep probe preflight
+on:
+  push:
+    branches: [experiment/drnas-coop51-hybrid-probe-20261114]
+    paths: [.github/workflows/drnas-coop51-preflight.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop51-hybrid-preflight
+  cancel-in-progress: false
+jobs:
+  build_and_certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43521424046
+          name: coop5-two-builds-and-safety
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore frozen reference binaries and compile hybrid under Werror
+        run: |
+          set -euo pipefail
+          tar -xzf coop5_frozen.tgz
+          sha256sum -c build/COOP5_SHA256SUMS
+          python3 -m py_compile research/drnas_coop51/build.py tests/test_drnas_coop51.py
+          python3 -u research/drnas_coop51/build.py | tee coop51_build.log
+          test -x build/drnas-coop51-hybrid
+          sha256sum build/drnas-coop5-fixed build/drnas-coop5-dynamic build/drnas-coop51-hybrid build/drnas-x5 build/drat-trim > build/COOP51_BINARIES.sha256
+          git rev-parse HEAD > COOP51_GIT_SHA
+      - name: Validate original SAT witnesses, RUP steps, independent DRAT proofs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP51_SINGLE_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop51.py | tee coop51_safety.log
+          tar -czf coop51_frozen.tgz \
+            build/drnas-coop5-fixed build/drnas-coop5-dynamic build/drnas-coop51-hybrid \
+            build/drnas-x5 build/drat-trim build/COOP51_BINARIES.sha256 COOP51_GIT_SHA
+          echo "COOP5.1 preflight PASS: hybrid + frozen previous builds, no main changes, independent proof." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop51-hybrid-frozen-safe
+          retention-days: 60
+          path: |
+            coop51_frozen.tgz
+            coop51_build.log
+            coop51_safety.log
+            build/COOP51_BINARIES.sha256
+            COOP51_GIT_SHA
