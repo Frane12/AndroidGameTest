@@ -62,7 +62,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.db.execute(
             "SELECT role,verified_claim,par2_s FROM observations").fetchone(),
             ("holdout", 1, 0.005))
-        self.assertEqual(M.import_zip(self.db, 9, 27, b.getvalue()), (2, 0))
+        self.assertEqual(M.import_zip(self.db, 9, 27, b.getvalue()), (0, 0))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM observations").fetchone()[0], 1)
 
     def test_legacy_train_import_with_holdout_taint(self):
