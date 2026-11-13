@@ -1,0 +1,79 @@
+name: DRNAS R31 watched-literal BCP optimization paired pilot
+on:
+  push:
+    branches: [experiment/drnas-native-r31-bcp-20261113]
+    paths:
+      - .github/workflows/drnas-native-r31-bcp.yml
+      - research/drnas_r31_compile.py
+      - research/drnas_r31_benchmark.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-r31-bcp-pilot
+  cancel-in-progress: true
+jobs:
+  paired_bcp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare compiler, source archive reader and reproducibility stamp
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential python3-venv
+          python3 -m venv .r31venv
+          .r31venv/bin/python -m pip install --disable-pip-version-check remotezip
+          git rev-parse HEAD > r31_commit.txt
+      - name: Compile original and two BCP variants plus independent small-CNF oracle
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_r31_compile.py research/drnas_r31_benchmark.py
+          python3 research/drnas_r31_compile.py
+      - name: Native paired original SAT2024 benchmark 3/5s two repeats
+        env:
+          R31_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "R31_SINGLE_LOGICAL_CPU $CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" .r31venv/bin/python -u research/drnas_r31_benchmark.py | tee r31.log
+          grep -q '^R31_FINAL ' r31.log
+      - name: Publish verified PAR2 and paired results
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          data=json.load(open('drnas_native_r31/report.json'))
+          lines=[f"## DRNAS R31 BCP — shard {data['shard']}",'',
+            'Original SAT2024, one CPU, exact same SHA/seed and 3/5s per trial.','',
+            '| Arm | Verified SAT | PAR2 s | End-to-end s |',
+            '|---|---:|---:|---:|']
+          for arm,stat in data['totals'].items():
+              lines.append(f"| {arm} | {stat['SAT_verified']} | {stat['PAR2_verified_s']:.5f} | {stat['e2e_s']:.5f} |")
+          lines.append('')
+          for arm,stat in data['relative_to_BASE'].items():
+              lines.append(f"{arm}: PAR2 x{stat['speedup_PAR2_x']:.4f}, "
+                f"paired wins/losses/ties {stat['paired_wins']}/{stat['paired_losses']}/{stat['paired_ties']}")
+          lines.append('\nTwo cohorts remain separate: outcome-free structural selection vs known solved calibration replay. Unverified UNSAT is never a verified win.')
+          print('\n'.join(lines))
+          if os.getenv('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fp:fp.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-r31-bcp-shard-${{ matrix.shard }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            r31_commit.txt
+            r31.log
+            drnas_native_r31/selection.json
+            drnas_native_r31/trials.jsonl
+            drnas_native_r31/report.json
