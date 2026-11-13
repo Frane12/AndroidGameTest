@@ -1,0 +1,89 @@
+name: DRNAS COOP5.2 deep repair preflight 24k original and fallback safety
+on:
+  push:
+    branches: [experiment/drnas-coop52-deep-repair-20261114]
+    paths: [.github/workflows/drnas-coop52-preflight.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop52-deep-repair-preflight
+  cancel-in-progress: false
+jobs:
+  freeze_and_certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43524169066
+          name: coop51-hybrid-frozen-safe
+          github-token: ${{ github.token }}
+          path: frozen/coop
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43449841902
+          name: x59-frozen
+          github-token: ${{ github.token }}
+          path: frozen/x59
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/inputs
+      - name: Exact original inputs and frozen baseline verifications
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/coop/coop51_frozen.tgz
+          sha256sum -c build/COOP51_BINARIES.sha256
+          mkdir -p cross/x59
+          tar -xzf frozen/x59/x59_frozen.tgz -C cross/x59
+          (cd cross/x59 && sha256sum -c build/X59_BINARIES.sha256)
+          tar -xzf frozen/inputs/real36_inputs.tgz
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          rows,meta=B.official_manifest()
+          assert len(rows)==36
+          x=rows[5]
+          assert x["id"]==5 and x["family"]=="planning" and x["nclauses"]==16408
+          print("COOP52_REAL36_MANIFEST_PASS",meta["manifest_sha256"])
+          PY
+      - name: Build 24k and fallback experiments from frozen COOP5 with -Werror
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_coop52/build.py tests/test_drnas_coop52.py
+          python3 -u research/drnas_coop52/build.py | tee coop52_build.log
+          test -x build/drnas-coop52-cap24k
+          test -x build/drnas-coop52-fallback
+          sha256sum build/drnas-coop5-fixed build/drnas-coop52-cap24k \
+            build/drnas-coop52-fallback build/drat-trim > build/COOP52_BINARIES.sha256
+      - name: Independent SAT witness UNSAT DRAT and 16408 original collector checks
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP52_ONE_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop52.py | tee coop52_safety.log
+          grep -q '^COOP52_SAFETY_PASS' coop52_safety.log
+          tar -czf coop52_frozen.tgz \
+            build/drnas-coop5-fixed build/drnas-coop52-cap24k \
+            build/drnas-coop52-fallback build/drat-trim build/COOP52_BINARIES.sha256 \
+            cross/x59/build/drnas-x59 cross/x59/build/kissat cross/x59/build/cadical \
+            cross/x59/build/drat-trim cross/x59/build/X59_BINARIES.sha256 \
+            real36_frozen
+          echo 'COOP52_PREFLIGHT_PASS main untouched frozen reference + two safe experimental builds' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop52-frozen-verified-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop52_frozen.tgz
+            coop52_build.log
+            coop52_safety.log
+            build/COOP52_BINARIES.sha256
