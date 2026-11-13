@@ -22,7 +22,7 @@ import tempfile
 import time
 import zipfile
 
-FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3","community3","xor_ring","graph_k4_unsat","planted4_dense","xor_bridge","mixed_sparse_23")
+FAMILIES=("planted3","planted_xor","planted_2sat","php_unsat","sparse4","sparse3","community3","xor_ring","graph_k4_unsat","planted4_dense","xor_bridge","mixed_sparse_23","hub4_planted","modular2_3","ring3_planted","xor_fan")
 WINDOWS=((1,8),(9,16),(17,128))
 
 def emit(tag, obj):
@@ -31,7 +31,7 @@ def emit(tag, obj):
 def build_case(family,i):
     rng=random.Random(0x46020261113+100003*FAMILIES.index(family)+7919*i)
     clauses=[]
-    n=18 if family in ("sparse4","sparse3","community3","xor_ring","graph_k4_unsat","planted4_dense","xor_bridge","mixed_sparse_23") else 12+(i%6)
+    n=18 if family in ("sparse4","sparse3","community3","xor_ring","graph_k4_unsat","planted4_dense","xor_bridge","mixed_sparse_23","hub4_planted","modular2_3","ring3_planted","xor_fan") else 12+(i%6)
     target=[None]+[bool(rng.randrange(2)) for _ in range(n)]
     def planted_clause(k):
         vs=rng.sample(range(1,n+1),k)
@@ -115,6 +115,44 @@ def build_case(family,i):
         clauses=[planted_clause(2) for _ in range(2*n)]
         clauses.extend(planted_clause(3) for _ in range(n))
         clauses.extend(planted_clause(4) for _ in range(n//2))
+    elif family=="hub4_planted":
+        # Strongly connected variable hub and weaker periphery.
+        hubs=[1,2,3]
+        for _ in range(8*n):
+            vs=rng.sample(hubs,2)+rng.sample(range(4,n+1),2)
+            c=[x*rng.choice((-1,1)) for x in vs]
+            if not any((lit>0)==target[abs(lit)] for lit in c):
+                c[rng.randrange(4)]*=-1
+            clauses.append(c)
+    elif family=="modular2_3":
+        # Modules of three with mixed binary/ternary constraints and bridges.
+        for k in range(0,n,3):
+            module=[k+1,k+2,k+3]
+            for _ in range(13):
+                vs=rng.sample(module,rng.choice((2,3)))
+                c=[x*rng.choice((-1,1)) for x in vs]
+                if not any((lit>0)==target[abs(lit)] for lit in c):
+                    c[rng.randrange(len(c))]*=-1
+                clauses.append(c)
+        clauses.extend(planted_clause(3) for _ in range(3*n))
+    elif family=="ring3_planted":
+        for k in range(n):
+            vs=[k+1,(k+1)%n+1,(k+2)%n+1]
+            for _ in range(5):
+                c=[x*rng.choice((-1,1)) for x in vs]
+                if not any((lit>0)==target[abs(lit)] for lit in c):
+                    c[rng.randrange(3)]*=-1
+                clauses.append(c)
+        clauses.extend(planted_clause(3) for _ in range(n))
+    elif family=="xor_fan":
+        hub=1
+        for i in range(2,n):
+            vs=[hub,i,i+1]
+            rhs=sum(target[x] for x in vs)%2
+            for bits in itertools.product((0,1),repeat=3):
+                if sum(bits)%2!=rhs:
+                    clauses.append([(-x if bit else x) for x,bit in zip(vs,bits)])
+        clauses.extend(planted_clause(3) for _ in range(2*n))
     elif family=="planted_xor":
         for _ in range(n+4):
             vs=rng.sample(range(1,n+1),3)
