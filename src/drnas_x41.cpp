@@ -66,6 +66,11 @@ struct Entry {
 
 class Solver {
   public:
+    struct BranchProbeCost {
+        int result=0;
+        int64_t conflicts=0,decisions=0,propagations=0;
+        double wall_ms=0.0;
+    };
     explicit Solver(int n, std::string mode, double seconds, Clock::time_point started, bool trace_trail=false, int compare_at=0, bool flip_sign=false)
         : n_(n), mode_(std::move(mode)),
           use_backdoor_(false),
@@ -245,14 +250,14 @@ class Solver {
     Result solve() {
         if (timedOut()) return Result::UNKNOWN;
         if (root_unsat_) return Result::UNSAT;
-        Prop p = propagate(-1);
-        if (p.result == PropResult::CONFLICT) return Result::UNSAT;
-        if (p.result == PropResult::TIMEOUT) return Result::UNKNOWN;
-        int64_t restart_interval = 96;
-        int64_t next_restart = restart_interval;
-        int64_t next_reduce = 2200;
+        Prop p;
+        if (!x46_clone_) {
+            p = propagate(-1);
+            if (p.result == PropResult::CONFLICT) return Result::UNSAT;
+            if (p.result == PropResult::TIMEOUT) return Result::UNKNOWN;
+        }
         while (true) {
-            if (timedOut()) return Result::UNKNOWN;
+            if (timedOut() || x46CloneBudgetReached()) return Result::UNKNOWN;
             p = propagate(-1);
             if (p.result == PropResult::TIMEOUT) return Result::UNKNOWN;
             if (p.result == PropResult::CONFLICT) {
@@ -269,15 +274,15 @@ class Solver {
                     throw std::runtime_error("internal asserting-clause invariant violated");
                 }
                 var_inc_ /= 0.95;
-                if (stats_.conflicts >= next_restart) {
+                if (stats_.conflicts >= next_restart_) {
                     cancelUntil(0);
                     ++stats_.restarts;
-                    restart_interval = std::min<int64_t>(2000, static_cast<int64_t>(static_cast<double>(restart_interval) * 1.45) + 1);
-                    next_restart = stats_.conflicts + restart_interval;
+                    restart_interval_ = std::min<int64_t>(2000, static_cast<int64_t>(static_cast<double>(restart_interval_) * 1.45) + 1);
+                    next_restart_ = stats_.conflicts + restart_interval_;
                 }
-                if (stats_.conflicts >= next_reduce) {
+                if (stats_.conflicts >= next_reduce_) {
                     reduceLearnts();
-                    next_reduce = stats_.conflicts + 1400;
+                    next_reduce_ = stats_.conflicts + 1400;
                 }
                 continue;
             }
@@ -296,6 +301,27 @@ class Solver {
             const int64_t next_decision=stats_.decisions+1;
             const int baseline_lit=phase_[v]*(v+1);
             int chosen_lit=baseline_lit;
+            // Two detached snapshots have identical selected-variable,
+            // watch lists, heap, phases, learnt clauses, and restart schedule.
+            // Work done by either probe is NEVER committed to the real solver.
+            if (!x46_clone_ && x46_enabled_ && compare_at_>0 &&
+                next_decision==compare_at_) {
+                x46_probe_digest_=stateDigestAtDecision(v);
+                if ((timeout_s_>0.0 && elapsed()>0.55*timeout_s_) ||
+                    clauses_.size()>60000 || n_>2500) {
+                    x46_skipped_=true;
+                } else {
+                    x46_triggered_=true;
+                    const auto start=Clock::now();
+                    x46_base_=shortProbeBranch(baseline_lit);
+                    x46_alt_=shortProbeBranch(-baseline_lit);
+                    x46_probes_wall_ms_=std::chrono::duration<double,std::milli>(
+                        Clock::now()-start).count();
+                    bool want_flip=preferAlternate(x46_base_,x46_alt_);
+                    x46_chose_flip_=want_flip;
+                    if (want_flip && !x46_shadow_)chosen_lit=-baseline_lit;
+                }
+            }
             if(compare_at_>0 && next_decision==compare_at_) {
                 compare_reached_=true;
                 compare_pre_hash_=stateDigestAtDecision(v);
@@ -401,6 +427,23 @@ class Solver {
             fd<<"}\n";
         }
     }
+    void configureX46(int conflicts,bool shadow,double probe_ms) {
+        if(conflicts!=8 && conflicts!=32 && conflicts!=128)
+            throw std::runtime_error("X46 conflicts must be 8, 32 or 128");
+        if(probe_ms<=0.0 || probe_ms>25.0 || !std::isfinite(probe_ms))
+            throw std::runtime_error("X46 probe wall budget invalid");
+        x46_enabled_=true;x46_shadow_=shadow;
+        x46_probe_conflict_cap_=conflicts;
+        x46_probe_wall_ms_=probe_ms;
+    }
+    bool x46Triggered() const{return x46_triggered_;}
+    bool x46Skipped() const{return x46_skipped_;}
+    bool x46ChosenFlip() const{return x46_chose_flip_;}
+    bool x46Shadow() const{return x46_shadow_;}
+    double x46ProbesWallMs() const{return x46_probes_wall_ms_;}
+    uint64_t x46ProbesHash() const{return x46_probe_digest_;}
+    const BranchProbeCost& x46Base() const{return x46_base_;}
+    const BranchProbeCost& x46Alt() const{return x46_alt_;}
     uint64_t comparePreHash() const{return compare_pre_hash_;}
     bool compareReached() const{return compare_reached_;}
     int compareAt() const{return compare_at_;}
@@ -434,6 +477,21 @@ class Solver {
     int compare_actual_literal_=0;
     int64_t compare_prefix_conflicts_=0,compare_prefix_learnt_=0,compare_prefix_propagations_=0;
     double compare_prefix_elapsed_=0.0;
+    // X4.6 experimental probe parameters. Always scoped to ONE designated
+    // checkpoint decision; never used to assert clauses, SAT, or UNSAT.
+    bool x46_enabled_=false,x46_shadow_=false,x46_clone_=false;
+    bool x46_triggered_=false,x46_skipped_=false,x46_chose_flip_=false;
+    int x46_probe_conflict_cap_=0, x46_clone_conflict_cap_=0;
+    int x46_clone_decision_cap_=0;
+    double x46_probe_wall_ms_=1.5,x46_probes_wall_ms_=0.0;
+    double x46_clone_wall_limit_ms_=0.0;
+    uint64_t x46_probe_digest_=0;
+    int64_t x46_clone_origin_conflicts_=0,x46_clone_origin_decisions_=0;
+    Clock::time_point x46_clone_started_=Clock::now();
+    BranchProbeCost x46_base_{},x46_alt_{};
+    // The original solve's restart/reduction schedule is retained in
+    // copied states; clones no longer silently reset it.
+    int64_t restart_interval_=96,next_restart_=96,next_reduce_=2200;
     struct Snapshot {
         int64_t decisions=0, conflicts=0, learnt=0, propagations=0;
         int assigned=0, level=0, long_open=0;
@@ -585,6 +643,52 @@ class Solver {
     }
     bool timedOut() const {
         return timeout_s_ > 0 && elapsed() >= timeout_s_;
+    }
+    bool x46CloneBudgetReached() const {
+        if(!x46_clone_)return false;
+        if(stats_.conflicts-x46_clone_origin_conflicts_ >=x46_clone_conflict_cap_)
+            return true;
+        if(stats_.decisions-x46_clone_origin_decisions_ >=x46_clone_decision_cap_)
+            return true;
+        return std::chrono::duration<double,std::milli>(
+                   Clock::now()-x46_clone_started_).count()>=x46_clone_wall_limit_ms_;
+    }
+    BranchProbeCost shortProbeBranch(int literal) const {
+        const auto begin=Clock::now();
+        Solver cp(*this);
+        cp.x46_clone_=true;
+        cp.x46_enabled_=false;
+        cp.x46_clone_origin_conflicts_=cp.stats_.conflicts;
+        cp.x46_clone_origin_decisions_=cp.stats_.decisions;
+        cp.x46_clone_conflict_cap_=x46_probe_conflict_cap_;
+        cp.x46_clone_decision_cap_=std::max(12,4*x46_probe_conflict_cap_);
+        cp.x46_clone_wall_limit_ms_=x46_probe_wall_ms_;
+        cp.x46_clone_started_=Clock::now();
+        ++cp.stats_.decisions;
+        cp.newDecisionLevel();
+        if(!cp.enqueue(literal,-1))
+            throw std::runtime_error("X46 first probe decision not free");
+        const Result r=cp.solve();
+        const double ms=std::chrono::duration<double,std::milli>(
+            Clock::now()-begin).count();
+        return {static_cast<int>(r),
+            cp.stats_.conflicts-x46_clone_origin_conflicts_,
+            cp.stats_.decisions-x46_clone_origin_decisions_,
+            cp.stats_.propagations-stats_.propagations,ms};
+    }
+    static bool preferAlternate(const BranchProbeCost& normal,
+                                const BranchProbeCost& flip) {
+        // A short, independently verified SAT witness is stronger evidence
+        // than nonterminal proxy scores. UNSAT is NEVER accepted as a proof.
+        if(flip.result==10 && normal.result!=10)return true;
+        if(normal.result==10 && flip.result!=10)return false;
+        const double score=[](const BranchProbeCost& p){
+            return 4.0*p.conflicts+0.55*p.decisions+0.003*p.propagations;
+        };
+        const double a=score(normal),b=score(flip);
+        // Avoid tiny proxy differences and cap-only undecided signals.
+        return a>=6.0 && (a-b)>std::max(1.0,0.20*a)
+               && flip.conflicts <=normal.conflicts+4;
     }
     int storeClause(std::vector<int> lits, bool learnt) {
         const int cid = static_cast<int>(clauses_.size());
@@ -909,8 +1013,9 @@ int run(int argc, char** argv) {
     const auto process_start=Clock::now();
     std::string input, mode="trace", trace_file;
     double seconds=5.0;
-    bool show_stats=false, trace_trail=false, compare_flip=false;
-    int compare_at=0;
+    bool show_stats=false, trace_trail=false, compare_flip=false,x46_shadow=false;
+    int compare_at=0,x46_conflicts=0;
+    double x46_probe_ms=1.5;
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -920,8 +1025,11 @@ int run(int argc, char** argv) {
         else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
         else if (opt=="--flip-branch") compare_flip=true;
+        else if (opt=="--x46-conflicts" && i+1<argc) x46_conflicts=std::stoi(argv[++i]);
+        else if (opt=="--x46-probe-ms" && i+1<argc) x46_probe_ms=std::stod(argv[++i]);
+        else if (opt=="--x46-shadow") x46_shadow=true;
         else if (opt=="--help") {
-            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch]\n";
+            std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow]\n";
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -931,6 +1039,10 @@ int run(int argc, char** argv) {
         throw std::runtime_error("invalid input/mode/time");
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
     if (compare_flip && compare_at==0)throw std::runtime_error("--flip-branch requires --branch-at");
+    if(x46_conflicts>0 && (compare_at<=0 || compare_flip))
+        throw std::runtime_error("X46 short probes require --branch-at and no --flip-branch");
+    if(x46_shadow && x46_conflicts==0)
+        throw std::runtime_error("--x46-shadow requires --x46-conflicts");
     if (compare_at<0 || compare_at>100000)throw std::runtime_error("invalid --branch-at");
     if (trace_trail && (mode!="trace" || trace_file.empty()))
         throw std::runtime_error("--trace-trail requires trace mode and --transitions");
@@ -958,6 +1070,7 @@ int run(int argc, char** argv) {
                 throw std::runtime_error("invalid DIMACS header");
             if (trace_trail && declared_vars>18) throw std::runtime_error("--trace-trail only supported for at most 18 variables");
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
+            if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             continue;
         }
         if (!solver) throw std::runtime_error("missing DIMACS header");
@@ -996,6 +1109,24 @@ int run(int argc, char** argv) {
     } else if (r==Result::UNSAT) std::cout<<"s UNSATISFIABLE\n";
     else std::cout<<"s UNKNOWN\n";
     solver->writeTransitions(trace_file,r,solve_finish_elapsed);
+    if(x46_conflicts>0){
+        const auto& a=solver->x46Base();
+        const auto& b=solver->x46Alt();
+        std::cerr<<"X46_PROBE {\"conflict_cap\":"<<x46_conflicts
+                 <<",\"per_probe_ms_limit\":"<<x46_probe_ms
+                 <<",\"triggered\":"<<(solver->x46Triggered()?"true":"false")
+                 <<",\"skipped\":"<<(solver->x46Skipped()?"true":"false")
+                 <<",\"shadow\":"<<(solver->x46Shadow()?"true":"false")
+                 <<",\"recommend_flip\":"<<(solver->x46ChosenFlip()?"true":"false")
+                 <<",\"probe_pair_wall_ms\":"<<std::fixed<<std::setprecision(7)<<solver->x46ProbesWallMs()
+                 <<",\"pre_state_digest\":\""<<std::hex<<solver->x46ProbesHash()<<std::dec
+                 <<"\",\"original\":{\"status\":"<<a.result
+                 <<",\"conflicts\":"<<a.conflicts<<",\"decisions\":"<<a.decisions
+                 <<",\"propagations\":"<<a.propagations<<",\"wall_ms\":"<<a.wall_ms
+                 <<"},\"opposite\":{\"status\":"<<b.result
+                 <<",\"conflicts\":"<<b.conflicts<<",\"decisions\":"<<b.decisions
+                 <<",\"propagations\":"<<b.propagations<<",\"wall_ms\":"<<b.wall_ms<<"}}\n";
+    }
     if(compare_at>0) {
         std::cerr<<"X45_COMPARE {\"decision_index\":"<<solver->compareAt()
                  <<",\"reached\":"<<(solver->compareReached()?"true":"false")
