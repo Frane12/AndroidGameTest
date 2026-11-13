@@ -26,18 +26,22 @@ import time
 import drnas_x45_matched_branches as X45
 
 ARMS=("CORE","FLIP","SHADOW_8","X46_8","X46_32","X46_128")
+LEARNED_ARM="X46_LEARNED_8"
 CHECKPOINTS=(1,2,4,8)
 
 def emit(tag,obj):
     print(tag+" "+json.dumps(obj,sort_keys=True,separators=(",",":")),flush=True)
 
-def run(binary,cnf,case,k,arm,cap,probe_ms):
+def run(binary,cnf,case,k,arm,cap,probe_ms,model_file=None):
     cmd=[str(binary),str(cnf),"--mode","core","--time",str(cap),"--branch-at",str(k),"--stats"]
     if arm=="FLIP":cmd.append("--flip-branch")
     elif arm.startswith("X46_") or arm=="SHADOW_8":
-        n=8 if arm=="SHADOW_8" else int(arm.split("_")[1])
+        n=8 if arm in ("SHADOW_8",LEARNED_ARM) else int(arm.split("_")[1])
         cmd+=["--x46-conflicts",str(n),"--x46-probe-ms",str(probe_ms)]
         if arm=="SHADOW_8":cmd.append("--x46-shadow")
+        if arm==LEARNED_ARM:
+            if model_file is None:raise ValueError("learned arm requires model")
+            cmd+=["--x46-model",str(model_file)]
     started=time.monotonic()
     try:
         p=subprocess.run(cmd,capture_output=True,text=True,timeout=cap+1)
@@ -135,6 +139,7 @@ def main():
     p.add_argument("--cap",type=float,default=.8)
     p.add_argument("--probe-ms",type=float,default=1.5)
     p.add_argument("--index-offset",type=int,default=400000)
+    p.add_argument("--model-file",type=Path,default=None)
     args=p.parse_args()
     if args.per_family<3 or args.repeats<2 or args.cap<.25 or args.index_offset<400000:
         raise ValueError("X46 input too small, reused source or invalid cap")
@@ -142,6 +147,10 @@ def main():
     if hasattr(os,"sched_setaffinity"):
         os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
     binary=args.binary.resolve()
+    model_file=args.model_file.resolve() if args.model_file else None
+    if model_file is not None and not model_file.exists():raise ValueError("frozen model absent")
+    model_sha=hashlib.sha256(model_file.read_bytes()).hexdigest() if model_file else None
+    used_arms=ARMS+(LEARNED_ARM,) if model_file else ARMS
     cases=[X45.make_case(fam,args.index_offset+i) for fam in X45.FAMILIES
            for i in range(args.per_family)]
     if len({x["sha256"] for x in cases})!=len(cases):
@@ -154,7 +163,8 @@ def main():
        "actual_distinct_originals":len(cases),
        "no_prior_X45_generator_indices":True,
        "source_generation_index_offset":args.index_offset,
-       "repeats":args.repeats,"checkpoints":CHECKPOINTS,"arms":ARMS,
+       "repeats":args.repeats,"checkpoints":CHECKPOINTS,"arms":used_arms,
+       "frozen_learned_model_sha256":model_sha,
        "per_probe_ms_limit":args.probe_ms,"cap_s":args.cap,
        "no_oracle_knowledge_in_runtime_controller":True,
        "SAT_independent_original_CNF_witness":True,
@@ -172,13 +182,13 @@ def main():
             for k in CHECKPOINTS:
                 for rep in range(args.repeats):
                     # Rotate arm order to reduce systematic thermal/timing bias.
-                    arms=list(ARMS)
+                    arms=list(used_arms)
                     offset=(i+k+rep)%len(arms)
                     arms=arms[offset:]+arms[:offset]
                     one={}
                     for arm in arms:
-                        one[arm]=run(binary,cnf,case,k,arm,args.cap,args.probe_ms)
-                    reached={one[a]["reached"] for a in ARMS}
+                        one[arm]=run(binary,cnf,case,k,arm,args.cap,args.probe_ms,model_file)
+                    reached={one[a]["reached"] for a in used_arms}
                     if len(reached)!=1:raise AssertionError("different checkpoint reachability")
                     if not one["CORE"]["reached"]:
                         not_reached+=1
@@ -206,7 +216,7 @@ def main():
                     diff=flipped["continuation_conflicts"]-original["continuation_conflicts"]
                     label="flip_cheaper" if diff<0 else "baseline_cheaper" if diff>0 else "equal_conflicts"
                     winning_counts[label]+=1
-                    for arm in ARMS:
+                    for arm in used_arms:
                         r=one[arm]
                         p=r["probe"]
                         probe_ms=p["probe_pair_wall_ms"] if p and p["triggered"] else 0
@@ -228,6 +238,8 @@ def main():
                              "probe_triggered":bool(p and p["triggered"]),
                              "probe_skipped":bool(p and p["skipped"]),
                              "recommended_flip":bool(rec),"actual_flip":actual_flip,
+                             "learned_model":bool(p and p.get("learned_model",False)),
+                             "flip_probability":p.get("predicted_flip_probability") if p else None,
                              "counterfactual_label":label,
                              "probe_base":p["original"] if p and p["triggered"] else None,
                              "probe_alt":p["opposite"] if p and p["triggered"] else None}
@@ -236,24 +248,27 @@ def main():
                 with (args.out/"trials.jsonl").open("w") as out:
                     for row in rows:out.write(json.dumps(row,sort_keys=True)+"\n")
                 emit("X46_PROGRESS",{"done_originals":i+1,"total_originals":len(cases),
-                    "matched_decision_pairs":len(rows)//len(ARMS),
+                    "matched_decision_pairs":len(rows)//len(used_arms),
                     "not_reached":not_reached,
                     "short_probes_triggered":probes_triggered})
     with (args.out/"trials.jsonl").open("w") as out:
         for row in rows:out.write(json.dumps(row,sort_keys=True)+"\n")
-    totals={arm:aggregate(rows,arm) for arm in ARMS}
-    tests={arm:bootstrap(rows,arm) for arm in ARMS[1:]}
-    family={fam:{arm:aggregate([x for x in rows if x["family"]==fam],arm) for arm in ARMS}
+    if model_file and hashlib.sha256(model_file.read_bytes()).hexdigest()!=model_sha:
+        raise AssertionError("holdout rewrote frozen X46 model")
+    totals={arm:aggregate(rows,arm) for arm in used_arms}
+    tests={arm:bootstrap(rows,arm) for arm in used_arms[1:]}
+    family={fam:{arm:aggregate([x for x in rows if x["family"]==fam],arm) for arm in used_arms}
              for fam in X45.FAMILIES}
     report={"protocol":"X46 costed two-clone online short-polarity probes at one matched checkpoint",
         "cohort":"new SHA-distinct original synthetics",
         "distinct_original_sources":len(cases),"source_family_count":len(X45.FAMILIES),
         "attempted_checkpoint_pairs":len(cases)*len(CHECKPOINTS)*args.repeats,
-        "matched_checkpoint_pairs":len(rows)//len(ARMS),
+        "matched_checkpoint_pairs":len(rows)//len(used_arms),
         "checkpoint_not_reached_pairs":not_reached,
-        "all_six_arms_matching_pre_state":True,
+        "all_arms_matching_pre_state":True,
         "all_continuations_verified":True,
         "training":False,"probe_policy_fixed_pre_holdout":True,
+        "frozen_learned_cost_model":model_sha,
         "default_branch_unchanged":True,
         "full_counterfactual_labels":dict(winning_counts),
         "probe_vs_full_continuation":{arm:{
@@ -262,14 +277,14 @@ def main():
             "accuracy":round(recommended_correct[arm+"|correct"]/
                       recommended_correct[arm+"|seen"],5)
                       if recommended_correct[arm+"|seen"] else None}
-            for arm in ("X46_8","X46_32","X46_128")},
+            for arm in (("X46_8","X46_32","X46_128",LEARNED_ARM) if model_file else ("X46_8","X46_32","X46_128"))},
         "by_arm":totals,"comparisons_vs_CORE":tests,
         "by_family":family,"all_probe_triggered_arm_runs":probes_triggered,
         "probe_skips":probe_skipped,
         "caveats":[
           "Short probe cost includes cloning and selected bounded C++ continuation; end-to-end PAR2 includes independent SAT witness checks.",
           "Main solver never imports learned clauses or proofs from clones.",
-          "This is an initial fixed heuristic with paired counterfactual labels, not a trained policy.",
+          "The optional learned arm loads a frozen predictor from a separate verified training cohort; fixed arms are heuristics.",
           "UNSAT only independently checked for <=18 vars by exhaustive enumeration.",
           "Original CNFs, not repeated probes, are independent statistical units.",
           "This is synthetic, not blind official SAT Competition performance."
