@@ -21,7 +21,7 @@ import subprocess
 import time
 import urllib.request
 
-from omega3_verify import parse_cnf, verify_sat, verify_unsat
+from omega3_verify import parse_cnf, verify_sat, verify_unsat, verify_source_preserving_sat_view
 
 
 def source_xor3(clauses):
@@ -280,10 +280,33 @@ def download_source(entry, commit, dest):
         raw = compressed
     if len(raw) > 10000000:
         raise ValueError("Input exceeds 10 MB")
-    parse_cnf(raw)
+    # MCC/PMC sources may carry projection/weight annotations and SATLIB
+    # '%' trailers. No variables, literal signs, clauses or formula order
+    # are changed; only formatting/annotation lines are removed for a
+    # common strict-DIMACS SAT interface for ALL three solver arms.
+    source_lines = []
+    stripped = 0
+    for line in raw.decode("ascii").splitlines():
+        line = line.strip()
+        if line.startswith("%"):
+            stripped += 1
+            break
+        if line.startswith("c") or line.startswith("w ") or not line:
+            stripped += 1
+            continue
+        source_lines.append(line)
+    sanitized = ("\n".join(source_lines) + "\n").encode("ascii")
+    n, clauses = parse_cnf(sanitized)
+    sat_view = (f"p cnf {n} {len(clauses)}\n" +
+                "".join(" ".join(map(str, clause)) + " 0\n" for clause in clauses)).encode("ascii")
+    verify_source_preserving_sat_view(raw, sat_view)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(raw)
-    return raw
+    dest.write_bytes(sat_view)
+    return sat_view, {"raw_source_sha256": sha256(raw),
+                      "raw_source_bytes": len(raw),
+                      "sat_view_sha256": sha256(sat_view),
+                      "stripped_metadata_lines": stripped,
+                      "normalization": "clause-preserving SAT base (original source SHA retained)"}
 
 
 def one_solver(bin_path, path, raw, cap):
@@ -375,7 +398,8 @@ def main():
         record["shard"] = args.shard
         dest = cases / (str(idx).zfill(3) + ".cnf")
         try:
-            raw = download_source(entry, manifest["commit"], dest)
+            raw, conversion = download_source(entry, manifest["commit"], dest)
+            record.update(conversion)
             record["sha256"] = sha256(raw)
             record["source_bytes"] = len(raw)
             if record["sha256"] in seen_sha:
