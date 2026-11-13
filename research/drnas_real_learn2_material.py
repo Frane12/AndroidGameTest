@@ -170,23 +170,30 @@ def select(args):
             buckets[(i["split"],i["tier"])].append(i)
         for k in buckets:
             buckets[k]=order_entries(buckets[k])
-        candidates=[]
-        used_entries=set()
-        def add_candidates(role,t,limit):
-            key=(role,t);added=0
-            for item in buckets.get(key,[]):
+        candidates=[];used_entries=set()
+        role_lists={role:[] for role in ROLES}
+        def queue(role,t,limit):
+            added=0
+            for item in buckets.get((role,t),[]):
                 identity=(item["year"],item["name"])
                 if identity in used_entries:continue
-                used_entries.add(identity);candidates.append(item);added+=1
+                used_entries.add(identity);role_lists[role].append(item);added+=1
                 if added>=limit:return
         for role in ROLES:
             for t in ("small","medium","large"):
                 target=round(args.count*ROLE_TARGETS[role]*TIER_TARGETS[t])
-                if target>0:add_candidates(role,t,target*3+10)
-        # Overflow pool: preserve the intended split proportions where possible.
+                if target>0:queue(role,t,target*3+10)
         for role in ROLES:
             for t in ("small","medium","large"):
-                add_candidates(role,t,args.count*2)
+                queue(role,t,args.count*3)
+        indices={role:0 for role in ROLES}
+        plan={role:0 for role in ROLES}
+        while any(indices[r]<len(role_lists[r]) for r in ROLES):
+            available=[r for r in ROLES if indices[r]<len(role_lists[r])]
+            role=min(available,key=lambda r:(plan[r]/max(1,ROLE_TARGETS[r]),ROLES.index(r)))
+            candidates.append(role_lists[role][indices[role]])
+            indices[role]+=1
+            plan[role]+=1
         selected=[];reject=collections.Counter();by_role=collections.Counter()
         max_attempts=min(len(candidates),max(args.count*7,1200))
         for item in candidates[:max_attempts]:
@@ -202,7 +209,7 @@ def select(args):
                     reject["historical_semantic_sha"]+=1;continue
                 if len(selected)+1<args.count and sum(x["bytes"] for x in selected)+len(raw)>args.max_raw_bytes:
                     reject["raw_byte_budget"]+=1;continue
-            except (OSError,EOFError,UnicodeError,ValueError,lzma.LZMAError,bz2.BZ2Decompressor.__class__) as exc:
+            except (OSError,EOFError,UnicodeError,ValueError,lzma.LZMAError) as exc:
                 reject[type(exc).__name__]+=1
                 continue
             old_sha.add(sha);old_sem.add(parsed["semantic_sha"])
