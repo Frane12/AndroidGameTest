@@ -137,7 +137,10 @@ def comparison(rows,left,right,metric):
         a=[x for x in group if x["arm"]==left]
         b=[x for x in group if x["arm"]==right]
         assert len(a)==len(b)==REPEATS
-        diffs.append(sum(x[metric] or 0 for x in b)-sum(x[metric] or 0 for x in a))
+        if any(x.get(metric) is None for x in a+b):
+            return {"left":left,"right":right,"metric":metric,"available":False,
+                    "reason":"A trial lacks an external CPU measurement; never impute zero"}
+        diffs.append(sum(x[metric] for x in b)-sum(x[metric] for x in a))
     rng=random.Random(551513)
     bootstrap=sorted(sum(rng.choices(diffs,k=len(diffs))) for _ in range(4000))
     return {"left":left,"right":right,"metric":metric,
