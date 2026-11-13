@@ -30,7 +30,7 @@ def trials(path,split,cap,arms,repeats,allowed):
         for line in (manifest.parent/"trials.jsonl").read_text().splitlines():
             if not line.strip():continue
             row=json.loads(line)
-            if row["sha256"] not in allowed or row["split"] not in allowed[row["sha256"]]:
+            if row["sha256"] not in allowed or row["split"] != allowed[row["sha256"]]:
                 raise RuntimeError("sample outside locked source split")
             if row["accepted"] and not row["verified"]:
                 raise RuntimeError("uncertified row received solved credit")
