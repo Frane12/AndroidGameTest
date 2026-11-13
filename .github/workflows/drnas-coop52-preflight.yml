@@ -1,0 +1,57 @@
+name: DRNAS COOP5.2 BCP quality and under25ms budget preflight
+on:
+  push:
+    branches: [experiment/drnas-coop52-budget-quality-20261114]
+    paths:
+      - .github/workflows/drnas-coop52-preflight.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop52-budget-quality-preflight
+  cancel-in-progress: false
+jobs:
+  build_and_certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43524169066
+          name: coop51-hybrid-frozen-safe
+          github-token: ${{ github.token }}
+          path: .
+      - name: Compile proof-preserving quality gate from frozen CDCL
+        run: |
+          set -euo pipefail
+          tar -xzf coop51_frozen.tgz
+          sha256sum -c build/COOP51_BINARIES.sha256
+          python3 -m py_compile research/drnas_coop52/build.py tests/test_drnas_coop52.py
+          python3 -u research/drnas_coop52/build.py | tee coop52_compile.log
+          test -x build/drnas-coop52-quality
+          sha256sum build/drnas-coop52-quality build/drnas-coop51-hybrid build/drnas-coop5-fixed build/drnas-coop5-dynamic build/drnas-x5 build/drat-trim > build/COOP52_BINARIES.sha256
+      - name: Independently validate original SAT witnesses and DRAT across 1ms 25ms policies
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP52_SINGLE_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop52.py | tee coop52_safety.log
+          git rev-parse HEAD > COOP52_GIT_SHA
+          tar -czf coop52_frozen.tgz \
+            build/drnas-coop52-quality build/drnas-coop51-hybrid \
+            build/drnas-coop5-fixed build/drnas-coop5-dynamic \
+            build/drnas-x5 build/drat-trim build/COOP52_BINARIES.sha256 COOP52_GIT_SHA
+          echo 'COOP5.2 1/25ms quality probe preflight certified. Experimental only, no main changes.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop52-quality-budgets-frozen
+          retention-days: 60
+          path: |
+            coop52_frozen.tgz
+            coop52_compile.log
+            coop52_safety.log
+            COOP52_GIT_SHA
+            build/COOP52_BINARIES.sha256
