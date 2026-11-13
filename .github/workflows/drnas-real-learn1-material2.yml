@@ -1,0 +1,357 @@
+name: DRNAS REAL-LEARN1 MATERIAL2 useful real data curriculum
+on:
+  push:
+    branches: [experiment/drnas-real-learn1-material2-20261113]
+    paths: [.github/workflows/drnas-real-learn1-material2.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-real-learn1-material2
+  cancel-in-progress: false
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+jobs:
+  safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Verify frozen identities and new data-contract tests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -m py_compile research/drnas_real_material2.py research/drnas_real_train2.py
+          python3 -m unittest discover -s tests -p test_drnas_real_material2.py -v
+          python3 - <<'PY'
+          import sys,tempfile,itertools,random,json,os
+          from pathlib import Path
+          sys.path.insert(0,'research')
+          import drnas_real_train2 as T
+          os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          rng=random.Random(131126);checked=0;proofs=0
+          cases=[(2,[(1,),(-1,)]),(2,[(1,2),(-1,2)])]
+          for i in range(24):
+              n=5;cs=[]
+              for _ in range(20):
+                  cs.append(tuple(v*rng.choice((-1,1)) for v in rng.sample(range(1,n+1),3)))
+              cases.append((n,cs))
+          with tempfile.TemporaryDirectory() as d:
+              td=Path(d);cnf=td/'original.cnf'
+              for i,(n,cs) in enumerate(cases):
+                  expected=any(all(any(bits[abs(v)-1]==(v>0) for v in c) for c in cs) for bits in itertools.product((False,True),repeat=n))
+                  cnf.write_text('p cnf %d %d\n'%(n,len(cs))+''.join(' '.join(map(str,c))+' 0\n' for c in cs))
+                  arms=(*T.ARMS,'Kissat','CaDiCaL','CMS') if i<2 else T.ARMS
+                  for arm in arms:
+                      r=T.execute(arm,cnf,cs,n,3.,td)
+                      assert r['accepted'] and (r['status']=='SAT')==expected,(arm,r)
+                      checked+=1;proofs+=r['status']=='UNSAT'
+          print('REAL1_M2_SAFETY',json.dumps({'checked':checked,'independent_unsat_proofs':proofs,'status':'PASS'}))
+          PY
+  material:
+    needs: safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn1-data-20261113
+          path: previous
+          persist-credentials: false
+      - name: Collect smaller applications and historical CNFs without inspecting outcomes
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages -q remotezip==0.12.3
+          python3 -u research/drnas_real_material2.py --count 480 \
+            --previous previous/research/memory/real_learn1/runs --out material | tee material.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1m2-material
+          retention-days: 90
+          path: material/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1m2-material-audit
+          retention-days: 90
+          path: |
+            material/manifest.json
+            material.log
+  train:
+    needs: material
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material
+          path: material
+      - name: Native paired curriculum 0.5s then 3s and bounded 12s rescue
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -u research/drnas_real_train2.py bench --stage train --material material \
+            --out train_${{ matrix.shard }} --shard ${{ matrix.shard }} --shards 4 --repeats 3 \
+            | tee train_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1m2-train-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            train_${{ matrix.shard }}/
+            train_${{ matrix.shard }}.log
+  fit:
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material-audit
+          path: audit
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1m2-train-*
+          path: trials
+      - name: Fit on train only with family CV, noise rejection and explicit censoring
+        run: |
+          set -euo pipefail
+          mkdir -p material
+          cp audit/material/manifest.json material/manifest.json
+          python3 -u research/drnas_real_train2.py fit --material material --data trials \
+            --out candidate/policy.json | tee candidate.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real1m2-candidate
+          retention-days: 90
+          path: candidate/
+  validation:
+    needs: fit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material
+          path: material
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-candidate
+          path: model
+      - name: One-pass unfiltered validation with real routing and SHAM overhead control
+        run: |
+          set -euo pipefail
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          python3 -u research/drnas_real_train2.py bench --stage validation --material material \
+            --model model/policy.json --out validation_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 --cap 3 --repeats 2 \
+            | tee validation_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1m2-validation-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            validation_${{ matrix.shard }}/
+            validation_${{ matrix.shard }}.log
+  gate:
+    needs: validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material-audit
+          path: audit
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-candidate
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1m2-validation-*
+          path: trials
+      - name: Freeze accepted policy or X5_NO_MIN fallback before opening holdout
+        run: |
+          set -euo pipefail
+          mkdir -p material
+          cp audit/material/manifest.json material/manifest.json
+          python3 -u research/drnas_real_train2.py report --stage validation --material material \
+            --data trials --model candidate/policy.json --out gated/validation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real1m2-gated
+          retention-days: 90
+          path: gated/
+  holdout:
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material
+          path: material
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-gated
+          path: model
+      - name: Unfiltered holdout against frozen native policies and three external references
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          python3 -u research/drnas_real_train2.py bench --stage holdout --material material \
+            --model model/frozen_policy.json --out holdout_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 --cap 3 --repeats 2 \
+            | tee holdout_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1m2-holdout-${{ matrix.shard }}
+          retention-days: 90
+          path: |
+            holdout_${{ matrix.shard }}/
+            holdout_${{ matrix.shard }}.log
+  final:
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-material-audit
+          path: audit
+      - uses: actions/download-artifact@v4
+        with:
+          name: real1m2-gated
+          path: model
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1m2-holdout-*
+          path: trials
+      - name: Family-clustered net PAR2 with no automatic solver promotion
+        run: |
+          set -euo pipefail
+          mkdir -p material
+          cp audit/material/manifest.json material/manifest.json
+          python3 -u research/drnas_real_train2.py report --stage holdout --material material \
+            --data trials --model model/frozen_policy.json --out final/report.json | tee final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real1m2-final
+          retention-days: 90
+          path: |
+            final/
+            final.log
+  persist:
+    needs: [material, train, fit, validation, gate, holdout, final]
+    if: always()
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-real-learn1-material2-data-20261113
+          path: durable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real1m2-*
+          path: evidence
+      - name: Keep audit and training memory even for rejected or incomplete cycles
+        env:
+          REAL_RUN: ${{ github.run_id }}
+          FINAL_STATE: ${{ needs.final.result }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,json,gzip,shutil,hashlib
+          from pathlib import Path
+          root=Path('durable/research/memory/real_learn1_material2')/os.environ['REAL_RUN']
+          root.mkdir(parents=True,exist_ok=False)
+          copied=[]
+          for p in sorted(Path('evidence').rglob('*')):
+              if not p.is_file() or p.suffix not in ('.json','.jsonl','.log'): continue
+              relative=p.relative_to('evidence'); target=root/relative
+              target.parent.mkdir(parents=True,exist_ok=True)
+              data=p.read_bytes()
+              if p.suffix in ('.jsonl','.log'):
+                  target=target.with_suffix(target.suffix+'.gz');data=gzip.compress(data,mtime=0)
+              target.write_bytes(data);copied.append(str(target.relative_to(root)))
+          (root/'archive_status.json').write_text(json.dumps({'run_id':os.environ['REAL_RUN'],
+              'final_job':os.environ['FINAL_STATE'],'complete':os.environ['FINAL_STATE']=='success',
+              'files':copied,'production_solver_modified':False,
+              'source_bytes':'90-day source artifact; permanent source URLs and byte/canonical hashes in manifest',
+              'training':'train-only; validation and holdout retained separately; no X47 label import'},indent=2)+'\n')
+          print('REAL1_M2_PERSISTED',str(root),len(copied),os.environ['FINAL_STATE'])
+          PY
+          git -C durable config user.name 'github-actions[bot]'
+          git -C durable config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C durable add research/memory/real_learn1_material2
+          git -C durable commit -m "memory(real-learn1): preserve material2 provenance, censored evidence and guarded model"
+          git -C durable push origin HEAD:experiment/drnas-real-learn1-material2-data-20261113
