@@ -1785,6 +1785,9 @@ int run(int argc, char** argv) {
     if (!solver || !clause.empty() || seen_clauses!=declared_clauses)
         throw std::runtime_error("incomplete or mismatched DIMACS clause count");
     solver->finishParsing();
+    // Print once *before* starting the time-capped search so CSR eligibility
+    // and static binary edge counts survive external watchdog kills.
+    if(show_stats && x56_binary_csr) solver->printX56Stats(std::cerr);
     // Fast fallback: if the frozen risk gate rejects this source before
     // any probe, do not even open or deserialize the learned cost model.
     // The original C++ CDCL search is left intact. The guard itself still
