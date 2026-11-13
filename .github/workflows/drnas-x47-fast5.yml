@@ -1,0 +1,120 @@
+name: DRNAS X4.7 FAST5 24 fresh CNFs 5s cap
+
+on:
+  push:
+    branches: [experiment/drnas-x47-longer-120-20261113]
+    paths:
+      - .github/workflows/drnas-x47-fast5.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-x47-fast5-fresh
+  cancel-in-progress: false
+
+jobs:
+  fast5:
+    name: FAST5 six-family shard ${{ matrix.shard }} / 3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          run-id: 43363483258
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Compile exact unchanged X4.7 CDCL and validate frozen policy SHA
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o drnas-x47-fast5
+          python3 -m py_compile research/drnas_x47_long_bench.py
+          (cd frozen && sha256sum -c x47long_frozen_sha256.txt)
+      - name: Six new source CNFs x five matched arms x two repetitions, cap 5 seconds
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x47_long_bench.py \
+            --binary drnas-x47-fast5 --cohort synthetic \
+            --out fast5_shard_${{ matrix.shard }} \
+            --shard ${{ matrix.shard }} --shards 4 \
+            --synthetic-count 24 --source-offset 1400000 \
+            --cap 5.0 --repeats 2 \
+            --model frozen/x47long_training/frozen_cost_model.txt \
+            --guard frozen/x47long_training/frozen_risk_guard.txt \
+            | tee fast5_shard_${{ matrix.shard }}.log
+      - name: Audit 6 unique SHA, six families, 60 paired trials, SAT/UNSAT verified
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('fast5_shard_${{ matrix.shard }}')
+          m=json.loads((p/'manifest.json').read_text())
+          r=json.loads((p/'report.json').read_text())
+          rows=[json.loads(x) for x in (p/'trials.jsonl').read_text().splitlines()]
+          assert m['cap_s']==5.0 and m['repeats']==2
+          assert m['original_sources']==6 and r['original_sources']==6 and r['total_trials']==60
+          assert len({x['sha256'] for x in m['originals']})==6
+          assert len({x['family'] for x in m['originals']})==6
+          assert all(r['all_arms'][a]['trials']==12 for a in m['arms'])
+          assert all(x['verified'] for x in rows if x['status'] in ('SAT','UNSAT'))
+          print('X47_FAST5_AUDIT_PASS',m['shard'],r['all_arms'])
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-fast5-shard-${{ matrix.shard }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            fast5_shard_${{ matrix.shard }}/manifest.json
+            fast5_shard_${{ matrix.shard }}/report.json
+            fast5_shard_${{ matrix.shard }}/trials.jsonl
+            fast5_shard_${{ matrix.shard }}.log
+
+  aggregate:
+    name: FAST5 verified PAR2, solved counts, paired source bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    needs: [fast5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x47-fast5-shard-*
+          path: results
+      - name: Aggregate results and verify N=24 distinct original CNFs
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x47_long_aggregate.py --root results --out fast5_summary.json | tee fast5_summary.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('fast5_summary.json').read_text())['synthetic']
+          assert s['original_sources']==24
+          assert s['source_families']==6
+          assert s['completed_shards']==4
+          assert s['total_trials']==240
+          assert all(v['trials']==48 for v in s['by_arm'].values())
+          print('X47_FAST5_VERIFIED_TOTAL',json.dumps({'sources':24,'cap_s':5,
+                'by_arm':s['by_arm'],'paired95':s['comparison']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-fast5-summary
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            fast5_summary.json
+            fast5_summary.log
