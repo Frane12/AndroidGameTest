@@ -77,7 +77,7 @@ def collect(out,local=None):
     if not d.eof or len(raw)>32*1024**2:raise RuntimeError('truncated/oversize input')
     raw_cases.append((e.filename,raw))
  cases=[];seen=set();case_dir=out/'cnf';case_dir.mkdir()
- for name,raw in sorted(raw_cases):
+ for name,raw in sorted(raw_cases,key=lambda item:(not pathlib.PurePosixPath(item[0]).name.startswith('simon-'),item[0])):
   sha=hashlib.sha256(raw).hexdigest();base=pathlib.PurePosixPath(name).name
   if base in CONTROLS and sha!=CONTROLS[base]:raise RuntimeError(('changed control input',base))
   if sha in seen:raise RuntimeError('duplicate original input')
@@ -134,7 +134,9 @@ def run(case,cs,arm,rep,out,cap):
    k,v=line.split(' ',1);stats[k]=json.loads(v)
  cpu_s=(after.ru_utime+after.ru_stime)-(before.ru_utime+before.ru_stime);rss=None
  if usage.exists():
-  values=usage.read_text().splitlines()[-1].split()
+  lines=usage.read_text().splitlines()
+  # External timeout can kill /usr/bin/time before it writes a final line.
+  values=lines[-1].split() if lines else []
   if len(values)==3:cpu_s=float(values[0])+float(values[1]);rss=int(values[2])
  accepted=verified and elapsed<=cap
  row={**case,'rep':rep,'arm':arm,'command':cmd,'cap_s':cap,'status':status,'verified':verified,'accepted':accepted,'returncode':rc,'externally_killed':killed,'solve_e2e_s':elapsed,'check_s':check_s,'verified_total_s':elapsed+check_s,'PAR2_s':elapsed if accepted else 2*cap,'cpu_s':cpu_s,'maxrss_kib':rss,'proof_bytes':proof.stat().st_size if proof.exists() else 0,'stats':stats}
