@@ -1,0 +1,156 @@
+name: DRNAS X5 GAP14 phase diagnosis frozen competitors 5s 15s
+on:
+  push:
+    branches: [experiment/drnas-x5-best100-gap14-20261113]
+    paths:
+      - .github/workflows/drnas-x5-best100-gap14.yml
+      - research/drnas_x5_gap14.py
+      - src/drnas_x5_profile.cpp
+      - tests/test_x5_profile.py
+      - experiments/drnas_x5_gap14/**
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x5-best100-gap14-20261113
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x52-original100-frozen-source-bytes
+          run-id: 43396550073
+          github-token: ${{ github.token }}
+          path: input
+      - name: Restore frozen solver runtime and validate original source hashes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat=5.11.15+dfsg1-1.1build1 libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1
+          chmod +x build/drnas-x5 build/kissat build/cadical build/cms build/drat-trim build/frat-rs build/timed
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          dpkg-query -W cryptominisat libcryptominisat5-5.11t64 > build/gap14_runtime.txt
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x5_profile.cpp -o build/drnas-x5-profile
+          g++ --version | head -1 > build/gap14_compiler.txt
+          python3 -m py_compile research/drnas_x5_gap14.py tests/test_x5_profile.py
+      - name: Validate profile OFF and ON search parity plus exact SAT and independent UNSAT proofs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u tests/test_x5_profile.py | tee gap14_selftest.log
+      - name: Freeze 14 original input identities and separate competitive and diagnostic protocols
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_gap14.py freeze | tee gap14_freeze.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-gap14-protocol
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            gap14_protocol.json
+            gap14_freeze.log
+            gap14_selftest.log
+            build/drnas-x5-profile
+            build/gap14_runtime.txt
+            build/gap14_compiler.txt
+
+  diagnostic:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x52-original100-frozen-source-bytes
+          run-id: 43396550073
+          github-token: ${{ github.token }}
+          path: input
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-gap14-protocol
+          path: protocol_download
+      - name: Restore exact profile binary and match frozen competitive solver identities
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat=5.11.15+dfsg1-1.1build1 libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1
+          cp protocol_download/build/drnas-x5-profile build/drnas-x5-profile
+          cp protocol_download/gap14_protocol.json gap14_protocol.json
+          chmod +x build/drnas-x5 build/drnas-x5-profile build/kissat build/cadical build/cms build/drat-trim build/frat-rs build/timed
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          dpkg-query -W cryptominisat libcryptominisat5-5.11t64 > build/gap14_runtime.txt
+          cmp protocol_download/build/gap14_runtime.txt build/gap14_runtime.txt
+      - name: Run matched five-solver comparison and six separate phase profiles on one logical CPU
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/drnas_x5_gap14.py shard --shard ${{ matrix.shard }} | tee gap14_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-gap14-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            gap14_shards/${{ matrix.shard }}/
+            gap14_shard.log
+
+  report:
+    needs: [prepare, diagnostic]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-gap14-protocol
+          path: protocol_download
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-x5-gap14-shard-*
+          path: gap14_downloads
+          merge-multiple: false
+      - name: Require all 280 competitive and 84 diagnostic rows and publish per-source phase analysis
+        run: |
+          set -euo pipefail
+          cp protocol_download/gap14_protocol.json gap14_protocol.json
+          python3 -u research/drnas_x5_gap14.py report | tee gap14_final.log
+          cat gap14_final/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x5-gap14-final
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            gap14_final/
+            gap14_final.log
+            gap14_protocol.json
