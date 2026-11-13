@@ -1,5 +1,5 @@
 // DRNAS X4.8 -- experimental conservative CDCL risk gate, never deployed as CORE.
-// Pilot phase: trace is observational ONLY; policy identical to X3 core.
+// CORE path remains identical to X4.7; gated action is opt-in, one checkpoint only.
 // Original implementation. No external SAT solver is linked or invoked.
 #include <algorithm>
 #include <chrono>
@@ -92,7 +92,7 @@ class Solver {
             if(!(in>>magic>>nf>>nm>>threshold_>>ood_limit_>>model_kind_>>model_bias_>>min_conflicts_) || magic!="X481" ||
                nf!=NF || nm<2 || nm>64 || !std::isfinite(threshold_) ||
                !std::isfinite(ood_limit_) || ood_limit_<=0 || !std::isfinite(model_bias_) || min_conflicts_<0 || min_conflicts_>100000 || (model_kind_!="ridge" && model_kind_!="tree"))
-                throw std::runtime_error("invalid X47 model header");
+                throw std::runtime_error("invalid X48 model header");
             for(double& v:centers_) if(!(in>>v) || !std::isfinite(v)) throw std::runtime_error("invalid center");
             for(double& v:scales_) if(!(in>>v) || !std::isfinite(v) || v<=0) throw std::runtime_error("invalid scale");
             weights_.resize(nm,std::vector<double>(model_kind_=="tree"?10:NF+1));
