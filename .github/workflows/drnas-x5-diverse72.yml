@@ -1,0 +1,106 @@
+name: DRNAS DIVERSE72 twelve SAT UNSAT categories 2s
+on:
+  push:
+    branches: [experiment/drnas-x5-diverse72-20261113]
+    paths: [.github/workflows/drnas-x5-diverse72.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x5-diverse72
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x5-frozen-binaries
+          run-id: 43368689724
+          github-token: ${{ github.token }}
+          path: build
+      - name: Check frozen source and reference binary identity
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          chmod +x build/*
+          sha256sum -c build/reference_sha256.txt
+          sha256sum -c experiments/drnas_x5/frozen_sha256.txt
+          python3 -m py_compile research/drnas_x5_diverse72.py
+      - name: Paired one-logical-CPU measurements with proof checks inside the 2s budget
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_x5_diverse72.py --out diverse72_${{ matrix.shard }} \
+            --per-family 6 --offset 9300000 --cap 2 --repeats 3 \
+            --shards 3 --shard ${{ matrix.shard }} \
+            | tee diverse72_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-diverse72-shard-${{ matrix.shard }}
+          retention-days: 30
+          path: |
+            diverse72_${{ matrix.shard }}/
+            diverse72_${{ matrix.shard }}.log
+  report:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-diverse72-shard-*
+          path: results
+      - name: Require all 1512 paired results and report size and category regressions
+        run: |
+          set -euo pipefail
+          python3 research/drnas_x5_report.py --root results --out diverse72_final.json --synthetic 72 --official 0 > diverse72_final.log
+          python3 - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          from collections import Counter
+          import sys
+          sys.path.insert(0,'research')
+          from drnas_x5_bench import summarize
+          manifests=[json.loads(p.read_text()) for p in Path('results').rglob('manifest.json')]
+          sources=[s for m in manifests for s in m['sources']]
+          rows=[json.loads(l) for p in Path('results').rglob('trials.jsonl') for l in p.read_text().splitlines()]
+          assert len(sources)==72 and len({s['sha256'] for s in sources})==72
+          assert len(rows)==1512 and len(manifests)==3
+          assert Counter(s['expected_status'] for s in sources)=={'SAT':36,'UNSAT':36}
+          assert len({s['family'] for s in sources})==12
+          assert Counter(s['level'] for s in sources)=={'small':24,'medium':24,'larger':24}
+          arms=manifests[0]['arms']
+          result={'sources':72,'categories':12,'repeats':3,'trials':1512,'cap_s':2,
+            'variables_range':[min(s['nvars'] for s in sources),max(s['nvars'] for s in sources)],
+            'clauses_range':[min(s['nclauses'] for s in sources),max(s['nclauses'] for s in sources)],
+            'totals':summarize(rows,arms),
+            'by_level':{size:summarize([r for r in rows if r['level']==size],arms) for size in ('small','medium','larger')},
+            'by_family':{f:summarize([r for r in rows if r['family']==f],arms) for f in sorted({r['family'] for r in rows})},
+            'timing':{a:{'solve_sum_s':sum(r['solve_s'] for r in rows if r['arm']==a),
+                         'check_sum_s':sum(r['check_s'] for r in rows if r['arm']==a),
+                         'median_solve_ms':1000*statistics.median(r['solve_s'] for r in rows if r['arm']==a)} for a in arms},
+            'caveat':'Constructed synthetic categories with shared generation templates; not industrial or independent-family generalization evidence.'}
+          Path('diverse72_summary.json').write_text(json.dumps(result,indent=2)+'\n')
+          print('DIVERSE72_SUMMARY',json.dumps(result,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-diverse72-final
+          retention-days: 30
+          path: |
+            diverse72_final.json
+            diverse72_final.log
+            diverse72_summary.json
