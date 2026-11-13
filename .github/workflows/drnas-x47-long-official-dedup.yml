@@ -1,0 +1,79 @@
+name: DRNAS X4.7 LONG official SAT2024 SHA deduplicated retry
+on:
+  push:
+    branches: [experiment/drnas-x47-longer-120-20261113]
+    paths:
+      - research/drnas_x47_official_dedup.py
+      - .github/workflows/drnas-x47-long-official-dedup.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-x47-long-official-deduplicated
+  cancel-in-progress: false
+jobs:
+  original_2024:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 47
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-x47-long-frozen-models
+          run-id: 43363483258
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Build same native binary and reproduce policy SHA
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror src/drnas_x41.cpp -o drnas-x47-long
+          python3 -m py_compile research/drnas_x47_long_bench.py research/drnas_x47_official_dedup.py
+          (cd frozen && sha256sum -c x47long_frozen_sha256.txt)
+          python3 -m pip install --break-system-packages -q remotezip
+      - name: Source SHA dedup before SAT2024 retrospective long benchmark
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_x47_official_dedup.py \
+            --binary drnas-x47-long --cohort official \
+            --out x47_long_official_dedup \
+            --shard 0 --shards 1 --official-count 24 \
+            --cap 8.0 --repeats 2 \
+            --model frozen/x47long_training/frozen_cost_model.txt \
+            --guard frozen/x47long_training/frozen_risk_guard.txt \
+            | tee x47_long_official_dedup.log
+      - name: Verify original SHA, family uniqueness and unsupported UNSAT isolation
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p=Path('x47_long_official_dedup')
+          m=json.loads((p/'manifest.json').read_text())
+          r=json.loads((p/'report.json').read_text())
+          assert m['original_sources']==24
+          assert len({x['sha256'] for x in m['originals']})==24
+          assert len({x['family'] for x in m['originals']})==24
+          assert r['total_trials']==240
+          assert all(r['all_arms'][a]['trials']==48 for a in m['arms'])
+          for s in (json.loads(t) for t in (p/'trials.jsonl').read_text().splitlines()):
+              if s['status']=='UNSAT':
+                  assert s['verified'] is False and s['PAR2']==16.0
+              if s['status']=='SAT':assert s['verified']
+          print('X47_OFFICIAL_DEDUP_PROOF_POLICY_PASS',json.dumps({
+              'originals':24,'trials':240,'families':24,
+              'core':r['all_arms']['CORE'],
+              'x47':r['all_arms']['X47_RISKGATE_8']},sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-x47-long-official-deduplicated-24
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            x47_long_official_dedup/manifest.json
+            x47_long_official_dedup/report.json
+            x47_long_official_dedup/trials.jsonl
+            x47_long_official_dedup.log
