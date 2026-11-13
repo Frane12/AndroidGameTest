@@ -1,0 +1,97 @@
+name: DRNAS REAL CRYPTO XOR original SAT2024 paired
+on:
+  push:
+    branches: [experiment/drnas-real-crypto-xor-20261113]
+    paths: [.github/workflows/drnas-real-crypto-xor.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-real-crypto-xor-single-run
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin original R28 source
+        uses: actions/checkout@v4
+        with:
+          ref: 95b2b06f16efc68827ed34de9cbc1bda7b6a0a37
+          path: frozen_r28
+          persist-credentials: false
+      - name: Pin original R153 source
+        uses: actions/checkout@v4
+        with:
+          ref: ea3575a512a3f93bc60bf74d0014b18b0a5440af
+          path: frozen_r153
+          persist-credentials: false
+      - name: Build reference solvers and source-pinned native GF2 engines
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cadical cryptominisat
+          git clone -q https://github.com/arminbiere/kissat.git /tmp/allnative-kissat
+          git -C /tmp/allnative-kissat checkout -q --detach 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          test "$(git -C /tmp/allnative-kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/allnative-kissat && ./configure && make -j2 >/tmp/allnative-kissat-build.log)
+          mkdir -p compiled
+          cp /tmp/allnative-kissat/build/kissat compiled/kissat
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror frozen_r28/experiments/drnas_v16/r28_exact_gf2.cpp -o compiled/r28_gf2
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror frozen_r153/research/r153_exact_units_gf2.cpp -o compiled/r153
+          sha256sum compiled/r28_gf2 compiled/r153 compiled/kissat /usr/bin/cadical /usr/bin/cryptominisat5 | tee compiled/binaries.sha256
+          compiled/kissat --version || true
+          cadical --version || true
+          cryptominisat5 --version | head -n 5 || true
+      - name: Build LTM7 LTM9 native C++ independently
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_allnative_competition_bench.py
+          python3 research/drnas_atlas13_generator.py
+          python3 research/drnas_atlas15_warm_patch.py
+          python3 research/drnas_atlas15_cdcl_patch.py
+          python3 research/drnas_atlas1_generate.py --out mre_atlas15/atlas1_table.hpp
+          python3 research/drnas_atlas9_export_table.py research/atlas8_reduction_table.jsonl mre_atlas15/atlas8_rules.hpp
+          python3 research/drnas_atlas16_build.py
+          python3 research/drnas_atlas17_build.py
+          python3 research/drnas_atlas19_build.py
+          python3 research/drnas_atlas23_build.py
+          python3 research/drnas_atlas36_build.py
+          python3 research/drnas_ltm6_build.py
+          python3 research/drnas_ltm7_build.py
+          python3 research/drnas_ltm8_php_build.py
+          python3 research/drnas_ltm9_audit_build.py
+          mkdir -p mre_atlas23/bin
+          g++ -O2 -std=c++17 -I mre_atlas23 -I mre_atlas15 mre_atlas23/native.cpp -o mre_atlas23/bin/drnas_ltm9
+          mre_atlas23/bin/drnas_ltm9 --selftest
+          sha256sum mre_atlas23/bin/drnas_ltm9 | tee -a compiled/binaries.sha256
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/drnas_r153_ltm9_hybrid.cpp -o compiled/r153_ltm9
+          sha256sum compiled/r153_ltm9 | tee -a compiled/binaries.sha256
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Werror research/drnas_r153_ltm9_gated.cpp -o compiled/r153_ltm9_gated
+          sha256sum compiled/r153_ltm9_gated | tee -a compiled/binaries.sha256
+      - name: Install archive reader
+        run: |
+          set -euo pipefail
+          python3 -m venv .cryptoenv
+          .cryptoenv/bin/pip install remotezip
+          .cryptoenv/bin/pip freeze > compiled/python-packages.txt
+      - name: Compare original crypto CNFs on one logical CPU
+        run: |
+          set -euo pipefail
+          .cryptoenv/bin/python -m py_compile research/drnas_real_crypto_xor.py research/drnas_hybrid_bench_helpers.py
+          taskset -c "$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')" .cryptoenv/bin/python -u research/drnas_real_crypto_xor.py | tee real-crypto.log
+          grep -q '^REAL_CRYPTO_FINAL ' real-crypto.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-real-crypto-xor-original
+          path: |
+            real-crypto.log
+            compiled/binaries.sha256
+            compiled/python-packages.txt
+            real_crypto_xor/
+          retention-days: 30
+          if-no-files-found: warn
