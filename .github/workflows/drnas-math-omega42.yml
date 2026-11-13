@@ -1,0 +1,141 @@
+name: DRNAS MATH OMEGA4.2 source-disjoint component CDCL audit
+on:
+  push:
+    branches: [experiment/drnas-math-omega42-20261113]
+    paths:
+      - .github/workflows/drnas-math-omega42.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: omega42-component-local-audit
+  cancel-in-progress: false
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore frozen original SHA40 and reference sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 42809444478 -R Frane12/AndroidGameTest \
+            -n xorabc2-frozen40-cpp-kissat-cms -D .
+          test -s mre_xorabc2/manifest.json
+          python3 -m py_compile research/omega42_benchmark.py
+          mkdir -p mre_omega42/bin
+      - name: Build independently replayed source-only XOR extractor
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            research/drnas_xorabc3_source_rows.cpp \
+            -o mre_omega42/bin/omega42_rows
+          mre_omega42/bin/omega42_rows selftest | tee mre_omega42/extractor-selftest.log
+          grep -q '^XORABC3_SELFTEST_PASS' mre_omega42/extractor-selftest.log
+      - name: Build pinned CaDiCaL true-trail bridge with identical six runtime modes
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/arminbiere/cadical.git /tmp/omega42-cadical
+          cd /tmp/omega42-cadical
+          git checkout --quiet --detach 31f9aae44947c673dc6190c9beb399acb9ffec6a
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/mre_omega42/cadical-source-commit.txt"
+          ./configure
+          make -j2
+          g++ -std=c++17 -O2 -Wall -Wextra -I./src \
+            "$GITHUB_WORKSPACE/research/omega42_live_gf2.cpp" \
+            ./build/libcadical.a -o "$GITHUB_WORKSPACE/mre_omega42/bin/omega42_bridge"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum mre_omega42/bin/omega42_bridge \
+            mre_omega42/bin/omega42_rows \
+            research/omega42_live_gf2.cpp | tee mre_omega42/native-source-pins.txt
+      - name: Exhaustively check 3-XOR-row reason, conflict, rollback and gated abstention
+        run: |
+          set -euo pipefail
+          mre_omega42/bin/omega42_bridge selftest | tee mre_omega42/native-selftest.log
+          grep -q '^OMEGA42_SELFTEST_PASS .*gated=1' mre_omega42/native-selftest.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omega42-frozen-development-inputs-and-native
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            mre_omega42/bin/*
+            mre_omega42/*-selftest.log
+            mre_omega42/cadical-source-commit.txt
+            mre_omega42/native-source-pins.txt
+            mre_xorabc2/manifest.json
+            mre_search5/cases/*.cnf
+            mre_search6/cases/*.cnf
+            mre_equiv9/cases/*.cnf
+
+  paired:
+    needs: setup
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: omega42-frozen-development-inputs-and-native
+          path: .
+      - name: Six-arm same-binary original-CNF paired test with two repetitions
+        run: |
+          set -euo pipefail
+          chmod +x mre_omega42/bin/omega42_bridge mre_omega42/bin/omega42_rows
+          taskset -c "$(taskset -pc $$ | sed -e 's/.*: //;s/,.*//;s/-.*//')" true || true
+          python3 -u research/omega42_benchmark.py shard \
+            --shard ${{ matrix.shard }} --cap 5.0 --reps 2 \
+            | tee "mre_omega42/shard-${{ matrix.shard }}.log"
+          grep -q '^OMEGA42_SHARD_PASS ${{ matrix.shard }} ' "mre_omega42/shard-${{ matrix.shard }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: omega42-shard-${{ matrix.shard }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            mre_omega42/shard-${{ matrix.shard }}.json
+            mre_omega42/shard-${{ matrix.shard }}.log
+  aggregate:
+    needs: [setup, paired]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: omega42-frozen-development-inputs-and-native
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: omega42-shard-*
+          merge-multiple: true
+          path: mre_omega42
+      - name: Strict pair accounting, verified SAT, no LRAT claims, utility cost audit
+        run: |
+          set -euo pipefail
+          python3 -u research/omega42_benchmark.py aggregate --reps 2 \
+            | tee mre_omega42/aggregate.log
+          grep -q '^OMEGA42_FINAL ' mre_omega42/aggregate.log
+          grep '^OMEGA42_FINAL ' mre_omega42/aggregate.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DRNAS-OMEGA42-REAL-CDCL-UTILITY-PAR2-AUDIT
+          retention-days: 30
+          path: |
+            mre_omega42/report.json
+            mre_omega42/aggregate.log
+            mre_omega42/shard-*.json
+            mre_omega42/native-source-pins.txt
