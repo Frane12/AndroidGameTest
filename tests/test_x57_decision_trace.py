@@ -24,7 +24,7 @@ def valid_model(stdout,clauses,n):
             if lit==0:continue
             if abs(lit)>n or (abs(lit) in vals and vals[abs(lit)]!=(lit>0)):return False
             vals[abs(lit)]=lit>0
-    return all(any(vals.get(abs(lit))==(l>0) for lit in c) for c in clauses)
+    return all(any(vals.get(abs(lit))==(lit>0) for lit in c) for c in clauses)
 
 def php(h):
     pigeons=h+1
