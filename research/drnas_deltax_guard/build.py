@@ -49,8 +49,12 @@ def main():
                 deltax_binary_originals_.insert(canonical(c));
         }""")
     h=once(h,
-      """                       Output& out,Tick::time_point deadline) {""",
-      """                       Output& out,Tick::time_point deadline,
+      """    void resolveDeltax(const Block& left,const Block& right,
+                       const std::vector<int8_t>& values,
+                       Output& out,Tick::time_point deadline) {""",
+      """    void resolveDeltax(const Block& left,const Block& right,
+                       const std::vector<int8_t>& values,
+                       Output& out,Tick::time_point deadline,
                        const std::function<bool(const std::vector<int>&)>& approve) {""")
     h=once(h,
       """            if(known.count(c.clause))continue;
