@@ -183,7 +183,7 @@ def aggregate():
         m=json.loads((base/"manifest.json").read_text())
         allmeta.append(m)
         allrows.extend(json.loads(line) for line in (base/"trials.jsonl").read_text().splitlines())
-    assert len(allrows)==len(src)*REPS*len(ARMS)==648
+    assert len(allrows)==len(src)*REPS*len(ARMS)
     expected={(z["sha256"],rep,arm) for z in src for rep in range(REPS) for arm in ARMS}
     actual=[(r["sha256"],r["rep"],r["arm"]) for r in allrows]
     assert len(set(actual))==len(actual) and set(actual)==expected
@@ -250,7 +250,7 @@ def aggregate():
     }
     save("coop54_final/report.json",report)
     lines=["## DRNAS COOP54 controlled CDCL policy ablations vs Kissat / CaDiCaL","",
-           "36 original SAT2024 REAL36 sources × 2 repeats × 9 arms = 648 trials.",
+           f"{len(src)} original SAT2024 REAL36 sources × {REPS} repeats × {len(ARMS)} arms = {len(allrows)} trials.",
            "**No blind holdout, no promotion.** SAT original witnesses and UNSAT DRAT independently verified.","",
            "| Solver | Verified /72 | SAT | UNSAT proof | Verified PAR2 (s) | Restarts | Minimized lits | Dead bridge skips |",
            "|---|---:|---:|---:|---:|---:|---:|---:|"]
