@@ -1,0 +1,83 @@
+name: DRNAS DELTAX synthetic earlier conflict and propagation-depth research
+on:
+  push:
+    branches: [experiment/drnas-deltax-conflict-depth1-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-depth1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-conflict-depth1-single-proof
+  cancel-in-progress: false
+
+jobs:
+  synthetic_conflict_depth:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore immutable original SAT2024 frozen source and binary references
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          python3 -m py_compile \
+            research/drnas_deltax/synthetic_causal_build.py \
+            research/drnas_deltax/conflict_depth_formulas.py \
+            tests/test_drnas_deltax_conflict_depth.py
+      - name: Build deterministic experimental DELTAX with genuine CDCL reason attribution
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltax/synthetic_causal_build.py | tee deltax_depth_build.log
+          grep -q '^DELTAX_CAUSAL_BUILD ' deltax_depth_build.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum build/drnas-deltax-causal build/drat-trim > build/DELTAX_DEPTH_BINARIES.sha256
+      - name: Verify generated original-CNF oracle results, RUP, BCP conflict depth and CDCL causes
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_DEPTH_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_deltax_conflict_depth.py \
+            | tee deltax_depth_trial.log
+          grep -q '^DELTAX_DEPTH1_FINAL ' deltax_depth_trial.log
+          sha256sum -c build/DELTAX_DEPTH_BINARIES.sha256
+          python3 - <<'PY'
+          import json
+          r=json.load(open('deltax_depth1_results/report.json'))
+          assert r['status']=='COMPLETE'
+          assert r['negative_false_aliases']==0
+          assert r['independently_source_rup_guarded_lemmas']>0
+          assert r['forward_wave_improvements']>0
+          assert r['earlier_conflict_wave_cases']>0
+          assert r['true_cdcl_enqueues_with_deltax_reason']>0
+          assert r['all_full_original_sat_unsat_proofs_checked']
+          assert r['wave_depth_is_not_solver_decision_savings']
+          assert r['no_speed_claim'] and not r['promotion']
+          print("DELTAX_EARLIER_CONFLICT_SEMANTIC_GATE_PASS")
+          PY
+          echo "DELTAX proof-first: independent BCP wave conflict comparison and genuine CDCL provenance. No speed or promotion claims." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-synthetic-conflict-depth1
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_depth1_inputs/
+            deltax_depth1_results/
+            deltax_depth_build.log
+            deltax_depth_trial.log
+            build/DELTAX_DEPTH_BINARIES.sha256
