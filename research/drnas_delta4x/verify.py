@@ -102,6 +102,8 @@ def run_suite(binary,compact=False):
                     assert q.returncode>=0 and 's VERIFIED' in q.stdout,('INVALID_UNSAT',name,mode,q.stdout[-500:])
                 assert proof.exists();check_rup(cs,proof)
                 st,new,causal=validate_events(p.stderr,cs)
+                if name in ('core','downstream','shifted_5005') and mode=='d4x':
+                    print('DELTA4X_DIAG',json.dumps({'case':name,'stats':st},sort_keys=True),flush=True)
                 if name=='shifted_5005':assert st['math_enabled'] and st['d4_originals']>0,'HIDDEN_SIZE_DISABLE'
                 row={'case':name,'mode':mode,'verified':True,'status':'SAT' if expected==10 else 'UNSAT',
                      'installed':st['installed'],'new_original_clauses':new,'actual_enqueues':st['actual_enqueues'],
