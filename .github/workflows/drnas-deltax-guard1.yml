@@ -1,0 +1,171 @@
+name: DRNAS DELTAX-GUARD1 same-state clone trial and proof-first HARD28
+on:
+  push:
+    branches: [experiment/drnas-deltax-guard1-paired-clone-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-guard1.yml
+      - research/drnas_deltax_guard/guard_methods.inc
+      - research/drnas_deltax_guard/build.py
+      - research/drnas_deltax_guard/paired.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deltax-guard1-same-state-paired-clones
+  cancel-in-progress: false
+
+jobs:
+  guard_proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore immutable DELTA3 originals and frozen binaries
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          python3 -m py_compile \
+            research/drnas_deltax_guard/build.py \
+            research/drnas_deltax_guard/paired.py
+      - name: Build isolated guarded CDCL from pinned DELTAX causal source
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltax_guard/build.py | tee deltax_guard_build.log
+          grep -q '^DELTAX_GUARD_BUILD ' deltax_guard_build.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum build/drnas-deltax-guard build/drnas-deltax-causal \
+            build/drat-trim > build/DELTAX_GUARD_FROZEN.sha256
+      - name: Real source-equivalent synthetic preflight, same-state clone and independent proofs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_GUARD1_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_guard/paired.py preflight \
+            | tee deltax_guard_preflight.log
+          grep -q '^DELTAX_GUARD_PREFLIGHT_PASS ' deltax_guard_preflight.log
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          python3 - <<'PY'
+          import json
+          x=json.load(open('deltax_guard_preflight/report.json'))
+          assert x["status"]=="PASS" and x["trials"]==16
+          assert x["guard_probe_trials"]>0 and x["one_logical_cpu"]
+          assert x["original_source_proof_checks"] and x["main_unmodified"]
+          print("DELTAX_GUARD1_PROOF_AND_SNAPSHOT_SAFETY_PASS",x["guard_probe_trials"])
+          PY
+          tar -czf deltax_guard_frozen.tgz \
+            build/drnas-deltax-guard build/drnas-deltax-causal \
+            build/drat-trim build/DELTAX_GUARD_FROZEN.sha256 \
+            deltax_hard_inputs
+          echo "DELTAX-GUARD1 proof-first clone preflight PASS; no main promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-guard1-frozen-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_guard_frozen.tgz
+            deltax_guard_build.log
+            deltax_guard_preflight.log
+            deltax_guard_preflight/
+            build/DELTAX_GUARD_BUILD.json
+            build/DELTAX_GUARD_FROZEN.sha256
+
+  paired_hard:
+    needs: guard_proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-guard1-frozen-preflight
+          path: frozen/guard1
+      - name: Paired original-CNF JOIN / SHADOW / ON / guarded on one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_GUARD1_SHARD_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_guard/paired.py shard --shard ${{ matrix.shard }} \
+            | tee deltax_guard_shard.log
+          grep -q '^DELTAX_GUARD_SHARD_PASS ' deltax_guard_shard.log
+          echo "Source SHA + SAT-model + UNSAT-DRAT verified before results" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-guard-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_guard_shards/${{ matrix.shard }}/
+            deltax_guard_shard.log
+
+  final_report:
+    needs: paired_hard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-guard1-frozen-preflight
+          path: frozen/guard1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deltax-guard-shard-*
+          merge-multiple: false
+          path: deltax_guard_downloads
+      - name: Reconcile every original SHA and report clone vetoes separately from correctness
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          python3 -u research/drnas_deltax_guard/paired.py aggregate \
+            | tee deltax_guard_final.log
+          grep -q '^DELTAX_GUARD_FINAL ' deltax_guard_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open('deltax_guard_final/report.json'))
+          assert r["sources"]==28 and r["trials"]==112
+          assert r["status"]=="COMPLETE" and r["proof_first"]
+          assert not r["blind_holdout"] and not r["promotion"]
+          assert r["one_logical_cpu"]
+          for arm in r["arms"].values():
+            assert arm["invalid_source_steps"]==0 and arm["clones_inconsistent"]==0
+          print("DELTAX_GUARD1_COMPLETE",r["arms"]["deltax-guard"]["guard_accepted"],
+                r["arms"]["deltax-guard"]["guard_rejected"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-guard1-hard28-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_guard_final/
+            deltax_guard_final.log
