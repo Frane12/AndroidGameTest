@@ -102,12 +102,14 @@ def guarded_join(core_n,core,seed,count=3,plant=None):
         # generator label or expected solution is fed to the solver.
         if i>0:
             prev=5*(i-1)+5
-            cs.append([-prev,y,5*count+1+rng.randrange(core_n)])
+            hard_idx=rng.randrange(core_n)
+            third=5*count+1+hard_idx
+            # In the planted family the known core witness must extend
+            # to the WHOLE formula. Pick a sign satisfied by that witness.
+            if plant is not None and not plant[hard_idx]:
+                third=-third
+            cs.append([-prev,y,third])
     cs+=shifted
-    if plant is not None:
-        # Determine whether the planted solution to the hard core
-        # extends to this *whole* guarded formula; flag separately.
-        pass
     return n,cs
 
 def generate():
@@ -117,7 +119,7 @@ def generate():
         for replicate in range(2):
             seed=seedbase+101*n+replicate*971
             core,plant=rng3(n,4.23+0.09*replicate,seed,planted=True)
-            nv,cs=guarded_join(n,core,seed,count=3)
+            nv,cs=guarded_join(n,core,seed,count=3,plant=plant)
             result.append(dict(name=f"planted3_n{n}_s{replicate}",family="planted3",
                                seed=seed,nvars=nv,clauses=cs,core_nvars=n,
                                motifs=3,expected_core="SAT_PLANTED",
