@@ -1,0 +1,154 @@
+name: DRNAS DELTAX GRAPH-ABLATION1 same-graph low-high guarded links
+on:
+  push:
+    branches: [experiment/drnas-deltax-graph-ablation1-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-graph-ablation1.yml
+      - research/drnas_deltax_guard/graph_ablation_sources.py
+      - research/drnas_deltax_guard/graph_ablation_paired.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deltax-graph-ablation1-one-controlled-study
+  cancel-in-progress: false
+
+jobs:
+  proof_and_source_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43596056826
+          name: deltax-guard1-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/guard1
+      - name: Restore same frozen GUARD1 native executable and independent DRAT checker
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltax_guard/graph_ablation_sources.py \
+            research/drnas_deltax_guard/graph_ablation_paired.py
+      - name: Generate 12 graph cores x 6 ablations, independently verify whole-source models and guarded reason preflight
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "GRAPH_ABLATION_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax_guard/graph_ablation_paired.py preflight \
+            | tee graph_ablation_preflight.log
+          grep -q '^DELTAX_ABLATION_SOURCES ' graph_ablation_preflight.log
+          grep -q '^DELTAX_ABLATION_PREFLIGHT_PASS ' graph_ablation_preflight.log
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          tar -czf graph_ablation_frozen.tgz \
+            build/drnas-deltax-guard build/drnas-deltax-causal \
+            build/drat-trim build/DELTAX_GUARD_FROZEN.sha256 \
+            deltax_graph_ablation1_inputs
+          echo "Unchanged 3-coloring graph edges, exact same motif and clause counts in matched controls" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-graph-ablation1-frozen
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            graph_ablation_frozen.tgz
+            graph_ablation_preflight.log
+            deltax_graph_ablation1_preflight/
+            deltax_graph_ablation1_inputs/manifest.json
+
+  paired_same_graph:
+    needs: proof_and_source_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-graph-ablation1-frozen
+          path: frozen/graph-ablation
+      - name: Six matched same-edge variants x four solver modes x two reps, one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/graph-ablation/graph_ablation_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "GRAPH_ABLATION_SHARD_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax_guard/graph_ablation_paired.py \
+            shard --shard ${{ matrix.shard }} | tee graph_ablation_shard.log
+          grep -q '^DELTAX_ABLATION_SHARD_PASS ' graph_ablation_shard.log
+          echo "Original-source SAT models and independent UNSAT DRAT certified where credited" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-ablation-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_graph_ablation1_shards/${{ matrix.shard }}/
+            graph_ablation_shard.log
+
+  ablation_final:
+    needs: paired_same_graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-graph-ablation1-frozen
+          path: frozen/graph-ablation
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deltax-ablation-shard-*
+          merge-multiple: false
+          path: deltax_graph_ablation1_downloads
+      - name: Require all 576 matched trials and report link-position/number effects independently
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/graph-ablation/graph_ablation_frozen.tgz
+          python3 -u research/drnas_deltax_guard/graph_ablation_paired.py aggregate \
+            | tee graph_ablation_final.log
+          grep -q '^DELTAX_ABLATION_FINAL ' graph_ablation_final.log
+          python3 - <<'PY'
+          import json
+          p=json.load(open("deltax_graph_ablation1_final/report.json"))
+          assert p["status"]=="COMPLETE" and p["attempts"]==576
+          assert p["sources"]==72 and p["base_graphs"]==12 and p["reps"]==2
+          assert p["same_variable_and_clause_count_in_five_matched_variants"]
+          assert p["common_graph_edges_in_each_group"]
+          assert p["one_logical_cpu_per_solver"]
+          assert p["original_CNF_SAT_models_and_UNSAT_DRAT_checked"]
+          assert not p["promotion"] and not p["blind_holdout"]
+          print("DELTAX_ABLATION_CONTROLLED_PASS",p["all_arm_paired_verified"],
+                p["did_comparable"],p["did_linked_positive_conflict_gain"],
+                p["did_linked_negative_conflict_gain"])
+          PY
+          echo "Ablation complete: same graph, matched dimensions, source proof gate, distinct link roles" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-graph-ablation1-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_graph_ablation1_final/
+            graph_ablation_final.log
