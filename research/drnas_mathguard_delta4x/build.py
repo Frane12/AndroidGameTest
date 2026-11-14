@@ -53,12 +53,12 @@ def main():
     double mg_wall_ms=0.0;""")
     s=one(s,
         "    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {",
-        """    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {
-    void configureMathGuard4(int mode,double budget_ms) {
+        """    void configureMathGuard4(int mode,double budget_ms) {
         if(mode<0 || mode>3 || !(budget_ms>0.0 && budget_ms<=12.0 && std::isfinite(budget_ms)))
             throw std::runtime_error("bad MATH_GUARD4 mode or budget");
         mg_mode_=mode;mg_budget_ms_=budget_ms;
-    }""")
+    }
+    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {""")
     s=one(s,"    bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;",
         """    bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;
     int mg_mode_=0;
@@ -94,8 +94,8 @@ def main():
             mg4_budget_ms=std::stod(argv[++i]);''')
     s=one(s,
         "            solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,",
-        """            solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,
-            solver->configureMathGuard4(mg4_mode,mg4_budget_ms);""")
+        """            solver->configureMathGuard4(mg4_mode,mg4_budget_ms);
+            solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,""")
     s=one(s,
         '        std::cerr<<"X5_STATS {',
         '''        std::cerr<<"MATH_GUARD4_STATS {\\"mode\\":"<<s.mg_mode
