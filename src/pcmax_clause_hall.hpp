@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -133,8 +134,10 @@ inline Result analyze_clause_hall(const std::vector<std::vector<int>>& clauses,i
                 std::chrono::duration<double>(options.seconds));
             std::unordered_set<uint64_t> mutex;
             std::vector<std::vector<int>> candidates;
+            std::vector<std::vector<int>> wide_alo;
             mutex.reserve(std::min<size_t>(clauses.size(),1000000));
             candidates.reserve(512);
+            wide_alo.reserve(512);
             bool limit=false;
             for(size_t i=0;i<clauses.size();++i) {
                 if((i&8191)==0 && Clock::now()>=deadline) {
@@ -157,9 +160,74 @@ inline Result analyze_clause_hall(const std::vector<std::vector<int>>& clauses,i
                     }
                     if(ok)candidates.push_back(clause);
                 }
+                // Wide positive ALO groups often encode scheduling slots.
+                // Keep them separately: millions of binary constraints must
+                // never crowd out the source ALO clauses.
+                if(clause.size()>12 && clause.size()<=96 && wide_alo.size()<1200){
+                    std::unordered_set<int> uniq;
+                    bool alo=true;
+                    for(int v:clause)if(v<=0 || v>nvars || !uniq.insert(v).second){alo=false;break;}
+                    if(alo)wide_alo.push_back(clause);
+                }
             }
             if(!limit) {
-                result.groups=static_cast<int>(candidates.size()); // telemetry: viable original ALO clauses
+                result.groups=static_cast<int>(candidates.size()+wide_alo.size()); // viable original ALO clauses
+                // Fast, rigorously checked Hall columns: if n disjoint jobs
+                // each need one of k slots and every cross-job same-column
+                // pair is blocked by a source binary clause, n>k proves UNSAT.
+                // This accepts wide time-slot CNFs (e.g. 75 jobs / 65 slots)
+                // without BDD extraction, learned clauses, or CDCL search.
+                std::map<size_t,std::vector<size_t>> by_width;
+                for(size_t gi=0;gi<wide_alo.size();++gi)
+                    by_width[wide_alo[gi].size()].push_back(gi);
+                for(const auto& [width,indices]:by_width) {
+                    if(result.verified || width<13 || indices.size()<=width)continue;
+                    const size_t tries=std::min<size_t>(20,indices.size());
+                    for(size_t ti=0;ti<tries&&!result.verified;++ti) {
+                        if(Clock::now()>=deadline) {
+                            result.reason="clause_wide_budget_exhausted";break;
+                        }
+                        size_t first=indices[(ti*indices.size())/tries];
+                        std::vector<std::vector<int>> chosen(1,wide_alo[first]);
+                        std::vector<std::vector<int>> resources(width);
+                        std::unordered_set<int> used;
+                        for(size_t col=0;col<width;++col) {
+                            resources[col].push_back(wide_alo[first][col]);
+                            used.insert(wide_alo[first][col]);
+                        }
+                        for(size_t gidx:indices) {
+                            if((chosen.size()&15)==0 && Clock::now()>=deadline)break;
+                            if(gidx==first)continue;
+                            const auto& g=wide_alo[gidx];
+                            bool compatible=true;
+                            for(int v:g)if(used.count(v)){compatible=false;break;}
+                            if(!compatible)continue;
+                            for(size_t col=0;col<width && compatible;++col)
+                                for(int earlier:resources[col])
+                                    if(!no_both(g[col],earlier,mutex)){
+                                        compatible=false;break;
+                                    }
+                            if(!compatible)continue;
+                            chosen.push_back(g);
+                            for(size_t col=0;col<width;++col) {
+                                resources[col].push_back(g[col]);
+                                used.insert(g[col]);
+                            }
+                            if(chosen.size()>width) {
+                                if(check_local(chosen,resources,mutex)) {
+                                    result.verified=true;
+                                    result.reason="clause_hall_wide_columns_verified";
+                                    result.groups=static_cast<int>(chosen.size());
+                                    result.machines=static_cast<int>(width);
+                                    result.demand=chosen.size();
+                                    result.capacity=width;
+                                    result.certificate_json=certificate(source_sha256,chosen,resources);
+                                } else result.reason="clause_wide_local_certificate_rejected";
+                                break;
+                            }
+                        }
+                    }
+                }
                 // Prioritize different widths so a mass of binary clauses cannot
                 // starve an actual k-choice capacity pattern.
                 std::vector<size_t> seeds;
@@ -169,6 +237,7 @@ inline Result analyze_clause_hall(const std::vector<std::vector<int>>& clauses,i
                         if(candidates[i].size()==width) {seeds.push_back(i);++n;}
                 }
                 for(size_t si:seeds){
+                    if(result.verified)break;
                     if(Clock::now()>=deadline) {
                         result.reason="clause_budget_exhausted_search";break;
                     }
