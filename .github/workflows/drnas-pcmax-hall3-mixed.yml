@@ -1,0 +1,101 @@
+name: DRNAS HALL3 mixed BDD Hall certified original CNFs
+on:
+  push:
+    branches: [experiment/drnas-pcmax-hall3-hybrid-proof-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-hall3-mixed.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-hall3-mixed-20261114
+  cancel-in-progress: false
+jobs:
+  proof_first:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile optional HALL3 and unchanged CDCL baseline
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          python3 -m py_compile research/pcmax_capacity/check_hall3_hybrid.py \
+            research/pcmax_capacity/test_hall3_hybrid.py \
+            research/pcmax_capacity/benchmark_hall3_originals.py
+      - name: New hybrid UNSAT proof, SAT controls, 10 permutations, tamper rejection
+        run: |
+          python3 research/pcmax_capacity/test_hall3_hybrid.py \
+            --binary build/drnas-pcmax --output results/hall3-fixture
+      - name: Unchanged HALL1 and HALL2 regression
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall.py \
+            --binary build/drnas-pcmax --output results/hall1-smoke
+          python3 research/pcmax_capacity/test_hall2_subset.py \
+            --binary build/drnas-pcmax --output results/hall2-smoke
+      - name: Unchanged CDCL and native guard safety regression
+        run: |
+          python3 research/pcmax_capacity/integration_tests.py \
+            --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base \
+            --work-dir results/pcmax-core-fixtures \
+            --report results/pcmax-core-regression.json
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - name: 18 untouched SAT2024 originals, 144 paired trials, one logical CPU per solver
+        run: |
+          python3 research/pcmax_capacity/benchmark_hall3_originals.py \
+            --binary build/drnas-pcmax --pcmax20 pcmax20 \
+            --unseen3 pcmax-unseen3-results/original_cnfs \
+            --out results/hall3-originals --budget-ms 5000 --reps 2 \
+            | tee results/hall3-original-benchmark.log
+      - name: Summary, rigorous provenance
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('results/hall3-originals/report.json')
+          if not p.exists():
+              print('Not complete; investigate the first failed step.')
+          else:
+              r=json.loads(p.read_text())
+              summary=(f"HALL3 original: {r['original_sources']} CNFs, {r['trials']} paired "
+                       f"trials. Independent source-clause certificates: {r['stats']}. "
+                       "Certificates are structural, NOT DRAT/LRAT.")
+              print(summary)
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-hall3-mixed-independent-certified
+          retention-days: 60
+          path: |
+            results/hall3-fixture/
+            results/hall1-smoke/report.json
+            results/hall2-smoke/report.json
+            results/pcmax-core-regression.json
+            results/hall3-originals/report.json
+            results/hall3-original-benchmark.log
+            research/pcmax_capacity/check_hall3_hybrid.py
+            research/pcmax_capacity/test_hall3_hybrid.py
+            research/pcmax_capacity/benchmark_hall3_originals.py
+            src/pcmax_clause_hall3.hpp
