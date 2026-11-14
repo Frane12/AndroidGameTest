@@ -1,0 +1,93 @@
+name: DRNAS PCMAX CLAUSE-HALL1 no-BDD original 2026 certified
+on:
+  push:
+    branches: [experiment/drnas-pcmax-clause-hall1-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-clause-hall1.yml
+      - src/drnas_x5.cpp
+      - src/pcmax_clause_hall.hpp
+      - research/pcmax_capacity/check_clause_hall.py
+      - research/pcmax_capacity/test_clause_hall.py
+      - research/pcmax_capacity/benchmark_official2026_clause1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-clause-hall1-20261114
+  cancel-in-progress: false
+jobs:
+  verified_clause_hall:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile guarded native optional module in a single process
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+      - name: Exhaustive safety-first PHP Hall tests, signed groups, adversarial missing clauses and forged certificates
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall.py \
+            --binary build/drnas-pcmax --output results/clause-hall1-smoke
+      - name: Run original BDD module integration to check for unexpected regressions
+        run: |
+          python3 research/pcmax_capacity/integration_tests.py \
+            --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base \
+            --work-dir results/pcmax-base-compat-fixtures \
+            --report results/pcmax-base-compat.json
+      - name: Original unmodified SAT2026 scheduling / exam CNFs with independent clause Hall proofs
+        run: |
+          python3 research/pcmax_capacity/benchmark_official2026_clause1.py \
+            --binary build/drnas-pcmax --out results/official2026-clause1 \
+            --budget-ms 1000 --repetitions 2
+      - name: Write complete outcome including unknown and misses
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,statistics,os
+          from pathlib import Path
+          p=Path('results/official2026-clause1/summary.json')
+          if not p.exists():
+              print('No complete original2026 results; see preceding stage.')
+              raise SystemExit(0)
+          obj=json.loads(p.read_text())
+          grouped={}
+          for r in obj['rows']:grouped.setdefault(r['file_id'],[]).append(r)
+          lines=['# Clause-Hall1 original CNFs (proof-first, no BDD)', '',
+              'Exact original SAT2026 GBD sources. One logical CPU per process. 1s module cap.',
+              'Only UNSAT with independent source-clause Hall certificate counted.',
+              '| Family | Source prefix | Catalog | Module result | Reason | Median native s |',
+              '|---|---|---|---|---|---:|']
+          for sha,rs in grouped.items():
+              row=rs[0];tim=[x['native_wall_s'] for x in rs if 'native_wall_s' in x]
+              lines.append(f"| {row.get('family','')} | {sha[:12]} | {row.get('catalog_label','')} | "
+                           f"{row['status']} | {row.get('reason','—')} | "
+                           f"{statistics.median(tim):.5f} |" if tim else
+                           f"| {row.get('family','')} | {sha[:12]} | {row.get('catalog_label','')} | "
+                           f"{row['status']} | {row.get('detail','—')[:30]} | — |")
+          lines.extend(['',f"Original sources {obj['selected_sources']}; downloads {obj['downloads_ok']}; "
+                            f"trials {obj['trials']}; independently verified UNSAT {obj['unsat_verified']}."])
+          s='\n'.join(lines)+'\n'
+          Path('results/official2026-clause1/README.md').write_text(s)
+          print(s)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(s)
+          PY
+      - name: Preserve exact source CNFs where bounded, telemetry, evidence and replay tools
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-clause-hall1-original2026
+          retention-days: 60
+          path: |
+            results/
+            src/drnas_x5.cpp
+            src/pcmax_clause_hall.hpp
+            src/pcmax_capacity.hpp
+            research/pcmax_capacity/check_clause_hall.py
+            research/pcmax_capacity/check_capacity.py
+            research/pcmax_capacity/test_clause_hall.py
+            research/pcmax_capacity/benchmark_official2026_clause1.py
+            build/drnas-pcmax
+            build/drnas-pcmax-base
