@@ -1,0 +1,115 @@
+name: DRNAS DELTAX GRAPH-LAB1 verified timing 15x on-off one-core
+on:
+  push:
+    branches: [experiment/drnas-deltax-graphlab-timing-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-graphlab-timing.yml
+      - research/drnas_deltax_guard/graphlab_timing.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-graphlab-timing-20261114
+  cancel-in-progress: false
+
+jobs:
+  matched_timing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve EXACT frozen GRAPH-LAB1 solver binaries, checker, and 20 source CNFs
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43598771169
+          name: deltax-graphlab1-frozen
+          github-token: ${{ github.token }}
+          path: frozen/graphlab1
+      - name: Restore source-locked graph cases and validate measurement harness
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/graphlab1/deltax_graphlab_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltax_guard/graphlab_timing.py
+          python3 - <<'PY'
+          import hashlib, pathlib
+          p = pathlib.Path('deltax_graphlab1_inputs/manifest.json')
+          h = hashlib.sha256(p.read_bytes()).hexdigest()
+          assert h == 'c4fd945407d52090a042c4130571baba859db972863b893792b6a28ea91d21d9', h
+          print('GRAPH_TIMING_FROZEN_OK', h)
+          PY
+      - name: Matched 15x JOIN DELTAX DELTAX-GUARD with independent SAT and DRAT audit
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax_guard/graphlab_timing.py shard \
+            --shard ${{ matrix.shard }} | tee graphlab_timing_shard.log
+          grep -q '^GRAPHLAB_TIME_SHARD_PASS ' graphlab_timing_shard.log
+          echo "One CPU; 15 randomized-order paired triplets per graph; verified originals" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphlab-time-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            graphlab_timing_shards/${{ matrix.shard }}/
+            graphlab_timing_shard.log
+
+  aggregate:
+    needs: matched_timing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore exact frozen 20 graph CNFs
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43598771169
+          name: deltax-graphlab1-frozen
+          github-token: ${{ github.token }}
+          path: frozen/graphlab1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: graphlab-time-shard-*
+          path: graphlab_timing_downloads
+      - name: Calculate source-cluster median timing comparisons and 95 percent bootstrap intervals
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/graphlab1/deltax_graphlab_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          python3 -u research/drnas_deltax_guard/graphlab_timing.py aggregate | tee graphlab_timing_final.log
+          grep -q '^GRAPHLAB_TIME_FINAL ' graphlab_timing_final.log
+          python3 - <<'PY'
+          import json
+          r = json.load(open('graphlab_timing_final/report.json'))
+          assert r['graphs'] == 20 and r['trials'] == 900
+          assert r['totals']['join']['verified'] == 300
+          assert r['totals']['deltax']['verified'] == 300
+          assert r['totals']['deltax-guard']['verified'] == 300
+          assert r['all_source_cnf_sat_and_drat_proofs_verified']
+          assert r['one_logical_cpu_per_runner'] and r['solver_processes_serial']
+          print('GRAPH_TIMING_RECONCILED', r['join_vs_guard'], r['deltax_vs_guard'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphlab-timing-final-15x
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            graphlab_timing_final/
+            graphlab_timing_final.log
