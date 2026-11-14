@@ -1,0 +1,77 @@
+name: DRNAS CDCL component interface contract and proof audit
+on:
+  push:
+    branches: [experiment/drnas-cdcl-component-contract-20261114]
+    paths:
+      - .github/workflows/drnas-cdcl-component-contract.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-cdcl-component-contract-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  contract_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43530828469
+          name: coop52-frozen-verified-preflight
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore frozen SHA/source and verify one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf coop52_frozen.tgz
+          sha256sum -c build/COOP52_BINARIES.sha256
+          (cd cross/x59 && grep -v '  build/drnas-x5$' build/X59_BINARIES.sha256 | sha256sum -c -)
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          rows,metadata=B.official_manifest()
+          assert len(rows)==36 and len({r["sha256"] for r in rows})==36
+          print("COOP53_FROZEN_ORIGINALS_36_PASS",metadata["manifest_sha256"])
+          PY
+          python3 -m py_compile research/drnas_contract/build.py tests/test_drnas_contract.py
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP53_ONE_LOGICAL_CPU=$CPU"
+      - name: Build immutable audit-only and repair siblings under -Werror
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_contract/build.py | tee coop53_build.log
+          grep -q '^COOP53_SOURCE_CONTRACT_PATCHED' coop53_build.log
+          sha256sum build/drnas-coop5-fixed build/drnas-coop52-cap24k \
+            build/drnas-coop53-audit build/drnas-coop53-repair \
+            build/drat-trim > build/COOP53_FROZEN.sha256
+          sha256sum -c build/COOP53_FROZEN.sha256
+      - name: Run original CNF SAT witnesses, independent UNSAT DRAT and rollback audit
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_contract.py \
+            | tee coop53_contract_safety.log
+          grep -q '^COOP53_CONTRACT_PREFLIGHT_PASS' coop53_contract_safety.log
+          echo 'COOP53_CONTRACT_PREFLIGHT_PASS no main changes, one logical CPU, independent proof checks' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop53-contract-audit-frozen
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop53_build.log
+            coop53_contract_safety.log
+            build/COOP53_FROZEN.sha256
+            build/drnas-coop53-audit
+            build/drnas-coop53-repair
+            research/drnas_contract/CDCL_COMPONENT_AUDIT_20261114.md
