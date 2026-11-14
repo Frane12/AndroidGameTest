@@ -54,7 +54,7 @@ int main() {
         heap.verify(assigned,higher);
         comparisons+=take;
         if(step==1000) {
-            const auto copy=heap;
+            auto copy=heap;
             heap.reset(N);
             heap.rebuild(assigned,higher);
             heap.verify(assigned,higher);
