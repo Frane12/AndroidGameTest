@@ -33,6 +33,7 @@
 #include "pcmax_capacity.hpp"
 #include "pcmax_clause_hall.hpp"
 #include "hall3_guard.hpp"
+#include "math4_xor_unit.hpp"
 #endif
 
 namespace {
@@ -1682,7 +1683,7 @@ int run(int argc, char** argv) {
     std::string cf6_snapshot_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
 #ifdef DRNAS_PCMAX_MODULE
-    bool pcmax_enabled=false, pcmax_only=false, pcmax_clause_guard=false, hall3=false;
+    bool pcmax_enabled=false, pcmax_only=false, pcmax_clause_guard=false, hall3=false, math4=false;
     double pcmax_budget_ms=250.0;
     std::string pcmax_certificate;
 #endif
@@ -1695,6 +1696,7 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
         else if (opt=="--hall3") { pcmax_enabled=true; hall3=true; }
+        else if (opt=="--math4") { pcmax_enabled=true; math4=true; }
         else if (opt=="--pcmax-clause-guard") { pcmax_enabled=true; pcmax_clause_guard=true; }
         else if (opt=="--pcmax-only") { pcmax_enabled=true; pcmax_only=true; }
         else if (opt=="--pcmax-budget-ms" && i+1<argc) {
@@ -1740,13 +1742,13 @@ int run(int argc, char** argv) {
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
     // Hybrid mode produces either an independent structural certificate OR
     // a CDCL DRAT proof. It never mixes unproved structural clauses into DRAT.
-    if(hall3 && pcmax_certificate.empty())
+    if((hall3||math4) && pcmax_certificate.empty())
         throw std::runtime_error("--hall3 requires --pcmax-certificate");
-    if(hall3 && !proof_path.empty() &&
+    if((hall3||math4) && !proof_path.empty() &&
        std::filesystem::absolute(proof_path).lexically_normal()==
        std::filesystem::absolute(pcmax_certificate).lexically_normal())
         throw std::runtime_error("DRAT and structural certificate paths must differ");
-    const bool pcmax_active=pcmax_enabled && (proof_path.empty() || hall3);
+    const bool pcmax_active=pcmax_enabled && (proof_path.empty() || hall3 || math4);
     bool pcmax_capture=pcmax_active;
     size_t pcmax_literals=0;
     std::vector<std::vector<int>> pcmax_original;
@@ -1921,7 +1923,9 @@ int run(int argc, char** argv) {
             digest=pcmax_digest->finish();
             pcmax::Options options;
             options.seconds=budget;
-            capacity_result=hall3
+            capacity_result=math4
+                ? pcmax::analyze_math4(pcmax_original,declared_vars,digest,options)
+                : hall3
                 ? pcmax::analyze_hall3(pcmax_original,declared_vars,digest,options)
                 : pcmax_clause_guard
                 ? pcmax::analyze_clause_hall(pcmax_original,declared_vars,digest,options)
