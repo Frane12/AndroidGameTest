@@ -52,8 +52,8 @@ def main():
     bool mg_budget_hit=false;
     double mg_wall_ms=0.0;""")
     s=one(s,
-        "    void configureX54(bool rotate) { x54_rotate_watches_=rotate; }",
-        """    void configureX54(bool rotate) { x54_rotate_watches_=rotate; }
+        "    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {",
+        """    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {
     void configureMathGuard4(int mode,double budget_ms) {
         if(mode<0 || mode>3 || !(budget_ms>0.0 && budget_ms<=12.0 && std::isfinite(budget_ms)))
             throw std::runtime_error("bad MATH_GUARD4 mode or budget");
@@ -93,11 +93,11 @@ def main():
         else if (opt=="--math-guard4-budget-ms" && i+1<argc)
             mg4_budget_ms=std::stod(argv[++i]);''')
     s=one(s,
-        "            solver->enableProofDeletes(proof_deletes_enabled);",
-        """            solver->enableProofDeletes(proof_deletes_enabled);
+        "            solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,",
+        """            solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,
             solver->configureMathGuard4(mg4_mode,mg4_budget_ms);""")
     s=one(s,
-        '        std::cerr<<"X52_STATS {',
+        '        std::cerr<<"X5_STATS {',
         '''        std::cerr<<"MATH_GUARD4_STATS {\\"mode\\":"<<s.mg_mode
                  <<",\\"orig_binary\\":"<<solver->mathguardOriginalBinary()
                  <<",\\"orig_ternary\\":"<<solver->mathguardOriginalTernary()
@@ -110,7 +110,7 @@ def main():
                  <<",\\"budget_hit\\":"<<(s.mg_budget_hit?"true":"false")
                  <<",\\"wall_ms\\":"<<std::fixed<<std::setprecision(7)<<s.mg_wall_ms
                  <<"}\\n";
-        std::cerr<<"X52_STATS {''')
+        std::cerr<<"X5_STATS {''')
     s=one(s,
         "    const Stats& stats() const { return stats_; }",
         """    const Stats& stats() const { return stats_; }
