@@ -87,9 +87,13 @@ def dataset():
     for s in chosen:
         p=R/s["path"]
         n,cs=B.parse_cnf(p.read_bytes())
+        archived=out/"official"/("sat2024_%02d.cnf"%s["id"])
+        archived.parent.mkdir(parents=True,exist_ok=True)
+        archived.write_bytes(p.read_bytes())
+        assert sha(archived)==s["sha256"]
         selected.append({
             "name":"official_sat2024_%02d"%s["id"],"family":"official/"+s["family"],
-            "path":str(p.relative_to(R)),"sha256":s["sha256"],
+            "path":str(archived),"sha256":s["sha256"],
             "nvars":n,"nclauses":len(cs),
             "origin":"sat2024_original_retrospective","graph_group":None
         })
