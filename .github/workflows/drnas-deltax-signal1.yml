@@ -1,0 +1,260 @@
+name: DRNAS DELTAX SIGNAL1 source-blind graph reach train-validate-holdout
+on:
+  push:
+    branches: [experiment/drnas-deltax-signal1-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-signal1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-signal1-frozen-disjoint-three-stage
+  cancel-in-progress: false
+
+jobs:
+  freeze_and_smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43596056826
+          name: deltax-guard1-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/guard1
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore and verify immutable original source CNFs and GUARD1 native proof baseline
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          python3 -m py_compile \
+            research/drnas_deltax_signal/build.py \
+            research/drnas_deltax_signal/dataset.py \
+            research/drnas_deltax_signal/experiment.py \
+            research/drnas_deltax_signal/final_report.py
+      - name: Compile isolated source-blind SIGNAL1 and verify original GUARD1 binary is SHA-identical
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltax_signal/build.py | tee deltax_signal_build.log
+          grep -q '^DELTAX_SIGNAL_BUILD ' deltax_signal_build.log
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          sha256sum build/drnas-deltax-signal build/drnas-deltax-guard \
+              build/drat-trim > build/DELTAX_SIGNAL_FROZEN.sha256
+      - name: Generate 60 sealed graph groups, verify matched controls and independent original-CNF proof smoke
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_SIGNAL_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_signal/dataset.py | tee deltax_signal_dataset.log
+          grep -q '^DELTAX_SIGNAL_DATA_FROZEN ' deltax_signal_dataset.log
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_signal/experiment.py smoke \
+            | tee deltax_signal_smoke.log
+          grep -q '^DELTAX_SIGNAL_SMOKE_PASS ' deltax_signal_smoke.log
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          tar -czf deltax_signal_frozen.tgz \
+            build/drnas-deltax-signal build/drnas-deltax-guard \
+            build/drat-trim build/DELTAX_SIGNAL_FROZEN.sha256 \
+            build/DELTAX_SIGNAL_BUILD.json \
+            deltax_signal1_inputs
+          echo "SIGNAL source-blind native classifier + frozen graph-disjoint 30/15/15 cohorts; no main promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-signal1-frozen-sources-and-binary
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_signal_frozen.tgz
+            deltax_signal_build.log
+            deltax_signal_dataset.log
+            deltax_signal_smoke.log
+            deltax_signal_smoke/
+            build/DELTAX_SIGNAL_BUILD.json
+            deltax_signal1_inputs/freeze.json
+
+  train_only:
+    needs: freeze_and_smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-frozen-sources-and-binary
+          path: frozen/signal
+      - name: Fit threshold using only 30 graph-disjoint TRAIN cores
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "SIGNAL_TRAIN_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_signal/experiment.py train \
+            | tee signal_train.log
+          grep -q '^DELTAX_SIGNAL_TRAIN_FROZEN ' signal_train.log
+          python3 - <<'PY'
+          import json
+          q=json.load(open("deltax_signal_train/policy.json"))
+          assert q["status"]=="FROZEN_TRAIN_ONLY"
+          assert not q["selection_uses_validation"] and not q["selection_uses_holdout"]
+          assert q["training_graph_groups"]==30
+          assert len(q["train_model_comparisons"])==4
+          print("DELTAX_SIGNAL_TRAIN_ONLY_POLICY_FROZEN",q["min_unassigned_binary_reach"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-signal1-training-frozen-model
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_signal_train/
+            signal_train.log
+
+  validation:
+    needs: train_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-frozen-sources-and-binary
+          path: frozen/signal
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-training-frozen-model
+          path: frozen/train
+      - name: Apply already sealed policy to 15 VALIDATION graphs; no refit
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          mkdir -p deltax_signal_train
+          cp frozen/train/deltax_signal_train/policy.json deltax_signal_train/policy.json
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_signal/experiment.py validation \
+            | tee signal_validation.log
+          grep -q '^DELTAX_SIGNAL_VALIDATION_RESULT ' signal_validation.log
+          echo "Validation uses fixed threshold; no model selection from validation outcomes" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-signal1-validation-no-refit
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_signal_validation/
+            signal_validation.log
+
+  holdout:
+    needs: validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-frozen-sources-and-binary
+          path: frozen/signal
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-training-frozen-model
+          path: frozen/train
+      - name: Evaluate untouched 15 HOLDOUT graphs using TRAIN-FROZEN policy only
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          mkdir -p deltax_signal_train
+          cp frozen/train/deltax_signal_train/policy.json deltax_signal_train/policy.json
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_signal/experiment.py holdout \
+            | tee signal_holdout.log
+          grep -q '^DELTAX_SIGNAL_HOLDOUT_RESULT ' signal_holdout.log
+          echo "Holdout had zero threshold fitting or model selection access" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-signal1-untouched-holdout
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_signal_holdout/
+            signal_holdout.log
+
+  final_report:
+    needs: holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-frozen-sources-and-binary
+          path: frozen/signal
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-training-frozen-model
+          path: frozen/train
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-validation-no-refit
+          path: frozen/validation
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-signal1-untouched-holdout
+          path: frozen/holdout
+      - name: Reconcile sealed train/validation/holdout CNF SHA, proof certificates and graph-family effects
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          python3 -u research/drnas_deltax_signal/final_report.py | tee signal_final.log
+          grep -q '^DELTAX_SIGNAL1_FINAL ' signal_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("deltax_signal1_final/report.json"))
+          assert r["status"]=="COMPLETE" and r["distinct_graphs"]==60
+          assert r["split_graphs"]=={"train":30,"validation":15,"holdout":15}
+          assert r["split_no_graph_id_overlap"] and r["all_certified_source_proofs_valid"]
+          assert r["source_blind_feature"] and not r["promoted"]
+          print("DELTAX_SIGNAL1_DISJOINT_RECONCILED",r["selected_threshold"],
+                r["holdout"]["wins_graph_groups"],r["holdout"]["regressed_graph_groups"])
+          PY
+          echo "Graph-disjoint SIGNAL1 model threshold frozen on train; original SAT/DRAT proof checks and full analyses preserved" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-signal1-proof-and-holdout-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_signal1_final/
+            signal_final.log
