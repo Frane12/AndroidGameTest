@@ -1,0 +1,158 @@
+name: DRNAS DELTA4X guard-index 5 previously certified real SAT2024 formulas
+on:
+  push:
+    branches: [experiment/drnas-delta4x-solved5-verified-20261114]
+    paths:
+      - .github/workflows/drnas-delta4x-solved5.yml
+      - research/drnas_delta4x/solved_real5.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-delta4x-solved5-certified-originals
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43593699141
+          name: delta4x-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4x
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43600620351
+          name: guard-index-proof-preflight
+          github-token: ${{ github.token }}
+          path: frozen/index
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43593699141
+          name: delta4x-real60-final
+          github-token: ${{ github.token }}
+          path: historical
+      - name: Restore SHA-pinned binaries and original 60 SAT2024 sources
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          tar -xzf frozen/index/guard_index_frozen.tgz
+          sha256sum -c build/GUARD_INDEX_FROZEN.sha256
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          python3 -m py_compile research/drnas_delta4x/solved_real5.py
+      - name: Prove five source hashes and historical independent SAT/UNSAT certificates
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_delta4x/solved_real5.py preflight | tee solved5_preflight.log
+          grep -q '^SOLVED5_PREFLIGHT_PASS ' solved5_preflight.log
+          tar -czf solved5_frozen.tgz \
+            build/drnas-delta4x build/drnas-delta4x-guard-index \
+            build/drnas-delta4x-observer-off \
+            build/drnas-deltacoop4 build/drat-trim \
+            cross/x59/build/kissat cross/x59/build/cadical \
+            build/DELTA4X_FROZEN.sha256 build/GUARD_INDEX_FROZEN.sha256 \
+            delta4_sources delta4x_guard_index_build.json solved5_protocol.json
+          echo 'Five originally certified SAT2024 CNFs frozen: IDs 14,32,33,40,41' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: solved5-proof-first-frozen
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            solved5_frozen.tgz
+            solved5_preflight.log
+            solved5_protocol.json
+
+  paired_certified_solve:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        source_id: [14,32,33,40,41]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: solved5-proof-first-frozen
+          path: frozen/solved5
+      - name: Two matched 20s repetitions x seven serial arms x one CPU, original SAT/UNSAT checked
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/solved5/solved5_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          sha256sum -c build/GUARD_INDEX_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_delta4x/solved_real5.py case --id ${{ matrix.source_id }} \
+            | tee solved5_case.log
+          grep -q '^SOLVED5_CASE_PASS ' solved5_case.log
+          grep -q '^SOLVED5_CASE_CERTIFIED ' solved5_case.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: solved5-case-${{ matrix.source_id }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            solved5_cases/${{ matrix.source_id }}/trials.jsonl
+            solved5_cases/${{ matrix.source_id }}/raw/*.stderr
+            solved5_cases/${{ matrix.source_id }}/raw/*.stdout
+            solved5_cases/${{ matrix.source_id }}/raw/*.check
+            solved5_cases/${{ matrix.source_id }}/raw/*.drat.gz
+            solved5_case.log
+
+  aggregate:
+    needs: paired_certified_solve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: solved5-proof-first-frozen
+          path: frozen/solved5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: solved5-case-*
+          path: solved5_downloads
+          merge-multiple: false
+      - name: Validate 70 unique SHA-matched trials and final verified PAR2
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/solved5/solved5_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          sha256sum -c build/GUARD_INDEX_FROZEN.sha256
+          python3 -u research/drnas_delta4x/solved_real5.py aggregate | tee solved5_final.log
+          grep -q '^SOLVED5_FINAL ' solved5_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: solved5-certified-real-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            solved5_final/
+            solved5_final.log
