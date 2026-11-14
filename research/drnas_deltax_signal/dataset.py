@@ -83,8 +83,8 @@ def write(folder):
             order=list(range(len(clauses)))
             random.Random(seed ^ 0x0A55).shuffle(order)
             clauses=[clauses[i] for i in order]
-            payload=f"p cnf {nvars} {len(clauses)}\n"+
-                    "".join(" ".join(map(str,c))+" 0\n" for c in clauses)
+            payload=(f"p cnf {nvars} {len(clauses)}\n"+
+                     "".join(" ".join(map(str,c))+" 0\n" for c in clauses))
             path=folder/(name+"__"+variant+".cnf")
             path.write_text(payload)
             entry={
