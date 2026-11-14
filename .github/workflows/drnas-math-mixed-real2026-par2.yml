@@ -1,0 +1,173 @@
+name: DRNAS MATH-MIXED REAL2026 source-pinned five-arm certified PAR2
+on:
+  push:
+    branches: [experiment/drnas-mixed-real2026-par2-20261114]
+    paths:
+      - .github/workflows/drnas-math-mixed-real2026-par2.yml
+      - src/drnas_x5.cpp
+      - src/math_mixed_guard.hpp
+      - research/pcmax_capacity/freeze_mixed_real2026.py
+      - research/pcmax_capacity/benchmark_mixed_real2026.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math-mixed-real2026-par2-20261114
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Source-pin frozen original SAT2026 CNFs and save original bytes
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/freeze_mixed_real2026.py \
+            --out frozen-real2026 | tee freeze_sources.log
+          grep -q '^FROZEN_REAL2026_PASS ' freeze_sources.log
+          tar -czf frozen-real2026.tgz frozen-real2026
+      - name: Recover SHA-pinned frozen Kissat, CaDiCaL and DRAT-trim
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43449841902
+          name: x59-frozen
+          github-token: ${{ github.token }}
+          path: frozen-x59
+      - name: Verify frozen reference binaries and compile same-source native arms
+        run: |
+          set -euo pipefail
+          mkdir -p reference
+          tar -xzf frozen-x59/x59_frozen.tgz -C reference
+          (cd reference && sha256sum -c build/X59_BINARIES.sha256)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          test -x build/drnas-pcmax
+          test -x build/drnas-pcmax-base
+          test -x reference/build/kissat
+          test -x reference/build/cadical
+          test -x reference/build/drat-trim
+      - name: Exercise native guard with a DRAT-capable CDCL fallback
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 - <<'PY'
+          import json,subprocess,tempfile
+          from pathlib import Path
+          from research.pcmax_capacity.check_mixed_unsat import verify
+          with tempfile.TemporaryDirectory() as folder:
+              p=Path(folder)
+              cnf=p/"binary-unsat.cnf"
+              raw=b"p cnf 2 4\n1 2 0\n-1 2 0\n1 -2 0\n-1 -2 0\n"
+              cnf.write_bytes(raw)
+              cert=p/"certificate.json"
+              drat=p/"unused.drat"
+              cmd=["build/drnas-pcmax",str(cnf),"--mode","core",
+                   "--time","2","--math-mixed-guard","--pcmax-budget-ms","40",
+                   "--pcmax-certificate",str(cert),"--proof",str(drat)]
+              trial=subprocess.run(cmd,capture_output=True,text=True,timeout=5)
+              assert trial.returncode==20,(trial.returncode,trial.stdout,trial.stderr)
+              assert verify(raw,json.loads(cert.read_text()))["status"]=="UNSAT_VERIFIED"
+              sat=p/"sat.cnf"
+              sat.write_bytes(b"p cnf 2 1\n1 2 0\n")
+              satproof=p/"sat.drat"
+              p2=subprocess.run(["build/drnas-pcmax",str(sat),"--mode","core",
+                                 "--time","2","--math-mixed-guard","--pcmax-budget-ms","40",
+                                 "--pcmax-certificate",str(p/"satcert.json"),
+                                 "--proof",str(satproof)],
+                                 capture_output=True,text=True,timeout=5)
+              assert p2.returncode==10,(p2.returncode,p2.stdout,p2.stderr)
+              print("MIXED_REAL2026_FALLBACK_SMOKE_PASS",flush=True)
+          PY
+          tar -czf binaries-real2026.tgz \
+            build/drnas-pcmax build/drnas-pcmax-base reference
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixed-real2026-source-binaries-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            frozen-real2026.tgz
+            binaries-real2026.tgz
+            freeze_sources.log
+            research/pcmax_capacity/freeze_mixed_real2026.py
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mixed-real2026-source-binaries-frozen
+          path: .
+      - name: Restore frozen binaries and exact 12 CNF sources
+        run: |
+          set -euo pipefail
+          tar -xzf frozen-real2026.tgz
+          tar -xzf binaries-real2026.tgz
+          (cd reference && sha256sum -c build/X59_BINARIES.sha256)
+          test -x build/drnas-pcmax && test -x build/drnas-pcmax-base
+      - name: Five-arm paired verified PAR2, single logical CPU, 6-second cap
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "MIXED_REAL2026_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/pcmax_capacity/benchmark_mixed_real2026.py shard \
+            --frozen frozen-real2026 --shards 4 --shard ${{ matrix.shard }} \
+            --reps 2 --cap 6 --guard-ms 120 --out shard-${{ matrix.shard }} \
+            | tee paired_${{ matrix.shard }}.log
+          grep -q '^MIXED_REAL2026_SHARD_PASS ' paired_${{ matrix.shard }}.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixed-real-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            shard-${{ matrix.shard }}/
+            paired_${{ matrix.shard }}.log
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mixed-real-shard-*
+          merge-multiple: false
+          path: shards-downloaded
+      - name: Audit 120 paired attempts, 12 unique SHA, verified PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_mixed_real2026.py aggregate \
+            --downloads shards-downloaded --out final-real2026 --cap 6 \
+            | tee mixed_real2026_final.log
+          grep -q '^MIXED_REAL2026_FINAL ' mixed_real2026_final.log
+          cat final-real2026/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math-mixed-real2026-final-verified-par2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            final-real2026/
+            mixed_real2026_final.log
+            research/pcmax_capacity/benchmark_mixed_real2026.py
+            research/pcmax_capacity/freeze_mixed_real2026.py
