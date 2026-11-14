@@ -1,0 +1,145 @@
+name: DRNAS COOP53 CDCL bridge audit vs repair source matched REAL36
+on:
+  push:
+    branches: [experiment/drnas-cdcl-component-contract-20261114]
+    paths:
+      - .github/workflows/drnas-coop53-paired.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-coop53-contract-paired
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43530828469
+          name: coop52-frozen-verified-preflight
+          github-token: ${{ github.token }}
+          path: frozen/coop52
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43534791673
+          name: coop53-contract-audit-frozen
+          github-token: ${{ github.token }}
+          path: frozen/coop53
+      - name: Pin source SHA, freeze old and new binary hashes, check Python protocol
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/coop52/coop52_frozen.tgz
+          test -s frozen/coop53/build/COOP53_FROZEN.sha256
+          cp frozen/coop53/build/drnas-coop53-audit frozen/coop53/build/drnas-coop53-repair build/
+          cp frozen/coop53/build/COOP53_FROZEN.sha256 build/
+          chmod +x build/drnas-coop53-audit build/drnas-coop53-repair
+          sha256sum -c build/COOP53_FROZEN.sha256
+          (cd cross/x59 && grep -v '  build/drnas-x5$' build/X59_BINARIES.sha256 | sha256sum -c -)
+          python3 -m py_compile research/drnas_contract/paired.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          originals,protocol=B.official_manifest()
+          assert len(originals)==36
+          assert len(set(s["sha256"] for s in originals))==36
+          print("COOP53_REAL36_FROZEN_SHA_PASS",protocol["manifest_sha256"])
+          PY
+          tar -czf coop53_benchmark_frozen.tgz \
+            build/drnas-coop5-fixed build/drnas-coop52-cap24k build/drnas-coop52-fallback \
+            build/drnas-coop53-audit build/drnas-coop53-repair build/drat-trim \
+            build/COOP53_FROZEN.sha256 cross/x59 real36_frozen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coop53-benchmark-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: coop53_benchmark_frozen.tgz
+
+  paired:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop53-benchmark-frozen
+          path: .
+      - name: Recheck every solver SHA and run source-matched pair under CPU affinity
+        run: |
+          set -euo pipefail
+          tar -xzf coop53_benchmark_frozen.tgz
+          sha256sum -c build/COOP53_FROZEN.sha256
+          (cd cross/x59 && grep -v '  build/drnas-x5$' build/X59_BINARIES.sha256 | sha256sum -c -)
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP53_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_contract/paired.py shard \
+            --shard ${{ matrix.shard }} --cap 8 --reps 2 | tee coop53_shard.log
+          grep -q '^CROSS_SHARD_PASS' coop53_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            cross_results/shard_${{ matrix.shard }}/
+            coop53_shard.log
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop53-benchmark-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-shard-*
+          merge-multiple: false
+          path: cross_downloads
+      - name: Reconcile paired verified PAR2 and per-family bootstrap without promotion
+        run: |
+          set -euo pipefail
+          tar -xzf coop53_benchmark_frozen.tgz
+          python3 -u research/drnas_contract/paired.py aggregate | tee coop53_final.log
+          grep -q '^CROSS_FINAL ' coop53_final.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open("cross_final/report.json"))
+          assert d["trials"]==432 and d["sources"]==36
+          assert d["status"]=="COMPLETE" and d["solver_errors"]==0
+          assert d["blind_holdout"] is False and d["promotion"] is False
+          print("COOP53_PROOF_ACCOUNTING_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop53-cdcl-contract-paired-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            cross_final/
+            coop53_final.log
