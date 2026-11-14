@@ -92,7 +92,7 @@ def verify(raw, proof):
             need(type(v) is int and 0<v<=nvars and v not in assign,
                  "invalid or repeated DPLL split")
             need("false" in node and "true" in node,"missing DPLL branch")
-            walk(node["false"],dict(assign,**{str(v):False}) if False else {**assign,v:False})
+            walk(node["false"],{**assign,v:False})
             walk(node["true"],{**assign,v:True})
         walk(tree,{})
         return {"status":"UNSAT_VERIFIED","method":method,
