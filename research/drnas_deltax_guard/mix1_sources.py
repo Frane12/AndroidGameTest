@@ -63,7 +63,8 @@ def synth_generator():
         if seed%3:
             perm=list(range(1,n+1));rng.shuffle(perm)
             change={i+1:perm[i] for i in range(n)}
-            cs=H.remap(cs,change)
+            cs=[[(1 if lit>0 else -1)*change[abs(lit)] for lit in row]
+                for row in cs]
         if seed%2:
             rng.shuffle(cs)
         rows.append({"name":name,"family":kind,"source_kind":"synthetic",
