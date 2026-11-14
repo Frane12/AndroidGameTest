@@ -1,0 +1,77 @@
+name: DRNAS CLAUSE RETENTION2 original SATLIB 125-150 LBD recency A/B
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-retention2-20261114
+    paths:
+      - .github/workflows/drnas-clause-retention2.yml
+      - research/drnas_clause_retention2.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-clause-retention2-onecore
+  cancel-in-progress: false
+
+jobs:
+  original_source_paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore independent original CNF UNSAT checker
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43601959681
+          name: deltax-signal1-frozen-sources-and-binary
+          github-token: ${{ github.token }}
+          path: frozen/signal
+      - name: Compile original frozen X5 and verify DRAT checksum
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_clause_retention2.py \
+            research/drnas_t0_frontier1.py research/drnas_t0_interaction2.py
+          mkdir -p build
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-t0-frontier1
+          test -x build/drat-trim
+          sha256sum src/drnas_x5.cpp build/drnas-t0-frontier1 build/drat-trim \
+            | tee clause_retention2_binaries.sha256
+      - name: Matched X5 retain/no-retain with original CNF proofs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "RETENTION2_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_clause_retention2.py \
+            | tee clause_retention2.log
+          grep -q '^RETENTION2_FINAL ' clause_retention2.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("clause_retention2/report.json"))
+          assert r["status"]=="COMPLETE" and r["unique_source_CNFs"]==32
+          assert r["one_cpu"] and r["same_binary"] and r["no_model_selection"]
+          assert r["original_source_proofs_checked"]
+          assert not r["main_modified"] and not r["solver_promoted"]
+          print("RETENTION2_VERIFIED",r["both_verified"],r["retention_actually_activated_sources"],
+                r["baseline_PAR2_verified_s"],r["retained_PAR2_verified_s"])
+          PY
+          echo "SOURCE-FROZEN verified native X5 retention package; independent original model/DRAT, no main change" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-clause-retention2-verified
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            clause_retention2/
+            clause_retention2.log
+            clause_retention2_binaries.sha256
