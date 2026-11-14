@@ -1,0 +1,64 @@
+name: DRNAS DELTA3 discovery-first guarded equivalence certificate
+on:
+  push:
+    branches: [experiment/drnas-delta3-semantic-utility-20261114]
+    paths:
+      - .github/workflows/drnas-delta3-semantic-utility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-delta3-semantic-utility-single-check
+  cancel-in-progress: false
+
+jobs:
+  semantic_certificate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore source-SHA-frozen real SAT2024 formula
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum real36_frozen/cases/030_*.cnf
+      - name: Certify original-CNF resolvents, affine gap, guarded aliases and rollback
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_delta3_semantic/semantic_use.py
+          python3 -u research/drnas_delta3_semantic/semantic_use.py \
+            --output delta3_semantic/semantic_certificate.json | tee delta3_semantic_audit.log
+          grep -q '^DELTA3_SEMANTIC_USE_PASS ' delta3_semantic_audit.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open("delta3_semantic/semantic_certificate.json"))
+          assert d["source_sha256"]=="ead2a1c2fb44d173d3a24bab1212f07adf571f4fc7563392d434e0f58386939b"
+          assert d["original_cnf_rup_certificates"]==2
+          assert d["conditioned_exact_models"]==2
+          assert d["conditioned_separate_affine_models"]==4
+          assert d["conditional_alias_representatives_after"]==1
+          assert d["guarded_alias_backtrack"]=="PASS"
+          assert not d["new_math_theorem_claim"] and not d["speed_test"]
+          print("DELTA3_DISCOVERY_FIRST_CERTIFIED")
+          PY
+          echo "Real SAT2024: 2 global RUP clauses, reversible guarded aliases; no speed claim" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta3-guarded-equivalence-certificate
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta3_semantic/semantic_certificate.json
+            delta3_semantic_audit.log
