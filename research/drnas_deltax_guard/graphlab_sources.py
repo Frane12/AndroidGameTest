@@ -141,10 +141,22 @@ def write(folder):
         check_graph_certificate(n,edges,colors,kind)
         core=color_cnf(n,edges)
         known=None if colors is None else [colors[v]==c for v in range(n) for c in range(3)]
+        links=[]
         if motifs:
             total,cnf=H.guarded_join(3*n,core,seed,count=motifs,plant=known)
             if known is not None:
                 check_full_planted_extension(cnf,known,3*n,motifs)
+            for i in range(motifs):
+                y=5*i+5
+                candidates=[c for c in cnf if len(c)==2 and -y in c
+                            and any(lit>5*motifs for lit in c)]
+                assert len(candidates)==1
+                target=next(lit for lit in candidates[0] if lit!=-y)
+                core_var=target-5*motifs-1
+                vertex,color=divmod(core_var,3)
+                links.append({"gadget_id":i,"y":y,"core_variable":target,
+                              "graph_vertex":vertex,"color":color,
+                              "vertex_degree":sum(vertex in edge for edge in edges)})
         else:
             total=3*n;cnf=core
         # Important: deterministic complete permutation + clause shuffle
@@ -156,6 +168,10 @@ def write(folder):
             perm={i+1:vs[i] for i in range(total)}
             cnf=[[(1 if lit>0 else -1)*perm[abs(lit)] for lit in c] for c in cnf]
             rng.shuffle(cnf)
+        for link in links:
+            if shuffled:
+                link["y"]=perm[link["y"]]
+                link["core_variable"]=perm[link["core_variable"]]
         text=f"p cnf {total} {len(cnf)}\n"
         text+="".join(" ".join(map(str,c))+" 0\n" for c in cnf)
         path=folder/(name+".cnf")
@@ -165,6 +181,7 @@ def write(folder):
             "graph_kind":kind,"graph_vertices":n,"graph_edges":len(edges),
             "graph_edges_explicit":edges,
             "motifs":motifs,"seed":seed,"permuted":shuffled,
+            "gadget_to_graph_links":links,
             "nvars":total,"nclauses":len(cnf),"path":str(path),
             "sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
             "expected_by_graph":"SAT" if colors is not None else "UNSAT",
