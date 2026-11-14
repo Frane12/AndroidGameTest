@@ -93,3 +93,7 @@ python3 research/drnas_nl_solved/bench.py --history history/delta3_final/trials.
 Odabrani režim: `build/drnas-nl-solved INPUT.cnf --mode core --x5-no-minimize
 --coop4 off --coop5 off --nl-focus inplace --proof OUTPUT.drat --stats`.
 Optimizacija nema lookup prema nazivu, SHA-u, očekivanom ishodu ili prethodnom modelu.
+
+## Dodatna provjera izvan Simona
+
+[Rezultati na pet lakših i srednje teških stvarnih formula](MEDIUM_RESULTS.md): 200/200 verificirano, bez potvrđenog ukupnog ubrzanja na tri dulje formule.
