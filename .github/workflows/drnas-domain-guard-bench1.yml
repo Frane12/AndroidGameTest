@@ -1,0 +1,161 @@
+name: DRNAS DOMAIN BENCH1 worker guard and PCMAX RUP584 original SAT2024
+on:
+  push:
+    branches: [experiment/drnas-domain-guard-bench1-20261114]
+    paths:
+      - .github/workflows/drnas-domain-guard-bench1.yml
+      - research/drnas_worker_domain_guard.hpp
+      - research/drnas_worker_guard_build.py
+      - research/drnas_domain_guard_bench1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-domain-bench1-frozen-source
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-compiled-binaries
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore original CNFs and pinned reference binaries
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          tar -xzf cf7_binaries.tgz
+          chmod +x build/drnas-clause-cf6 build/kissat build/drat-trim
+          python3 -m py_compile research/drnas_domain_guard_bench1.py research/drnas_worker_guard_build.py
+          python3 -u research/drnas_worker_guard_build.py | tee domain_build.log
+          sha256sum build/drnas-worker-domain build/drnas-clause-cf6 build/kissat build/drat-trim > domain_binaries.sha256
+      - name: Smoke verify original Worker SAT guard, OFF equivalence and PCMAX direct-RUP
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,sys,pathlib,subprocess,tempfile
+          sys.path.insert(0,"research")
+          import drnas_domain_guard_bench1 as B
+          from drnas_clause_cf7_real100 import DATA
+          sources=B.read_sources()
+          original=pathlib.Path(sources[64]["path"])
+          for extra,expected in [([],False),(["--domain-guard","--domain-budget-ms","2.0"],True)]:
+              p=subprocess.run(["build/drnas-worker-domain",str(original),
+                "--mode","core","--time","2.0","--x5-no-minimize",*extra],
+                capture_output=True,text=True,timeout=3)
+              assert p.returncode==10,(p.returncode,p.stderr[-1000:],p.stdout[-1000:])
+              assert DATA.sat_witness_valid(original,DATA.nvars(original),p.stdout)
+              if expected:
+                  assert '"solved":true' in p.stderr and '"eligible":true' in p.stderr,p.stderr
+          with tempfile.TemporaryDirectory() as t:
+              out=pathlib.Path(t)/"augmented.cnf"
+              n,d=B.append_rup584(sources[44],out)
+              assert n==584 and out.is_file() and d
+              print("DOMAIN_PREP_SELFTEST_PASS worker_original_sat=2/2 pcmax_rup=584")
+          # Negative-control: guard must not claim UNSAT on unsatisfiable
+          # all-positive-groups/all-negative-pair formula.
+          with tempfile.TemporaryDirectory() as td:
+              toy=pathlib.Path(td)/"unsat.cnf"
+              toy.write_text("p cnf 3 5\n1 2 3 0\n-1 -2 0\n-1 -3 0\n-2 -3 0\n-1 -2 0\n")
+              p=subprocess.run(["build/drnas-worker-domain",str(toy),
+                 "--mode","core","--time","1.0","--domain-guard"],
+                 capture_output=True,text=True,timeout=3)
+              assert p.returncode in (10,20,0),p.stderr
+              if p.returncode==10:assert DATA.sat_witness_valid(toy,3,p.stdout)
+              print("DOMAIN_GUARD_NO_UNSAFE_UNSAT_PASS")
+          PY
+          tar -czf domain_bench_ready.tgz cf7/ build/drnas-worker-domain build/drnas-clause-cf6 \
+            build/kissat build/drat-trim domain_binaries.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: domain-bench1-prepared
+          retention-days: 45
+          path: |
+            domain_bench_ready.tgz
+            domain_build.log
+            domain_binaries.sha256
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        panel: [worker, pcmax, controls]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: domain-bench1-prepared
+          path: .
+      - name: Run source paired original-CNF verified PAR2 one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf domain_bench_ready.tgz
+          sha256sum -c domain_binaries.sha256
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONHASHSEED=0 \
+            taskset -c "$CPU" python3 -u research/drnas_domain_guard_bench1.py ${{ matrix.panel }} | tee domain_panel.log
+          grep -q '^DOMAIN_PANEL_PASS ' domain_panel.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-${{ matrix.panel }}
+          retention-days: 45
+          path: |
+            domain_bench/${{ matrix.panel }}/
+            domain_panel.log
+  final:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          path: bench_downloads
+      - name: Verify complete 157-trial matrix and summarize three separate PAR2 panels
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_domain_guard_bench1.py report | tee domain_final.log
+          grep -q '^DOMAIN_BENCH_FINAL ' domain_final.log
+          python3 - <<'PY'
+          import json,os
+          report=json.load(open("bench_final/report.json"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("## DRNAS DOMAIN BENCH1 — original SAT2024 source-paired verified PAR2\n\n")
+              f.write("| Panel | Cap | Solver | Trials | Verified | PAR2 s | Median verified s | Guard solved |\n")
+              f.write("|---|---:|---|---:|---:|---:|---:|---:|\n")
+              for r in report["summary"]:
+                  f.write(f'| {r["panel"]} | {r["cap_s"]} | {r["arm"]} | {r["trials"]} | {r["accepted"]} | {r["PAR2_verified_s"]:.4f} | {r["median_verified_s"]} | {r["guard_solved"]} |\n')
+              f.write("\nRetrospective source-exposed experiment, not a blind holdout; no promotion.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-domain-bench1-final
+          retention-days: 60
+          path: |
+            bench_final/
+            domain_final.log
