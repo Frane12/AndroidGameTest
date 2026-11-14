@@ -1,0 +1,161 @@
+name: DRNAS DELTA-COOP3 real nonlinear witness to proof-carrying short CNF
+on:
+  push:
+    branches: [experiment/drnas-deltacoop3-nonlinear-clause-20261114]
+    paths:
+      - .github/workflows/drnas-deltacoop3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltacoop3-one-proof-first
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43584992768
+          name: delta2-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta2
+      - name: Restore unchanged source CNFs and frozen DELTA2/competitors
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta2/delta2_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltacoop3/build.py research/drnas_deltacoop3/paired.py tests/test_drnas_deltacoop3.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          cases,meta=B.official_manifest()
+          assert len(cases)==36 and len({c['sha256'] for c in cases})==36
+          print("DELTA3_FROZEN_REAL36_SOURCES_PASS",meta["manifest_sha256"])
+          PY
+      - name: Build new C++ binary from source-only pinned generators
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltacoop3/build.py | tee delta3_build.log
+          grep -q '^DELTA3_BUILD ' delta3_build.log
+          sha256sum build/drnas-deltacoop3 build/drnas-deltacoop2 \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            > build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA2_FROZEN.sha256
+      - name: Reproduce exact real nonlinear witness and check global RUP lemma
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tests/delta3_real_witness_replay.cpp -o build/delta3-real-replay
+          taskset -c "$CPU" build/delta3-real-replay | tee delta3_replay.log
+          grep -q '^DELTA3_REAL_SOURCE_REPLAY_PASS ' delta3_replay.log
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_deltacoop3.py \
+            | tee delta3_safety.log
+          grep -q '^DELTA3_PREFLIGHT_PASS ' delta3_safety.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          tar -czf delta3_bench_frozen.tgz \
+            build/drnas-deltacoop3 build/drnas-deltacoop2 \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            build/DELTA3_BUILD.json build/DELTA3_FROZEN.sha256 \
+            build/DELTA2_FROZEN.sha256 real36_frozen
+          echo "DELTA3_RUP_PREFLIGHT_PASS original SAT/UNSAT proof checks; no main changes" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta3-proof-first-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta3_bench_frozen.tgz
+            delta3_build.log
+            delta3_replay.log
+            delta3_safety.log
+            build/DELTA3_BUILD.json
+
+  real36_paired:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta3-proof-first-preflight
+          path: frozen/delta3
+      - name: Compare 6 arms on original SAT2024, one logical CPU, independently verified
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_deltacoop3/paired.py \
+            shard --shard ${{ matrix.shard }} | tee delta3_shard.log
+          grep -q '^DELTA3_SHARD_PASS ' delta3_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta3-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta2_shards/${{ matrix.shard }}/
+            delta3_shard.log
+
+  aggregate:
+    needs: real36_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta3-proof-first-preflight
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: delta3-shard-*
+          merge-multiple: false
+          path: delta3_downloads
+      - name: Reconcile 432 original-source trials, original proofs and family bootstrap
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          python3 -u research/drnas_deltacoop3/paired.py aggregate | tee delta3_final.log
+          grep -q '^DELTA3_FINAL ' delta3_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("delta3_final/report.json"))
+          assert r["attempts"]==432 and r["originals"]==36
+          assert not r["blind_holdout"] and not r["promotion"]
+          assert r["one_cpu_per_solver"]
+          print("DELTA3_RECONCILED",r["attempts"],r["fields"]["BRIDGE"]["math"]["bridge_injected"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta3-real36-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta3_final/
+            delta3_final.log
