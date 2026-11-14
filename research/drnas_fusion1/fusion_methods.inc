@@ -94,7 +94,7 @@
         // costly proof modules deserve a short trial.
         const bool graph_like=(
             n_<=768 && fusion_max_original_clause_size_<=3 &&
-            fusion_original_binary_>=n_/2 &&
+            fusion_original_binary_>=n_/2 && binary_edges>=n_ &&
             fusion_original_ternary_>=n_/10);
         const bool xor_like=fusion_xor_groups_>0;
         if(!graph_like && !xor_like){++fusion_cheap_veto_;return false;}
