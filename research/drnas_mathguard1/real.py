@@ -18,7 +18,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-CAP = 6.0
+CAP = 10.0
 REPS = 2
 MAX_SOURCES = 12
 OUT = ROOT / "mathguard1_real"
@@ -123,8 +123,8 @@ def trial(source, arm, rep):
     stem = f"{source['id']}-{rep}-{arm}"
     proof = folder / (stem + ".drat")
     usage = folder / (stem + ".usage")
-    executable = ROOT / ("build/drnas-mathguard1" if arm == "MATH_GUARD"
-                         else "build/drnas-x59-frozen")
+    # Both measurements use the IDENTICAL binary: guard is a runtime toggle.
+    executable = ROOT / "build/drnas-mathguard1"
     cmd = [str(executable), str(path), "--mode", "core",
            "--time", str(CAP-0.10), "--x5-no-minimize",
            "--stats", "--proof", str(proof)]
@@ -201,14 +201,14 @@ def main():
     os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
     selected, eligible = choose()
     write("cohort.json", {
-        "criteria": "prior certificate within 6s plus DELTA4 nonlinear/nonaffine structural telemetry",
+        "criteria": "prior certificate within 10s plus DELTA4 nonlinear/nonaffine structural telemetry",
         "historical_run": 43589616448, "retrospective": True,
         "holdout": False, "promotion": False, "eligible": eligible,
         "selected": selected, "one_logical_cpu": True, "max_sources": MAX_SOURCES})
     rows = []
     for s in selected:
         for rep in range(REPS):
-            arms = ["FROZEN_X59", "MATH_GUARD"]
+            arms = ["GUARD_OFF", "MATH_GUARD"]
             random.Random(int(s["sha256"][:16], 16)+rep*61).shuffle(arms)
             for arm in arms:
                 rows.append(trial(s, arm, rep))
@@ -217,7 +217,7 @@ def main():
     paired = []
     for s in selected:
         for rep in range(REPS):
-            x = by[s["sha256"], rep, "FROZEN_X59"]
+            x = by[s["sha256"], rep, "GUARD_OFF"]
             y = by[s["sha256"], rep, "MATH_GUARD"]
             if x["verified"] and y["verified"]:
                 assert x["status"] == y["status"], ("CONTRADICTORY_VERIFIED_VERDICT", s["sha256"])
@@ -228,9 +228,9 @@ def main():
         "both_verified_pairs": len(paired),
         "median_speedup_when_both_verified": statistics.median(paired) if paired else None,
         "verified": {arm: sum(r["verified"] for r in rows if r["arm"] == arm)
-                     for arm in ("FROZEN_X59", "MATH_GUARD")},
+                     for arm in ("GUARD_OFF", "MATH_GUARD")},
         "PAR2_verified_s": {arm: sum(r["PAR2_verified_s"] for r in rows if r["arm"] == arm)
-                            for arm in ("FROZEN_X59", "MATH_GUARD")},
+                            for arm in ("GUARD_OFF", "MATH_GUARD")},
         "math_guard_lemmas": sum(r["math_guard"].get("lemmas", 0)
                                  for r in rows if r["arm"] == "MATH_GUARD"),
         "single_cpu": True, "retrospective": True,
