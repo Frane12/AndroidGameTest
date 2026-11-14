@@ -1,0 +1,109 @@
+name: DRNAS DELTA4X MATH-GUARD4 four-arm certified original SAT2024
+
+on:
+  push:
+    branches: [experiment/drnas-delta4x-mathguard-ab-20261114]
+    paths:
+      - .github/workflows/drnas-delta4x-mathguard-ab.yml
+      - research/drnas_mathguard_delta4x/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-delta4x-mathguard-ab
+  cancel-in-progress: false
+
+jobs:
+  four_arm_certified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          name: delta4-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43593699141
+          name: delta4x-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4x
+      - name: Restore SHA-pinned original CNFs, solvers, DRAT and C++ source-generation prerequisites
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          python3 -m py_compile research/drnas_mathguard_delta4x/build.py research/drnas_mathguard_delta4x/bench.py
+      - name: Derive and compile single-process DELTA4X + GUARD4 with unchanged frozen baseline
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_mathguard_delta4x/build.py | tee mg4_build.log
+          grep -q '^DELTA4X_MATHGUARD_BUILD ' mg4_build.log
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+      - name: Independent exhaustive SAT oracle and DRAT/RUP proof preflight on one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_mathguard_delta4x/bench.py preflight | tee mg4_preflight.log
+          grep -q '^MG4_PREFLIGHT_PASS ' mg4_preflight.log
+      - name: Paired 8 frozen original SAT2024 formulas x 2 repeats x 4 arms, 6s cap
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_mathguard_delta4x/bench.py bench | tee mg4_real.log
+          grep -q '^MG4_REAL_FINAL ' mg4_real.log
+      - name: Audit paired source hashes, complete trial matrix and verified PAR2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          d=Path('delta4x_mathguard_ab')
+          protocol=json.loads((d/'protocol.json').read_text())
+          rows=json.loads((d/'trials.json').read_text())
+          report=json.loads((d/'report.json').read_text())
+          assert len(rows)==8*2*4
+          assert report['one_cpu'] and report['one_process_at_a_time']
+          assert not report['blind_holdout'] and not report['promotion']
+          for i,h in protocol['hashes'].items():
+              assert set(r['sha256'] for r in rows if r['id']==int(i))=={h}
+          keys=[(r['id'],r['rep'],r['arm']) for r in rows]
+          assert len(keys)==len(set(keys))
+          assert all(r['verified'] or r['PAR2_verified_s']==12.0 for r in rows)
+          print('MG4_AUDIT_PASS', len(rows), report['results'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4x-mathguard4-ab-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            mg4_build.log
+            mg4_preflight.log
+            mg4_real.log
+            build/DELTA4X_MATHGUARD_BUILD.json
+            delta4x_mathguard_ab/protocol.json
+            delta4x_mathguard_ab/trials.json
+            delta4x_mathguard_ab/report.json
