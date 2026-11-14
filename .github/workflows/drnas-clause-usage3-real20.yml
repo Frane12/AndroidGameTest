@@ -1,0 +1,100 @@
+name: DRNAS CLAUSE-USAGE3 REAL20 original SAT2024 100-500 conflict windows
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-usage3-real2024-20261114
+    paths:
+      - .github/workflows/drnas-clause-usage3-real20.yml
+      - research/drnas_clause_usage3_build.py
+      - research/drnas_clause_usage3_real20.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-clause-usage3-real20-experiment
+  cancel-in-progress: false
+
+jobs:
+  real20_clause_utility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore independently frozen original competition 2024 CNF archive
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - name: Restore original DRAT checker and verify frozen binary SHA
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43601959681
+          name: deltax-signal1-frozen-sources-and-binary
+          github-token: TOKEN_PLACEHOLDER
+          path: frozen/proof
+      - name: Extract original CNFs and compile telemetry-only native build
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_clause_usage3_build.py \
+            research/drnas_clause_usage3_real20.py research/drnas_x55_cpu_real36.py
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf frozen/proof/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as F
+          src,proto=F.official_manifest()
+          assert len(src)==36
+          print('CLAUSE_USAGE3_SOURCE_AUDIT',len(src),proto['manifest_sha256'])
+          PY
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-clause-usage3-reference
+          python3 -u research/drnas_clause_usage3_build.py | tee clause_usage3_build.log
+          sha256sum src/drnas_x5.cpp build/drnas-clause-usage3-reference \
+            build/drnas-clause-usage3 build/drat-trim \
+            | tee clause_usage3_binaries.sha256
+      - name: Run 20 original SHA-pinned CNFs under both existing policy modes
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "CLAUSE_USAGE3_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_clause_usage3_real20.py \
+            | tee clause_usage3_real20.log
+          grep -q '^CLAUSE_USAGE3_FINAL ' clause_usage3_real20.log
+          python3 - <<'PY'
+          import json
+          p=json.load(open('clause_usage3_real20/report.json'))
+          assert p['status']=='COMPLETE' and p['original_CNFs']==20
+          assert p['all_pairs_SHA_pinned'] and p['one_cpu']
+          assert p['no_training_or_refit'] and p['no_main_changes'] and not p['solver_promoted']
+          for name in ['after_100_conflicts','after_500_conflicts']:
+              x=p[name]
+              assert x['both_eligible_source_count']>=0
+          print('CLAUSE_USAGE3_CERTIFIED',p['original_models_or_DRAT_verified_total'],
+                p['both_verified'],p['pairs_with_reduction'],
+                p['after_100_conflicts']['both_eligible_source_count'],
+                p['after_500_conflicts']['both_eligible_source_count'])
+          PY
+          echo "Original SAT2024, per-clause age 100/500 conflict exposure; baseline versus retention policy bundle; no main edits or speed claim" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-clause-usage3-real20-provenance
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            clause_usage3_real20/
+            clause_usage3_build.log
+            clause_usage3_real20.log
+            clause_usage3_binaries.sha256
