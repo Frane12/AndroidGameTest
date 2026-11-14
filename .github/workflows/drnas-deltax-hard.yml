@@ -1,0 +1,155 @@
+name: DRNAS DELTAX HARD linked synthetic 3SAT XOR PHP proof-first
+on:
+  push:
+    branches: [experiment/drnas-deltax-hard-synthetic-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-hard.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deltax-hard-first-source-sha-paired
+  cancel-in-progress: false
+
+jobs:
+  freeze_proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore untouched reference tools and frozen original CNFs
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltax/hard_formulas.py \
+            research/drnas_deltax/hard_paired.py \
+            research/drnas_deltax/synthetic_causal_build.py
+      - name: Compile fresh DELTAX causal telemetry binary and SHA-pin competitors
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltax/synthetic_causal_build.py | tee deltax_hard_build.log
+          grep -q '^DELTAX_CAUSAL_BUILD ' deltax_hard_build.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum build/drnas-deltax build/drnas-deltax-causal \
+            build/drat-trim > build/DELTAX_HARD_BINARIES.sha256
+      - name: Produce 28 distinct source SHA CNFs and run one-CPU proof preflight
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_HARD_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax/hard_paired.py preflight | tee deltax_hard_preflight.log
+          grep -q '^DELTAX_HARD_PREFLIGHT_PASS ' deltax_hard_preflight.log
+          sha256sum -c build/DELTAX_HARD_BINARIES.sha256
+          tar -czf deltax_hard_frozen.tgz \
+            build/drnas-deltax-causal build/drat-trim \
+            build/DELTAX_HARD_BINARIES.sha256 \
+            build/drnas-deltax deltax_hard_inputs
+          echo "DELTAX_HARD_PREFLIGHT_PASS no main edits, true original SAT+DRAT checks" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-hard-frozen-preflight
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            deltax_hard_frozen.tgz
+            deltax_hard_build.log
+            deltax_hard_preflight.log
+            deltax_hard_preflight/
+            deltax_hard_inputs/manifest.json
+
+  paired_hard:
+    needs: freeze_proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-hard-frozen-preflight
+          path: frozen/deltax-hard
+      - name: Paired 6-second JOIN SHADOW DELTAX hard CNFs; 1 CPU per solver
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/deltax-hard/deltax_hard_frozen.tgz
+          sha256sum -c build/DELTAX_HARD_BINARIES.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_HARD_SHARD_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax/hard_paired.py shard --shard ${{ matrix.shard }} \
+            | tee hard_shard.log
+          grep -q '^DELTAX_HARD_SHARD_PASS ' hard_shard.log
+          echo "Hard shard verified: SAT models on original CNF / UNSAT independent DRAT" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-hard-shard-${{ matrix.shard }}
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            deltax_hard_shards/${{ matrix.shard }}/
+            hard_shard.log
+
+  final_reconcile:
+    needs: paired_hard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-hard-frozen-preflight
+          path: frozen/deltax-hard
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deltax-hard-shard-*
+          merge-multiple: false
+          path: deltax_hard_downloads
+      - name: Compare paired verified search decisions, conflicts, proof reasons
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/deltax-hard/deltax_hard_frozen.tgz
+          python3 -u research/drnas_deltax/hard_paired.py aggregate \
+            | tee deltax_hard_final.log
+          grep -q '^DELTAX_HARD_FINAL ' deltax_hard_final.log
+          python3 - <<'PY'
+          import json
+          x=json.load(open('deltax_hard_final/report.json'))
+          assert x['status']=='COMPLETE' and x['sources']==28 and x['trials']==84
+          assert x['one_cpu_per_solver'] and x['retrospective_synthetic']
+          assert not x['blind_holdout'] and not x['promotion'] and x['no_speed_claim']
+          print('DELTAX_HARD_COMPLETE',x['genuine_nontrivial_join_cases'],
+                x['paired_both_decision_reductions'],x['paired_both_conflict_reductions'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-hard-paired-final
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            deltax_hard_final/
+            deltax_hard_final.log
