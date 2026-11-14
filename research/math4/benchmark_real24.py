@@ -150,7 +150,7 @@ def trial(source,arm,rep,folder,cap=CAP):
         check_wall_s=round(check_s,6),certified_e2e_s=round(certified_e2e,6),
         cpu_s=result['cpu_s'],maxrss_kib=result['maxrss_kib'],checker_maxrss_kib=check_rss,
         PAR2_verified_s=round(certified_e2e if accepted else 2*cap,6),
-        PAR2_strict_drat_s=round(result['elapsed'] if strict else 2*cap,6),
+        PAR2_strict_drat_s=round(certified_e2e if strict else 2*cap,6),
         PAR2_certified_e2e_s=round(certified_e2e if accepted and certified_e2e<=cap else 2*cap,6),
         proof_bytes=proof.stat().st_size if proof.exists() else 0,
         guard=telemetry[-1] if telemetry else None)
