@@ -1,0 +1,93 @@
+name: DRNAS CLAUSE CFC5 first-reduction counterfactual real SAT2024
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-counterfactual5-real2024-20261114
+    paths:
+      - .github/workflows/drnas-clause-cf5-real14.yml
+      - research/drnas_clause_cf5_build.py
+      - research/drnas_clause_cf5_real14.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-clause-cf5-onecore-real14
+  cancel-in-progress: false
+
+jobs:
+  first_reduction_equal_budget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: TOKEN_PLACEHOLDER
+          path: frozen/original_proof
+      - name: Freeze original SAT2024 CNF SHA and compile isolated first-deletion variants
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_clause_cf5_build.py \
+            research/drnas_clause_cf5_real14.py research/drnas_x55_cpu_real36.py
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf frozen/original_proof/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as REAL
+          s,p=REAL.official_manifest()
+          assert len(s)==36 and len({x['sha256'] for x in s})==36
+          print("CLCF5_ORIGINAL_SOURCE_AUDIT",len(s),p['manifest_sha256'])
+          PY
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-clause-cf5-reference
+          python3 -u research/drnas_clause_cf5_build.py | tee cf5_build.log
+          sha256sum src/drnas_x5.cpp build/drnas-clause-cf5-reference \
+            build/drnas-clause-cf5 build/drat-trim | tee cf5_sha256.txt
+      - name: Four serial A/B/C/sham runs; equal deletion count and original proof checking
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "CLCF5_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_clause_cf5_real14.py | tee cf5_real14.log
+          grep -q '^CLCF5_FINAL ' cf5_real14.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open('clause_cf5_real14/report.json'))
+          assert r["status"]=="COMPLETE" and r["source_count"]==14
+          assert r["paired_same_first_reduction_checked"]==14
+          assert r["one_cpu"] and r["no_model_fitting"] and not r["not_promoted"]==False
+          assert r["original_models_and_unsat_drat_independently_checked"]
+          assert r["no_branching_or_CDCL_proof_policy_changes"]
+          print("CLCF5_RESULT",r["first_reduction_triggered"],
+                r["post500_all_arms_exposed"],r["aggregate"])
+          PY
+          echo "Mechanistic original SAT2024 first-reduction test: BASE, LBD, RECENT, HASH; exactly equal deletion budgets; no main changes." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-clause-cf5-real14-source-verified
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            clause_cf5_real14/
+            cf5_real14.log
+            cf5_build.log
+            cf5_sha256.txt
