@@ -1,0 +1,206 @@
+name: DRNAS CLAUSE CF6 equal-budget matched swaps REAL14 and REPLAY3
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-cf6-matched-swap-20261114
+    paths:
+      - .github/workflows/drnas-clause-cf6.yml
+      - research/drnas_clause_cf6_build.py
+      - research/drnas_clause_cf6_bench.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-cf6-first-reduction-matched-20261114
+  cancel-in-progress: false
+
+jobs:
+  freeze_and_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: frozen/original_proof
+      - name: Restore SHA-pinned SAT2024 originals and compile isolated CF6
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf frozen/original_proof/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          mkdir -p build
+          python3 -m py_compile research/drnas_clause_cf5_build.py research/drnas_clause_cf6_build.py research/drnas_clause_cf6_bench.py
+          python3 -u research/drnas_clause_cf6_build.py | tee cf6_build.log
+          sha256sum build/drnas-clause-cf6 build/drat-trim | tee cf6_sha256.txt
+      - name: First state invariant, 8 arms, full identity ledger
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "CF6_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_clause_cf6_bench.py freeze | tee cf6_freeze.log
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_clause_cf6_bench.py preflight | tee cf6_preflight.log
+          grep -q '^CF6_PREFLIGHT_PASS ' cf6_preflight.log
+          tar -czf cf6_frozen.tgz build/drnas-clause-cf6 build/drat-trim cf6/frozen/protocol.json cf6_build.log cf6_freeze.log cf6_preflight.log cf6_sha256.txt
+          echo "CF6 preflight OK; 14 historical originals, not blind; no main edits." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf6-frozen
+          retention-days: 50
+          if-no-files-found: warn
+          path: |
+            cf6_frozen.tgz
+            cf6/preflight/
+            cf6_build.log
+            cf6_preflight.log
+
+  paired_real14:
+    needs: freeze_and_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf6-frozen
+          path: .
+      - name: Paired SHA-checked 4s REAL14 source shard ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf cf6_frozen.tgz
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_clause_cf6_bench.py shard --shard ${{ matrix.shard }} | tee cf6_shard.log
+          grep -q '^CF6_SHARD_PASS ' cf6_shard.log
+          echo "CF6 real14 shard complete, originals verified; not a blind holdout." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf6-real14-${{ matrix.shard }}
+          retention-days: 50
+          if-no-files-found: warn
+          path: cf6/real14/shard-${{ matrix.shard }}/
+
+  replay16:
+    needs: freeze_and_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf6-frozen
+          path: .
+      - name: Triplicate 8s verified SAT2024 scheduling source id16
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf cf6_frozen.tgz
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_clause_cf6_bench.py replay | tee cf6_replay.log
+          grep -q '^CF6_REPLAY_PASS ' cf6_replay.log
+          echo "CF6 8s replay #16: 3 correlated repetitions, NOT independent families." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf6-replay16
+          retention-days: 50
+          if-no-files-found: warn
+          path: cf6/replay16/
+
+  final_report:
+    needs: [paired_real14, replay16]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf6-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cf6-real14-*
+          path: cf6/downloads
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf6-replay16
+          path: cf6/downloads/cf6-replay16
+      - name: Strict full-trial report (112 REAL14 plus 24 replay)
+        run: |
+          set -euo pipefail
+          tar -xzf cf6_frozen.tgz
+          python3 -u research/drnas_clause_cf6_bench.py final | tee cf6_final.log
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open("cf6/final/report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==14
+          assert r["one_logical_cpu"] and r["retrospective_not_blind"]
+          assert r["real14"]["attempts"]==112 and r["replay16"]["attempts"]==24
+          assert r["no_wrong_SAT_UNSAT_observed"] and not r["promotion"]
+          lines=["## CF6 original SAT2024 first-reduction controlled matched swaps",
+                 "REAL14 4s (14 originals / 4 families); replay id16 x3 8s.",
+                 "Original SAT models and independent UNSAT DRAT only.",
+                 "No new blind holdout. Different caps are never pooled.","",
+                 "| Arm | REAL14 verified /14 | E2E PAR2 4s | REPLAY16 verified /3 | E2E PAR2 8s |",
+                 "|---|---:|---:|---:|---:|"]
+          for arm,v in r["real14"]["arms"].items():
+              rep=r["replay16"]["arms"][arm]
+              lines.append(f"| {arm} | {v['verified_within_cap']} | {v['PAR2_verified_s']:.4f} | {rep['verified_within_cap']} | {rep['PAR2_verified_s']:.4f} |")
+          lines+=["","Family bootstrap CI95 is in report.json for 4 retrospective families.",
+                  "Single-source replay is not independent replication across families.",
+                  "No automatic promotion, no main or frozen baseline modifications."]
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf6-matched-swaps-real14-replay16-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            cf6/final/report.json
+            cf6/final/trials_real14.jsonl
+            cf6/final/trials_replay16.jsonl
+            cf6/frozen/protocol.json
+            cf6_final.log
