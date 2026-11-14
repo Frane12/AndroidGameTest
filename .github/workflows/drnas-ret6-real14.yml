@@ -1,0 +1,154 @@
+name: DRNAS RET6 continuous clause retention six-arm original SAT2024
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-continuous6-real2024-20261114
+    paths:
+      - .github/workflows/drnas-ret6-real14.yml
+      - research/drnas_retain6_build.py
+      - research/drnas_retain6_real14.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-ret6-continuous-original-SAT2024
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: frozen/reference
+      - name: SHA verify ORIGINAL CNF and proof checker and compile isolated native control
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_retain6_build.py \
+            research/drnas_retain6_real14.py research/drnas_x55_cpu_real36.py
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf frozen/reference/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as F
+          cases,metadata=F.official_manifest()
+          assert len(cases)==36 and len({r["sha256"] for r in cases})==36
+          print("RET6_SOURCE_VERIFIED",len(cases),metadata["manifest_sha256"])
+          PY
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-ret6-reference
+          python3 -u research/drnas_retain6_build.py | tee retain6_build.log
+          sha256sum src/drnas_x5.cpp build/drnas-ret6-reference \
+            build/drnas-ret6 build/drat-trim | tee retain6_binaries.sha256
+      - name: Matched six policy outcomes per original CNF; one logical CPU per solver
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "RET6_ONE_LOGICAL_CPU=$CPU SHARD=${{ matrix.shard }}"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_retain6_real14.py shard \
+              --shard ${{ matrix.shard }} \
+            | tee retain6_shard_${{ matrix.shard }}.log
+          grep -q '^RET6_SHARD_COMPLETE ' retain6_shard_${{ matrix.shard }}.log
+          tar -czf ret6_shard_${{ matrix.shard }}.tgz \
+            retain6_real14/${{ matrix.shard }}/
+          sha256sum ret6_shard_${{ matrix.shard }}.tgz | tee ret6_shard_${{ matrix.shard }}.sha256
+          echo "Shard ${{ matrix.shard }} completed: original SAT/UNSAT proof verification, all six modes, serial on one logical CPU" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ret6-shard-${{ matrix.shard }}
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            ret6_shard_${{ matrix.shard }}.tgz
+            ret6_shard_${{ matrix.shard }}.sha256
+            retain6_shard_${{ matrix.shard }}.log
+            retain6_build.log
+            retain6_binaries.sha256
+
+  final:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ret6-shard-*
+          path: retain6_downloads
+          merge-multiple: false
+      - name: Reconcile original SHA-pinned CNFs, shards and six-arm verified outcomes
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/real36/real36_inputs.tgz
+          for i in 0 1 2; do
+            cd retain6_downloads/ret6-shard-"$i"
+            sha256sum -c ret6_shard_"$i".sha256
+            cd ../..
+            tar -xzf retain6_downloads/ret6-shard-"$i"/ret6_shard_"$i".tgz
+          done
+          PYTHONHASHSEED=0 python3 -u research/drnas_retain6_real14.py final \
+            | tee retain6_final.log
+          grep -q '^RET6_FINAL ' retain6_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("retain6_real14/final_report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==14 and r["shards"]==3
+          assert r["verified_original_source_controls"]["all_valid_proofs_original_CNF"]
+          assert r["verified_original_source_controls"]["no_mismatched_pre_first_deletion_state"]
+          assert r["verified_original_source_controls"]["one_logical_CPU_per_solver"]
+          assert r["no_main_changes"] and r["no_promotion"]
+          for p in ["OFF","FULL","LBD_ONLY","RECENT_ONLY","QUOTA_ONLY","FULL_HALF"]:
+            assert r["aggregates"][p]["cases"]==14
+          print("RET6_AUDITED_FINAL",json.dumps(r["aggregates"],sort_keys=True))
+          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("## DRNAS RET6 continuous retention (retrospective original SAT2024)\n")
+            f.write("| Arm | Verified/14 | PAR2 verified s | Effective reductions | Deleted clauses |\n")
+            f.write("|---|---:|---:|---:|---:|\n")
+            for k,v in r["aggregates"].items():
+              f.write(f"| {k} | {v['verified']} | {v['PAR2_s']:.3f} | {v['effective_reductions']} | {v['deleted']} |\n")
+            f.write("\nNo main edits; SAT model/DRAT independently checked; no general speed claim.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ret6-real14-final
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            retain6_real14/final_report.json
+            retain6_final.log
