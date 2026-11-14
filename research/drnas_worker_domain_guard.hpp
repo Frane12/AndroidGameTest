@@ -1,8 +1,6 @@
 // Experimental domain guard for exact independent-transversal SAT subclass.
 // No UNSAT inference: on any mismatch or failure, fall back to original CDCL.
 // This header is included only by the experiment-specific generated X5 clone.
-#include <functional>
-#include <cstdint>
 
 struct WorkerDomainAnswer {
     bool eligible = false;
