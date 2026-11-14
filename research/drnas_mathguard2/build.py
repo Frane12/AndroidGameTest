@@ -83,15 +83,17 @@ def main():
     s=one(s,"    bool math_guard_enabled_=false;",
           "    bool math_guard_enabled_=false;\n"
           "    bool math_guard2_enabled_=false;\n"
+          "    bool math_guard2_lean_=false;\n"
           "    double math_guard2_budget_ms_=8.0;")
     s=one(s,"    bool math_guard_budget_hit=false;",
           "    bool math_guard_budget_hit=false;\n"
           "    int64_t math_guard2_scanned=0,math_guard2_diamonds=0;\n"
           "    int64_t math_guard2_lemmas=0,math_guard2_binary=0;\n"
+          "    int64_t math_guard2_stored=0,math_guard2_proof_only=0;\n"
           "    bool math_guard2_budget_hit=false;\n"
           "    double math_guard2_wall_ms=0.0;")
     s=one(s,"    void configureMathGuard(bool enabled, double budget_ms) {",
-          """    void configureMathGuard2(bool enabled, double budget_ms) {
+          """    void configureMathGuard2(bool enabled, double budget_ms, bool lean) {\n        math_guard2_lean_=lean;
         if (!(budget_ms>0.0 && budget_ms<=50.0 && std::isfinite(budget_ms)))
             throw std::runtime_error("invalid guard2 budget");
         math_guard2_enabled_=enabled;
@@ -104,16 +106,18 @@ def main():
     s=one(s,"    bool math_guard=false;",
           "    bool math_guard=false;\n"
           "    bool math_guard2=false;\n"
+          "    bool math_guard2_lean=false;\n"
           "    double math_guard2_budget_ms=8.0;")
     s=one(s,'        else if (opt=="--math-guard") math_guard=true;',
           '        else if (opt=="--math-guard") math_guard=true;\n'
           '        else if (opt=="--math-guard2") math_guard2=true;\n'
+          '        else if (opt=="--math-guard2-lean") { math_guard2=true; math_guard2_lean=true; }\n'
           '        else if (opt=="--math-guard2-budget-ms" && i+1<argc)\n'
           '            math_guard2_budget_ms=std::stod(argv[++i]);')
     s=one(s,
           "            solver->configureMathGuard(math_guard,math_guard_budget_ms);",
           "            solver->configureMathGuard(math_guard,math_guard_budget_ms);\n"
-          "            solver->configureMathGuard2(math_guard2,math_guard2_budget_ms);")
+          "            solver->configureMathGuard2(math_guard2,math_guard2_budget_ms,math_guard2_lean);")
     s=one(s,'        std::cerr<<"MATH_GUARD_STATS {',
           '''        std::cerr<<"MATH_GUARD2_STATS {\\"enabled\\":"<<(math_guard2?"true":"false")
                  <<",\\"diamonds\\":"<<s.math_guard2_diamonds
