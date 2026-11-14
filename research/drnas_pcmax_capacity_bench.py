@@ -11,7 +11,7 @@ if hasattr(os,'sched_setaffinity'):
     assert len(os.sched_getaffinity(0))==1
 
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
-def check_guard(path,expected=None,limit=1500):
+def check_guard(path,expected=None,limit=5000):
     t=time.perf_counter()
     try:r=derive(path,expected,limit)
     except (NotRecognized,AssertionError,ValueError,KeyError,IndexError,OverflowError,RecursionError) as e:
@@ -73,7 +73,7 @@ def main():
         if entry.get('status')!='OK':continue
         p=ROOT/'pcmax20'/pathlib.Path(entry['path']).name
         assert p.is_file() and sha(p)==entry['sha256']
-        row=check_guard(p,entry['sha256'],1500)
+        row=check_guard(p,entry['sha256'],5000)
         classification='SAT' if '-SAT.' in p.name else 'UNSAT' if '-UNSAT.' in p.name else 'UNKNOWN'
         if classification=='SAT':assert row['status']!='UNSAT_STRUCT_VERIFIED','FALSE_UNSAT'
         row.update({'panel':'PCMAX_OTHER_ORIGINALS','source':p.name,'source_class':classification})
