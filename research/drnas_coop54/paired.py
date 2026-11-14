@@ -116,7 +116,7 @@ def sample(original,arm,rep,cap):
             else:raise RuntimeError(f"PROCESS_ERROR {arm} rc={rc} {err[-600:]}")
         metrics={}
         for label in ("X41_STATS","X5_STATS","COOP4_STATS",
-                      "COOP5_PROBE","COOP53_CONTRACT","COOP54_DISPATCH"):
+                      "COOP5_PROBE","COOP53_CONTRACT","COOP54_DISPATCH","COOP55_RUP"):
             found=[x.partition(" ")[2] for x in err.splitlines()
                    if x.startswith(label+" ")]
             if len(found)>1:raise RuntimeError("DUPLICATE_TELEMETRY_"+label)
