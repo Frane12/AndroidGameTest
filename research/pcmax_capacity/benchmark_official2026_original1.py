@@ -26,7 +26,7 @@ CATALOG_URL = ("https://raw.githubusercontent.com/satcompetition/2026/"
                + CATALOG_COMMIT + "/downloads/benchmark-compilation-script/benchmarks2026.csv")
 CASES = [
   ("47173e8ab499159d3aa301b0101fe170","schreiber","school-timetabling","unsat"),
-  ("48432767076e402daccbf2da7260885","schreiber","school-timetabling","unsat"),
+  ("48432767076e402d2accbf2da7260885","schreiber","school-timetabling","unsat"),
   ("546a73eef02dda3719018050b09e9392","schreiber","school-timetabling","unsat"),
   ("5f10d57cf49586518e1a103f03984e74","schreiber","school-timetabling","unsat"),
   ("93f5b06574be09ad5b46778248421019","schreiber","school-timetabling","unsat"),
