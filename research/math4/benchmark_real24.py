@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'research'))
 from drnas_x55_cpu_real36 import parse_cnf, check_sat
-sys.path.insert(0,str(Path(__file__).resolve().parent))
+sys.path.insert(0,str(ROOT/'research/hall3'))
 from collect import download, MAX_ARCHIVE, MAX_RAW
 CAP=12.0
 REPS=2
