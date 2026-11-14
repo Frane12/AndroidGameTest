@@ -57,8 +57,7 @@ def main():
         }
         std::cerr<<"CLAUSE_USAGE3 {\"final_conflicts\":"<<stats_.conflicts
                  <<",\"first100_learned\":"<<quality_records_.size()
-                 <<",\"cumulative_window_definition\":\"post_birth_conflicts\"
-                 <<"\",\"bins\":[";
+                 <<",\"cumulative_window_definition\":\"post_birth_conflicts\",\"bins\":[";
         for(int i=0;i<3;++i){
             if(i)std::cerr<<",";
             std::cerr<<"{\"label\":\""<<(i==0?"LBD<=2":i==1?"LBD3-6":"LBD>=7")
