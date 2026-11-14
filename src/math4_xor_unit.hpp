@@ -189,7 +189,8 @@ inline Result xor_unit(const std::vector<std::vector<int>>& clauses,
         units.push_back(forced[size_t(i)]==1?i:-i);
     const size_t total=equations.size()+units.size();
     const size_t width=(size_t(nvars)+63)/64, provenance_width=(total+63)/64;
-    std::vector<std::unique_ptr<ElimRow>> basis(size_t(nvars));
+    std::vector<std::unique_ptr<ElimRow>> basis;
+    basis.resize(static_cast<size_t>(nvars));
     for(size_t ri=0;ri<total;++ri){
         if((ri&15)==0&&!deadline.live()){
             out.reason="math4_elimination_budget";return finish();
