@@ -6,7 +6,7 @@ branching, proof, restarts and analysis. At the FIRST effective reduction only,
 keep the same number of clauses while ranking candidate deletion by:
   BASE  - original activity/length order (unmodified)
   LBD   - delete higher-LBD clauses first
-  RECENT- delete the least used in BCP/conflict analysis in prior 500 conflicts
+  RECENT- delete clauses with oldest actual BCP/conflict-analysis use
   HASH  - deterministic pseudorandom order (sham-selection control)
 No solver runs in parallel; no unproved clauses, model shortcuts or main edits.
 """
@@ -31,7 +31,6 @@ def build():
     s=once(s,"    int64_t last_used = 0;\n};",
       """    int64_t last_used = 0;
     int64_t cf5_last_use = -1000000000;
-    int cf5_preuse500 = 0;
     int cf5_tracking_id = -1;
 };""")
     s=once(s,"    const char* mode() const { return mode_.c_str(); }",
@@ -60,6 +59,7 @@ def build():
                  <<"\",\"first_effective_reduce\":"<<(cf5_first_done_?"true":"false")
                  <<",\"first_reduce_conflicts\":"<<cf5_first_conflicts_
                  <<",\"first_reduce_decisions\":"<<cf5_first_decisions_
+                 <<",\"first_candidate_digest\":"<<cf5_first_digest_
                  <<",\"candidates\":"<<cf5_first_cohort_.size()
                  <<",\"deleted\":"<<cf5_first_deleted_
                  <<",\"post100_observed\":"
@@ -73,7 +73,7 @@ def build():
                      <<"\",\"candidates\":"<<candidate_bins[b]
                      <<",\"retained\":"<<retained_bins[b]
                      <<",\"deleted\":"<<deleted_bins[b]
-                     <<",\"pre500_uses_retained\":"<<preuse_kept[b]
+                     <<",\"pre500_recently_used_retained\":"<<preuse_kept[b]
                      <<",\"post100_distinct_used\":"<<used100[b]
                      <<",\"post100_bcp\":"<<events100_bcp[b]
                      <<",\"post100_analysis\":"<<events100_analysis[b]
@@ -88,7 +88,8 @@ def build():
     std::string cf5_policy_="BASE";
     bool cf5_first_done_=false;
     int64_t cf5_first_conflicts_=-1,cf5_first_decisions_=-1;
-    int64_t cf5_first_deleted_=0;""")
+    int64_t cf5_first_deleted_=0;
+    uint64_t cf5_first_digest_=0;""")
     s=once(s, "    std::vector<Clause> clauses_;",
       """    struct Cf5Record {
         int glue=0,preuse=0;
@@ -102,8 +103,6 @@ def build():
         Clause& c=clauses_[static_cast<size_t>(cid)];
         if(!c.learnt)return;
         if(!cf5_first_done_) {
-            if(c.cf5_last_use<stats_.conflicts-500)c.cf5_preuse500=0;
-            if(c.cf5_preuse500<1000000)++c.cf5_preuse500;
             c.cf5_last_use=stats_.conflicts;
             return;
         }
@@ -137,10 +136,15 @@ def build():
                 cf5_first_conflicts_=stats_.conflicts;
                 cf5_first_decisions_=stats_.decisions;
                 cf5_first_cohort_.reserve(candidates.size());
+                cf5_first_digest_=1469598103934665603ULL;
                 for(int cid:candidates) {
+                    cf5_first_digest_^=static_cast<uint64_t>(cid);
+                    cf5_first_digest_*=1099511628211ULL;
+                    const Clause& item=clauses_[static_cast<size_t>(cid)];
+                    cf5_first_digest_^=static_cast<uint64_t>(item.glue);
+                    cf5_first_digest_*=1099511628211ULL;
                     Clause& c=clauses_[static_cast<size_t>(cid)];
-                    const int pre=(c.cf5_last_use>=stats_.conflicts-500)?
-                        c.cf5_preuse500:0;
+                    const int pre=(c.cf5_last_use>=stats_.conflicts-500)?1:0;
                     c.cf5_tracking_id=static_cast<int>(cf5_first_cohort_.size());
                     cf5_first_cohort_.push_back(Cf5Record{c.glue,pre});
                 }
@@ -155,10 +159,7 @@ def build():
                     if(cf5_policy_=="LBD" && ca.glue!=cb.glue)
                         return ca.glue>cb.glue;
                     if(cf5_policy_=="RECENT") {
-                        const int64_t au=(ca.cf5_last_use>=stats_.conflicts-500)?
-                                           ca.cf5_preuse500:0;
-                        const int64_t bu=(cb.cf5_last_use>=stats_.conflicts-500)?
-                                           cb.cf5_preuse500:0;
+                        const int64_t au=ca.cf5_last_use,bu=cb.cf5_last_use;
                         if(au!=bu)return au<bu;
                     }
                     if(cf5_policy_=="HASH") {
