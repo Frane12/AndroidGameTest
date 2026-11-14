@@ -31,6 +31,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "pcmax_capacity.hpp"
+#include "pcmax_clause_hall.hpp"
 #endif
 
 namespace {
@@ -1400,7 +1401,7 @@ int run(int argc, char** argv) {
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
 #ifdef DRNAS_PCMAX_MODULE
-    bool pcmax_enabled=false, pcmax_only=false;
+    bool pcmax_enabled=false, pcmax_only=false, pcmax_clause_guard=false;
     double pcmax_budget_ms=250.0;
     std::string pcmax_certificate;
 #endif
@@ -1412,6 +1413,7 @@ int run(int argc, char** argv) {
         else if (opt=="--proof" && i+1<argc) proof_path=argv[++i];
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
+        else if (opt=="--pcmax-clause-guard") { pcmax_enabled=true; pcmax_clause_guard=true; }
         else if (opt=="--pcmax-only") { pcmax_enabled=true; pcmax_only=true; }
         else if (opt=="--pcmax-budget-ms" && i+1<argc) {
             const std::string value=argv[++i];
@@ -1438,7 +1440,7 @@ int run(int argc, char** argv) {
         else if (opt=="--help") {
             std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts]\n";
 #ifdef DRNAS_PCMAX_MODULE
-            std::cout<<"PCMAX options (off by default): --pcmax-capacity [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
+            std::cout<<"PCMAX options (off by default): --pcmax-capacity | --pcmax-clause-guard [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
 #endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
@@ -1625,7 +1627,9 @@ int run(int argc, char** argv) {
             digest=pcmax_digest->finish();
             pcmax::Options options;
             options.seconds=budget;
-            capacity_result=pcmax::analyze(pcmax_original,declared_vars,digest,options);
+            capacity_result=pcmax_clause_guard
+                ? pcmax::analyze_clause_hall(pcmax_original,declared_vars,digest,options)
+                : pcmax::analyze(pcmax_original,declared_vars,digest,options);
         }
         std::vector<std::vector<int>>().swap(pcmax_original);
         pcmax_digest.reset();
