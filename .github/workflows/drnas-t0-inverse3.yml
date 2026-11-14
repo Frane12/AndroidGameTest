@@ -1,0 +1,76 @@
+name: DRNAS T0 INVERSE3 pretrained rule independent cohort validation
+on:
+  push:
+    branches:
+      - experiment/drnas-t0-inverse3-20261114
+    paths:
+      - .github/workflows/drnas-t0-inverse3.yml
+      - research/drnas_t0_inverse3.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-t0-inverse3-new-satlib-cohort
+  cancel-in-progress: false
+
+jobs:
+  inverse_score_validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore proof-checked frozen independent DRAT binary
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43601959681
+          name: deltax-signal1-frozen-sources-and-binary
+          github-token: ${{ github.token }}
+          path: frozen/signal
+      - name: Pin source and compile same native X5 without algorithm edits
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_t0_frontier1.py \
+             research/drnas_t0_interaction2.py research/drnas_t0_inverse3.py
+          mkdir -p build
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-t0-frontier1
+          test -x build/drat-trim
+          sha256sum src/drnas_x5.cpp build/drnas-t0-frontier1 build/drat-trim \
+            > t0_inverse3_binary_sha256.txt
+      - name: Evaluate inverted fixed T0 policy; untouched independent sources
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "T0_INVERSE3_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_t0_inverse3.py | tee t0_inverse3.log
+          grep -q '^T0_INVERSE3_FINAL ' t0_inverse3.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("t0_interaction3/report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==48
+          assert r["both_verified"]==r["matched_first_branch_state"]==48
+          assert r["one_logical_cpu"] and r["fixed_policy_no_refit"]
+          assert not r["main_modified"] and not r["solver_promoted"]
+          print("T0_INVERSE3_COMPLETED",r["correct"],r["wrong"],
+            r["informative"],r["pre_registered_target_met"])
+          PY
+          echo "Separate SATLIB source cohort; fixed inverse first-polarity score, no training or promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-t0-inverse3-source-verified-results
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            t0_interaction3/
+            t0_inverse3.log
+            t0_inverse3_binary_sha256.txt
