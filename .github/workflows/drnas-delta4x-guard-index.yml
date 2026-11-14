@@ -1,0 +1,202 @@
+name: DRNAS DELTA4X guard-index observer proof-first ablation
+on:
+  push:
+    branches: [experiment/drnas-delta4x-guard-index-20261114]
+    paths:
+      - .github/workflows/drnas-delta4x-guard-index.yml
+      - research/drnas_delta4x/guard_index_audit.py
+      - research/drnas_delta4x/guard_index_lifecycle.cpp
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-delta4x-guard-index-proof-first
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          name: delta4-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43593699141
+          name: delta4x-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4x
+      - name: Restore and hash-check reference tools and original REAL60 formulas
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          python3 -m py_compile research/drnas_delta4x/guard_index_audit.py
+      - name: Build private guard-indexed DELTA4X without changes to frozen reference binaries
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_delta4x/guard_index_audit.py build \
+            | tee guard_index_build.log
+          grep -q '^GUARD_INDEX_BUILD ' guard_index_build.log
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+      - name: Verify all guard lifecycle paths including backtrack and unrelated assignments
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            research/drnas_delta4x/guard_index_lifecycle.cpp -o build/guard-index-lifecycle
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" build/guard-index-lifecycle | tee guard_index_lifecycle.log
+          grep -q '^GUARD_INDEX_LIFECYCLE_PASS ' guard_index_lifecycle.log
+      - name: Certify original SAT models, UNSAT proofs, RUP and causal reasons against frozen DELTA4X
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_delta4x/guard_index_audit.py preflight \
+            | tee guard_index_preflight.log
+          grep -q '^GUARD_INDEX_PREFLIGHT_PASS ' guard_index_preflight.log
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          sha256sum build/drnas-delta4x build/drnas-delta4x-guard-index \
+            build/drnas-delta4x-observer-off build/drat-trim \
+            > build/GUARD_INDEX_FROZEN.sha256
+          tar -czf guard_index_frozen.tgz \
+            build/drnas-delta4x build/drnas-delta4x-guard-index \
+            build/drnas-delta4x-observer-off build/drat-trim \
+            build/GUARD_INDEX_FROZEN.sha256 delta4_sources \
+            delta4x_guard_index_build.json
+          echo 'Pure guard index, proof-first, same single logical CPU, no main change' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guard-index-proof-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            guard_index_frozen.tgz
+            guard_index_build.log
+            guard_index_lifecycle.log
+            guard_index_preflight.log
+            delta4x_guard_index_build.json
+            delta4x_guard_index_preflight/report.json
+
+  original_formula_cases:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        source_id: [8,19,25,26,28,38]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: guard-index-proof-preflight
+          path: frozen/guard_index
+      - name: Five same-CPU arms x three matched repetitions x 3s per original SAT2024 formula
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/guard_index/guard_index_frozen.tgz
+          sha256sum -c build/GUARD_INDEX_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_delta4x/guard_index_audit.py case \
+            --id ${{ matrix.source_id }} --cap 3.0 | tee guard_index_case.log
+          grep -q '^GUARD_INDEX_CASE_PASS ' guard_index_case.log
+          grep -q '^GUARD_INDEX_CASE_CERTIFIED ' guard_index_case.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guard-index-source-${{ matrix.source_id }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4x_guard_index_cases/${{ matrix.source_id }}/trials.jsonl
+            guard_index_case.log
+
+  final:
+    needs: original_formula_cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: guard-index-source-*
+          path: guard_index_downloads
+          merge-multiple: false
+      - name: Require all 90 trials and make source-paired throughput-only report
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections,json
+          from pathlib import Path
+          ps=list(Path("guard_index_downloads").rglob("trials.jsonl"))
+          assert len(ps)==6,("MISSING_SHARD",len(ps),[str(p) for p in ps])
+          rows=[json.loads(s) for p in ps for s in p.read_text().splitlines()]
+          arms=("X_ACTIVE","X_GUARD_INDEX","X_OBSERVER_OFF","X_SHADOW","D4_FIXED")
+          ids=(8,19,25,26,28,38)
+          keys=[(x["id"],x["rep"],x["arm"]) for x in rows]
+          assert len(rows)==len(set(keys))==90
+          assert set(keys)=={(i,r,a) for i in ids for r in range(3) for a in arms}
+          assert len({x["sha256"] for x in rows})==6
+          outcome=collections.defaultdict(set)
+          for x in rows:
+              if x["verified"]:outcome[x["sha256"]].add(x["status"])
+          assert all(len(v)<=1 for v in outcome.values()),"CONTRADICTORY_CERTIFIED_STATUSES"
+          by={(x["id"],x["rep"],x["arm"]):x for x in rows}
+          report={"status":"COMPLETE","cases":6,"attempts":90,"cap_s":3,
+              "promotion":False,"blind_holdout":False,"retrospective":True,
+              "no_speed_to_solution_claim":True,"sources":{}}
+          for i in ids:
+              x={}
+              for arm in arms:
+                  t=[by[(i,r,arm)] for r in range(3)]
+                  st=[z["stats"].get("X41_STATS",{}) for z in t]
+                  x[arm]={"verified":sum(z["verified"] for z in t),
+                          "par2_s":sum(z["PAR2_verified_s"] for z in t),
+                          "conflicts":sum(z.get("conflicts",0) for z in st),
+                          "decisions":sum(z.get("decisions",0) for z in st),
+                          "installed":sum(z["x_installed"] for z in t),
+                          "enqueues":sum(z["x_actual_enqueues"] for z in t)}
+              a=x["X_ACTIVE"]["conflicts"]
+              b=x["X_GUARD_INDEX"]["conflicts"]
+              x["indexed_more_conflicts_pct"]=100*(b-a)/a if a else None
+              x["index_relative_to_observer_off_pct"]=(100*b/x["X_OBSERVER_OFF"]["conflicts"] if x["X_OBSERVER_OFF"]["conflicts"] else None)
+              report["sources"][str(i)]=x
+          Path("guard_index_final.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
+          print("GUARD_INDEX_FINAL "+json.dumps(report,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guard-index-six-source-final
+          retention-days: 60
+          path: guard_index_final.json
