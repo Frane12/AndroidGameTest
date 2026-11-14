@@ -1,0 +1,55 @@
+name: DRNAS MATH-GUARD1 graph 3-colouring proof-first paired benchmark
+
+on:
+  push:
+    branches: [experiment/drnas-mathguard1-graph3c-20261114]
+    paths:
+      - research/drnas_mathguard1/graph3.py
+      - .github/workflows/drnas-mathguard1-graph3c.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-mathguard1-graph3c
+  cancel-in-progress: false
+
+jobs:
+  paired_graph3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare and build proof checker (pinned external source)
+        run: |
+          set -euo pipefail
+          mkdir -p external
+          git clone https://github.com/marijnheule/drat-trim.git external/drat-trim
+          git -C external/drat-trim checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          make -C external/drat-trim
+          test -x external/drat-trim/drat-trim
+      - name: Build isolated native X59 and MATH-GUARD1
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_mathguard1/build.py | tee graph3_build.log
+          python3 -m py_compile research/drnas_mathguard1/graph3.py
+      - name: Paired colourable and non-colourable graphs on one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_mathguard1/graph3.py | tee graph3_trial.log
+          grep -q '^GRAPH3_FINAL ' graph3_trial.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathguard1-graph3c-audit
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            graph3_build.log
+            graph3_trial.log
+            mathguard_graph3c/trials.json
+            mathguard_graph3c/report.json
