@@ -1,0 +1,88 @@
+name: DRNAS HALL2 subset-deficit certified experiment
+on:
+  push:
+    branches: [experiment/drnas-pcmax-hall2-subset-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-hall2-subset.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-hall2-subset-20261114
+  cancel-in-progress: false
+jobs:
+  certified_hall2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile opt-in HALL2 and frozen CDCL baseline
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+      - name: Prove subset example and adversarial SAT controls with independent checker
+        run: |
+          python3 research/pcmax_capacity/test_hall2_subset.py \
+            --binary build/drnas-pcmax --output results/hall2-subset-smoke
+      - name: Regression - HALL1 standalone original source-clause checking
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall.py \
+            --binary build/drnas-pcmax --output results/hall1-regression
+      - name: Regression - base PCMAX/CDCL behavior, guard fail-closed, file safety
+        run: |
+          python3 research/pcmax_capacity/integration_tests.py \
+            --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base \
+            --work-dir results/pcmax-base-regression \
+            --report results/pcmax-base-regression.json
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - name: Benchmark 18 frozen original SAT2024 CNFs HALL1 vs HALL2, 2 repeats
+        run: |
+          python3 research/pcmax_capacity/benchmark_hall2_originals.py \
+            | tee results/hall2-original-benchmark.log
+      - name: Summarize measured certified results, not DRAT/LRAT
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          path=Path('results/hall2-originals/report.json')
+          if not path.exists():
+              print('Original 2024 experiment did not finish; check earlier steps.')
+          else:
+              r=json.loads(path.read_text())
+              out=f"HALL2 subset proof-first: {r['original_sources']} sources, {r['trials']} trials. HALL1 {r['summary']['HALL1']}, HALL2 {r['summary']['HALL2']}. Structural proofs, NOT DRAT/LRAT."
+              print(out)
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(out+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-hall2-subset-certified-benchmark
+          retention-days: 60
+          path: |
+            results/hall2-subset-smoke/
+            results/hall1-regression/
+            results/pcmax-base-regression.json
+            results/hall2-originals/report.json
+            results/hall2-original-benchmark.log
+            research/pcmax_capacity/test_hall2_subset.py
+            research/pcmax_capacity/benchmark_hall2_originals.py
+            research/pcmax_capacity/check_clause_hall.py
+            src/pcmax_clause_hall2.hpp
