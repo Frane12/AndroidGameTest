@@ -103,3 +103,18 @@ def verify(raw,proof):
             "method":"GF2_WITH_SOURCE_BCP_UNITS","xor_rows":len(rows),
             "root_units":len(units),"original_clauses":len(original),
             "forced_unit_closure":len(forced)}
+
+
+if __name__=="__main__":
+    import argparse,json,sys
+    from pathlib import Path
+    parser=argparse.ArgumentParser()
+    parser.add_argument("cnf",type=Path)
+    parser.add_argument("certificate",type=Path)
+    a=parser.parse_args()
+    try:
+        result=verify(a.cnf.read_bytes(),json.loads(a.certificate.read_text()))
+        print(json.dumps(result,sort_keys=True))
+    except Exception as exc:
+        print("INVALID_MATH4_SOURCE_CERTIFICATE "+str(exc),file=sys.stderr)
+        raise SystemExit(1)
