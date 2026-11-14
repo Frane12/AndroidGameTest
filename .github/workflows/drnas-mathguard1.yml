@@ -1,0 +1,98 @@
+name: DRNAS MATH-GUARD1 one-core proof-first native pilot
+
+on:
+  push:
+    branches: [experiment/drnas-mathguard1-proof-first-20261114]
+    paths:
+      - .github/workflows/drnas-mathguard1.yml
+      - research/drnas_mathguard1/**
+      - tests/test_drnas_mathguard1.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-mathguard1-proof-first
+  cancel-in-progress: false
+
+jobs:
+  proof_and_solved_real:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          name: delta4-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          pattern: delta4-shard-*
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          path: frozen/delta4_shards
+      - name: Restore and verify frozen original SAT2024 inputs and prior paired outcomes
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          python3 -m py_compile research/drnas_mathguard1/build.py \
+            research/drnas_mathguard1/real.py tests/test_drnas_mathguard1.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          m=json.loads(Path('delta4_sources/manifest.json').read_text())
+          s=list(Path('frozen/delta4_shards').rglob('trials.jsonl'))
+          assert len(m['sources'])==60 and len(s)==12,(len(m['sources']),len(s))
+          assert sum(len(p.read_text().splitlines()) for p in s)==840
+          print('MATH_GUARD_FROZEN_INPUTS_PASS', len(m['sources']), len(s))
+          PY
+      - name: Build isolated native X59 baseline and GUARD-on/off executable
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_mathguard1/build.py | tee mathguard_build.log
+          grep -q '^MATH_GUARD1_BUILD ' mathguard_build.log
+          sha256sum -c build/DELTA4_FROZEN.sha256
+      - name: Exhaustive truth oracle and per-addition independent RUP proof audit on one CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u tests/test_drnas_mathguard1.py | tee mathguard_preflight.log
+          grep -q '^MATH_GUARD1_PREFLIGHT_PASS ' mathguard_preflight.log
+      - name: Paired real previously solved nonlinear-signal cohort with independent model and DRAT checks
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_mathguard1/real.py | tee mathguard_real.log
+          grep -q '^MATH_GUARD_REAL_FINAL ' mathguard_real.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('mathguard1_real/report.json').read_text())
+          assert s['single_cpu'] and not s['holdout'] and not s['promotion']
+          assert s['paired_trials']==4*s['selected_sources']
+          print('MATH_GUARD_REAL_AUDITED',s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathguard1-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            mathguard_build.log
+            mathguard_preflight.log
+            mathguard_real.log
+            build/MATH_GUARD1_BUILD.json
+            mathguard1_real/cohort.json
+            mathguard1_real/trials.json
+            mathguard1_real/report.json
