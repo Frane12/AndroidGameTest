@@ -46,6 +46,7 @@ These data refute the premise that more speculative BCP automatically helps.
 | A05 | Probe partials ↔ ranking | Limited BCP prefixes can differ in measured reduction; the score compares prefixes rather than completed subproblems. | P2 **bias risk**; report complete/incomplete separately and gate on confidence. |
 | A06 | Controller ↔ resource budget | 25 ms is per-solve cumulative budget. Fallback polls many times and raises overhead even when there is no high-utility recommendation. | P2 **performance**; require utility gate and adaptive abstention from blind holdout. |
 | A07 | COOP4 proofs ↔ CDCL clause owner | COOP4 may provide only original-CNF implied clauses. Proof intermediates must precede learned-lemma insertion; UNSAT status requires an independent DRAT/LRAT checker. | **Safety invariant**; existing tests cover many small cases. Audit all generated results. |
+| A09 | Native CDCL settings ↔ component efficacy | The COOP5 benchmark invokes `--x5-no-minimize`; base X5 defaults `x5_retain_=false` and `x5_restarts_=false` (adaptive restarts OFF, geometric restart schedule ON). The LBD protection branch in `reduceLearnts()` is only active under retention. | P1 **benchmark configuration gap**. Do not conclude component quality explains the two extra UNSAT timeouts without separately testing minimization, retention and adaptive restarts on identical originals. |
 | A08 | X5 CDCL ↔ OMEGA bridge | OMEGA4.2's connected CaDiCaL external propagator and X5/COOP5 do **not** share a native clause/trail/reason API. Previous OMEGA UNSAT lacks an independent original-CNF proof, and its parser/extractor logged failures. | **Integration blocker**. Do not call this a unified solver without implementing a typed, proof-carrying bridge. |
 
 ## Required component protocol (future architecture)
@@ -76,6 +77,20 @@ They may return exactly one of:
 7. CPU, preparation, proof-generation and probe costs are included in E2E solve time.
 8. Freeze reference binaries/source SHA; use one logical CPU per solver, paired source/seed,
    train/validation/holdout separation, and no automatic promotion.
+
+## First measured dynamic contract evidence
+
+[Contract safety run 43534791673](https://github.com/Frane12/AndroidGameTest/actions/runs/43534791673) completed successfully:
+- 71 exact tiny SAT/UNSAT formulas × 2 modes × 2 compiled audit/repair variants = **284** oracle trials, **104** independently checked UNSAT proofs, no false SAT/UNSAT;
+- six additional real SAT2024 originals, including planning ID 5, Simon XOR, scheduling and miter;
+- **62 sampled speculative BCP rollback checks**, no detected trail/phase/qhead leakage;
+- one observed hint generated before a mutation of the CDCL trail (miter ID 23); repair explicitly invalidated it;
+- repair tracked **140 component-generated lemma insertions** on these six real originals and cleared **121 remembered signatures** when CDCL removed their clauses (mostly hardware-miter ID 23). These are cleanup counts, **not** proof of improved runtime or of 121 unique clauses being rederived;
+- audit-only and repair each verified 1 SAT and 1 UNSAT among the 6 originals within the 2 s cap.
+
+These are **source-/execution-grounded behavior differences** rather than a general benchmark win.
+The modified *repair* binary is proof-safe in these tests; the full paired performance run must
+determine speed impact. No promotion until independent blind holdout.
 
 ## Verification stages
 
