@@ -1222,6 +1222,12 @@ class Solver {
         rebuildHeapIfNeeded();
         // Fast path preserves frozen score and variable-ID tie breaking.
         if (!use_depth_) {
+            if (x60_indexed_heap_) {
+                // The original X5 fast path reads the lazy heap directly.
+                // Route the new core through its indexed heap instead.
+                const auto top=topCandidates(1);
+                return top.empty() ? -1 : top[0];
+            }
             while(!heap_.empty()) {
                 const Entry& e=heap_.top();
                 if(values_[e.variable]==0 && generation_[e.variable]==e.generation)return e.variable;
@@ -1229,7 +1235,7 @@ class Solver {
             }
             return -1;
         }
-        if (heap_.empty()) return -1;
+        if (x60_indexed_heap_ ? x60_heap_.size()==0 : heap_.empty()) return -1;
         if (!use_depth_ || (stats_.decisions%32)!=0 ||
             stats_.decisions<cooldown_until_decision_ ||
             (stats_.decisions>=256 && stats_.conflicts*3>stats_.decisions*2) ||
