@@ -80,7 +80,10 @@ def main():
     configs=[("php3x2",3,2,False,True),("php5x4",5,4,False,True),
              ("php7x6",7,6,False,True),("signed_php3x2",3,2,True,True),
              ("sat_2x2",2,2,False,False),("sat_4x4",4,4,False,False),
-             ("sat_gap3x2",3,2,False,False)]
+             ("sat_gap3x2",3,2,False,False),
+             ("wide_php75x65",75,65,False,True),
+             ("wide_php85x80",85,80,False,True),
+             ("wide_sat40x40",40,40,False,False)]
     results=[]
     for name,n,k,signed,unsat in configs:
         groups,clauses=php(n,k,signed=signed)
@@ -98,7 +101,7 @@ def main():
             proof=json.loads(cert.read_text())
             outcome=check(raw,proof)
             assert outcome["status"]=="UNSAT_CLAUSE_HALL_CERTIFICATE_VERIFIED"
-            negative_checks(raw,proof)
+            if n<=7:negative_checks(raw,proof)
             status="UNSAT_CERTIFIED"
         else:
             assert native["rc"]==0 and not cert.exists(),(name,native)
