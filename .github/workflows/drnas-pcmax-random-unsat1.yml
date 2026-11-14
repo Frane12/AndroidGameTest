@@ -1,0 +1,67 @@
+name: DRNAS PCMAX RANDOM UNSAT1 Hall vs arbitrary contradictions
+on:
+  push:
+    branches: [experiment/drnas-pcmax-random-unsat1-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-random-unsat1.yml
+      - research/pcmax_capacity/random_unsat_probe.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-random-unsat1-20261114
+  cancel-in-progress: false
+jobs:
+  random_unsat_certified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile unchanged opt-in native CLAUSE-HALL1 module
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+      - name: Run reproducible 116 random UNSAT and SAT-control CNFs one CPU proof-first
+        run: |
+          python3 research/pcmax_capacity/random_unsat_probe.py \
+            --binary build/drnas-pcmax --out results/random-unsat1 \
+            --budget-ms 700
+      - name: Report certified vs missed classes and reasoning
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path("results/random-unsat1/summary.json")
+          if not p.exists():
+              print("No final result; see failing job and partial trials.jsonl")
+              raise SystemExit(0)
+          s=json.loads(p.read_text())
+          lines=["# Seeded random UNSAT: source-clause Hall detector", "",
+            "Only independent clause-Hall certificate checks count as UNSAT.",
+            "Generic random UNSAT and SAT controls are verified by construction or exhaustive oracle.",
+            f"Cases: {s['total']}; independently certified: {s['unsat_certified']}; false UNSAT on SAT controls: {s['sat_false_positive']}.",
+            "", "| Family | Total | UNSAT certified | UNKNOWN | Certificate reasons |",
+            "|---|---:|---:|---:|---|"]
+          for fam,d in s["families"].items():
+              why=", ".join(f"{k}:{v}" for k,v in d["reasons"].items())
+              lines.append(f"| {fam} | {d['total']} | {d['certified']} | {d['unknown']} | {why} |")
+          report=chr(10).join(lines)+chr(10)
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],"a") as f:f.write(report)
+          PY
+      - name: Preserve random DIMACS, SHA, certificates, checker, native binary and per-case telemetry
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-random-unsat1-proof-audit
+          retention-days: 60
+          path: |
+            results/random-unsat1/
+            research/pcmax_capacity/random_unsat_probe.py
+            research/pcmax_capacity/check_clause_hall.py
+            research/pcmax_capacity/check_capacity.py
+            src/pcmax_clause_hall.hpp
+            build/drnas-pcmax
