@@ -1,0 +1,79 @@
+name: DRNAS PCMAX PUBLIC upstream P||Cmax verified blind14
+on:
+  push:
+    branches: [experiment/drnas-pcmax-public-source1-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-public1.yml
+      - research/pcmax_capacity/benchmark_public1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-public1-20261114
+  cancel-in-progress: false
+jobs:
+  public_independent:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build original native optional guard, no CDCL changes
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+      - name: Fetch pinned public source tasks, exact oracle, BDD CNFs, native guard, proof checker
+        run: |
+          python3 research/pcmax_capacity/benchmark_public1.py \
+            --binary build/drnas-pcmax --output results/public1 \
+            --budget-ms 3000 --repetitions 2
+      - name: Report independently verified UNSAT and all UNKNOWN cases
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, statistics, os
+          from pathlib import Path
+          p=Path('results/public1/summary.json')
+          if not p.is_file():
+              print('No summary: inspect incomplete trials and failures.')
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          grouped={}
+          for row in d['rows']:
+              grouped.setdefault((row['index'],row['family'],row['expected']),[]).append(row)
+          lines=['# Independent PUBLIC P||Cmax input audit', '',
+                 'Unseen public job inputs from anon495351/pcmax at immutable commit; new local BDD CNF encoding.',
+                 'Not existing competition PCMAX CNFs, not independently published CNF bytes.',
+                 'Each original job instance tested at published optimum-1 (UNSAT) and optimum (SAT control).',
+                 'Native guard with separate original-CNF structural certificate verifier; not DRAT/LRAT.',
+                 'One logical CPU, two serial repetitions, 3s native discovery cap.','',
+                 '| ID | Family | Bound | Status | Verified | Median native (s) | Median full (s) |',
+                 '|---:|---|---|---|---:|---:|---:|']
+          for (i,fam,expected),rs in sorted(grouped.items()):
+              lines.append(f"| {i} | {fam} | {expected} | {rs[0]['status']} | "
+                           f"{sum(x['verified'] for x in rs)}/{len(rs)} | "
+                           f"{statistics.median(x['native_s'] for x in rs):.5f} | "
+                           f"{statistics.median(x['total_s'] for x in rs):.5f} |")
+          lines.append('')
+          lines.append('Verified UNSAT trials: '+str(d['independently_verified_unsat_trials']))
+          lines.append('False UNSAT SAT controls: '+str(d['false_unsat_on_sat_controls']))
+          s='\n'.join(lines)+'\n'
+          Path('results/public1/README.md').write_text(s)
+          print(s)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(s)
+          PY
+      - name: Preserve all public task inputs, generated CNFs, hashes, certificates and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-public-source1
+          retention-days: 60
+          path: |
+            results/public1/
+            research/pcmax_capacity/benchmark_public1.py
+            research/pcmax_capacity/check_capacity.py
+            research/pcmax_capacity/tests/make_fixtures.py
+            src/pcmax_capacity.hpp
+            README_PCMAX.md
+            build/drnas-pcmax
