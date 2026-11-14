@@ -32,6 +32,7 @@
 #include <unistd.h>
 #include "pcmax_capacity.hpp"
 #include "pcmax_clause_hall.hpp"
+#include "math_mixed_guard.hpp"
 #endif
 
 namespace {
@@ -1401,7 +1402,7 @@ int run(int argc, char** argv) {
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
 #ifdef DRNAS_PCMAX_MODULE
-    bool pcmax_enabled=false, pcmax_only=false, pcmax_clause_guard=false;
+    bool pcmax_enabled=false, pcmax_only=false, pcmax_clause_guard=false, pcmax_mixed_guard=false;
     double pcmax_budget_ms=250.0;
     std::string pcmax_certificate;
 #endif
@@ -1414,6 +1415,7 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
         else if (opt=="--pcmax-clause-guard") { pcmax_enabled=true; pcmax_clause_guard=true; }
+        else if (opt=="--math-mixed-guard") { pcmax_enabled=true; pcmax_mixed_guard=true; }
         else if (opt=="--pcmax-only") { pcmax_enabled=true; pcmax_only=true; }
         else if (opt=="--pcmax-budget-ms" && i+1<argc) {
             const std::string value=argv[++i];
@@ -1440,7 +1442,7 @@ int run(int argc, char** argv) {
         else if (opt=="--help") {
             std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts]\n";
 #ifdef DRNAS_PCMAX_MODULE
-            std::cout<<"PCMAX options (off by default): --pcmax-capacity | --pcmax-clause-guard [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
+            std::cout<<"PCMAX/MATH options (off by default): --pcmax-capacity | --pcmax-clause-guard | --math-mixed-guard [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
 #endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
@@ -1627,9 +1629,31 @@ int run(int argc, char** argv) {
             digest=pcmax_digest->finish();
             pcmax::Options options;
             options.seconds=budget;
-            capacity_result=pcmax_clause_guard
-                ? pcmax::analyze_clause_hall(pcmax_original,declared_vars,digest,options)
-                : pcmax::analyze(pcmax_original,declared_vars,digest,options);
+            if (pcmax_mixed_guard) {
+                // Native mathematical proof producer has a strict small pre-gate.
+                // Unchanged Hall2 is tried with all remaining budget, and
+                // source-bound certificates are checked OUTSIDE the solver.
+                pcmax::Options mixed_options;
+                mixed_options.seconds=std::min(budget,0.050);
+                capacity_result=pcmax::mixed::analyze(pcmax_original,declared_vars,digest,mixed_options);
+                if (!capacity_result.verified) {
+                    const double elapsed=std::chrono::duration<double>(
+                        Clock::now()-process_start).count();
+                    const double remaining=seconds>0
+                        ? std::min(pcmax_budget_ms/1000.0,std::max(0.0,seconds-elapsed))
+                        : pcmax_budget_ms/1000.0;
+                    if (remaining>0) {
+                        pcmax::Options hall_options;
+                        hall_options.seconds=remaining;
+                        capacity_result=pcmax::analyze_clause_hall(
+                            pcmax_original,declared_vars,digest,hall_options);
+                    }
+                }
+            } else {
+                capacity_result=pcmax_clause_guard
+                    ? pcmax::analyze_clause_hall(pcmax_original,declared_vars,digest,options)
+                    : pcmax::analyze(pcmax_original,declared_vars,digest,options);
+            }
         }
         std::vector<std::vector<int>>().swap(pcmax_original);
         pcmax_digest.reset();
