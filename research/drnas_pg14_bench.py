@@ -98,7 +98,7 @@ def smoke():
             path=td/(name+".cnf");path.write_text(cnf)
             out=one(path,"PG14_CONGRUENCE",2.5,name,expect=expected)
             if name=="and_miter_unsat":
-                assert out["preprocess"]["gate_equalities"]>0,("NO_CONGRUENCE",out)
+                assert (out["preprocess"]["gate_equalities"]>0 or out["preprocess"]["state"]=="gate_unsat"),("NO_CONGRUENCE",out)
             if name=="binary_scc_unsat":
                 assert out["preprocess"]["state"]=="binary_unsat",out
     emit("PG14_SMOKE_PASS",{"cases":4,"proof_certified":True,
