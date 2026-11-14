@@ -1,0 +1,191 @@
+name: DRNAS DELTA4X guarded equivalence REAL60 10s proof-first
+on:
+  push:
+    branches: [experiment/drnas-delta4x-audited-20261114]
+    paths:
+      - .github/workflows/drnas-delta4x.yml
+      - research/drnas_delta4x/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-delta4x-real60-proof-first
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          name: delta4-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4
+      - name: Restore frozen original SAT2024 sources and reference executables
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          python3 -m py_compile research/drnas_delta4x/{build,verify,bench}.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          from drnas_delta4x.bench import sources
+          a,h=sources()
+          assert len(a)==60 and len({r["sha256"] for r in a})==60
+          assert len({r["family"] for r in a})==60
+          print("DELTA4X_FROZEN_60_SOURCES_PASS",h)
+          PY
+      - name: Build new audited DELTA4X without changing any frozen reference
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_delta4x/build.py --ubsan | tee delta4x_build.log
+          grep -q '^DELTA4X_BUILD ' delta4x_build.log
+          sha256sum -c build/DELTA4_FROZEN.sha256
+      - name: Static source-independent RUP, SAT, UNSAT and causal reason preflight
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_delta4x/verify.py | tee delta4x_preflight.log
+          grep -q '^DELTA4X_PREFLIGHT_PASS ' delta4x_preflight.log
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_delta4x/verify.py --ubsan | tee delta4x_ubsan.log
+          grep -q '^DELTA4X_PREFLIGHT_PASS ' delta4x_ubsan.log
+      - name: Validate guard lifecycle, rollback, missing reverse clause and independent X dispatch
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            research/drnas_delta4x/lifecycle.cpp -o build/delta4x-lifecycle
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" build/delta4x-lifecycle | tee delta4x_lifecycle.log
+          grep -q '^DELTA4X_LIFECYCLE_PASS ' delta4x_lifecycle.log
+      - name: Freeze seven arms and smoke two SHA-frozen real SAT2024 sources
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_delta4x/bench.py freeze | tee delta4x_freeze.log
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_delta4x/bench.py pilot | tee delta4x_pilot.log
+          grep -q '^DELTA4X_REAL_PILOT_PASS ' delta4x_pilot.log
+          sha256sum build/drnas-delta4x build/drnas-deltacoop4 \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            > build/DELTA4X_FROZEN.sha256
+          tar -czf delta4x_bench_frozen.tgz \
+            build/drnas-delta4x build/drnas-deltacoop4 build/drnas-deltacoop3 \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            build/DELTA4X_FROZEN.sha256 build/DELTA4_FROZEN.sha256 \
+            build/DELTA4X_BUILD.json delta4_sources delta4x_protocol.json
+          echo 'Proof-first DELTA4X passed and retained reference hashes; no main changes' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4x-proof-first-frozen
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4x_bench_frozen.tgz
+            delta4x_build.log
+            delta4x_preflight.log
+            delta4x_ubsan.log
+            delta4x_lifecycle.log
+            delta4x_freeze.log
+            delta4x_pilot.log
+            build/DELTA4X_BUILD.json
+            delta4x_audit/preflight.json
+            delta4x_audit/ubsan.json
+            delta4x_audit/real_pilot.json
+            delta4x_protocol.json
+
+  real60_paired:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta4x-proof-first-frozen
+          path: frozen/delta4x
+      - name: Run 5 originals x 2 repeats x 7 arms, 10 seconds each, single logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_delta4x/bench.py \
+            shard --shard ${{ matrix.shard }} | tee delta4x_shard.log
+          grep -q '^DELTA4X_SHARD_PASS ' delta4x_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4x-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4x_shards/${{ matrix.shard }}/manifest.json
+            delta4x_shards/${{ matrix.shard }}/trials.jsonl
+            delta4x_shard.log
+
+  aggregate:
+    needs: real60_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta4x-proof-first-frozen
+          path: frozen/delta4x
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: delta4x-shard-*
+          path: delta4x_downloads
+          merge-multiple: false
+      - name: Require all 840 matched source-SHA trials, certified SAT/UNSAT and causal telemetry
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          python3 -u research/drnas_delta4x/bench.py aggregate | tee delta4x_final.log
+          grep -q '^DELTA4X_FINAL ' delta4x_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("delta4x_final/report.json"))
+          assert r["attempts"]==840 and r["sources"]==60 and r["cap_s"]==10.0
+          assert r["one_cpu"] and not r["blind_holdout"] and not r["promotion"]
+          print("DELTA4X_RECONCILED",r["attempts"],r["fields"]["DELTA4X"]["actual_enqueues"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4x-real60-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4x_final/
+            delta4x_final.log
