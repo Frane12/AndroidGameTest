@@ -1,0 +1,82 @@
+name: DRNAS PCMAX native capacity module original20
+on:
+  push:
+    branches: [experiment/drnas-pcmax-capacity-module-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-capacity.yml
+      - src/drnas_x5.cpp
+      - src/pcmax_capacity.hpp
+      - research/pcmax_capacity/**
+      - CMakeLists.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pcmax-capacity-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verified_original20:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build optional native module and unchanged CDCL comparison target
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+      - name: Check fallback, exact-byte hashing, proof mode, and output failures
+        run: |
+          python3 research/pcmax_capacity/integration_tests.py --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base --work-dir results/integration-fixtures --report results/integration.json
+      - name: Check native integer maxima against exhaustive scheduling oracles
+        run: |
+          python3 research/pcmax_capacity/tests/test_native_math.py --binary build/drnas-pcmax --checker research/pcmax_capacity/check_capacity.py --header src/pcmax_capacity.hpp --output results/math
+      - name: Find and independently verify original20 certificates on one CPU
+        run: |
+          python3 research/pcmax_capacity/benchmark.py --binary build/drnas-pcmax --inputs original-cnfs --output results/original20 --budget-ms 5000 --repetitions 3 --download
+      - name: Summarize verified results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,statistics
+          from pathlib import Path
+          p=Path('results/original20/summary.json')
+          if not p.exists():
+              print('No complete original20 summary; inspect failing step.')
+              raise SystemExit(0)
+          data=json.loads(p.read_text())
+          rows={}
+          for row in data['rows']:rows.setdefault(row['name'],[]).append(row)
+          lines=['# Native PCMAX capacity module','',
+                 'One logical CPU per process. Native discovery and independent Python checker timed separately.',
+                 'Certificates use pcmax-capacity-v1, not DRAT/LRAT. This is not a competitor PAR2 comparison.','',
+                 '| Original formula | Verified UNSAT trials | Median native seconds | Median total seconds |',
+                 '|---|---:|---:|---:|']
+          for name,trials in rows.items():
+              verified=sum(r['verified'] for r in trials)
+              native=statistics.median(r['native']['wall_s'] for r in trials)
+              total=statistics.median(r['total_wall_s'] for r in trials)
+              lines.append(f'| {name} | {verified}/{len(trials)} | {native:.6f} | {total:.6f} |')
+          text='\n'.join(lines)+'\n'
+          Path('results/README.md').write_text(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(text)
+          print(text)
+          PY
+      - name: Save build, original inputs, certificates and replay tools
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-native-capacity-original20
+          retention-days: 45
+          path: |
+            build/drnas-pcmax
+            build/drnas-pcmax-base
+            src/pcmax_capacity.hpp
+            src/drnas_x5.cpp
+            CMakeLists.txt
+            README_PCMAX.md
+            third_party/stanford-simplex/
+            research/pcmax_capacity/
+            original-cnfs/
+            results/

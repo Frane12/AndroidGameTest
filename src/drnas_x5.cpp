@@ -21,9 +21,148 @@
 #include <string>
 #include <utility>
 #include <vector>
+#ifdef DRNAS_PCMAX_MODULE
+#include <cerrno>
+#include <cstring>
+#include <filesystem>
+#include <memory>
+#include <fcntl.h>
+#include <openssl/evp.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "pcmax_capacity.hpp"
+#endif
 
 namespace {
 using Clock = std::chrono::steady_clock;
+
+#ifdef DRNAS_PCMAX_MODULE
+// These helpers are excluded from the frozen CDCL comparison target.
+class PcmaxDigest {
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context_{EVP_MD_CTX_new(), EVP_MD_CTX_free};
+  public:
+    PcmaxDigest() {
+        if (!context_ || EVP_DigestInit_ex(context_.get(), EVP_sha256(), nullptr) != 1)
+            throw std::runtime_error("cannot initialize PCMAX SHA256");
+    }
+    void update(const void* bytes, size_t size) {
+        if (EVP_DigestUpdate(context_.get(), bytes, size) != 1)
+            throw std::runtime_error("cannot update PCMAX SHA256");
+    }
+    std::string finish() {
+        unsigned char bytes[EVP_MAX_MD_SIZE];
+        unsigned int size = 0;
+        if (EVP_DigestFinal_ex(context_.get(), bytes, &size) != 1 || size != 32)
+            throw std::runtime_error("cannot finish PCMAX SHA256");
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result;
+        result.reserve(64);
+        for (unsigned int i = 0; i < size; ++i) {
+            result += hex[bytes[i] >> 4]; result += hex[bytes[i] & 15];
+        }
+        return result;
+    }
+};
+
+std::string pcmaxJsonString(const std::string& value) {
+    std::ostringstream result;
+    result << '"';
+    for (unsigned char ch : value) {
+        if (ch == '"' || ch == '\\') result << '\\' << ch;
+        else if (ch < 32) result << "\\u00" << "0123456789abcdef"[ch >> 4]
+                                 << "0123456789abcdef"[ch & 15];
+        else result << ch;
+    }
+    result << '"';
+    return result.str();
+}
+
+class PcmaxFd {
+    int value_;
+  public:
+    explicit PcmaxFd(int value = -1) : value_(value) {}
+    PcmaxFd(const PcmaxFd&) = delete;
+    PcmaxFd& operator=(const PcmaxFd&) = delete;
+    ~PcmaxFd() { if (value_ >= 0) ::close(value_); }
+    int get() const { return value_; }
+    void reset(int value) { if (value_ >= 0) ::close(value_); value_ = value; }
+};
+
+// Publish a complete certificate without replacing any existing file. Opening
+// every directory with O_NOFOLLOW also rejects symlinks in parent components.
+// A same-directory temporary is flushed before its atomic, exclusive link.
+void pcmaxWriteCertificate(const std::string& path, const std::string& json) {
+    if (path.empty() || json.empty()) throw std::runtime_error("empty PCMAX certificate path or content");
+    const auto target = std::filesystem::absolute(path);
+    const std::string name = target.filename().string();
+    if (name.empty() || name == "." || name == "..")
+        throw std::runtime_error("invalid PCMAX certificate filename");
+    PcmaxFd directory(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (directory.get() < 0) throw std::runtime_error("cannot open PCMAX certificate directory");
+    for (const auto& component : target.parent_path().relative_path()) {
+        const int next = ::openat(directory.get(), component.c_str(),
+                                  O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (next < 0) throw std::runtime_error("cannot open PCMAX certificate directory without symlinks: " +
+                                             std::string(std::strerror(errno)));
+        directory.reset(next);
+    }
+    struct stat existing{};
+    if (::fstatat(directory.get(), name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0)
+        throw std::runtime_error("PCMAX certificate already exists; refusing overwrite");
+    if (errno != ENOENT) throw std::runtime_error("cannot inspect PCMAX certificate destination");
+    std::string temporary;
+    PcmaxFd file;
+    for (unsigned int attempt = 0; attempt < 100; ++attempt) {
+        temporary = ".pcmax-certificate-" + std::to_string(::getpid()) + "-" + std::to_string(attempt) + ".tmp";
+        const int opened = ::openat(directory.get(), temporary.c_str(),
+                                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (opened >= 0) { file.reset(opened); break; }
+        if (errno != EEXIST) throw std::runtime_error("cannot create PCMAX certificate: " +
+                                                    std::string(std::strerror(errno)));
+    }
+    if (file.get() < 0) throw std::runtime_error("cannot allocate PCMAX certificate temporary file");
+    bool published = false;
+    try {
+        const std::string contents = json.back() == '\n' ? json : json + '\n';
+        size_t offset = 0;
+        while (offset < contents.size()) {
+            const ssize_t written = ::write(file.get(), contents.data() + offset, contents.size() - offset);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) throw std::runtime_error("PCMAX certificate write failed");
+            offset += static_cast<size_t>(written);
+        }
+        while (::fsync(file.get()) != 0) {
+            if (errno != EINTR) throw std::runtime_error("PCMAX certificate fsync failed");
+        }
+        if (::linkat(directory.get(), temporary.c_str(), directory.get(), name.c_str(), 0) != 0)
+            throw std::runtime_error("cannot publish PCMAX certificate without overwrite: " +
+                                     std::string(std::strerror(errno)));
+        published = true;
+        if (::unlinkat(directory.get(), temporary.c_str(), 0) != 0)
+            throw std::runtime_error("cannot remove PCMAX certificate temporary link");
+        while (::fsync(directory.get()) != 0) {
+            if (errno != EINTR) throw std::runtime_error("PCMAX certificate directory fsync failed");
+        }
+    } catch (...) {
+        ::unlinkat(directory.get(), temporary.c_str(), 0);
+        if (published) ::unlinkat(directory.get(), name.c_str(), 0);
+        throw;
+    }
+}
+
+void pcmaxTelemetry(const pcmax::Result& result, double budget, Clock::time_point process_start,
+                    const std::string& digest, const std::string& certificate_path) {
+    std::cout << "c PCMAX_CAPACITY {\"verified\":" << (result.verified ? "true" : "false")
+              << ",\"reason\":" << pcmaxJsonString(result.reason)
+              << ",\"groups\":" << result.groups << ",\"machines\":" << result.machines
+              << ",\"rounds\":" << result.rounds << ",\"demand\":" << result.demand
+              << ",\"capacity\":" << result.capacity << ",\"budget_s\":" << budget
+              << ",\"module_elapsed_s\":" << result.elapsed
+              << ",\"total_elapsed_s\":" << std::chrono::duration<double>(Clock::now() - process_start).count()
+              << ",\"source_sha256\":" << pcmaxJsonString(digest)
+              << ",\"certificate_path\":" << pcmaxJsonString(result.verified ? certificate_path : "") << "}\n";
+}
+#endif
 
 enum class Result { SAT = 10, UNSAT = 20, UNKNOWN = 0 };
 enum class PropResult { OK, CONFLICT, LIMIT, TIMEOUT };
@@ -1260,12 +1399,28 @@ int run(int argc, char** argv) {
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
+#ifdef DRNAS_PCMAX_MODULE
+    bool pcmax_enabled=false, pcmax_only=false;
+    double pcmax_budget_ms=250.0;
+    std::string pcmax_certificate;
+#endif
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
         else if (opt=="--time" && i+1<argc) seconds=std::stod(argv[++i]);
         else if (opt=="--transitions" && i+1<argc) trace_file=argv[++i];
         else if (opt=="--proof" && i+1<argc) proof_path=argv[++i];
+#ifdef DRNAS_PCMAX_MODULE
+        else if (opt=="--pcmax-capacity") pcmax_enabled=true;
+        else if (opt=="--pcmax-only") { pcmax_enabled=true; pcmax_only=true; }
+        else if (opt=="--pcmax-budget-ms" && i+1<argc) {
+            const std::string value=argv[++i];
+            size_t consumed=0;
+            pcmax_budget_ms=std::stod(value,&consumed);
+            if (consumed!=value.size()) throw std::runtime_error("invalid --pcmax-budget-ms");
+        }
+        else if (opt=="--pcmax-certificate" && i+1<argc) pcmax_certificate=argv[++i];
+#endif
         else if (opt=="--x5-no-minimize") x5_minimize=false;
         else if (opt=="--x5-no-retain") x5_retain=false;
         else if (opt=="--x5-retain") x5_retain=true;
@@ -1282,6 +1437,9 @@ int run(int argc, char** argv) {
         else if (opt=="--x47-guard" && i+1<argc) x47_guard_path=argv[++i];
         else if (opt=="--help") {
             std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts]\n";
+#ifdef DRNAS_PCMAX_MODULE
+            std::cout<<"PCMAX options (off by default): --pcmax-capacity [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
+#endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -1289,6 +1447,19 @@ int run(int argc, char** argv) {
     }
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
+#ifdef DRNAS_PCMAX_MODULE
+    if (!std::isfinite(pcmax_budget_ms) || pcmax_budget_ms<0 || pcmax_budget_ms>86400000.0)
+        throw std::runtime_error("invalid --pcmax-budget-ms");
+    if (pcmax_only && !proof_path.empty())
+        throw std::runtime_error("--pcmax-only cannot be combined with --proof");
+    const bool pcmax_active=pcmax_enabled && proof_path.empty();
+    bool pcmax_capture=pcmax_active;
+    size_t pcmax_literals=0;
+    std::vector<std::vector<int>> pcmax_original;
+    std::optional<PcmaxDigest> pcmax_digest;
+    std::string pcmax_skip_reason=pcmax_enabled && !pcmax_active ? "disabled_for_drat" : "";
+    if (pcmax_active) pcmax_digest.emplace();
+#endif
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
     if (compare_flip && compare_at==0)throw std::runtime_error("--flip-branch requires --branch-at");
     if(x46_conflicts>0 && (compare_at<=0 || compare_flip))
@@ -1307,7 +1478,11 @@ int run(int argc, char** argv) {
         proof.open(proof_path);
         if(!proof)throw std::runtime_error("cannot create proof");
     }
+#ifdef DRNAS_PCMAX_MODULE
+    std::ifstream fd(input,std::ios::binary);
+#else
     std::ifstream fd(input);
+#endif
     if (!fd) throw std::runtime_error("cannot open CNF: "+input);
     int declared_vars=-1, declared_clauses=-1;
     std::optional<Solver> solver;
@@ -1317,10 +1492,42 @@ int run(int argc, char** argv) {
     // allocation, while still supporting DIMACS clauses spanning many lines.
     std::string line;
     while (std::getline(fd,line)) {
+#ifdef DRNAS_PCMAX_MODULE
+        if (pcmax_capture && std::any_of(line.begin(),line.end(),[](unsigned char ch){return ch>=128;})) {
+            pcmax_capture=false;
+            pcmax_skip_reason="unsupported_dimacs_dialect";
+            std::vector<std::vector<int>>().swap(pcmax_original);
+            pcmax_digest.reset();
+        }
+        if (pcmax_digest) {
+            pcmax_digest->update(line.data(),line.size());
+            if (!fd.eof()) pcmax_digest->update("\n",1);
+        }
+        if (pcmax_active && seconds>0 &&
+            std::chrono::duration<double>(Clock::now()-process_start).count()>=seconds) {
+            pcmax::Result expired;
+            expired.reason="overall_time_exhausted_during_read";
+            pcmaxTelemetry(expired,0,process_start,"",pcmax_certificate);
+            std::cout<<"s UNKNOWN\n";
+            return 0;
+        }
+#endif
         const char* at=line.data();
         const char* end=line.data()+line.size();
         auto skip=[&](){while (at<end && (*at==' ' || *at=='\t' || *at=='\r')) ++at;};
         skip();
+#ifdef DRNAS_PCMAX_MODULE
+        // The bundled independent checker accepts ASCII DIMACS with full-line
+        // `c` comments. Keep the core's broader dialect, but do not certify it.
+        if (pcmax_capture && at<end &&
+            (*at=='%' || (*at=='c' && at+1<end && at[1]!=' ' && at[1]!='\t' &&
+                         at[1]!='\r' && at[1]!='\v' && at[1]!='\f'))) {
+            pcmax_capture=false;
+            pcmax_skip_reason="unsupported_dimacs_dialect";
+            std::vector<std::vector<int>>().swap(pcmax_original);
+            pcmax_digest.reset();
+        }
+#endif
         if (at==end || *at=='c' || *at=='%') continue;
         if (*at=='p' && (at+1==end || at[1]==' ' || at[1]=='\t')) {
             std::istringstream header(line);
@@ -1330,6 +1537,21 @@ int run(int argc, char** argv) {
                 declared_clauses<0 || (header>>extra))
                 throw std::runtime_error("invalid DIMACS header");
             if (trace_trail && declared_vars>18) throw std::runtime_error("--trace-trail only supported for at most 18 variables");
+#ifdef DRNAS_PCMAX_MODULE
+            if (pcmax_active && (declared_vars>200000 || declared_clauses>1000000)) {
+                pcmax_capture=false;
+                pcmax_skip_reason="declared_size_limit";
+                pcmax_digest.reset();
+                if (pcmax_only) {
+                    pcmax::Result skipped;
+                    skipped.reason="header_size_gate";
+                    pcmaxTelemetry(skipped,0,process_start,"",pcmax_certificate);
+                    std::cout<<"s UNKNOWN\n";
+                    return 0;
+                }
+            }
+            if (pcmax_capture) pcmax_original.reserve(static_cast<size_t>(declared_clauses));
+#endif
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,
                                 proof_path.empty()?nullptr:&proof);
@@ -1340,6 +1562,14 @@ int run(int argc, char** argv) {
         if (!solver) throw std::runtime_error("missing DIMACS header");
         while (at<end) {
             skip();
+#ifdef DRNAS_PCMAX_MODULE
+            if (pcmax_capture && at<end && (*at=='c' || *at=='%')) {
+                pcmax_capture=false;
+                pcmax_skip_reason="unsupported_dimacs_dialect";
+                std::vector<std::vector<int>>().swap(pcmax_original);
+                pcmax_digest.reset();
+            }
+#endif
             if (at==end || *at=='c' || *at=='%') break;
             if (*at=='+') ++at;
             int val=0;
@@ -1350,15 +1580,81 @@ int run(int argc, char** argv) {
                 throw std::runtime_error("invalid or out-of-range DIMACS literal");
             at=parsed.ptr;
             if (val==0) {
+#ifdef DRNAS_PCMAX_MODULE
+                if (pcmax_capture) pcmax_original.push_back(clause);
+#endif
                 solver->addOriginal(std::move(clause));clause.clear();++seen_clauses;
                 if (seen_clauses>declared_clauses)
                     throw std::runtime_error("extra DIMACS clause");
-            } else clause.push_back(val);
+            } else {
+                clause.push_back(val);
+#ifdef DRNAS_PCMAX_MODULE
+                if (pcmax_capture && ++pcmax_literals>10000000) {
+                    pcmax_capture=false;
+                    pcmax_skip_reason="literal_size_limit";
+                    std::vector<std::vector<int>>().swap(pcmax_original);
+                    pcmax_digest.reset();
+                    if (pcmax_only) {
+                        pcmax::Result skipped;
+                        skipped.reason="literal_size_gate";
+                        pcmaxTelemetry(skipped,0,process_start,"",pcmax_certificate);
+                        std::cout<<"s UNKNOWN\n";
+                        return 0;
+                    }
+                }
+#endif
+            }
         }
     }
     if (!solver || !clause.empty() || seen_clauses!=declared_clauses)
         throw std::runtime_error("incomplete or mismatched DIMACS clause count");
+#ifdef DRNAS_PCMAX_MODULE
+    if (fd.bad()) throw std::runtime_error("CNF read failed");
+#endif
     solver->finishParsing();
+#ifdef DRNAS_PCMAX_MODULE
+    if (pcmax_enabled) {
+        pcmax::Result capacity_result;
+        std::string digest;
+        double budget=pcmax_budget_ms/1000.0;
+        if (seconds>0) budget=std::min(budget,std::max(0.0,seconds-
+            std::chrono::duration<double>(Clock::now()-process_start).count()));
+        if (!pcmax_skip_reason.empty()) capacity_result.reason=pcmax_skip_reason;
+        else if (budget<=0) capacity_result.reason="budget_exhausted_before_module";
+        else {
+            digest=pcmax_digest->finish();
+            pcmax::Options options;
+            options.seconds=budget;
+            capacity_result=pcmax::analyze(pcmax_original,declared_vars,digest,options);
+        }
+        std::vector<std::vector<int>>().swap(pcmax_original);
+        pcmax_digest.reset();
+        if (capacity_result.verified) {
+            if (pcmax_certificate.empty()) {
+                capacity_result.verified=false;
+                capacity_result.reason="certificate_path_required";
+            } else if (seconds>0 &&
+                       std::chrono::duration<double>(Clock::now()-process_start).count()>=seconds) {
+                capacity_result.verified=false;
+                capacity_result.reason="overall_time_exhausted_before_certificate";
+            } else {
+                try { pcmaxWriteCertificate(pcmax_certificate,capacity_result.certificate_json); }
+                catch (const std::exception& error) {
+                    capacity_result.verified=false;
+                    capacity_result.reason="certificate_write_failed: "+std::string(error.what());
+                    pcmaxTelemetry(capacity_result,budget,process_start,digest,pcmax_certificate);
+                    throw;
+                }
+            }
+        }
+        pcmaxTelemetry(capacity_result,budget,process_start,digest,pcmax_certificate);
+        if (capacity_result.verified) {
+            std::cout<<"s UNSATISFIABLE\n";
+            return 20;
+        }
+        if (pcmax_only) { std::cout<<"s UNKNOWN\n"; return 0; }
+    }
+#endif
     // Fast fallback: if the frozen risk gate rejects this source before
     // any probe, do not even open or deserialize the learned cost model.
     // The original C++ CDCL search is left intact. The guard itself still
