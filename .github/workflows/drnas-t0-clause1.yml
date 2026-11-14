@@ -1,0 +1,82 @@
+name: DRNAS T0 CLAUSE1 first-decision learned-clause quality audit
+on:
+  push:
+    branches:
+      - experiment/drnas-t0-clause-quality1-20261114
+    paths:
+      - .github/workflows/drnas-t0-clause1.yml
+      - research/drnas_t0_clause1.py
+      - research/drnas_t0_clause1_build.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-t0-clause-quality1-original-satlib
+  cancel-in-progress: false
+
+jobs:
+  learned_clause_quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore certified original-CNF proof checker
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43601959681
+          name: deltax-signal1-frozen-sources-and-binary
+          github-token: ${{ github.token }}
+          path: frozen/signal
+      - name: Compile unchanged X5 reference and observational quality instrument
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_t0_frontier1.py \
+            research/drnas_t0_interaction2.py research/drnas_t0_clause1_build.py \
+            research/drnas_t0_clause1.py
+          mkdir -p build
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-t0-frontier1
+          python3 -u research/drnas_t0_clause1_build.py | tee t0_clause_build.log
+          test -x build/drat-trim
+          sha256sum src/drnas_x5.cpp build/drnas-t0-frontier1 \
+            build/drnas-t0-clause1 build/drat-trim | tee t0_clause_binaries.sha256
+      - name: Run 60 original source matched first-branch comparisons
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "T0_CLAUSE1_SINGLE_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_t0_clause1.py | tee t0_clause.log
+          grep -q '^T0_CLAUSE_FINAL ' t0_clause.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("t0_clause1/report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==60
+          assert r["original_SAT_or_DRAT_verified_pairs"]==60
+          assert r["first_snapshot_matched_pairs"]==60
+          assert r["instrumented_vs_original_equal_smoke"]==6
+          assert r["one_logical_cpu"] and r["no_model_training"]
+          assert not r["no_main_modification"]==False and not r["no_promotion"]==False
+          print("T0_CLAUSE_TEST_OK",r["lbd8"],r["length8"],
+            r["both_8_conflict_windows"])
+          PY
+          echo "T0-CLAUSE1: informational test; 60 SATLIB original CNFs, proof checked, no main/heuristic changes" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-t0-clause1-source-paired-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            t0_clause1/
+            t0_clause.log
+            t0_clause_build.log
+            t0_clause_binaries.sha256
