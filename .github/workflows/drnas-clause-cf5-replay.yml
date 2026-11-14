@@ -1,0 +1,80 @@
+name: DRNAS CLAUSE CF5 REPLAY same-policy 8s triple original SAT2024
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-counterfactual5-real2024-20261114
+    paths:
+      - .github/workflows/drnas-clause-cf5-replay.yml
+      - research/drnas_clause_cf5_replay.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-clause-cf5-replay3
+  cancel-in-progress: false
+
+jobs:
+  real16_fixed_repeated:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: frozen/original_proof
+      - name: Recompile precisely pinned CLCF5 four-policy binary
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_clause_cf5_replay.py \
+            research/drnas_clause_cf5_real14.py research/drnas_clause_cf5_build.py
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf frozen/original_proof/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          mkdir -p build
+          python3 -u research/drnas_clause_cf5_build.py | tee cf5_replay_build.log
+          sha256sum build/drnas-clause-cf5 build/drat-trim \
+            | tee cf5_replay_sha256.txt
+      - name: Run fixed 8s triple replay, one logical CPU and original proofs
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_clause_cf5_replay.py \
+            | tee cf5_replay.log
+          grep -q '^CLCF5_REPLAY_FINAL ' cf5_replay.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("clause_cf5_replay/report.json"))
+          assert r["status"]=="COMPLETE" and r["repetitions"]==3
+          assert r["all_first_reduction_signature_matched"]
+          assert r["all_proved_SAT_UNSAT_original_CNF"] and r["one_cpu"]
+          assert r["no_main_edits_or_promotion"]
+          print("CLCF5_REPLAY_CERTIFIED",r["median_and_PAR2"])
+          PY
+          echo "Three repeated pinned policy comparisons on original SAT2024 #16 at 8s, no promotion or fitting." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-clause-cf5-replay3-verified
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            clause_cf5_replay/
+            cf5_replay_build.log
+            cf5_replay.log
+            cf5_replay_sha256.txt
