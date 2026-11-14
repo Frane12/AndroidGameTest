@@ -1,0 +1,82 @@
+name: DRNAS DELTAX synthetic guarded equality causal CDCL probe
+on:
+  push:
+    branches: [experiment/drnas-deltax-synthetic-causality-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-synthetic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-synthetic-causality-once
+  cancel-in-progress: false
+
+jobs:
+  synthetic_proof_first:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore pinned original SAT2024 sources and frozen reference executables
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          python3 -m py_compile \
+            research/drnas_deltax/synthetic_formulas.py \
+            research/drnas_deltax/synthetic_causal_build.py \
+            tests/test_drnas_deltax_synthetic.py
+      - name: Compile original DELTAX reference and separate causal instrumentation binary
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltax/synthetic_causal_build.py | tee deltax_synthetic_build.log
+          grep -q '^DELTAX_CAUSAL_BUILD ' deltax_synthetic_build.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum build/drnas-deltax build/drnas-deltax-causal build/drat-trim \
+             > build/DELTAX_SYNTH_BINARIES.sha256
+      - name: Test generated nonlinear guarded SAT and UNSAT CNFs with real CDCL reason attribution
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_SYNTH_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_deltax_synthetic.py \
+            | tee deltax_synthetic_trial.log
+          grep -q '^DELTAX_SYNTH_FINISHED ' deltax_synthetic_trial.log
+          sha256sum -c build/DELTAX_SYNTH_BINARIES.sha256
+          python3 - <<'PY'
+          import json
+          r=json.load(open("deltax_synthetic_result/report.json"))
+          assert r["status"]=="COMPLETE"
+          assert r["certified_alias_events"]>0
+          assert r["all_original_sat_models_and_unsat_proofs_checked"]
+          assert r["all_logged_resolvents_original_rup_checked"]
+          assert r["control_causal_enqueues"]==0
+          assert not r["no_speed_claim"] is False
+          print("DELTAX_SYNTH_ORIGINAL_PROOF_SAFETY_PASS",
+                r["actual_cdcl_propagations_using_deltax_clause"])
+          PY
+          echo "Synthetic source oracles + RUP proved; causal propagation count reported independently, no main promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-synthetic-proof-causality-report
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_synthetic_inputs/
+            deltax_synthetic_result/
+            deltax_synthetic_build.log
+            deltax_synthetic_trial.log
+            build/DELTAX_SYNTH_BINARIES.sha256
