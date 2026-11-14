@@ -1,0 +1,119 @@
+name: DRNAS MATH4 native GF2+UP vs HALL3 CF7 Kissat CaDiCaL REAL24 verified
+on:
+  push:
+    branches: [experiment/drnas-math4-native-cf7-real24-20261114]
+    paths:
+      - .github/workflows/drnas-math4-real24-par2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math4-real24-verified-20261114
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43643413210
+          name: hall3-prepared
+          github-token: ${{ github.token }}
+          path: reference
+      - name: Freeze 24 original SAT2026 CNF source hashes and build opt-in native MATH4
+        run: |
+          set -euo pipefail
+          tar -xzf reference/hall3-prepared.tgz
+          python3 -m py_compile research/math4/benchmark_real24.py research/math4/check_xor_units.py
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            -DDRNAS_PCMAX_MODULE src/drnas_hall3.cpp -lcrypto -o build/drnas-math4
+          python3 -u research/math4/benchmark_real24.py prepare | tee math4_prepare.log
+          grep -q '^HALL3_READY ' math4_prepare.log
+          sha256sum build/drnas-math4 build/drnas-cf7-frozen build/kissat \
+            build/cadical build/drat-trim src/math4_xor_unit.hpp \
+            research/math4/check_xor_units.py > math4_frozen.sha256
+          tar -czf math4-frozen.tgz build/drnas-math4 build/drnas-cf7-frozen \
+            build/kissat build/cadical build/drat-trim hall3_inputs/cnf \
+            math4_results/protocol.json math4_frozen.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-math4-real24-frozen-sources-and-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            math4-frozen.tgz
+            math4_prepare.log
+            math4_frozen.sha256
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-math4-real24-frozen-sources-and-binaries
+          path: .
+      - name: Restore SHA-pinned original CNFs and frozen native reference binaries
+        run: |
+          set -euo pipefail
+          tar -xzf math4-frozen.tgz
+          sha256sum -c math4_frozen.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "MATH4_SHARD_SINGLE_CPU=$CPU"
+      - name: Paired source-pinned end-to-end proof-certified PAR2 (5 arms, 12 s)
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/math4/benchmark_real24.py shard \
+              --index ${{ matrix.shard }} | tee math4_shard.log
+          grep -q '^MATH4_SHARD_PASS ' math4_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math4-shard-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            math4_results/shard-${{ matrix.shard }}/
+            math4_shard.log
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: math4-shard-*
+          merge-multiple: true
+          path: math4_results/
+      - name: Reconcile 240 source-paired attempts, proof status and E2E PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/math4/benchmark_real24.py report | tee math4_final.log
+          grep -q '^MATH4_FINAL ' math4_final.log
+          cat math4_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math4-cf7-original24-final-e2e-par2
+          retention-days: 60
+          path: |
+            math4_results/summary.json
+            math4_results/README.md
+            math4_final.log
