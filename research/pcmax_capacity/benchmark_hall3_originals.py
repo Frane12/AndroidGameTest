@@ -26,7 +26,9 @@ def main():
     binary=args.binary.resolve()
     args.out.mkdir(parents=True,exist_ok=False)
     report20=json.loads((args.pcmax20/'report.json').read_text())['results']
-    report3=json.loads((args.unseen3/'source_manifest.json').read_text())
+    manifest3=args.unseen3/'source_manifest.json'
+    if not manifest3.exists():manifest3=args.unseen3.parent/'source_manifest.json'
+    report3=json.loads(manifest3.read_text())
     sources=[]
     for entry in report20:
         if entry.get('status')=='OK':
