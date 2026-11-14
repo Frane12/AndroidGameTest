@@ -94,8 +94,8 @@ def main():
                 removed=frozenset((-resource[0],-resource[1]))
                 mutated=[c for c in clauses if frozenset(c)!=removed]
                 assert len(mutated)<len(clauses),(name,"missing original blocking clause")
-                tampered=(f"p cnf {nvars} {len(mutated)}\\n"+
-                          "".join(" ".join(map(str,c))+" 0\\n" for c in mutated)).encode()
+                tampered=(f"p cnf {nvars} {len(mutated)}\n"+
+                          "".join(" ".join(map(str,c))+" 0\n" for c in mutated)).encode()
                 forged=copy.deepcopy(proof)
                 forged["source_sha256"]=hashlib.sha256(tampered).hexdigest()
                 try:check(tampered,forged)
@@ -116,7 +116,7 @@ def main():
              "unsat_certified":sum(r["expected"]=="UNSAT" and r["status"]=="UNSAT_CERTIFIED" for r in rows),
              "unsat_total":sum(r["expected"]=="UNSAT" for r in rows),
              "rows":rows}
-    (args.out/"summary.json").write_text(json.dumps(summary,indent=2)+"\\n")
+    (args.out/"summary.json").write_text(json.dumps(summary,indent=2)+"\n")
     print("HALL2_ADVERSARIAL_SUMMARY "+json.dumps({
         k:summary[k] for k in ("total","sat_controls","false_unsat","unsat_total","unsat_certified")
     },sort_keys=True),flush=True)
