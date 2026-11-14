@@ -1,0 +1,85 @@
+name: DRNAS DELTAX live proof-carrying guarded equivalence integration
+on:
+  push:
+    branches: [experiment/drnas-deltax-live-guarded-equivalence-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-live.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-first-integration
+  cancel-in-progress: false
+
+jobs:
+  guarded_cdcl_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore immutable Delta3 original CNFs and native reference binaries
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltax/build.py tests/test_drnas_deltax.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          sources,manifest=B.official_manifest()
+          assert len(sources)==36 and len({s['sha256'] for s in sources})==36
+          print("DELTAX_SOURCE_FROZEN",manifest['manifest_sha256'])
+          PY
+      - name: Compile source-only DELTAX C++ live guarded-equivalence CDCL
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltax/build.py | tee deltax_build.log
+          grep -q '^DELTAX_BUILD ' deltax_build.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum build/drnas-deltax build/drat-trim > build/DELTAX_FROZEN.sha256
+      - name: Source-RUP clauses, original SAT/UNSAT, guarded alias activation and rollback safety
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_deltax.py \
+            | tee deltax_preflight.log
+          grep -q '^DELTAX_PREFLIGHT_PASS ' deltax_preflight.log
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTAX_FROZEN.sha256
+          python3 - <<'PY'
+          import json
+          r=json.load(open("deltax_certificate/report.json"))
+          assert r['status']=='PASS'
+          assert r['original_real30']['deltax']['proof_carrying_injected']>0
+          assert r['original_real30']['deltax-shadow']['proof_carrying_injected']==0
+          assert r['all_aliases_original_source_rup_checked']
+          assert not r['literal_substitution_in_cdcl'] and not r['speed_evaluation'] and not r['promotion']
+          print("DELTAX_DISCOVERY_PROOF_AND_LIVE_CDCL_GATE_PASS")
+          PY
+          echo "DELTAX: live proof-carrying conditional equality, guard rollback tracking; no speed claims" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-first-live-integration
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_certificate/
+            deltax_build.log
+            deltax_preflight.log
+            build/DELTAX_BUILD.json
+            build/DELTAX_FROZEN.sha256
