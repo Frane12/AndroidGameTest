@@ -1,0 +1,116 @@
+name: DRNAS DELTA-COOP2 nonlinear separator signal and paired proof test
+on:
+  push:
+    branches: [experiment/drnas-deltacoop2-nonlinear-20261114]
+    paths: [.github/workflows/drnas-deltacoop2.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-deltacoop2-one-discovery
+  cancel-in-progress: false
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43582788399
+          name: delta-coop1-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta1
+      - name: Restore original inputs and immutable Delta1 references
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta1/delta_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          sha256sum -c build/DELTA_COOP1_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltacoop2/*.py tests/test_drnas_deltacoop2.py
+      - name: Build isolated source and verify mathematical witnesses and all small RUP additions
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltacoop2/build.py | tee delta2_build.log
+          python3 -u tests/test_drnas_deltacoop2.py | tee delta2_preflight.log
+          grep -q '^DELTA2_PREFLIGHT_PASS ' delta2_preflight.log
+          sha256sum -c build/COOP54_FROZEN.sha256
+          sha256sum -c build/DELTA_COOP1_FROZEN.sha256
+          sha256sum build/drnas-deltacoop2 build/drnas-deltacoop1 build/drat-trim cross/x59/build/kissat cross/x59/build/cadical > build/DELTA2_FROZEN.sha256
+          tar -czf delta2_frozen.tgz build/drnas-deltacoop2 build/drnas-deltacoop1 build/drat-trim build/DELTA2_BUILD.json build/DELTA2_FROZEN.sha256 cross/x59/build/kissat cross/x59/build/cadical real36_frozen
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta2-preflight
+          retention-days: 60
+          path: |
+            delta2_frozen.tgz
+            delta2_build.log
+            delta2_preflight.log
+            delta2_preflight/
+            build/DELTA2_BUILD.json
+  real36_paired:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta2-preflight
+          path: frozen/delta2
+      - name: Run seven paired arms on the same logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta2/delta2_frozen.tgz
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          PYTHONHASHSEED=0 python3 -u research/drnas_deltacoop2/paired.py shard --shard ${{ matrix.shard }} | tee delta2_shard.log
+          grep -q '^DELTA2_SHARD_PASS ' delta2_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta2-shard-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            delta2_shards/${{ matrix.shard }}/
+            delta2_shard.log
+  aggregate:
+    needs: real36_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta2-preflight
+          path: frozen/delta2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: delta2-shard-*
+          path: delta2_downloads
+      - name: Require all 504 pairs and report nonlinear signal separately from speed
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta2/delta2_frozen.tgz
+          python3 -u research/drnas_deltacoop2/paired.py aggregate | tee delta2_final.log
+          grep -q '^DELTA2_FINAL ' delta2_final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta2-real36-final
+          retention-days: 60
+          path: |
+            delta2_final/
+            delta2_final.log
