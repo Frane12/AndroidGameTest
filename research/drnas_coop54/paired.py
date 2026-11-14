@@ -82,10 +82,12 @@ def sample(original,arm,rep,cap):
                  str(src),str(proof)]
         else:raise RuntimeError("UNKNOWN_ARM")
         rc,out,err,wall,killed=proc(cmd,cap+.15)
-        status="TIMEOUT" if killed or wall>cap else "UNKNOWN"
+        status="TIMEOUT" if killed else "UNKNOWN"
         cert="none"
         check_s=0.0
-        if status!="TIMEOUT":
+        # Check every returned SAT/UNSAT, even if it arrived after the cap.
+        # Only on-time verified results receive PAR2 credit.
+        if not killed:
             if rc==10:
                 n,clauses=B.parse_cnf(raw)
                 if not B.check_sat(out,clauses,n):
