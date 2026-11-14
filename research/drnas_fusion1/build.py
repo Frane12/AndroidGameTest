@@ -45,7 +45,8 @@ def main():
     s=once(s,
         '''        coop_.add(clean);
         const int cid = storeClause(std::move(clean), false);''',
-        '''        if(fusion_mode_!=3 && fusion_mode_!=2)coop_.add(clean);
+        '''        if(fusion_mode_==3 || fusion_mode_==2)fusionObserveOriginal(clean);
+        if(fusion_mode_!=3 && fusion_mode_!=2)coop_.add(clean);
         const int cid = storeClause(std::move(clean), false);''')
     # First safety control is outside ALL module engines and is O(1):
     # use only already-computed CDCL counters and static binary footprints.
