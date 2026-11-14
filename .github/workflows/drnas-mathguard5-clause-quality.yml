@@ -1,0 +1,114 @@
+name: DRNAS MATH-GUARD5 ranked vs low utility original SAT2024
+
+on:
+  push:
+    branches: [experiment/drnas-mathguard5-clause-quality-20261114]
+    paths:
+      - .github/workflows/drnas-mathguard5-clause-quality.yml
+      - research/drnas_mathguard5/**
+      - research/drnas_mathguard_delta4x/bench.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-mathguard5-clause-quality
+  cancel-in-progress: false
+
+jobs:
+  five_arm_certified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          name: delta4-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43593699141
+          name: delta4x-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4x
+      - name: Restore SHA-pinned original SAT2024 CNFs and frozen binary references
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          python3 -m py_compile research/drnas_mathguard5/build.py research/drnas_mathguard5/bench.py
+      - name: Build derived proof-first ranked MATH-GUARD5 without changing main or frozen reference
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_mathguard5/build.py | tee mg5_build.log
+          grep -q '^MG5_BUILD ' mg5_build.log
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+      - name: Exhaustive small CNF SAT oracle with independent RUP and DRAT audit
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_mathguard5/bench.py preflight | tee mg5_preflight.log
+          grep -q '^MG4_PREFLIGHT_PASS ' mg5_preflight.log
+          grep -q '^MG5_PREFLIGHT_PASS ' mg5_preflight.log
+      - name: Five serial arms, 8 SHA-frozen real SAT2024 formulas, 2 repeats, 6s cap
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_mathguard5/bench.py bench | tee mg5_benchmark.log
+          grep -q '^MG5_FINAL ' mg5_benchmark.log
+      - name: Check all original CNF hashes and verified paired PAR2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=Path('mathguard5_clause_quality')
+          p=json.loads((d/'protocol.json').read_text())
+          r=json.loads((d/'report.json').read_text())
+          rows=json.loads((d/'trials.json').read_text())
+          assert len(rows)==len(r['arms'])*r['original_sat2024_sources']*r['repetitions']==80
+          assert r['one_logical_cpu'] and r['one_solver_process_at_a_time']
+          assert r['retrospective'] and not r['blind_holdout'] and not r['promotion']
+          keys={(v['id'],v['rep'],v['arm']) for v in rows}
+          assert len(keys)==len(rows)
+          for i,h in p['hashes'].items():
+              assert {x['sha256'] for x in rows if x['id']==int(i)}=={h}
+          for row in rows:
+              assert row['verified'] or row['PAR2_verified_s']==12.0
+              if row['arm'] in ('MG5_TOP8','MG5_BOTTOM8'):
+                  assert 0<=row['mg_installed']<=8
+          print('MG5_AUDIT_PASS',len(rows),r['results'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathguard5-clause-quality-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            mg5_build.log
+            mg5_preflight.log
+            mg5_benchmark.log
+            build/MATH_GUARD5_BUILD.json
+            mathguard5_clause_quality/protocol.json
+            mathguard5_clause_quality/trials.json
+            mathguard5_clause_quality/report.json
