@@ -1,0 +1,146 @@
+name: DRNAS HALL3 CF7 STANDARD26 original Main 24 certified
+on:
+  push:
+    branches: [experiment/drnas-hall3-cf7-standard26-20261114]
+    paths:
+      - .github/workflows/drnas-hall3-cf7-standard26.yml
+      - research/hall3/**
+      - src/drnas_hall3.cpp
+      - src/drnas_cf7_frozen.cpp
+      - src/hall3_guard.hpp
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-hall3-cf7-standard26
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-compiled-binaries
+          github-token: ${{ github.token }}
+          path: reference_artifact
+      - name: Build native CF7 with bounded Hall cooperation
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          tar -xzf reference_artifact/cf7_binaries.tgz build/kissat build/cadical build/drat-trim
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror -DDRNAS_PCMAX_MODULE src/drnas_hall3.cpp -lcrypto -o build/drnas-hall3
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror src/drnas_cf7_frozen.cpp -o build/drnas-cf7-frozen
+          sha256sum -c research/hall3/source-pins.sha256
+          python3 -m py_compile research/hall3/*.py
+      - name: Oracle proof routing and frozen CF7 parity
+        run: |
+          set -euo pipefail
+          python3 -u research/hall3/test_integration.py > integration.log
+          tail -1 integration.log
+          python3 research/pcmax_capacity/test_clause_hall.py --binary build/drnas-hall3 --output hall3_clause_regression > clause-regression.log
+          tail -1 clause-regression.log
+          python3 -u research/hall3/test_recovery.py > recovery.log
+          tail -1 recovery.log
+          python3 -u research/hall3/test_references.py > reference-smoke.log
+          tail -1 reference-smoke.log
+      - name: Download only precommitted original Main Track CNFs and freeze binaries
+        run: |
+          set -euo pipefail
+          python3 -u research/hall3/benchmark.py prepare | tee prepare.log
+          tar -czf hall3-prepared.tgz build/drnas-hall3 build/drnas-cf7-frozen build/kissat build/cadical build/drat-trim hall3_inputs/cnf hall3_results/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hall3-prepared
+          path: hall3-prepared.tgz
+          retention-days: 60
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hall3-safety-and-provenance
+          retention-days: 60
+          path: |
+            hall3_safety/
+            hall3_clause_regression/
+            hall3_recovery/
+            hall3_reference_smoke/
+            integration.log
+            clause-regression.log
+            recovery.log
+            reference-smoke.log
+            prepare.log
+            research/hall3/
+            src/drnas_hall3.cpp
+            src/drnas_cf7_frozen.cpp
+            src/hall3_guard.hpp
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: hall3-prepared
+      - name: Sequential paired arms pinned to one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf hall3-prepared.tgz
+          PYTHONHASHSEED=0 python3 -u research/hall3/benchmark.py shard --index ${{ matrix.shard }} | tee shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hall3-shard-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            hall3_results/shard-${{ matrix.shard }}/
+            shard.log
+  report:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hall3-shard-*
+          path: downloaded
+      - name: Validate exact 288-trial matrix and separate proof systems
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('hall3_results');root.mkdir()
+          for i in range(6):
+              hits=list(Path('downloaded').glob(f'hall3-shard-{i}/**/trials.jsonl'))
+              assert len(hits)==1,(i,hits)
+              shutil.copytree(hits[0].parent,root/f'shard-{i}')
+          PY
+          python3 -u research/hall3/benchmark.py report | tee report.log
+          cat hall3_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hall3-standard26-final
+          retention-days: 60
+          path: |
+            hall3_results/summary.json
+            hall3_results/README.md
+            report.log
+            research/hall3/manifest.json
