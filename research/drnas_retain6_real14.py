@@ -203,7 +203,7 @@ def final():
     sources,proto=protocol()
     all_entries=[]
     for k in range(SHARDS):
-        shard_dir=Path("retain6_downloads")/("ret6-shard-"+str(k))/"retain6_real14"/str(k)
+        shard_dir=OUT/str(k)
         p=shard_dir/"protocol.json"
         assert json.loads(p.read_text())==proto,(
             "FROZEN_MANIFEST_MISMATCH",k)
