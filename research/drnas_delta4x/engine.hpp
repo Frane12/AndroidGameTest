@@ -104,10 +104,14 @@ public:
     }
     Output step(const std::vector<int8_t>& values,int64_t decisions,int64_t conflicts,
                 const std::function<void(const std::vector<int>&)>& emit) {
-        // Both active and shadow retain exactly the same corrected D4 base.
-        Output out=JoinEngine::step(values,decisions,conflicts,emit);
+        // Give exact original-source guarded reasons first refusal: ordinary
+        // D4 may otherwise install the same resolvent before X can record
+        // provenance. A step with no X clause falls back to identical D4.
+        // Shadow always falls back to D4 and never inserts X candidates.
         xpending.clear(); // clauses not stored after an early conflict may be rediscovered
-        if(!xReady(decisions,conflicts))return out;
+        if(!xReady(decisions,conflicts))
+            return JoinEngine::step(values,decisions,conflicts,emit);
+        Output out;
         const auto start=Tick::now();++xpasses;xlastdec=decisions;xnextconf=conflicts+64;
         const double allowance=std::min(xprepared?2.0:6.0,40.0-xms);
         const auto deadline=start+std::chrono::microseconds(static_cast<int64_t>(allowance*1000));
@@ -132,6 +136,7 @@ public:
             (void)free;
         }
         xms+=std::chrono::duration<double,std::milli>(Tick::now()-start).count();
+        if(out.clauses.empty())return JoinEngine::step(values,decisions,conflicts,emit);
         return out;
     }
     bool onStored(const std::vector<int>& clause,const std::vector<int8_t>& values) {
