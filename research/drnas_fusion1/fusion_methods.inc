@@ -84,7 +84,7 @@
         // signal comes from actual CDCL decisions/conflicts. We do not
         // run MATH, XOR, join tables, clone solvers or graph recognition
         // to determine whether to awaken the modules.
-        const int64_t binary_edges=stats_.binary_edges;
+        // Prefer source counts below; no redundant derived-counter state.
         // Two independently motivated SOURCE-BLIND structural hints:
         // (1) graph-like: many original binary constraints plus short
         //     original clauses (blocks of at-most-one indicators);
