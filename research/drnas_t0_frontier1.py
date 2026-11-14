@@ -43,10 +43,14 @@ def sha(raw):
 
 def parse(raw):
     n=expected=None
-    clauses=[];partial=[]
+    clauses=[];partial=[];ended=False
     for line in raw.decode("ascii").splitlines():
         line=line.strip()
-        if not line or line.startswith(("c","%")):continue
+        if not line or line.startswith("c"):continue
+        if line.startswith("%"):ended=True;continue
+        if ended:
+            if line=="0":continue  # SATLIB/DIMACS conventional terminator
+            raise ValueError("Unexpected SATLIB post-trailer token")
         if line.startswith("p "):
             words=line.split()
             assert len(words)==4 and words[1]=="cnf" and n is None
