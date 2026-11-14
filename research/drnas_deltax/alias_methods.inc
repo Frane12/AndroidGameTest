@@ -129,7 +129,7 @@
                             if(val==0||((val>0)==(guard>0)))continue;
                             std::vector<int> residual;
                             for(int lit:c)if(lit!=guard)residual.push_back(lit);
-                            if(residual.size()!=2 || residual[0]*residual[1]>=0 ||
+                            if(residual.size()!=2 || ((residual[0]>0)==(residual[1]>0)) ||
                                std::abs(residual[0])==std::abs(residual[1]))continue;
                             const int negative=residual[0]<0?residual[0]:residual[1];
                             const int positive=residual[0]>0?residual[0]:residual[1];
