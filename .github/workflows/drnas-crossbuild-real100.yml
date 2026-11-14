@@ -1,0 +1,159 @@
+name: DRNAS CROSS REAL100 LTM8 LTM9 X5 R153 CF7 Kissat verified PAR2
+on:
+  push:
+    branches: [experiment/drnas-crossbuild-real100-20261114]
+    paths:
+      - .github/workflows/drnas-crossbuild-real100.yml
+      - research/drnas_crossbuild_real100.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-crossbuild-real100-one-run
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-ltm12-progressive-20261112
+          path: cross_aux/ltm
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/drnas-r153-real-context-20261112
+          path: cross_aux/context
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-compiled-binaries
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: cross_aux/x5_artifact
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43170837571
+          name: drnas-context-native-binaries
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43170837571
+          name: drnas-context-memory-v1
+          github-token: ${{ github.token }}
+          path: drnas_memory
+      - name: Compile original LTM8 and LTM9 certificate code, preserve binary provenance
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_binaries.tgz
+          tar -xzf cf7_inputs.tgz
+          (cd cross_aux/ltm && python3 research/drnas_ltm9_cert_compile.py)
+          mkdir -p build cross_results
+          mapfile -t X5 < <(find cross_aux/x5_artifact -type f -name drnas-x5)
+          test "${#X5[@]}" -eq 1
+          cp "${X5[0]}" build/drnas-x5
+          chmod +x build/drnas-x5 mre_r28_native/drnas_r28_native mre_r28_context/drnas_r28_context
+          python3 cross_aux/context/research/drnas_r28_context_restore.py validate
+          python3 -m py_compile research/drnas_crossbuild_real100.py
+          sha256sum build/drnas-x5 build/drnas-clause-cf6 build/kissat build/drat-trim \
+            cross_aux/ltm/mre_atlas23/bin/drnas_ltm8_base \
+            cross_aux/ltm/mre_atlas23/bin/drnas_ltm9_certificate \
+            mre_r28_native/drnas_r28_native mre_r28_context/drnas_r28_context > cross_results/binaries.sha256
+          git rev-parse HEAD > cross_results/harness_commit.txt
+          (cd cross_aux/ltm && git rev-parse HEAD) > cross_results/ltm_commit.txt
+          (cd cross_aux/context && git rev-parse HEAD) > cross_results/context_commit.txt
+          tar -czf cross_prepared.tgz cf7 build/drnas-x5 build/drnas-clause-cf6 build/kissat build/drat-trim \
+            cross_aux/ltm/research cross_aux/ltm/mre_atlas23/bin \
+            cross_aux/context/research mre_r28_native mre_r28_context drnas_memory cross_results
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-real100-prepared
+          retention-days: 30
+          path: cross_prepared.tgz
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-real100-prepared
+          path: .
+      - name: Seven real solvers per source, one pinned CPU, no training
+        run: |
+          set -euo pipefail
+          tar -xzf cross_prepared.tgz
+          sha256sum -c cross_results/binaries.sha256
+          mkdir -p cross_results
+          cp drnas_memory/memory.sqlite cross_results/memory-shard-$(printf '%02d' ${{ matrix.shard }}).sqlite
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONHASHSEED=0 \
+            taskset -c "$CPU" python3 -u research/drnas_crossbuild_real100.py shard --shard ${{ matrix.shard }} | tee cross_shard.log
+          grep -q '^CROSS_SHARD_PASS ' cross_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-shard-${{ matrix.shard }}
+          retention-days: 45
+          path: |
+            cross_results/shard-*/
+            cross_shard.log
+  final:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cross-shard-*
+          path: cross_downloads
+      - name: Verify exact 100-by-7 paired matrix and rank all builds
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          python3 -u research/drnas_crossbuild_real100.py report | tee cross_final.log
+          grep -q '^CROSS_FINAL ' cross_final.log
+          cat cross_final/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-cross-real100-final
+          retention-days: 60
+          path: |
+            cross_final/
+            cross_final.log
