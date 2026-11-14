@@ -123,10 +123,17 @@ def run_one(src,mode,rep,cap,folder):
     elif not killed and p.returncode not in (0,153):
         raise RuntimeError(("NATIVE_CRASH",src["id"],arm,p.returncode,stderr[-900:]))
     g={}
+    g5={}
     dx={}
     cdcl={}
     if not killed:
         g,verified_logged=check_lemmas(stderr,clauses,mode)
+        g5_events=events(stderr,"MATH_GUARD5_STATS")
+        assert len(g5_events)==1,("MISSING_GUARD5_TELEMETRY",src["id"],mode)
+        g5=g5_events[0]
+        if mode in (4,5):
+            assert 0<=g5["selected"]<=8 and g5["selected"]==g["installed"],("RANKED_COUNT_MISMATCH",g5,g)
+            assert g5["score_sum"]>=0
         dx,_,_=validate_events(stderr,clauses)
         stats=events(stderr,"X41_STATS")
         assert len(stats)==1
@@ -150,6 +157,9 @@ def run_one(src,mode,rep,cap,folder):
         mg_candidates=g.get("candidates",0),mg_installed=g.get("installed",0),
         mg_ms=g.get("wall_ms",0),mg_gate_skips=g.get("gate_skips",0),
         mg_caused_enqueues=g.get("reason_enqueues",0),
+        mg5_selected=g5.get("selected",0),
+        mg5_score_sum=g5.get("score_sum",0),
+        mg5_analysis_uses=g5.get("conflict_analysis_uses",0),
         mg_scanned=g.get("scanned",0),mg_pairs=g.get("pairs",0),
         math_original_binary=g.get("orig_binary",0),
         math_original_ternary=g.get("orig_ternary",0),
