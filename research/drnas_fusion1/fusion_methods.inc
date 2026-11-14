@@ -28,7 +28,7 @@
         // Called during source parsing ONLY if guarded mode was requested.
         // O(1) for almost all clauses, and a strictly bounded map for
         // exact XOR-three variable signatures. No learned clauses sampled.
-        if(fusion_mode_!=3)return;
+        if(fusion_mode_!=3 && fusion_mode_!=2)return;
         fusion_max_original_clause_size_=std::max<int64_t>(
             fusion_max_original_clause_size_,static_cast<int64_t>(c.size()));
         if(c.size()==2)++fusion_original_binary_;
