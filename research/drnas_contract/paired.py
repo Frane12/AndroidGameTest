@@ -78,7 +78,7 @@ def run_one(src, arm, rep, cap, raw):
         proof = Path(td) / "proof.drat"
         tsv = Path(td) / "source.tsv"
         tsv.write_text("")
-        solver_cap = max        solver_cap = max(.05, cap - extract_seconds - .04)
+        solver_cap = max(.05, cap - extract_seconds - .04)
         if arm == "X59_ON":
             command = [BIN[arm].resolve(), cnf, "--mode", "core", "--time",
                        str(solver_cap), "--stats", "--x59-stamp-glue",
