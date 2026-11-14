@@ -228,6 +228,80 @@ inline Result analyze_clause_hall(const std::vector<std::vector<int>>& clauses,i
                         }
                     }
                 }
+                // Hall2: contiguous slot bundles (e.g. 40 options -> 20
+                // adjacent-pair resource cliques). All inferred conflicts
+                // must be explicit ORIGINAL two-literal clauses, including
+                // within each proposed bundle and across every selected job.
+                // No adjacency rule is trusted: check_local and the separate
+                // source-clause checker independently validate every edge.
+                for(const auto& [width,indices]:by_width) {
+                    if(result.verified || width<13 || width>96)continue;
+                    for(unsigned bundle : {2u,3u}) {
+                        if(result.verified)break;
+                        const size_t k=(width+bundle-1)/bundle;
+                        if(indices.size()<=k)continue;
+                        const size_t tries=std::min<size_t>(12,indices.size());
+                        for(size_t ti=0;ti<tries&&!result.verified;++ti) {
+                            if(Clock::now()>=deadline) {
+                                result.reason="clause_bundle_budget_exhausted";
+                                break;
+                            }
+                            const size_t seed=indices[(ti*indices.size())/tries];
+                            const auto& first=wide_alo[seed];
+                            std::vector<std::vector<int>> resources(k);
+                            bool anchor_ok=true;
+                            for(size_t slot=0;slot<width&&anchor_ok;++slot) {
+                                auto& r=resources[slot/bundle];
+                                for(int previous:r)
+                                    if(!no_both(first[slot],previous,mutex)) {
+                                        anchor_ok=false;break;
+                                    }
+                                if(anchor_ok)r.push_back(first[slot]);
+                            }
+                            if(!anchor_ok)continue;
+                            std::vector<std::vector<int>> chosen(1,first);
+                            std::unordered_set<int> used(first.begin(),first.end());
+                            for(size_t gi:indices) {
+                                if(Clock::now()>=deadline)break;
+                                if(gi==seed)continue;
+                                const auto& g=wide_alo[gi];
+                                bool ok=true;
+                                for(int l:g)if(used.count(l)){ok=false;break;}
+                                if(!ok)continue;
+                                for(size_t slot=0;slot<width&&ok;++slot) {
+                                    const size_t b=slot/bundle;
+                                    for(int prev:resources[b]) {
+                                        if(!no_both(g[slot],prev,mutex)){
+                                            ok=false;break;
+                                        }
+                                    }
+                                    if(ok)
+                                        for(size_t other=b*bundle;other<slot;++other)
+                                            if(!no_both(g[slot],g[other],mutex)){
+                                                ok=false;break;
+                                            }
+                                }
+                                if(!ok)continue;
+                                chosen.push_back(g);
+                                for(size_t slot=0;slot<width;++slot)
+                                    resources[slot/bundle].push_back(g[slot]);
+                                for(int l:g)used.insert(l);
+                                if(chosen.size()>k) {
+                                    if(check_local(chosen,resources,mutex)) {
+                                        result.verified=true;
+                                        result.reason="clause_hall_bundled_columns_verified";
+                                        result.groups=static_cast<int>(chosen.size());
+                                        result.machines=static_cast<int>(k);
+                                        result.demand=chosen.size();
+                                        result.capacity=k;
+                                        result.certificate_json=certificate(source_sha256,chosen,resources);
+                                    }else result.reason="clause_bundle_local_certificate_rejected";
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 // Prioritize different widths so a mass of binary clauses cannot
                 // starve an actual k-choice capacity pattern.
                 std::vector<size_t> seeds;
