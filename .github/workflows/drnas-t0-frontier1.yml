@@ -1,0 +1,75 @@
+name: DRNAS T0 FRONTIER1 source-blind first branch diagnostic
+on:
+  push:
+    branches:
+      - experiment/drnas-t0-frontier1-20261114
+    paths:
+      - .github/workflows/drnas-t0-frontier1.yml
+      - research/drnas_t0_frontier1.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-t0-frontier1-exploratory
+  cancel-in-progress: false
+
+jobs:
+  source_only_t0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore frozen independent original-CNF DRAT proof checker
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43601959681
+          name: deltax-signal1-frozen-sources-and-binary
+          github-token: ${{ github.token }}
+          path: frozen/signal
+      - name: Pin same native X5 code and compile separate baseline executable
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_t0_frontier1.py
+          mkdir -p build
+          tar -xzf frozen/signal/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-t0-frontier1
+          test -x build/drat-trim
+          sha256sum src/drnas_x5.cpp build/drnas-t0-frontier1 build/drat-trim \
+             | tee t0_frontier1_binaries.sha256
+      - name: Test pre-registered T0 graph-frontier score vs real first-branch A/B
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "T0_FRONTIER_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_t0_frontier1.py | tee t0_frontier1.log
+          grep -q '^T0_FRONTIER_FINAL ' t0_frontier1.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("t0_frontier1/report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==36
+          assert r["one_logical_cpu"] and r["same_t0_snapshot_checked"]
+          assert not r["solver_promoted"] and not r["metric_fitted_to_outcomes"]
+          print("T0_FRONTIER_COMPLETED",r["direction_correct"],
+                r["direction_wrong"],r["predicted_flip_wins"],
+                r["predicted_flip_losses"])
+          PY
+          echo "Exploratory source-blind T0 metric; matched first branch; no main changes or promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-t0-frontier1-frozen-diagnostic
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            t0_frontier1/
+            t0_frontier1.log
+            t0_frontier1_binaries.sha256
