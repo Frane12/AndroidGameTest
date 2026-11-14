@@ -1,0 +1,81 @@
+name: DRNAS MATH-GUARD3 original DIMACS school myciel DSJC
+
+on:
+  push:
+    branches: [experiment/drnas-mathguard3-dimacs-real-20261114]
+    paths:
+      - .github/workflows/drnas-mathguard3-dimacs-real.yml
+      - research/drnas_mathguard3/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-mathguard3-dimacs-real
+  cancel-in-progress: false
+
+jobs:
+  original_dimacs_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent DRAT checker
+        run: |
+          set -euo pipefail
+          mkdir -p external
+          git clone https://github.com/marijnheule/drat-trim.git external/drat-trim
+          git -C external/drat-trim checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          make -C external/drat-trim
+          test -x external/drat-trim/drat-trim
+      - name: Proof certificate and separate derived native build
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_mathguard3/build.py research/drnas_mathguard3/dimacs_real.py
+          python3 -u research/drnas_mathguard3/build.py | tee mathguard3_dimacs_build.log
+          grep -q '^MATH_GUARD2_CERTIFICATE_PASS ' mathguard3_dimacs_build.log
+          grep -q '^MATH_GUARD3_BUILD ' mathguard3_dimacs_build.log
+      - name: Download original CMU DIMACS graphs and paired serial CPU-only verified test
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_mathguard3/dimacs_real.py | tee mathguard3_dimacs_trials.log
+          grep -q '^DIMACS_REAL_FINAL ' mathguard3_dimacs_trials.log
+      - name: Audit original source identity and paired outcomes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          root=Path('mathguard3_dimacs_real')
+          manifest=json.loads((root/'source_manifest.json').read_text())
+          rows=json.loads((root/'trials.json').read_text())
+          report=json.loads((root/'report.json').read_text())
+          assert len(manifest)==10 and len(rows)==60
+          assert report['original_public_graphs'] and not report['synthetic']
+          assert report['one_logical_cpu'] and report['one_process_at_a_time']
+          for graph in manifest:
+              raw=(root/'source'/(graph['name']+'.col')).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==graph['raw_sha256']
+              subset=[r for r in rows if r['graph']==graph['name']]
+              assert len(subset)==6
+              assert len({r['cnf_sha256'] for r in subset})==1
+          print('DIMACS_REAL_AUDIT_PASS', len(manifest),len(rows))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathguard3-original-dimacs-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            mathguard3_dimacs_build.log
+            mathguard3_dimacs_trials.log
+            build/MATH_GUARD3_BUILD.json
+            mathguard3_dimacs_real/source_manifest.json
+            mathguard3_dimacs_real/source/*.col
+            mathguard3_dimacs_real/trials.json
+            mathguard3_dimacs_real/report.json
