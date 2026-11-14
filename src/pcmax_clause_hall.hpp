@@ -71,6 +71,52 @@ inline bool assign_to_cliques(const std::vector<int>& g,
     return dfs(0);
 }
 
+// HALL2: find a complete matching between randomly ordered ALO options
+// and the resource cliques. Every accepted edge is independently backed
+// by ORIGINAL binary mutex clauses; a failed match cannot imply SAT.
+inline bool match_wide_alo(const std::vector<int>& group,
+                          std::vector<std::vector<int>>& resources,
+                          const std::unordered_set<uint64_t>& mutex,
+                          Clock::time_point deadline) {
+    const size_t width=resources.size();
+    if(group.size()!=width || !width)return false;
+    std::vector<std::vector<int>> allowed(width);
+    for(size_t i=0;i<width;++i) {
+        if((i&3)==0 && Clock::now()>=deadline)return false;
+        for(size_t col=0;col<width;++col) {
+            bool all_mutex=true;
+            for(int prior:resources[col]) {
+                if(!no_both(group[i],prior,mutex)) {all_mutex=false;break;}
+            }
+            if(all_mutex)allowed[i].push_back(static_cast<int>(col));
+        }
+        if(allowed[i].empty())return false;
+    }
+    std::vector<int> assigned(width,-1);
+    std::function<bool(int,std::vector<char>&)> augment=
+        [&](int i,std::vector<char>& seen)->bool {
+            for(int col:allowed[i]) {
+                if(seen[col])continue;
+                seen[col]=1;
+                if(assigned[col]<0 || augment(assigned[col],seen)) {
+                    assigned[col]=i;
+                    return true;
+                }
+            }
+            return false;
+        };
+    for(size_t i=0;i<width;++i) {
+        if(Clock::now()>=deadline)return false;
+        std::vector<char> seen(width,0);
+        if(!augment(static_cast<int>(i),seen))return false;
+    }
+    for(size_t col=0;col<width;++col) {
+        if(assigned[col]<0)return false;
+        resources[col].push_back(group[assigned[col]]);
+    }
+    return true;
+}
+
 inline std::string certificate(const std::string& source_hash,
                                 const std::vector<std::vector<int>>& groups,
                                 const std::vector<std::vector<int>>& resources) {
@@ -166,7 +212,9 @@ inline Result analyze_clause_hall(const std::vector<std::vector<int>>& clauses,i
                 if(clause.size()>12 && clause.size()<=96 && wide_alo.size()<1200){
                     std::unordered_set<int> uniq;
                     bool alo=true;
-                    for(int v:clause)if(v<=0 || v>nvars || !uniq.insert(v).second){alo=false;break;}
+                    for(int v:clause)
+                        if(v==0 || v < -nvars || v>nvars ||
+                           !uniq.insert(std::abs(v)).second) {alo=false;break;}
                     if(alo)wide_alo.push_back(clause);
                 }
             }
@@ -224,6 +272,58 @@ inline Result analyze_clause_hall(const std::vector<std::vector<int>>& clauses,i
                                     result.certificate_json=certificate(source_sha256,chosen,resources);
                                 } else result.reason="clause_wide_local_certificate_rejected";
                                 break;
+                            }
+                        }
+                    }
+                }
+                // HALL2 fallback: order-independent signed wide Hall witnesses.
+                // The original fast aligned-column path above is unchanged and
+                // keeps its existing timing on previously solved SAT2026 sources.
+                if(!result.verified) {
+                    for(const auto& [width,indices]:by_width) {
+                        if(result.verified || indices.size()<=width)continue;
+                        const size_t tries=std::min<size_t>(12,indices.size());
+                        for(size_t ti=0;ti<tries && !result.verified;++ti) {
+                            if(Clock::now()>=deadline) {
+                                result.reason="clause_hall2_budget_exhausted";break;
+                            }
+                            const size_t first=indices[(ti*indices.size())/tries];
+                            std::vector<std::vector<int>> chosen(1,wide_alo[first]);
+                            std::vector<std::vector<int>> resources(width);
+                            std::unordered_set<int> used;
+                            for(size_t col=0;col<width;++col) {
+                                const int l=wide_alo[first][col];
+                                resources[col].push_back(l);
+                                used.insert(std::abs(l));
+                            }
+                            for(size_t idx:indices) {
+                                if(Clock::now()>=deadline)break;
+                                if(idx==first)continue;
+                                const auto& group=wide_alo[idx];
+                                bool disjoint=true;
+                                for(int l:group)if(used.count(std::abs(l))) {
+                                    disjoint=false;break;
+                                }
+                                if(!disjoint)continue;
+                                auto proposed=resources;
+                                if(!match_wide_alo(group,proposed,mutex,deadline))
+                                    continue;
+                                resources.swap(proposed);
+                                chosen.push_back(group);
+                                for(int l:group)used.insert(std::abs(l));
+                                if(chosen.size()>width) {
+                                    if(check_local(chosen,resources,mutex)) {
+                                        result.verified=true;
+                                        result.reason="clause_hall2_permutation_verified";
+                                        result.groups=static_cast<int>(chosen.size());
+                                        result.machines=static_cast<int>(width);
+                                        result.demand=chosen.size();
+                                        result.capacity=width;
+                                        result.certificate_json=certificate(
+                                            source_sha256,chosen,resources);
+                                    } else result.reason="clause_hall2_local_certificate_rejected";
+                                    break;
+                                }
                             }
                         }
                     }
