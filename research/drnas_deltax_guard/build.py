@@ -67,6 +67,7 @@ def main():
             for(int lit:c.parent_a)if(lit!=c.pivot)derived.push_back(lit);
             for(int lit:c.parent_b)if(lit!=-c.pivot)derived.push_back(lit);
             derived=canonical(std::move(derived));
+            derived.erase(std::unique(derived.begin(),derived.end()),derived.end());
             const bool valid=
                 deltax_source_keys_.count(canonical(c.parent_a))!=0 &&
                 deltax_source_keys_.count(canonical(c.parent_b))!=0 &&
