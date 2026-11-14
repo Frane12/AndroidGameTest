@@ -184,7 +184,7 @@ def preflight():
             cnf=Path(root)/(name+".cnf")
             cnf.write_text(f"p cnf {n} {len(clauses)}\n"+
                            "".join(" ".join(map(str,c))+" 0\n" for c in clauses))
-            expect=10 if oracle(n,clauses) else 20
+            expect=10 if oracle(clauses) else 20
             for mode in range(4):
                 proof=Path(root)/(name+f"_{mode}.drat")
                 cmd=[str(EXEC),str(cnf),"--mode","core","--time","1.4",
