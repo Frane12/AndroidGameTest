@@ -1,0 +1,124 @@
+name: DRNAS DELTA4X observer cost proof-first original CNF audit
+on:
+  push:
+    branches: [experiment/drnas-delta4x-utility-audit-20261114]
+    paths:
+      - .github/workflows/drnas-delta4x-utility-audit.yml
+      - research/drnas_delta4x/utility_audit.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: delta4x-utility-audit-original
+  cancel-in-progress: false
+
+jobs:
+  build_and_safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43589616448
+          name: delta4-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43593699141
+          name: delta4x-proof-first-frozen
+          github-token: ${{ github.token }}
+          path: frozen/delta4x
+      - name: Restore exact pinned originals and reference executables
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          tar -xzf frozen/delta4x/delta4x_bench_frozen.tgz
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          python3 -m py_compile research/drnas_delta4x/utility_audit.py
+      - name: Build observer-only ablation from same C++ while freezing all references
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_delta4x/utility_audit.py build | tee utility_build.log
+          grep -q '^DELTA4X_UTILITY_BUILD ' utility_build.log
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+      - name: Check original SAT models, UNSAT proofs, source RUP and causal enqueues for both binaries
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_delta4x/utility_audit.py preflight | tee utility_preflight.log
+          grep -q '^DELTA4X_UTILITY_PREFLIGHT_PASS ' utility_preflight.log
+          tar -czf utility_frozen.tgz \
+            build/drnas-delta4x build/drnas-delta4x-observer-off \
+            build/drat-trim delta4_sources delta4x_utility_build.json
+          sha256sum -c build/DELTA4X_FROZEN.sha256
+          echo 'Original binaries SHA-pinned; observer-only mutation, certified SAT/UNSAT and RUP OK' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4x-utility-proof-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            utility_frozen.tgz
+            utility_build.log
+            utility_preflight.log
+            delta4x_utility_build.json
+            delta4x_utility_safety/report.json
+
+  real_cases:
+    needs: build_and_safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        source_id: [8,19,28,38]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta4x-utility-proof-preflight
+          path: frozen/utility
+      - name: Paired proof-first original SAT2024 comparison, one logical CPU per sequential solver
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/utility/utility_frozen.tgz
+          sha256sum build/drnas-delta4x build/drnas-delta4x-observer-off build/drat-trim
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_delta4x/utility_audit.py case --id ${{ matrix.source_id }} \
+            | tee delta4x_utility_case.log
+          grep -q '^DELTA4X_UTILITY_CASE_PASS ' delta4x_utility_case.log
+          grep -q '^DELTA4X_UTILITY_VALIDATED ' delta4x_utility_case.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4x-utility-source-${{ matrix.source_id }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4x_utility/${{ matrix.source_id }}/rows.jsonl
+            delta4x_utility_case.log
