@@ -66,6 +66,7 @@ def run_one(case,arm,rep,folder):
          "--time",str(CAP-.08),"--proof",str(proof),"--stats"]
     if arm=="GUARD1":cmd+=["--math-guard","--math-guard-budget-ms","4"]
     if arm=="GUARD2":cmd+=["--math-guard2","--math-guard2-budget-ms","8"]
+    if arm=="GUARD2_LEAN":cmd+=["--math-guard2-lean","--math-guard2-budget-ms","8"]
     def limit():
         resource.setrlimit(resource.RLIMIT_AS,(2*1024**3,2*1024**3))
     start=time.perf_counter()
@@ -101,7 +102,7 @@ def run_one(case,arm,rep,folder):
     s=stats("X41_STATS")
     g1s=stats("MATH_GUARD_STATS")
     g2=stats("MATH_GUARD2_STATS")
-    if arm=="GUARD2" and not g2.get("enabled"):
+    if arm in ("GUARD2","GUARD2_LEAN") and not g2.get("enabled"):
         raise RuntimeError(("MISSING_GUARD2_STATS",case["name"]))
     proof.unlink(missing_ok=True)
     row=dict(name=case["name"],group=case["group"],vertices=n,edges=len(edges),
@@ -123,7 +124,7 @@ def main():
     with tempfile.TemporaryDirectory() as root:
         for case in suite:
             for rep in range(REPS):
-                arms=["BASE","GUARD1","GUARD2"]
+                arms=["BASE","GUARD1","GUARD2","GUARD2_LEAN"]
                 random.Random(int(hashlib.sha256(case["name"].encode()).hexdigest()[:12],16)+rep).shuffle(arms)
                 for arm in arms:
                     with tempfile.TemporaryDirectory(dir=root) as td:
@@ -134,7 +135,7 @@ def main():
     for case in suite:
         for rep in range(REPS):
             a=next(r for r in rows if r["name"]==case["name"] and r["rep"]==rep and r["arm"]=="BASE")
-            b=next(r for r in rows if r["name"]==case["name"] and r["rep"]==rep and r["arm"]=="GUARD2")
+            b=next(r for r in rows if r["name"]==case["name"] and r["rep"]==rep and r["arm"]=="GUARD2_LEAN")
             if a["verified"] and b["verified"]:
                 if a["status"]!=b["status"]:raise RuntimeError("CONTRADICTORY_VERDICTS")
                 ratio=a["e2e_s"]/b["e2e_s"]
@@ -143,9 +144,9 @@ def main():
                 if ratio<.95:regressions.append((case["name"],rep,ratio))
     summary=dict(graphs=len(suite),runs=len(rows),both_verified_pairs=len(pair_ratio),
         verified={a:sum(r["verified"] for r in rows if r["arm"]==a)
-                  for a in ("BASE","GUARD1","GUARD2")},
+                  for a in ("BASE","GUARD1","GUARD2","GUARD2_LEAN")},
         PAR2={a:sum(r["PAR2"] for r in rows if r["arm"]==a)
-             for a in ("BASE","GUARD1","GUARD2")},
+             for a in ("BASE","GUARD1","GUARD2","GUARD2_LEAN")},
         median_speedup=statistics.median(pair_ratio) if pair_ratio else None,
         guard2_motifs=sum(r["guard2_diamonds"] for r in rows),
         guard2_lemmas=sum(r["guard2_lemmas"] for r in rows),
