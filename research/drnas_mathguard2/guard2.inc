@@ -89,7 +89,15 @@
                         std::sort(learned.begin(),learned.end());
                         if (!known.insert(learned).second) continue;
                         if (learned.size()==2) ++st.math_guard2_binary;
-                        storeClause(std::move(learned),true);
+                        if (math_guard2_lean_ && learned.size()!=2) {
+                            // Certified RUP proof step, but no internal CDCL storage.
+                            // Checker retains it for later derived binary clauses.
+                            writeProofClause(learned);
+                            ++st.math_guard2_proof_only;
+                        } else {
+                            storeClause(std::move(learned),true);
+                            ++st.math_guard2_stored;
+                        }
                         ++st.math_guard2_lemmas;
                     }
                 }
