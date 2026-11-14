@@ -1,0 +1,141 @@
+name: DRNAS QUOTA7 REAL36 paired original SAT2024 8s
+on:
+  push:
+    branches:
+      - experiment/drnas-quota7-real36-20261114
+    paths:
+      - .github/workflows/drnas-quota7-real36.yml
+      - research/drnas_quota7_real36.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-quota7-real36-20261114
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: frozen/reference
+      - name: Freeze source SHA and compile identical X5 core and QUOTA7 policies
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_quota7_real36.py \
+            research/drnas_retain6_real14.py research/drnas_retain6_build.py
+          tar -xzf frozen/real36/real36_inputs.tgz
+          tar -xzf frozen/reference/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-ret6-reference
+          python3 -u research/drnas_retain6_build.py | tee quota7_build.log
+          sha256sum build/drnas-ret6-reference build/drnas-ret6 build/drat-trim \
+            | tee quota7_binary_sha256.txt
+      - name: Run paired original source, all arms serially on one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "QUOTA7_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_quota7_real36.py shard \
+            --shard ${{ matrix.shard }} | tee quota7_shard_${{ matrix.shard }}.log
+          grep -q '^QUOTA7_SHARD_COMPLETE ' quota7_shard_${{ matrix.shard }}.log
+          tar -czf quota7_shard_${{ matrix.shard }}.tgz quota7_real36/${{ matrix.shard }}/
+          sha256sum quota7_shard_${{ matrix.shard }}.tgz \
+            | tee quota7_shard_${{ matrix.shard }}.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quota7-shard-${{ matrix.shard }}
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            quota7_shard_${{ matrix.shard }}.tgz
+            quota7_shard_${{ matrix.shard }}.sha256
+            quota7_shard_${{ matrix.shard }}.log
+            quota7_build.log
+            quota7_binary_sha256.txt
+
+  final:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: quota7-shard-*
+          path: quota7_downloads
+          merge-multiple: false
+      - name: Reconcile all original source SHA and verified paired results
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/real36/real36_inputs.tgz
+          for i in 0 1 2 3; do
+            cd quota7_downloads/quota7-shard-"$i"
+            sha256sum -c quota7_shard_"$i".sha256
+            cd ../..
+            tar -xzf quota7_downloads/quota7-shard-"$i"/quota7_shard_"$i".tgz
+          done
+          PYTHONHASHSEED=0 python3 -u research/drnas_quota7_real36.py final \
+            | tee quota7_final.log
+          grep -q '^QUOTA7_FINAL ' quota7_final.log
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open("quota7_real36/final_report.json"))
+          assert r["status"]=="COMPLETE" and r["original_sources"]==36
+          assert r["solver_executions"]==216 and r["paired_source_repetitions"]==72
+          assert r["one_logical_cpu_per_solver"] and r["original_CNF_verification"]
+          assert r["pre_first_reduction_state_identical"] and r["main_untouched"]
+          assert not r["not_promoted"]==False
+          print("QUOTA7_CERTIFIED",json.dumps(r["arms"],sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+            f.write("## QUOTA7 original SAT2024 REAL36, 2 repeats, 8s cap\n")
+            f.write("| Policy | Verified/72 | Unique solved/36 | PAR2 s | MaxRSS KiB |\n")
+            f.write("|---|---:|---:|---:|---:|\n")
+            for name,x in r["arms"].items():
+              f.write(f"| {name} | {x['verified']} | {x['unique_solved']} | {x['PAR2_verified_s']:.3f} | {x['maxrss_kib']} |\n")
+            f.write("\nRetrospective not blind; no main edits, no promotion.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-quota7-real36-final
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            quota7_real36/final_report.json
+            quota7_final.log
