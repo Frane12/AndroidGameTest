@@ -1,0 +1,80 @@
+name: DRNAS FOCUS44-64 original SAT2024 structural and CDCL diagnostics
+on:
+  push:
+    branches: [experiment/drnas-worker64-pcmax44-diagnostic-20261114]
+    paths:
+      - .github/workflows/drnas-focus44-64.yml
+      - research/drnas_focus_44_64.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-focus44-64-20261114
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-compiled-binaries
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen_x5
+      - name: Restore frozen sources and binaries without changing their code
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          tar -xzf cf7_binaries.tgz
+          mkdir -p build
+          mapfile -t X5 < <(find frozen_x5 -type f -name drnas-x5)
+          test "${#X5[@]}" -eq 1
+          cp "${X5[0]}" build/drnas-x5
+          chmod +x build/drnas-x5 build/drnas-clause-cf5 build/drnas-clause-cf6 build/kissat build/cadical build/drat-trim
+          python3 -m py_compile research/drnas_focus_44_64.py
+          mkdir -p diagnostic_44_64
+          sha256sum build/drnas-x5 build/drnas-clause-cf5 build/drnas-clause-cf6 build/kissat build/cadical build/drat-trim > diagnostic_44_64/binaries.sha256
+          git rev-parse HEAD > diagnostic_44_64/harness_commit.txt
+      - name: Source-pinned repeated worker64 and pcmax44 diagnostics one CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONHASHSEED=0 \
+            taskset -c "$CPU" python3 -u research/drnas_focus_44_64.py | tee focus_44_64.log
+          grep -q '^FOCUS_FINAL ' focus_44_64.log
+          python3 - <<'PY'
+          import json,os,pathlib
+          report=json.loads(pathlib.Path("diagnostic_44_64/report.json").read_text())
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("## Worker #64 — 25 serial repeats per engine\n\n")
+              f.write("| Engine | Verified | Median E2E (s) | First reduction triggered | Swaps |\n|---|---:|---:|---:|---:|\n")
+              for arm,v in sorted(report["worker_64"].items(),key=lambda p:p[1]["median_verified_s"] or 999):
+                  f.write(f'| {arm} | {v["verified"]}/25 | {v["median_verified_s"]} | {v["first_reduction_triggered"]} | {v["cf7_total_actual_swaps"]} |\n')
+              f.write("\n## PCMAX #44: original CNF and time-window diagnostics\n\n")
+              f.write("See uploaded JSON/JSONL for conflicts, decisions, propagations, proof bytes and first-reduction actions. No novel blind holdout or promotion.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-focus44-64-verified-diagnostics
+          retention-days: 45
+          path: |
+            diagnostic_44_64/
+            focus_44_64.log
