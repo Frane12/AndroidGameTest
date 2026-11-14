@@ -46,7 +46,25 @@ def preflight():
     B.preflight()  # 24 independent small-CNF oracles x 4 MG4-compatible modes
     tested=0
     installs={4:0,5:0}
-    for name,n,clauses in fixtures()[:20]+fixtures()[-10:]:
+    # Use CNFs without initial empty clauses or opposing root units:
+    # otherwise native solve returns UNSAT before the GUARD hook runs.
+    small=[
+        ("bridge_sat",4,[[1,2,3],[-1,2,3],[2,4],[-4,3]]),
+        ("bridge_unsat",3,[[1,2,3],[-1,2,3],[1,-2],[-1,-2],[1,-3],[-1,-3]]),
+        ("parity_sat",3,[[1,2,3],[1,-2,-3],[-1,2,-3],[-1,-2,3]]),
+        ("parity_unsat",3,[[1,2,3],[1,-2,-3],[-1,2,-3],[-1,-2,3],
+                          [-1,-2,-3],[-1,2,3],[1,-2,3],[1,2,-3]]),
+    ]
+    for i in range(32):
+        rng=random.Random(55150+i)
+        n=5+i%4
+        clauses=[]
+        for _ in range(10+i%18):
+            size=rng.choice((2,2,3,3))
+            vars_=rng.sample(range(1,n+1),size)
+            clauses.append([v if rng.randrange(2) else -v for v in vars_])
+        small.append((f"random_{i}",n,clauses))
+    for name,n,clauses in small:
         expect=10 if oracle(clauses) else 20
         with tempfile.TemporaryDirectory() as tmp:
             tmp=Path(tmp)
