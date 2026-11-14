@@ -115,8 +115,8 @@ def worker(clauses,groups,choice):
     for a,b in (c for c in clauses if len(c)==2):
         adjacency[-a].add(-b);adjacency[-b].add(-a)
     outside=set(abs(l) for c in clauses for l in c)-set(choice)
-    assert all(all(l<0 for c in clauses if abs(l) in c for l in c if abs(l) in outside)
-               for _ in [0]),"nonchoice variables must occur only negatively"
+    assert all(l<0 for c in clauses for l in c if abs(l) in outside),
+        "nonchoice variables must occur only negatively"
     nodes=0;backtracks=0;started=time.perf_counter()
     def dfs(available,chosen):
         nonlocal nodes,backtracks
