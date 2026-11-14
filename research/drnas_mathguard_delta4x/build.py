@@ -52,15 +52,15 @@ def main():
     bool mg_budget_hit=false;
     double mg_wall_ms=0.0;""")
     s=one(s,
-        "    void configureX59(bool enabled) { x59_stamp_glue_=enabled; }",
-        """    void configureX59(bool enabled) { x59_stamp_glue_=enabled; }
+        "    void configureX54(bool rotate) { x54_rotate_watches_=rotate; }",
+        """    void configureX54(bool rotate) { x54_rotate_watches_=rotate; }
     void configureMathGuard4(int mode,double budget_ms) {
         if(mode<0 || mode>3 || !(budget_ms>0.0 && budget_ms<=12.0 && std::isfinite(budget_ms)))
             throw std::runtime_error("bad MATH_GUARD4 mode or budget");
         mg_mode_=mode;mg_budget_ms_=budget_ms;
     }""")
-    s=one(s,"    bool x59_stamp_glue_=false;",
-        """    bool x59_stamp_glue_=false;
+    s=one(s,"    bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;",
+        """    bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;
     int mg_mode_=0;
     double mg_budget_ms_=2.0;
     int64_t mg_orig_binary_=0,mg_orig_ternary_=0;
@@ -83,21 +83,21 @@ def main():
         if(reason>=0 && !mg_clause_ids_.empty() &&
            mg_clause_ids_.count(reason)!=0 && !probing_ && !x46_clone_)
             ++stats_.mg_reason_enqueues;""")
-    s=one(s,"    bool x59_stamp_glue=false;",
-        """    bool x59_stamp_glue=false;
+    s=one(s,"    bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;",
+        """    bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
     int mg4_mode=0;double mg4_budget_ms=2.0;""")
     s=one(s,
-        '        else if (opt=="--x59-stamp-glue") x59_stamp_glue=true;',
-        '''        else if (opt=="--x59-stamp-glue") x59_stamp_glue=true;
+        '        else if (opt=="--stats") show_stats=true;',
+        '''        else if (opt=="--stats") show_stats=true;
         else if (opt=="--math-guard4" && i+1<argc) mg4_mode=std::stoi(argv[++i]);
         else if (opt=="--math-guard4-budget-ms" && i+1<argc)
             mg4_budget_ms=std::stod(argv[++i]);''')
     s=one(s,
-        "            solver->configureX59(x59_stamp_glue);",
-        """            solver->configureX59(x59_stamp_glue);
+        "            solver->enableProofDeletes(proof_deletes_enabled);",
+        """            solver->enableProofDeletes(proof_deletes_enabled);
             solver->configureMathGuard4(mg4_mode,mg4_budget_ms);""")
     s=one(s,
-        '        std::cerr<<"X58_STATS {',
+        '        std::cerr<<"X52_STATS {',
         '''        std::cerr<<"MATH_GUARD4_STATS {\\"mode\\":"<<s.mg_mode
                  <<",\\"orig_binary\\":"<<solver->mathguardOriginalBinary()
                  <<",\\"orig_ternary\\":"<<solver->mathguardOriginalTernary()
@@ -110,7 +110,7 @@ def main():
                  <<",\\"budget_hit\\":"<<(s.mg_budget_hit?"true":"false")
                  <<",\\"wall_ms\\":"<<std::fixed<<std::setprecision(7)<<s.mg_wall_ms
                  <<"}\\n";
-        std::cerr<<"X58_STATS {''')
+        std::cerr<<"X52_STATS {''')
     s=one(s,
         "    const Stats& stats() const { return stats_; }",
         """    const Stats& stats() const { return stats_; }
