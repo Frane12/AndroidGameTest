@@ -108,7 +108,10 @@ def trial(source,mode,instrumented=True):
                 assert 0<=x["used100_distinct"]<=x["eligible100"]<=x["born"]<=100
                 assert 0<=x["used500_distinct"]<=x["eligible500"]<=x["born"]<=100
                 assert x["eligible500"]<=x["eligible100"]
-                assert x["used100_distinct"]<=x["used500_distinct"]
+                # A younger clause can be eligible at 100 but censored at 500.
+                # Compare cumulative use only for the same fully exposed cohort.
+                if x["eligible100"]==x["eligible500"]:
+                    assert x["used100_distinct"]<=x["used500_distinct"]
         return {
             "arm":mode,"instrumented":instrumented,"status":status,
             "verified":valid,"accepted":valid and wall<=CAP,
