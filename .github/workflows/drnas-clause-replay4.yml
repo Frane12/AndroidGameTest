@@ -1,0 +1,80 @@
+name: DRNAS CLAUSE REPLAY4 repeated original SAT2024 retention time no telemetry
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-replay4-real2024-20261114
+    paths:
+      - .github/workflows/drnas-clause-replay4.yml
+      - research/drnas_clause_replay4.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-clause-replay4-original-freeze
+  cancel-in-progress: false
+
+jobs:
+  independent_repeat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/original
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: frozen/native
+      - name: Freeze original CNF and no-instrument native + DRAT checks
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_clause_replay4.py research/drnas_x55_cpu_real36.py
+          tar -xzf frozen/original/real36_inputs.tgz
+          tar -xzf frozen/native/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            src/drnas_x5.cpp -o build/drnas-clause-replay4
+          sha256sum src/drnas_x5.cpp build/drnas-clause-replay4 build/drat-trim \
+            | tee replay4_binaries.sha256
+      - name: Repeat five times primary UNSAT, controls matched and independently verified
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "REPLAY4_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_clause_replay4.py \
+            | tee replay4.log
+          grep -q '^REPLAY4_FINAL ' replay4.log
+          python3 - <<'PY'
+          import json
+          x=json.load(open("clause_replay4/report.json"))
+          assert x["status"]=="COMPLETE" and x["repeated_cases"]==5
+          assert x["paired_runs"]==15 and x["one_logical_cpu"]
+          assert x["source_SHA256_frozen_before_execution"]
+          assert x["each_original_model_or_unsat_drat_checked"]
+          assert not x["main_modified"] and not x["solver_promoted"]
+          print("REPLAY4_CONFIRMED",x["by_source"]["16"])
+          PY
+          echo "Repeated uninstrumented native X5 policy A/B on original SAT2024, proof checked; no promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-clause-replay4-real2024
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            clause_replay4/
+            replay4_binaries.sha256
+            replay4.log
