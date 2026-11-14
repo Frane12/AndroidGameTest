@@ -37,8 +37,8 @@ def build():
         }
         while (true) {''')
     s=replace_once(s,
-        "    bool x5_minimize=true, x5_retain=false, x5_gc=true, x5_restarts=false;",
-        "    bool x5_minimize=true, x5_retain=false, x5_gc=true, x5_restarts=false;\n    bool pg14=false;")
+        "    bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;",
+        "    bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;\n    bool pg14=false;")
     s=replace_once(s,
         '        else if (opt=="--x5-no-minimize") x5_minimize=false;',
         '        else if (opt=="--pg-congruence") pg14=true;\n        else if (opt=="--x5-no-minimize") x5_minimize=false;')
