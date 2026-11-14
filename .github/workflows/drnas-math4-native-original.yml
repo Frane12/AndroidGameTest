@@ -1,0 +1,68 @@
+name: DRNAS MATH4 native original lights-out GF2 plus HALL3 proof-first
+on:
+  push:
+    branches: [experiment/drnas-math4-native-cf7-real24-20261114]
+    paths:
+      - .github/workflows/drnas-math4-native-original.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math4-native-original
+  cancel-in-progress: false
+jobs:
+  original_certified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43643413210
+          name: hall3-prepared
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore exact source-pinned original SAT2026 inputs and compile new CF7 native MATH4
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/hall3-prepared.tgz
+          python3 -m py_compile research/math4/*.py
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+              -DDRNAS_PCMAX_MODULE src/drnas_hall3.cpp -lcrypto -o build/drnas-math4
+          sha256sum src/drnas_hall3.cpp src/math4_xor_unit.hpp research/math4/check_xor_units.py \
+            > math4_source_sha256.txt
+      - name: Regress old source-clause Hall proof integrity on new binary
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 research/pcmax_capacity/test_clause_hall.py \
+             --binary build/drnas-math4 --output results/math4_hall_compat | tee hall_compat.log
+          grep -q '^CLAUSE_HALL_SMOKE_SUMMARY ' hall_compat.log
+      - name: Prove original SAT2026 lights-out UNSAT with source-only GF2+UP and independent verifier
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/math4/native_smoke.py --binary build/drnas-math4 \
+              --out results/math4_native | tee math4_native.log
+          grep -q '^MATH4_NATIVE_SMOKE_PASS ' math4_native.log
+      - name: Archive source, binary, original-CNF hashes, structural certs and all negative results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-math4-native-real-original-certified
+          retention-days: 60
+          path: |
+            results/math4_native/
+            results/math4_hall_compat/
+            math4_native.log
+            hall_compat.log
+            math4_source_sha256.txt
+            research/math4/
+            src/math4_xor_unit.hpp
+            src/drnas_hall3.cpp
+            build/drnas-math4
