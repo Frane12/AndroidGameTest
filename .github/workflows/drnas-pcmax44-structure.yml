@@ -1,0 +1,86 @@
+name: DRNAS PCMAX44 WORKER64 exact structure audit
+on:
+  push:
+    branches: [experiment/drnas-pcmax44-structure-audit-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax44-structure.yml
+      - research/drnas_structure_44_64.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-pcmax44-structure-audit
+  cancel-in-progress: false
+jobs:
+  structural_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - name: Source SHA pin, exact structural selftests and audit
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          python3 -m py_compile research/drnas_structure_44_64.py
+          PYTHONHASHSEED=0 python3 - <<'PY'
+          import itertools,random,sys
+          sys.path.insert(0,"research")
+          import drnas_structure_44_64 as A
+          # Brute force renamable-Horn decisions for random toy CNFs.
+          rng=random.Random(44564)
+          for case in range(100):
+              n=3
+              clauses=[]
+              for _ in range(rng.randint(1,10)):
+                  literals=list({rng.choice([-1,1])*rng.randint(1,n) for k in range(rng.randint(1,4))})
+                  if any(-l in literals for l in literals):continue
+                  clauses.append(tuple(literals))
+              observed=A.renamable_horn(n,clauses)["renamable_horn"]
+              expected=any(all(sum(((l>0)!=bool(flips[abs(l)-1])) for l in c)<=1 for c in clauses)
+                           for flips in itertools.product((False,True),repeat=n))
+              assert observed==expected,(case,observed,expected,clauses)
+          # Root implication must detect the unsatisfiable binary 2-SAT square.
+          square=[(1,2),(-1,2),(1,-2),(-1,-2)]
+          assert A.binary_implication(2,square)["binary_subformula_unsat"]
+          assert not A.renamable_horn(2,square)["renamable_horn"]
+          assert A.horn_closure(2,[(1,),(-1,2),(-2,)])["contradiction"]
+          assert A.propagation(2,[(1,),(-1,2),(-2,)])["contradiction"]
+          print("STRUCTURE_SELFTEST_PASS cases=100 binary_square=true horn_unsat=true root_conflict=true")
+          PY
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" PYTHONHASHSEED=0 python3 -u research/drnas_structure_44_64.py | tee structure_audit.log
+          grep -q '^STRUCTURE_FINAL ' structure_audit.log
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open("pcmax_structure/report.json"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("## Exact structural audit: SAT2024 original PCMAX44 vs Worker64\n\n")
+              f.write("| Metric | Worker #64 | PCMAX #44 |\n|---|---|---|\n")
+              cases=x["formulas"]
+              keys=[("Renamable Horn",("renamable_horn","renamable_horn")),
+                    ("Horn forced TRUE",("horn_closure","forced_true")),
+                    ("Binary core UNSAT",("binary_implication","binary_subformula_unsat")),
+                    ("Root UP assignments",("root_unit_propagation","root_forced")),
+                    ("Pure+unit remaining clauses",("pure_literal_plus_unit","remaining_clauses")),
+                    ("Strong Horn backdoor upper bound",("greedy_horn_backdoor","backdoor_upper_bound_variables"))]
+              for label,(group,key) in keys:
+                  f.write(f'| {label} | {cases["64"][group][key]} | {cases["44"][group][key]} |\n')
+              f.write("\nThese are structural diagnostics, not validated SAT/UNSAT solver claims.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-pcmax44-worker64-structure
+          retention-days: 45
+          path: |
+            pcmax_structure/
+            structure_audit.log
