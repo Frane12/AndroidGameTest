@@ -25,6 +25,11 @@ def main():
     subprocess.run([sys.executable,str(ROOT/"research/drnas_mathguard2/build.py")],check=True)
     src=BUILD/"drnas_mathguard2.cpp"
     s=src.read_text()
+    # Raise GUARD3's opt-in recognition ceiling for original DIMACS graphs.
+    # G2 baseline remains capped at 96 vertices; G3 still respects 8 ms.
+    s=one(s,
+        "if (n_<12 || n_%3!=0 || n_/3>96 || original_count_>24000) {",
+        "if (n_<12 || n_%3!=0 || n_/3>(math_guard3_enabled_?400:96) || original_count_>(math_guard3_enabled_?90000:24000)) {")
     s=one(s,
         "        std::set<std::pair<int,int>> done;",
         (HERE/"adaptive.inc").read_text()+
