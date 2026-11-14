@@ -1,0 +1,146 @@
+name: DRNAS DELTAX GRAPH-LAB1 guarded equality in SAT graph coloring
+on:
+  push:
+    branches: [experiment/drnas-deltax-graphlab1-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-graphlab1.yml
+      - research/drnas_deltax_guard/graphlab_sources.py
+      - research/drnas_deltax_guard/graphlab_paired.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-graphlab1-once
+  cancel-in-progress: false
+
+jobs:
+  graph_truth_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43596056826
+          name: deltax-guard1-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/guard1
+      - name: Restore exact frozen GUARD1 binaries and DRAT independent checker
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltax_guard/graphlab_sources.py \
+            research/drnas_deltax_guard/graphlab_paired.py
+      - name: Certify constructed graph coloring or obstructions and proof-first 5-class pilot
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax_guard/graphlab_paired.py preflight \
+            | tee deltax_graphlab_preflight.log
+          grep -q '^DELTAX_GRAPHLAB_SOURCES ' deltax_graphlab_preflight.log
+          grep -q '^DELTAX_GRAPHLAB_PREFLIGHT_PASS ' deltax_graphlab_preflight.log
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          tar -czf deltax_graphlab_frozen.tgz \
+            build/drnas-deltax-guard build/drnas-deltax-causal build/drat-trim \
+            build/DELTAX_GUARD_FROZEN.sha256 deltax_graphlab1_inputs
+          echo "Graph certificates / original SAT + DRAT checks passed in preflight" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-graphlab1-frozen
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_graphlab_frozen.tgz
+            deltax_graphlab_preflight.log
+            deltax_graphlab1_preflight/
+            deltax_graphlab1_inputs/manifest.json
+
+  paired_graphs:
+    needs: graph_truth_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-graphlab1-frozen
+          path: frozen/graphlab
+      - name: Four-arm paired real CDCL 3-coloring with exact source proof checks
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/graphlab/deltax_graphlab_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/drnas_deltax_guard/graphlab_paired.py shard \
+            --shard ${{ matrix.shard }} | tee deltax_graphlab_shard.log
+          grep -q '^DELTAX_GRAPHLAB_SHARD_PASS ' deltax_graphlab_shard.log
+          echo "One CPU per solver; SAT models and UNSAT original CNF DRAT checked" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-graphlab-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_graphlab1_shards/${{ matrix.shard }}/
+            deltax_graphlab_shard.log
+
+  graph_final:
+    needs: paired_graphs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-graphlab1-frozen
+          path: frozen/graphlab
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deltax-graphlab-shard-*
+          path: deltax_graphlab1_downloads
+      - name: Reconcile all graph sources and explain proven equality-to-color links
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/graphlab/deltax_graphlab_frozen.tgz
+          python3 -u research/drnas_deltax_guard/graphlab_paired.py aggregate \
+            | tee deltax_graphlab_final.log
+          grep -q '^DELTAX_GRAPHLAB_FINAL ' deltax_graphlab_final.log
+          python3 - <<'PY'
+          import json
+          x=json.load(open('deltax_graphlab1_final/report.json'))
+          assert x['status']=='COMPLETE' and x['new_graph_cases']==20
+          assert x['trials']==80 and x['single_logical_cpu']
+          assert x['binary_frozen_from_guard1'] and not x['promotion']
+          assert x['all_credited_unsat_proofs_independently_verified']
+          print('DELTAX_GRAPHLAB_RECONCILED',
+                x['matched_verified'],x['guard_decision_better_than_join'],
+                x['guard_conflict_better_than_join'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-graphlab1-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            deltax_graphlab1_final/
+            deltax_graphlab_final.log
