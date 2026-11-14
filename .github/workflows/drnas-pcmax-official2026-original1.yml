@@ -1,0 +1,79 @@
+name: DRNAS PCMAX guard on ORIGINAL 2026 submitted scheduling CNFs
+on:
+  push:
+    branches: [experiment/drnas-pcmax-official2026-original1-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-official2026-original1.yml
+      - research/pcmax_capacity/benchmark_official2026_original1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-original2026-20261114
+  cancel-in-progress: false
+jobs:
+  original_2026_guard_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile optional native PCMAX capacity guard (no CDCL changes)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+      - name: Fetch byte-original CNFs, test PCMAX guard on one logical CPU, verify every certificate
+        run: |
+          python3 research/pcmax_capacity/benchmark_official2026_original1.py \
+            --binary build/drnas-pcmax --out results/official2026-original1 \
+            --budget-ms 1000 --repetitions 2
+      - name: Summarize all outcomes including UNKNOWN, size gates and failed inputs
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,statistics,os
+          from pathlib import Path
+          p=Path('results/official2026-original1/summary.json')
+          if not p.exists():
+              print('No complete summary: check the log and partial trials.jsonl.')
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          by={}
+          for x in d['rows']:
+              by.setdefault(x['file_id'],[]).append(x)
+          lines=['# PCMAX native guard — ORIGINAL 2026 CNFs','',
+                 'SAT Competition 2026 compilation catalog; exact unmodified GBD source CNF bytes.',
+                 'These are school timetabling / exam scheduling, not P||Cmax.',
+                 'No CNF re-encoding, no new structural assumptions, one logical CPU.',
+                 'A catalog UNSAT label is NOT a DRNAS proof. Only separately verified structural certificates count.','',
+                 '| GBD file ID | Family | Catalog | Outcome | Reason | Median native(s) |',
+                 '|---|---|---|---|---|---:|']
+          for key,rs in by.items():
+              row=rs[-1]
+              times=[r['native_wall_s'] for r in rs if 'native_wall_s' in r]
+              lines.append(f"| {key[:12]}… | {row.get('family')} | {row.get('catalog_label')} | "
+                           f"{row.get('status')} | {row.get('reason','—')} | "
+                           f"{statistics.median(times):.4f} |" if times else
+                           f"| {key[:12]}… | {row.get('family')} | {row.get('catalog_label')} | "
+                           f"{row.get('status')} | {row.get('detail','—')[:45]} | — |")
+          lines.extend(['',f"Sources: {d['selected_sources']}; retrieved: {d['downloads_ok']}; "
+                         f"native trials: {d['trials']}; certificates VERIFIED: {d['unsat_verified']}."])
+          report='\n'.join(lines)+'\n'
+          Path('results/official2026-original1/README.md').write_text(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f: f.write(report)
+          print(report)
+          PY
+      - name: Store raw source files when small, all manifests, certificates and per-trial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-official2026-original-cnfs-audit
+          retention-days: 45
+          path: |
+            results/official2026-original1/
+            research/pcmax_capacity/benchmark_official2026_original1.py
+            research/pcmax_capacity/check_capacity.py
+            src/pcmax_capacity.hpp
+            README_PCMAX.md
+            build/drnas-pcmax
