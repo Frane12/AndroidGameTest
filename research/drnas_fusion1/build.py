@@ -17,8 +17,7 @@ R=Path(__file__).resolve().parents[2]
 B=R/"build"
 PIN_SIGNAL_SOURCE="9d142ff619f9519dd58912a2c153864dcdc9e27c46c94022d63a9f4f1fc24599"
 PIN_SIGNAL_BINARY="46252501f59b279165cfcb55b000cb357d5217fde32a94ee693ae47e3bb495e0"
-sys.path.insert(0,str(R/"research/drnas_deltax_signal"))
-import build as signal_build
+
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def once(src,old,new):
@@ -29,7 +28,8 @@ def once(src,old,new):
 def main():
     # Rebuild and verify *identical* frozen SIGNAL1 before modifying any
     # source. This checks the entire inherited X5->COOP4->DELTA->GUARD chain.
-    signal_build.main()
+    subprocess.run([sys.executable,str(R/"research/drnas_deltax_signal/build.py")],
+                   cwd=R,check=True)
     assert sha(B/"drnas_deltax_signal.cpp")==PIN_SIGNAL_SOURCE,\
         ("FUSION_FROZEN_SOURCE_CHANGED",sha(B/"drnas_deltax_signal.cpp"))
     assert sha(B/"drnas-deltax-signal")==PIN_SIGNAL_BINARY,\
