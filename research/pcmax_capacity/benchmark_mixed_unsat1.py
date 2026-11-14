@@ -74,7 +74,7 @@ def main():
                     mixed=outcome
                     method=proposed["method"]
                     (args.out/(c["name"]+".mixed.json")).write_text(
-                        json.dumps(proposed,sort_keys=True)+"\\n")
+                        json.dumps(proposed,sort_keys=True)+"\n")
             row={"id":idx,"family":c["family"],"name":c["name"],"expected":label,
                  "clauses":len(c["clauses"]),"variables":c["nvars"],
                  "sha256":hashlib.sha256(raw).hexdigest(),
@@ -84,7 +84,7 @@ def main():
                  "proof_checker_s":round(checker_s,6),
                  "mixed_metadata":mixed,"native_reason":tele.get("reason","not_reported")}
             rows.append(row)
-            stream.write(json.dumps(row,sort_keys=True)+"\\n")
+            stream.write(json.dumps(row,sort_keys=True)+"\n")
             stream.flush()
             print("MIXED_UNSAT_TRIAL "+json.dumps(row,sort_keys=True),flush=True)
     families={}
@@ -104,7 +104,7 @@ def main():
             "false_unsat":sum(r["expected"]=="SAT" and (r["hall2_verified"] or r["mixed_verified"]) for r in rows),
             "methods":dict(collections.Counter(r["method"] for r in rows)),
             "families":families}
-    (args.out/"summary.json").write_text(json.dumps(result,indent=2,sort_keys=True)+"\\n")
+    (args.out/"summary.json").write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
     print("MIXED_UNSAT_FINAL "+json.dumps(result,sort_keys=True),flush=True)
     assert result["false_unsat"]==0
     assert result["total"]==116
