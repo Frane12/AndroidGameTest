@@ -73,7 +73,8 @@ def main():
                     drnas_coop4::Delta4XEngine::vec(why);
                     std::cerr<<",\"antecedents_false\":[";
                     bool first=true;for(int other:why)if(other!=lit){
-                        if(!first)std::cerr<<",";first=false;std::cerr<<other;
+                        if(!first){std::cerr<<",";}
+                        first=false;std::cerr<<other;
                     }
                     std::cerr<<"]}\n";
                 }
