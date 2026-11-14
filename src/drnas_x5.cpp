@@ -1456,7 +1456,9 @@ int run(int argc, char** argv) {
         throw std::runtime_error("invalid --pcmax-budget-ms");
     if (pcmax_only && !proof_path.empty())
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
-    const bool pcmax_active=pcmax_enabled && proof_path.empty();
+    // Mixed/Hall opt-in modules emit their own source-bound certificates. If the
+    // guard returns UNKNOWN, the unchanged CDCL still writes standard DRAT.
+    const bool pcmax_active=pcmax_enabled && (proof_path.empty() || pcmax_mixed_guard || pcmax_clause_guard);
     bool pcmax_capture=pcmax_active;
     size_t pcmax_literals=0;
     std::vector<std::vector<int>> pcmax_original;
