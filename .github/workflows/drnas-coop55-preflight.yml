@@ -1,0 +1,76 @@
+name: DRNAS COOP55 failed-literal RUP proof-first safety preflight
+on:
+  push:
+    branches: [experiment/drnas-coop55-failed-literal-proof-20261114]
+    paths:
+      - .github/workflows/drnas-coop55-preflight.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-coop55-proof-first-preflight-once
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43579405454
+          name: coop54b-frozen-policy-preflight
+          github-token: ${{ github.token }}
+          path: frozen/coop54b
+      - name: Restore exact original CNFs and SHA-pinned baseline binaries
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/coop54b/coop54b_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          python3 -m py_compile research/drnas_coop55/build.py tests/test_drnas_coop55.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as B
+          src,proto=B.official_manifest()
+          assert len(src)==36 and len(set(r['sha256'] for r in src))==36
+          print("COOP55_ORIGINAL_SOURCE_SHA_PASS",proto["manifest_sha256"])
+          PY
+      - name: Build proof-learning OFF and ON from pinned same-source CDCL with Werror
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_coop55/build.py | tee coop55_build.log
+          grep -q '^COOP55_BUILD shadow ' coop55_build.log
+          grep -q '^COOP55_BUILD active ' coop55_build.log
+          sha256sum build/drnas-coop55-shadow build/drnas-coop55-active \
+            build/drat-trim > build/COOP55_BINARIES.sha256
+      - name: Prove every SAT model and independently verify UNSAT DRAT
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP55_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_coop55.py \
+            | tee coop55_proof_audit.log
+          grep -q '^COOP55_PROOF_SAFETY_PASS' coop55_proof_audit.log
+          sha256sum -c build/COOP55_BINARIES.sha256
+          tar -czf coop55_frozen.tgz \
+            build/drnas-coop55-shadow build/drnas-coop55-active \
+            build/drat-trim build/COOP55_BINARIES.sha256 real36_frozen
+          echo 'COOP55_PROOF_SAFE_STAGE_PASS no main promotion or unchecked UNSAT' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop55-proof-first-frozen-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop55_frozen.tgz
+            build/COOP55_BINARIES.sha256
+            coop55_build.log
+            coop55_proof_audit.log
