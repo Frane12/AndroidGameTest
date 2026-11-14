@@ -38,7 +38,7 @@ def manifest():
 
 def preflight():
     os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
-    rows=generate(R/"deltax_mix1_inputs")
+    rows=generate("deltax_mix1_inputs")
     chosen=[]
     for family in sorted({s["family"] for s in rows}):
         chosen.append(next(s for s in rows if s["family"]==family))
