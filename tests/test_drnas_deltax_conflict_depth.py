@@ -60,6 +60,7 @@ def wave_bcp(clauses,assumptions,watch=None):
     observed=0 if watch is not None and values.get(abs(watch))==(watch>0) else None
     for wave in range(256):
         pending={}
+        opposite_unit_forces=False
         for c in clauses:
             if any(abs(l) in values and values[abs(l)]==(l>0) for l in c):
                 continue
@@ -72,9 +73,16 @@ def wave_bcp(clauses,assumptions,watch=None):
                 v=abs(lit)
                 b=lit>0
                 if v in pending and pending[v]!=b:
-                    return {"conflict_wave":wave+1,"watch_wave":observed,
-                            "assigned":len(values)}
-                pending[v]=b
+                    # Finish scanning ALL clauses in this synchronous wave.
+                    # An already empty derived clause has conflict depth=wave,
+                    # which is strictly earlier than opposing fresh unit
+                    # assignments (conflict depth=wave+1).
+                    opposite_unit_forces=True
+                else:
+                    pending[v]=b
+        if opposite_unit_forces:
+            return {"conflict_wave":wave+1,"watch_wave":observed,
+                    "assigned":len(values)}
         if not pending:
             return {"conflict_wave":None,"watch_wave":observed,
                     "assigned":len(values)}
@@ -232,6 +240,20 @@ def main():
     trap_advances=sum(x.get("trap_branch_new_conflict_wave",1000)<
                       x.get("trap_branch_original_conflict_wave",1000)
                       for x in waves.values() if x and "trap_branch_original_conflict_wave" in x)
+    keyed={(r["name"],r["mode"]):r for r in rows}
+    positive_names=[case["name"] for case in cases if case["group"]!="negative"]
+    actual_decision_reductions=sum(
+        keyed[(name,"deltax")]["decisions"]<keyed[(name,"join")]["decisions"]
+        for name in positive_names)
+    actual_conflict_reductions=sum(
+        keyed[(name,"deltax")]["conflicts"]<keyed[(name,"join")]["conflicts"]
+        for name in positive_names)
+    actual_decision_regressions=sum(
+        keyed[(name,"deltax")]["decisions"]>keyed[(name,"join")]["decisions"]
+        for name in positive_names)
+    actual_conflict_regressions=sum(
+        keyed[(name,"deltax")]["conflicts"]>keyed[(name,"join")]["conflicts"]
+        for name in positive_names)
     stats={
         "status":"COMPLETE",
         "sources":len(cases),"trials":len(rows),
@@ -241,6 +263,10 @@ def main():
         "forward_wave_improvements":advances,
         "earlier_conflict_wave_cases":earlier_conflicts,
         "selector_trap_branch_conflict_improvements":trap_advances,
+        "actual_native_cdcl_decision_reductions_vs_join":actual_decision_reductions,
+        "actual_native_cdcl_conflict_reductions_vs_join":actual_conflict_reductions,
+        "actual_native_cdcl_decision_regressions_vs_join":actual_decision_regressions,
+        "actual_native_cdcl_conflict_regressions_vs_join":actual_conflict_regressions,
         "negative_false_aliases":sum(r["alias_events_checked"]>0 for r in neg),
         "all_full_original_sat_unsat_proofs_checked":True,
         "three_way_same_binary_control":True,
