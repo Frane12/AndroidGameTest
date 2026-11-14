@@ -139,14 +139,76 @@ def derive(path,expected_sha=None,max_ms=2000):
         if sum(bounds)<prefix:
             found=(prefix,bounds,detail)
             break
-    if found:prefix,bounds,detail=found
-    else:prefix=nj
+    weights=None;lp_iterations=0
+    if not found and max_ms>1500:
+        # Optimization can propose weights but cannot certify them.
+        # Every accepted inequality is recomputed with integer-only BDD DP.
+        from scipy.optimize import linprog
+        import numpy as np
+        nm=len(roots)
+        def upper_bound_path(mid,w):
+            root=roots[mid];seen=machine_states[mid]
+            prefix_weights=[0]
+            for j in range(nj):
+                prefix_weights.append(prefix_weights[-1]+per_machine[mid].get(j,0)*w[j])
+            vec0=tuple(per_machine[mid].get(j,0) if j<stage[root] else 0 for j in range(nj))
+            best={root:(prefix_weights[stage[root]],vec0)}
+            for state in sorted(seen):
+                if state not in best:continue
+                value,vector=best[state];j=stage[state]
+                for branch,(var,child) in edges[state].items():
+                    if child in bad:continue
+                    next_stage=stage[child] if child in edges else nj
+                    new_value=value+branch*w[j]+prefix_weights[next_stage]-prefix_weights[j+1]
+                    if child not in best or new_value>best[child][0]+1e-11:
+                        new_vec=list(vector)
+                        new_vec[j]+=branch
+                        for k in range(j+1,next_stage):
+                            new_vec[k]+=per_machine[mid].get(k,0)
+                        best[child]=(new_value,tuple(new_vec))
+            return max((best[t] for t in good if t in best),key=lambda pair:pair[0])
+        constraints=[];constraint_set=set()
+        for iteration in range(180):
+            check_time()
+            objective=np.r_[np.zeros(nj),np.ones(nm)]
+            a_ub=np.zeros((len(constraints),nj+nm))
+            for i,(m,vec) in enumerate(constraints):
+                a_ub[i,:nj]=vec
+                a_ub[i,nj+m]=-1
+            a_eq=np.r_[np.ones(nj),np.zeros(nm)].reshape(1,-1)
+            opt=linprog(objective,
+                A_ub=a_ub if constraints else None,
+                b_ub=np.zeros(len(constraints)) if constraints else None,
+                A_eq=a_eq,b_eq=[1],
+                bounds=[(0,None)]*(nj+nm),method='highs')
+            if not opt.success:break
+            proposed=opt.x[:nj];h=opt.x[nj:]
+            oracle_values=[upper_bound_path(m,proposed) for m in range(nm)]
+            # Independently check the proposed candidate on integer arithmetic.
+            integer_weights=[max(0,round(float(x)*10000000)) for x in proposed]
+            integer_caps=[upper_bound_path(m,integer_weights)[0] for m in range(nm)]
+            if sum(integer_weights)>sum(integer_caps):
+                weights=integer_weights;bounds=integer_caps;detail=[]
+                lp_iterations=iteration+1;found=True
+                break
+            added=0
+            for m,(value,vec) in enumerate(oracle_values):
+                if value>h[m]+1e-7 and (m,vec) not in constraint_set:
+                    constraint_set.add((m,vec))
+                    constraints.append((m,vec));added+=1
+            if not added:break
+    if found and weights is None:
+        prefix,bounds,detail=found
+    else:
+        prefix=nj
     return {
         'status':'UNSAT_STRUCT_VERIFIED' if found else 'UNKNOWN',
         'cnf_sha256':sha,'variables':n,'clauses':len(clauses),
         'jobs':nj,'machines':len(roots),'states':len(edges),
-        'demand':prefix,'capacity':sum(bounds),'bounds':bounds,
+        'demand':sum(weights) if weights is not None else prefix,
+        'capacity':sum(bounds),'bounds':bounds,
         'detail':detail,'prefix_jobs':prefix,
+        'weights':weights,'weighted_lp_iterations':lp_iterations,
         'certificate_kind':'CNF_BDD_CAPACITY_NOT_DRAT_LRAT',
         'elapsed_ms':round(1000*(time.perf_counter()-start_time),3)
     }
