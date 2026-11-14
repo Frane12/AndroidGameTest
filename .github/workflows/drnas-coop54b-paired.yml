@@ -1,0 +1,130 @@
+name: DRNAS COOP54B empty-block 360 verified originals vs Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-coop54b-empty-block-bypass-20261114]
+    paths:
+      - .github/workflows/drnas-coop54b-paired.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-coop54b-empty-block-real36-20261114
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43579405454
+          name: coop54b-frozen-policy-preflight
+          github-token: ${{ github.token }}
+          path: .
+      - name: Recheck original source and frozen solver checksums
+        run: |
+          set -euo pipefail
+          tar -xzf coop54b_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          python3 -m py_compile research/drnas_coop54/paired.py research/drnas_coop54b/paired.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as B
+          originals,protocol=B.official_manifest()
+          assert len(originals)==36 and len(set(r['sha256'] for r in originals))==36
+          print('COOP54_SOURCE_SHA36_RECHECK',protocol['manifest_sha256'])
+          PY
+          echo 'COOP54_FROZEN_PASS no main changes, 36 SHA originals, 9 arms' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coop54b-policy-benchmark-inputs
+          retention-days: 60
+          if-no-files-found: error
+          path: coop54b_frozen.tgz
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop54b-policy-benchmark-inputs
+          path: .
+      - name: Pin binary/source SHA and run 9 solver modes on one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf coop54b_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP54_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop54b/paired.py shard \
+            --shard ${{ matrix.shard }} --cap 8 --reps 2 | tee coop54_shard.log
+          grep -q '^COOP54_SHARD_PASS' coop54_shard.log
+          echo "COOP54_SHARD_COMPLETE ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop54-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop54_shards/${{ matrix.shard }}/
+            coop54_shard.log
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop54b-policy-benchmark-inputs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coop54-shard-*
+          merge-multiple: false
+          path: coop54_downloads
+      - name: Reconcile 648 matched original CNF trials, proofs and 7-family CIs
+        run: |
+          set -euo pipefail
+          tar -xzf coop54b_frozen.tgz
+          python3 -u research/drnas_coop54b/paired.py aggregate | tee coop54_final.log
+          grep -q '^COOP54_FINAL' coop54_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("coop54_final/report.json"))
+          assert r["trials"]==360 and r["originals"]==36
+          assert r["blind_holdout"] is False and r["promotion"] is False
+          assert r["verified_only"] is True
+          print("COOP54_FINAL_ACCOUNTING_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop54b-empty-block-original36-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop54_final/
+            coop54_final.log
