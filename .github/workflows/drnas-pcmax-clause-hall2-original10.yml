@@ -1,0 +1,98 @@
+name: DRNAS PCMAX CLAUSE-HALL2 original10 frozen audit vs Kissat
+on:
+  push:
+    branches: [experiment/drnas-pcmax-clause-hall2-original10-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-clause-hall2-original10.yml
+      - research/pcmax_capacity/benchmark_official2026_ten.py
+      - research/pcmax_capacity/check_clause_hall.py
+      - research/pcmax_capacity/test_clause_hall.py
+      - src/pcmax_clause_hall.hpp
+      - src/drnas_x5.cpp
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-clause-hall2-original10-20261114
+  cancel-in-progress: false
+jobs:
+  original10:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile guarded DRNAS single-process solver
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+      - name: Get fixed Kissat 4.0.4 release for paired audit
+        run: |
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git external-kissat
+          echo "Kissat release SHA: $(git -C external-kissat rev-parse HEAD)"
+          (cd external-kissat && ./configure && make -j2)
+          test -x external-kissat/build/kissat
+      - name: Native source-clause Hall proof safety regression
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall.py \
+            --binary build/drnas-pcmax --output results/original10-hall-smoke
+      - name: Original legacy BDD guard integration regression
+        run: |
+          python3 research/pcmax_capacity/integration_tests.py \
+            --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base \
+            --work-dir results/original10-bdd-compat \
+            --report results/original10-bdd-compat.json
+      - name: Frozen original 10 CNFs; diagnose structure; validate proofs; 2 paired runs
+        run: |
+          python3 research/pcmax_capacity/benchmark_official2026_ten.py \
+            --binary build/drnas-pcmax --kissat external-kissat/build/kissat \
+            --out results/original10-2026 --budget-ms 1000 \
+            --repetitions 2 --kissat-cap-s 8
+      - name: Write original10 complete summary, including misses
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,statistics
+          from pathlib import Path
+          p=Path("results/original10-2026/summary.json")
+          if not p.exists():
+              print("No complete original10 summary; earlier step failed.")
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          lines=["# DRNAS CLAUSE-HALL2 original 10 (no modified CNFs)","",
+            "Frozen SAT2026 original CNF hashes. UNSAT requires independent source-clause proof checker.",
+            "Single logical CPU per solver. Kissat 4.0.4 reported results are **not** counted as certified.",
+            "| Family | Original ID | Catalog | DRNAS | Median DRNAS (s) | Kissat | Median Kissat (s) |",
+            "|---|---|---|---|---:|---|---:|"]
+          for md5 in d["case_ids"]:
+              rs=[x for x in d["rows"] if x["file_id"]==md5]
+              g=[x for x in rs if x.get("arm")=="CLAUSE_HALL"]
+              k=[x for x in rs if x.get("arm")=="KISSAT"]
+              one=(g or k or rs)[0]
+              med=lambda v,key: f"{statistics.median(x[key] for x in v):.3f}" if v else "—"
+              lines.append(f"| {one['family']} | {md5[:12]} | {one['catalog_label']} | "
+                f"{g[0]['status'] if g else 'NOT_RUN'} | {med(g,'native_s')} | "
+                f"{k[0]['status'] if k else 'NOT_RUN'} | {med(k,'elapsed_s')} |")
+          lines.extend(["",f"Original cases: {len(d['case_ids'])}; "
+            f"independently verified DRNAS UNSAT trials: "
+            f"{d.get('totals',{}).get('CLAUSE_HALL',{}).get('verified_unsat',0)}.",
+            "UNKNOWN ≠ SAT, TIMEOUT ≠ solved. Catalog labels do not certify run results."])
+          s="\n".join(lines)+"\n"
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(s)
+          (p.parent/"README.md").write_text(s)
+          PY
+      - name: Preserve original inputs and proof evidence, all telemetry and replay sources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-clause-hall2-original10
+          retention-days: 60
+          path: |
+            results/
+            research/pcmax_capacity/benchmark_official2026_ten.py
+            research/pcmax_capacity/check_clause_hall.py
+            src/pcmax_clause_hall.hpp
+            build/drnas-pcmax
+            external-kissat/build/kissat
