@@ -1,0 +1,76 @@
+name: DRNAS MATH-GUARD3 adaptive certified graph3 benchmark
+
+on:
+  push:
+    branches: [experiment/drnas-mathguard3-adaptive-20261114]
+    paths:
+      - .github/workflows/drnas-mathguard3-adaptive.yml
+      - research/drnas_mathguard3/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-mathguard3-adaptive
+  cancel-in-progress: false
+
+jobs:
+  paired_graph3_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent DRAT checker
+        run: |
+          set -euo pipefail
+          mkdir -p external
+          git clone https://github.com/marijnheule/drat-trim.git external/drat-trim
+          git -C external/drat-trim checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          make -C external/drat-trim
+          test -x external/drat-trim/drat-trim
+      - name: Static Python checks and independent 30-step RUP preflight
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_mathguard3/build.py research/drnas_mathguard3/benchmark.py
+          python3 -u research/drnas_mathguard3/build.py | tee mathguard3_build.log
+          grep -q '^MATH_GUARD2_CERTIFICATE_PASS ' mathguard3_build.log
+          grep -q '^MATH_GUARD3_BUILD ' mathguard3_build.log
+      - name: Fresh frozen-seed paired A/B/C on one logical CPU with DRAT and SAT verification
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_mathguard3/benchmark.py | tee mathguard3_trial.log
+          grep -q '^GUARD3_FINAL ' mathguard3_trial.log
+      - name: Manifest and paired-result audit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          d=Path('mathguard3_graph3')
+          report=json.loads((d/'report.json').read_text())
+          manifest=json.loads((d/'frozen_manifest.json').read_text())
+          rows=json.loads((d/'trials.json').read_text())
+          assert report['one_logical_cpu'] and report['one_solver_process_at_a_time']
+          assert report['instances']==len(manifest)==40
+          assert report['runs']==len(rows)==report['instances']*3*5
+          assert all(len([r for r in rows if r['name']==m['name']])==15 for m in manifest)
+          assert not report['promotion']
+          print('GUARD3_AUDIT_PASS',report['instances'],report['runs'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathguard3-adaptive-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            mathguard3_build.log
+            mathguard3_trial.log
+            build/MATH_GUARD3_BUILD.json
+            mathguard3_graph3/frozen_manifest.json
+            mathguard3_graph3/trials.json
+            mathguard3_graph3/report.json
