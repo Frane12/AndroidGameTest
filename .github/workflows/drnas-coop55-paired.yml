@@ -1,0 +1,141 @@
+name: DRNAS COOP55 proof-carrying failed literals vs frozen SAT competitors
+on:
+  push:
+    branches: [experiment/drnas-coop55-failed-literal-proof-20261114]
+    paths: [.github/workflows/drnas-coop55-paired.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-coop55-rup-paired-source-matched
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43579405454
+          name: coop54b-frozen-policy-preflight
+          github-token: ${{ github.token }}
+          path: frozen/coop54b
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43580031955
+          name: coop55-proof-first-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/coop55
+      - name: Prove frozen source and all binary hashes
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/coop54b/coop54b_frozen.tgz
+          tar -xzf frozen/coop55/coop55_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          sha256sum -c build/COOP55_BINARIES.sha256
+          python3 -m py_compile research/drnas_coop54/paired.py research/drnas_coop55/paired.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          selected,manifest=B.official_manifest()
+          assert len(selected)==36 and len({row['sha256'] for row in selected})==36
+          print("COOP55_REAL36_SHA_PASS",manifest["manifest_sha256"])
+          PY
+          tar -czf coop55_bench_frozen.tgz \
+            build/drnas-coop53-repair build/drnas-coop54-gate \
+            build/drnas-coop55-shadow build/drnas-coop55-active \
+            build/drat-trim build/COOP54_FROZEN.sha256 build/COOP55_BINARIES.sha256 \
+            cross/x59/build/kissat cross/x59/build/cadical real36_frozen
+          echo "COOP55_FROZEN_PASS 36 source SHA, 6 arms, one logical CPU, no promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coop55-benchmark-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: coop55_bench_frozen.tgz
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop55-benchmark-frozen
+          path: .
+      - name: Run proof checked one-logical-CPU paired COOP55 against independent references
+        run: |
+          set -euo pipefail
+          tar -xzf coop55_bench_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          sha256sum -c build/COOP55_BINARIES.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP55_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_coop55/paired.py shard \
+            --shard ${{ matrix.shard }} --cap 8 --reps 2 | tee coop55_shard.log
+          grep -q '^COOP54_SHARD_PASS' coop55_shard.log
+          echo "COOP55_SHARD_PASS completed" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop54-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop54_shards/${{ matrix.shard }}/
+            coop55_shard.log
+
+  final_report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coop55-benchmark-frozen
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coop54-shard-*
+          merge-multiple: false
+          path: coop54_downloads
+      - name: Reconcile 432 paired proof-checked original-CNF trials and family CIs
+        run: |
+          set -euo pipefail
+          tar -xzf coop55_bench_frozen.tgz
+          python3 -u research/drnas_coop55/paired.py aggregate | tee coop55_final.log
+          grep -q '^COOP54_FINAL ' coop55_final.log
+          python3 - <<'PY'
+          import json
+          d=json.load(open("coop54_final/report.json"))
+          assert d['trials']==432 and d['originals']==36
+          assert not d['blind_holdout'] and not d['promotion']
+          assert d['verified_only']
+          print("COOP55_FINAL_PROOF_ACCOUNTING_PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop55-original36-paired-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop54_final/
+            coop55_final.log
