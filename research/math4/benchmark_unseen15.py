@@ -46,7 +46,7 @@ def prepare():
     names=sorted(set(BIN.values())|{'build/drat-trim','build/drnas-cf7-frozen'})
     protocol=dict(name='MATH4-CF7-UNSEEN15-V1',cap_s=CAP,repetitions=REPS,
         shards=SHARDS,arms=ARMS,guard_budget_ms=750,source_count=len(m['sources']),
-        expected_trials=24*REPS*len(ARMS),one_logical_cpu=True,prepare_cpu=cpu,
+        expected_trials=len(m['sources'])*REPS*len(ARMS),one_logical_cpu=True,prepare_cpu=cpu,
         binary_sha256={n:sha(ROOT/n) for n in names},
         manifest_sha256=sha(ROOT/'math4_holdout/manifest.json'),
         verifier_sha256={n:sha(ROOT/n) for n in ['research/pcmax_capacity/check_clause_hall.py',
@@ -57,7 +57,7 @@ def prepare():
         structural_score='SAT model, DRAT or independent original-CNF Hall/BDD certificate',
         timing='solver wall includes startup/parsing/guard/CDCL; verification separately and E2E score',
         selection_frozen_before_results=True,training=False,automatic_promotion=False)
-    save(OUT/'protocol.json',protocol);emit('HALL3_READY',protocol)
+    save(OUT/'protocol.json',protocol);emit('MATH4_UNSEEN_READY',protocol)
 
 def run(cmd,folder,limit):
     folder.mkdir(parents=True,exist_ok=True)
