@@ -44,7 +44,7 @@ def main():
     int64_t d4_input_clauses=0,d4_reservoir_replacements=0;
     bool d4_large_formula=false;''')
     engine=once(engine,
-        '''        if(originals.size()>=12000){disabled=true;originals.clear();return;}
+        '''        if(originals.size()>=24000){disabled=true;originals.clear();return;}
         originals.push_back(c);''',
         '''        ++d4_input_clauses;
         if(originals.size()<12000){originals.push_back(c);return;}
