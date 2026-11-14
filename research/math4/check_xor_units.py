@@ -7,6 +7,9 @@ It never trusts a producer's elimination, source classification or solver.
 """
 import hashlib
 import itertools
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"pcmax_capacity"))
 from check_capacity import parse_cnf
 
 class InvalidMath4Proof(ValueError):
