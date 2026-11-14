@@ -106,7 +106,7 @@
             experiment.result!=Result::UNKNOWN && ecost<=bcost;
         const bool accept=
             !contradiction &&
-            (nonregress && substantial || useful_termination);
+            ((nonregress && substantial) || useful_termination);
         if(accept)++deltax_guard_accept_;
         else ++deltax_guard_reject_;
         if(deltax_guard_events_<12) {
