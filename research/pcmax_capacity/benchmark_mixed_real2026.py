@@ -148,7 +148,10 @@ def evaluate(source,arm,rep,args,out):
     if subprocess_result["killed"] or solve_elapsed>args.cap:
         status="TIMEOUT"
     elif rc==10:
-        if not model_verified(path,stdout,source["variables"]):
+        t=time.perf_counter()
+        model_ok=model_verified(path,stdout,source["variables"])
+        proof_check_elapsed=time.perf_counter()-t
+        if not model_ok:
             raise RuntimeError(f"WRONG_SAT_WITNESS:{source['file_id']}:{arm}:{rep}")
         if source["label"]=="unsat":
             # Catalog metadata does not establish a result, but conflicting
@@ -187,6 +190,8 @@ def evaluate(source,arm,rep,args,out):
                                        +checker["stderr"][-400:])
         else:
             status="UNSAT_UNVERIFIED"
+    elif rc==-25:
+        status="PROOF_RESOURCE_LIMIT"
     elif rc in (0,153):
         status="UNKNOWN"
     else:
@@ -197,6 +202,11 @@ def evaluate(source,arm,rep,args,out):
         status="TIMEOUT_WITH_PROOF"
     if status in ("PROCESS_ERROR","WRONG_SAT_WITNESS"):
         raise RuntimeError(f"{status}:{source['file_id']}:{arm}:{rc}:{stderr[-500:]}")
+    proof_bytes=proof.stat().st_size if proof.is_file() else 0
+    unverified_partial_proof_sha256=None
+    if proof_bytes>8*1024*1024 and status!="UNSAT_CERTIFIED":
+        unverified_partial_proof_sha256=sha(proof)
+        proof.unlink()
     row={
         "id":source["id"],"family":source["family"],"label":source["label"],
         "file_id":source["file_id"],"sha256":source_hash,
@@ -211,7 +221,8 @@ def evaluate(source,arm,rep,args,out):
         "module_groups":guard_data.get("groups"),
         "module_demand":guard_data.get("demand"),
         "module_capacity":guard_data.get("capacity"),
-        "proof_bytes":proof.stat().st_size if proof.is_file() else 0,
+        "proof_bytes":proof_bytes,
+        "unverified_partial_proof_sha256":unverified_partial_proof_sha256,
         "model_independently_checked":status=="SAT_VERIFIED",
         "source_pinned":True,
     }
