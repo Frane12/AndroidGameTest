@@ -29,7 +29,8 @@ s=rep(s,
 '''            p = propagate(-1);
             coop5Settle(p.result == PropResult::CONFLICT);
             if(p.result==PropResult::OK) {
-                if(!coop_.enabled() || coop_.passes>=24 ||
+                if(!coop_.enabled() || (coop_.prepared && coop_.blocks.empty()) ||
+                   coop_.passes>=24 ||
                    coop_.ms>=30 || coop_.lemmas>=256) {
                     coop_hint_=-1;
                     ++coop54_skipped_dead_dispatch_;
