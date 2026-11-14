@@ -9,7 +9,8 @@ def solve(binary,cnf,flag=False):
     proof=cnf.parent/(cnf.stem+("_on" if flag else "_off")+".drat")
     proof.unlink(missing_ok=True)
     cmd=[str(binary),str(cnf),"--mode","core","--time","3","--stats","--proof",str(proof)]
-    if flag:cmd.append("--x60-stamp-glue")
+    cmd.append("--x59-stamp-glue") # identical glue mode in both A/B arms
+    if flag:cmd.extend(["--x60-indexed-heap","--x60-heap-audit"])
     p=subprocess.run(cmd,capture_output=True,text=True,timeout=5)
     assert p.returncode in (10,20), (cmd,p.returncode,p.stderr[-1000:])
     stats=[json.loads(x.split(" ",1)[1]) for x in p.stderr.splitlines()
