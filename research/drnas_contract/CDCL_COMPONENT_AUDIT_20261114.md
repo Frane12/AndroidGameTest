@@ -94,6 +94,44 @@ These are **source-/execution-grounded behavior differences** rather than a gene
 The modified *repair* binary is proof-safe in these tests; the full paired performance run must
 determine speed impact. No promotion until independent blind holdout.
 
+## Final retrospective paired contract check
+
+[COOP5.3 matched REAL36 paired run 43535427022](https://github.com/Frane12/AndroidGameTest/actions/runs/43535427022)
+finished successfully: **36 original sources × 2 repetitions × 6 arms = 432 trials**,
+one logical CPU per solver, same 8 s cap, deterministic arm order, **0 solver process errors**.
+
+| Solver | Independently verified / 72 | Verified PAR2 (s) |
+| --- | ---: | ---: |
+| CaDiCaL | 26 | 744.280429 |
+| Kissat | 26 | 747.194653 |
+| COOP5.3 AUDIT (no functional change) | 24 | 770.090114 |
+| COOP5.3 REPAIR (hint epoch + known-clause lifecycle) | 24 | 770.091239 |
+| COOP5.2 CAP24K (frozen) | 24 | 770.108912 |
+| X5.9 | 24 | 770.367783 |
+
+COOP5.3 REPAIR tracked 1,294 component clause insertions and removed 1,176
+remembered clause keys after CDCL deleted their associated clauses; it also
+invalidated two hints that became stale after CDCL trail changes. Across
+the run, 292 sampled speculative rollback postconditions passed; AUDIT recorded
+296 sampled checks and two observed stale hints. All scored SAT/UNSAT results
+were independently validated, and no process errors were reported.
+
+**Scientific interpretation:** the consistency bug is real and its conservative
+repair passed the safety/paired checks, but it did not produce a performance
+improvement or solve more instances. A few hundredths of a second out of
+770 s aggregate PAR2 is benchmark noise, not evidence of progress. Not blind.
+**Do not promote**. Keep the frozen reference and audit/repair siblings available.
+
+### Implication for next development
+
+The dominant bottleneck remains native CDCL reasoning on hard UNSAT families.
+Next controlled A/B (separate from these proof-first fixes): re-enable clause
+minimization, compare conservative LBD retention, and adaptive restarts **one
+dimension at a time**, while keeping component mode constant. Use a new blind
+holdout only after the training and validation stages. For long-running formulas,
+replace unconditional component polling with a proven no-op fast path after
+algebra budgets are exhausted; this must preserve BCP fixpoint and hint epoch.
+
 ## Verification stages
 
 **C0 — static source contract:** identify all CDCL mutation sites (enqueue,
