@@ -1,0 +1,158 @@
+name: DRNAS MATH4 unseen15 original SAT2026 vs HALL3 CF7 Kissat CaDiCaL certified
+on:
+  push:
+    branches: [experiment/drnas-math4-unseen15-original-20261114]
+    paths:
+      - .github/workflows/drnas-math4-unseen15-par2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math4-unseen15-original-20261114
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43643413210
+          name: hall3-prepared
+          github-token: ${{ github.token }}
+          path: prior_pinned
+      - name: Download 15 preregistered original CNFs, keep input failures and freeze exact SHA
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/math4/freeze_unseen15.py | tee math4_unseen_inputs.log
+          grep -q '^MATH4_HOLDOUT_FROZEN ' math4_unseen_inputs.log
+      - name: Restore frozen CF7 Kissat CaDiCaL DRAT and compile native MATH4
+        run: |
+          set -euo pipefail
+          tar -xzf prior_pinned/hall3-prepared.tgz
+          python3 -m py_compile research/math4/benchmark_unseen15.py
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            -DDRNAS_PCMAX_MODULE src/drnas_hall3.cpp -lcrypto -o build/drnas-math4
+          python3 -u research/math4/benchmark_unseen15.py prepare | tee math4_unseen_prepare.log
+          grep -q '^MATH4_UNSEEN_READY ' math4_unseen_prepare.log
+          sha256sum build/drnas-math4 build/drnas-cf7-frozen build/kissat build/cadical \
+            build/drat-trim research/math4/holdout_selection.json \
+            research/math4/check_xor_units.py > math4_unseen_frozen.sha256
+          tar -czf math4_unseen_frozen.tgz build/drnas-math4 build/drnas-cf7-frozen \
+            build/kissat build/cadical build/drat-trim math4_holdout/cnf \
+            math4_holdout/manifest.json math4_holdout_results/protocol.json \
+            math4_unseen_frozen.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math4-unseen15-source-frozen
+          retention-days: 60
+          path: |
+            math4_unseen_frozen.tgz
+            math4_unseen_inputs.log
+            math4_unseen_prepare.log
+            math4_unseen_frozen.sha256
+            math4_holdout/manifest.json
+            research/math4/holdout_selection.json
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math4-unseen15-source-frozen
+          path: .
+      - name: Verify original SHA and source-disjoint protocol
+        run: |
+          set -euo pipefail
+          tar -xzf math4_unseen_frozen.tgz
+          sha256sum -c math4_unseen_frozen.sha256
+          python3 - <<'PY'
+          import json
+          m=json.load(open("math4_holdout/manifest.json"))
+          selection=json.load(open("research/math4/holdout_selection.json"))
+          assert m["selected_count"]==15 and m["downloaded_count"]>=8
+          assert all(x["file_id"] in {y["file_id"] for y in selection["source_ids"]}
+                     for x in m["sources"])
+          print("MATH4_UNSEEN_SOURCE_DISJOINT_GATE_PASS",len(m["sources"]))
+          PY
+      - name: Source-paired one-CPU certified 10s end-to-end PAR2 trials
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/math4/benchmark_unseen15.py shard \
+            --index ${{ matrix.shard }} | tee math4_unseen_shard.log
+          grep -q '^MATH4_UNSEEN_SHARD_PASS ' math4_unseen_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math4-unseen-shard-${{ matrix.shard }}
+          retention-days: 60
+          path: |
+            math4_holdout_results/shard-${{ matrix.shard }}/
+            math4_unseen_shard.log
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: math4-unseen-shard-*
+          path: downloaded
+      - name: Reconcile each eligible original source and certify no false UNSAT
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path("math4_holdout_results")
+          root.mkdir(exist_ok=False)
+          for i in range(5):
+              files=list(Path("downloaded").glob(f"math4-unseen-shard-{i}/**/trials.jsonl"))
+              assert len(files)==1,(i,files)
+              shutil.copytree(files[0].parent,root/f"shard-{i}")
+          PY
+          # The pinned original manifest and protocol are provided separately
+          # in the freeze artifact; aggregate checks exact eligible count.
+      - uses: actions/download-artifact@v4
+        with:
+          name: math4-unseen15-source-frozen
+          path: freeze_meta
+      - name: Validate original SHA, complete source-paired trial matrix and E2E PAR2
+        run: |
+          set -euo pipefail
+          mkdir -p math4_holdout
+          cp freeze_meta/math4_holdout/manifest.json math4_holdout/manifest.json
+          python3 -u research/math4/benchmark_unseen15.py report | tee math4_unseen_final.log
+          grep -q '^MATH4_UNSEEN_FINAL ' math4_unseen_final.log
+          cat math4_holdout_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math4-unseen15-final-source-disjoint-par2
+          retention-days: 60
+          path: |
+            math4_holdout_results/summary.json
+            math4_holdout_results/README.md
+            math4_unseen_final.log
+            research/math4/holdout_selection.json
+            math4_holdout/manifest.json
