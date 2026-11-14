@@ -1,0 +1,176 @@
+name: DRNAS FUSION-GUARD1B selective graph or XOR math risk gate
+on:
+  push:
+    branches: [experiment/drnas-fusion-guard1b-20261114]
+    paths:
+      - .github/workflows/drnas-fusion-guard1b.yml
+      - research/drnas_fusion1/fusion_methods.inc
+      - research/drnas_fusion1/build.py
+      - research/drnas_fusion1/bench.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-fusion-guard1b-source-risk-selective
+  cancel-in-progress: false
+
+jobs:
+  compile_proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43596056826
+          name: deltax-guard1-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/guard1
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43601959681
+          name: deltax-signal1-frozen-sources-and-binary
+          github-token: ${{ github.token }}
+          path: frozen/signal1
+      - name: Restore SHA-frozen native CDCL source/model and independent original CNF proof checker
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          tar -xzf frozen/signal1/deltax_signal_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          python3 -m py_compile research/drnas_fusion1/build.py research/drnas_fusion1/bench.py
+      - name: Compile only NEW fusion binary and pin original SIGNAL1 native CDCL core
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_fusion1/build.py | tee fusion1_build.log
+          grep -q '^DRNAS_FUSION_BUILD ' fusion1_build.log
+          sha256sum -c build/DELTAX_SIGNAL_FROZEN.sha256
+          sha256sum build/drnas-fusion1 build/drnas-deltax-signal \
+            build/drat-trim > build/FUSION1_FROZEN.sha256
+      - name: Generate retrospective mixed sources and ensure core/shadow do not change native CDCL
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DRNAS_FUSION_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_fusion1/bench.py smoke | tee fusion1_smoke.log
+          grep -q '^DRNAS_FUSION_PREFLIGHT_PASS ' fusion1_smoke.log
+          sha256sum -c build/FUSION1_FROZEN.sha256
+          tar -czf fusion1_frozen.tgz \
+            build/drnas-fusion1 build/drnas-deltax-signal build/drat-trim \
+            build/FUSION1_FROZEN.sha256 \
+            fusion1_inputs deltax_signal1_inputs
+          echo "FUSION1 core-only equivalence and original SAT/UNSAT proof checks required before paired benchmarks" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion1-cold-native-frozen-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            fusion1_frozen.tgz
+            fusion1_build.log
+            fusion1_smoke.log
+            fusion1_preflight/
+            build/FUSION1_BUILD.json
+            build/FUSION1_FROZEN.sha256
+            fusion1_inputs/manifest.json
+
+  paired_native:
+    needs: compile_proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: fusion1-cold-native-frozen-preflight
+          path: frozen/fusion
+      - name: Same original CNF core vs fusion shadow vs guarded proof modules, one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/fusion/fusion1_frozen.tgz
+          sha256sum -c build/FUSION1_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DRNAS_FUSION_SHARD_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_fusion1/bench.py shard \
+            --shard ${{ matrix.shard }} | tee fusion1_shard.log
+          grep -q '^DRNAS_FUSION_SHARD_PASS ' fusion1_shard.log
+          echo "All credited SAT/UNSAT verified on original CNF (independent DRAT for UNSAT)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            fusion1_shards/${{ matrix.shard }}/
+            fusion1_shard.log
+
+  independent_final:
+    needs: paired_native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: fusion1-cold-native-frozen-preflight
+          path: frozen/fusion
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fusion1-shard-*
+          path: fusion1_downloads
+      - name: Demand frozen-core behavior, safe module activation and independently checked original proof results
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/fusion/fusion1_frozen.tgz
+          python3 -u research/drnas_fusion1/bench.py aggregate | tee fusion1_final.log
+          grep -q '^DRNAS_FUSION_FINAL ' fusion1_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("fusion1_final/report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==24 and r["trials"]==120
+          assert r["native_baseline_cdcl_unchanged_when_math_off"]
+          assert r["verified_core_off_matched_pairs"]>0
+          assert r["modules_off_by_default"] and r["modules_wake_only_when_cheap_guard_authorizes"]
+          assert r["one_process_one_logical_cpu_per_solver"]
+          assert r["original_SAT_and_independent_UNSAT_proofs_checked"]
+          assert r["main_untouched"] and r["no_promotion"]
+          print("DRNAS_FUSION1_NATIVE_CORE_AND_GUARD_PASS",r["verified_core_off_matched_pairs"],
+                r["arms"]["FUSION_GUARD"]["module_wakeups"])
+          PY
+          echo "Native CDCL core remains sole solver, modules gated, proof-first and no main promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion1-paired-proof-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            fusion1_final/
+            fusion1_final.log
