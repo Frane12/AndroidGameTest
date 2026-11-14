@@ -42,7 +42,7 @@ def main():
 ''' + needle
     if s.count(needle)!=1:raise RuntimeError(("SOURCE_ANCHOR_DRIFT",s.count(needle)))
     # C++ escaped newline, not literal backslash-n
-    replacement=replacement.replace('<<"}\\\\n";','<<"}\\\\n";')
+    replacement=replacement.replace(chr(92)*4 + "n", chr(92) + "n")
     s=s.replace(needle,replacement)
     target=R/"build/drnas_preguard_shadow13.cpp"
     target.write_text(s)
