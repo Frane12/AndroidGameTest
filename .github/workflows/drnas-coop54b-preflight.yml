@@ -1,0 +1,81 @@
+name: DRNAS COOP54B zero-component fast abstention proof preflight
+on:
+  push:
+    branches: [experiment/drnas-coop54b-empty-block-bypass-20261114]
+    paths:
+      - .github/workflows/drnas-coop54b-preflight.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-coop54b-empty-block-preflight
+  cancel-in-progress: false
+
+jobs:
+  freeze_and_certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43530828469
+          name: coop52-frozen-verified-preflight
+          github-token: ${{ github.token }}
+          path: frozen/coop52
+      - name: Freeze original SAT2024 sources and reference SHA
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/coop52/coop52_frozen.tgz
+          sha256sum -c build/COOP52_BINARIES.sha256
+          (cd cross/x59 && grep -v '  build/drnas-x5$' build/X59_BINARIES.sha256 | sha256sum -c -)
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"research")
+          import drnas_x55_cpu_real36 as B
+          src,meta=B.official_manifest()
+          assert len(src)==36 and len({s["sha256"] for s in src})==36
+          print("COOP54_FROZEN_REAL36_PASS",meta["manifest_sha256"])
+          PY
+      - name: Compile COOP54 fast abstention and verify COOP53 frozen binary hashes
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_coop54/build.py tests/test_drnas_coop54.py tests/test_drnas_coop54b.py
+          python3 -u research/drnas_coop54/build.py | tee coop54_build.log
+          grep -q '^COOP54_BUILD_OK' coop54_build.log
+          sha256sum build/drnas-coop53-repair build/drnas-coop54-gate \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            > build/COOP54_FROZEN.sha256
+      - name: Original-CNF SAT model and independent UNSAT DRAT tests for all policies
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "COOP54_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_coop54.py \
+            | tee coop54_safety.log
+          grep -q '^COOP54_POLICY_SAFETY_PASS' coop54_safety.log
+          taskset -c "$CPU" python3 -u tests/test_drnas_coop54b.py | tee coop54b_block_safety.log
+          grep -q '^COOP54B_EMPTY_BLOCK_FASTPATH_PASS' coop54b_block_safety.log
+          sha256sum -c build/COOP54_FROZEN.sha256
+          tar -czf coop54b_frozen.tgz \
+            build/drnas-coop53-repair build/drnas-coop54-gate build/drat-trim \
+            cross/x59/build/kissat cross/x59/build/cadical \
+            build/COOP54_FROZEN.sha256 real36_frozen
+          echo 'COOP54_SAFETY_PASS only experimental branch, model/proof verified, main unchanged' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coop54b-frozen-policy-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop54b_frozen.tgz
+            build/COOP54_FROZEN.sha256
+            coop54_build.log
+            coop54_safety.log
+            coop54b_block_safety.log
