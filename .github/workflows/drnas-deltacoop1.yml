@@ -1,0 +1,156 @@
+name: DRNAS DELTA-COOP1 marginal algebra to CDCL proof-first paired test
+on:
+  push:
+    branches: [experiment/drnas-deltacoop1-math-20261114]
+    paths:
+      - .github/workflows/drnas-deltacoop1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltacoop1-single-experiment
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43579405454
+          name: coop54b-frozen-policy-preflight
+          github-token: ${{ github.token }}
+          path: frozen/coop54b
+      - name: Restore exact original CNFs and frozen competitor baselines
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/coop54b/coop54b_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltacoop1/build.py research/drnas_deltacoop1/paired.py tests/test_drnas_deltacoop1.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'research')
+          import drnas_x55_cpu_real36 as B
+          rows,meta=B.official_manifest()
+          assert len(rows)==36 and len({r['sha256'] for r in rows})==36
+          print("DELTA_COOP1_REAL36_FROZEN_SHA_PASS",meta["manifest_sha256"])
+          PY
+      - name: Build algebra audit and RUP-certified CDCL source from immutable COOP54B
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltacoop1/build.py | tee delta_build.log
+          grep -q '^DELTA_COOP1_BUILD ' delta_build.log
+          sha256sum build/drnas-deltacoop1 build/drat-trim > build/DELTA_COOP1_FROZEN.sha256
+      - name: Verify tiny truth tables, mixed XOR counterexample, original models and UNSAT DRAT
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTA_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_deltacoop1.py | tee delta_preflight.log
+          grep -q '^DELTA_COOP1_PREFLIGHT_PASS ' delta_preflight.log
+          sha256sum -c build/COOP54_FROZEN.sha256
+          sha256sum -c build/DELTA_COOP1_FROZEN.sha256
+          tar -czf delta_frozen.tgz \
+            build/drnas-deltacoop1 build/drnas-coop53-repair build/drnas-coop54-gate \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            build/DELTA_COOP1_FROZEN.sha256 build/COOP54_FROZEN.sha256 real36_frozen
+          echo "DELTA_COOP1_PREFLIGHT_CERTIFIED – only experimental branch, main untouched" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta-coop1-preflight
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta_frozen.tgz
+            delta_build.log
+            delta_preflight.log
+            build/DELTA_COOP1_FROZEN.sha256
+
+  real36_paired:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta-coop1-preflight
+          path: frozen/delta
+      - name: Run original SAT2024 retrospective 5-arm paired on one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta/delta_frozen.tgz
+          sha256sum -c build/COOP54_FROZEN.sha256
+          sha256sum -c build/DELTA_COOP1_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTA_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_deltacoop1/paired.py \
+            shard --shard ${{ matrix.shard }} --cap 5 --reps 2 | tee delta_shard.log
+          grep -q '^COOP54_SHARD_PASS' delta_shard.log
+          echo "DELTA_SHARD_PASS – original SHA and models/proofs independently checked" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            coop54_shards/${{ matrix.shard }}/
+            delta_shard.log
+
+  aggregate:
+    needs: real36_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta-coop1-preflight
+          path: frozen/delta
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: delta-shard-*
+          merge-multiple: false
+          path: delta_downloads
+      - name: Verify full pairing and summarize exact marginal CDCL effects
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta/delta_frozen.tgz
+          python3 -u research/drnas_deltacoop1/paired.py aggregate | tee delta_final.log
+          grep -q '^DELTA_COOP1_FINAL ' delta_final.log
+          python3 - <<'PY'
+          import json
+          data=json.load(open("delta_final/report.json"))
+          assert data["total_trials"]==360 and data["originals"]==36
+          assert data["same_binary_off_shadow_on"]
+          assert not data["blind_holdout"] and not data["promotion"]
+          assert data["one_logical_cpu_each"] and data["independent_original_unsat_proof_required"]
+          print("DELTA_COOP1_AGGREGATE_RECONCILED",data["total_trials"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta-coop1-real36-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta_final/
+            delta_final.log
