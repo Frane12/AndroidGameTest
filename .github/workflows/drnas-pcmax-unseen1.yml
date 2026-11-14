@@ -1,0 +1,77 @@
+name: DRNAS PCMAX fresh task holdout1 verified UNSAT
+on:
+  push:
+    branches: [experiment/drnas-pcmax-unseen-holdout1-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-unseen1.yml
+      - research/pcmax_capacity/benchmark_unseen1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-unseen1-20261114
+  cancel-in-progress: false
+jobs:
+  independent_fresh_cases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build current native guard (do not alter CDCL)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+      - name: Fresh distinct task-based PCMAX formulas, capacity guard and independent checker
+        run: |
+          python3 research/pcmax_capacity/benchmark_unseen1.py \
+            --binary build/drnas-pcmax --output results/unseen1 \
+            --budget-ms 5000 --repetitions 2
+      - name: Report all trials, distinguish verified UNSAT from UNKNOWN
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,statistics
+          from pathlib import Path
+          p=Path('results/unseen1/summary.json')
+          if not p.is_file():
+              print('No complete benchmark summary. Inspect test failure and partial trials.jsonl.')
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          byname={}
+          for row in d['rows']: byname.setdefault(row['name'],[]).append(row)
+          lines=['# Fresh PCMAX capacity-guard test','',
+                 'Fresh synthetic task scheduling CNFs (not official competition holdout).',
+                 'No original20 source bytes; one logical CPU; independent original-CNF capacity certificates.',
+                 'Structural proof format is NOT DRAT/LRAT. Native time includes process startup.',
+                 '',
+                 '| Name | Label | Verified UNSAT | Median native (s) | Median with checker (s) |',
+                 '|---|---|---:|---:|---:|']
+          expected={e['name']:e['label'] for e in d['frozen_cases']}
+          for name,rows in byname.items():
+              good=sum(x['checked'] for x in rows)
+              native=statistics.median(x['native_s'] for x in rows)
+              total=statistics.median(x['total_s'] for x in rows)
+              lines.append(f"| {name} | {expected[name]} | {good}/{len(rows)} | {native:.5f} | {total:.5f} |")
+          lines.extend(['', f"Verified UNSAT trials: {d['verified_unsat_trials']}",
+                       f"Fresh cases: {d['source_count']} (UNSAT {d['unsat_cases']}, SAT {d['sat_controls']})"])
+          s='\n'.join(lines)+'\n'
+          Path('results/unseen1/README.md').write_text(s)
+          print(s)
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a') as f: f.write(s)
+          PY
+      - name: Archive CNFs, SHA256 manifests, checked certs, results and code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-unseen1-independent
+          retention-days: 45
+          path: |
+            results/unseen1/
+            research/pcmax_capacity/benchmark_unseen1.py
+            research/pcmax_capacity/check_capacity.py
+            research/pcmax_capacity/tests/make_fixtures.py
+            src/pcmax_capacity.hpp
+            README_PCMAX.md
+            build/drnas-pcmax
