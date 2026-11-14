@@ -16,7 +16,7 @@ B = R / "build"
 BASE = B / "drnas_clause_cf5.cpp"
 SOURCE = B / "drnas_clause_cf6.cpp"
 OUT = B / "drnas-clause-cf6"
-PIN_CF5_SOURCE = "2d1ebcc42be6872819b08f9711df24b738e79273c9504e4"
+PIN_CF5_SOURCE = "2d1ebcc42be6872819b08f9711df24b738e79273c9504e4d194e0b4cf4769a4e"
 PIN_CF5_BINARY = "286626e221568b3c7541da7a1514fdee55f1462d4d0028a775cc5c7d0561fd5f"
 ARMS = ("BASE", "LBD", "B2L_1", "B2L_8", "B2L_32",
         "L2B_1", "L2B_8", "L2B_32")
