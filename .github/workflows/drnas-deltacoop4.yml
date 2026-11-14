@@ -1,0 +1,171 @@
+name: DRNAS DELTA4 general SAT 60 medium-source 10s proof-first
+on:
+  push:
+    branches: [experiment/drnas-deltacoop4-general-medium10-20261114]
+    paths:
+      - .github/workflows/drnas-deltacoop4.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-delta4-one-medium10-experiment
+  cancel-in-progress: false
+
+jobs:
+  proof_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore immutable DELTA3 inputs, original SAT2024 REAL36, and references
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA2_FROZEN.sha256
+          python3 -m py_compile research/drnas_deltacoop4/build.py research/drnas_deltacoop4/collect.py research/drnas_deltacoop4/paired.py tests/test_drnas_deltacoop4.py
+      - name: Generate isolated DELTA4 executable without changing DELTA3
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_deltacoop4/build.py | tee delta4_build.log
+          grep -q '^DELTA4_BUILD ' delta4_build.log
+          sha256sum build/drnas-deltacoop4 build/drnas-deltacoop3 \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            > build/DELTA4_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          sha256sum -c build/DELTA4_FROZEN.sha256
+      - name: Independent SAT and UNSAT proof preflight plus real hardware-miter replay
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u tests/test_drnas_deltacoop4.py | tee delta4_preflight.log
+          grep -q '^DELTA4_PREFLIGHT_PASS ' delta4_preflight.log
+      - name: Fetch only 60 original diverse medium-size SAT2024 CNFs using ZIP range requests
+        run: |
+          set -euo pipefail
+          python3 -m venv .d4venv
+          .d4venv/bin/python -m pip install --disable-pip-version-check --no-input remotezip
+          .d4venv/bin/python -u research/drnas_deltacoop4/collect.py | tee delta4_sources.log
+          grep -q '^DELTA4_SOURCES_FROZEN ' delta4_sources.log
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          m=json.loads(pathlib.Path("delta4_sources/manifest.json").read_text())
+          a=m["sources"]
+          assert len(a)==60 and len({r["family"] for r in a})==60
+          assert len({r["sha256"] for r in a})==60
+          assert m["cap_s"]==10.0 and not m["blind_holdout"] and not m["promotion"]
+          print("DELTA4_INPUT_INTEGRITY_PASS",len(a),len({r["family"] for r in a}))
+          PY
+      - name: Freeze new binary and all original source SHAs for 12 paired shards
+        run: |
+          set -euo pipefail
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          tar -czf delta4_bench_frozen.tgz \
+            build/drnas-deltacoop4 build/drnas-deltacoop3 \
+            build/drat-trim cross/x59/build/kissat cross/x59/build/cadical \
+            build/DELTA4_FROZEN.sha256 delta4_sources
+          ls -lh delta4_bench_frozen.tgz
+          echo "DELTA4_PREFLIGHT_SUCCESS: 60 original diverse SAT2024 formulas, 10s, proof first; no main edits" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4-proof-first-frozen
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4_bench_frozen.tgz
+            delta4_build.log
+            delta4_preflight.log
+            delta4_sources.log
+            build/DELTA4_BUILD.json
+            delta4_sources/manifest.json
+
+  real60_paired:
+    needs: proof_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta4-proof-first-frozen
+          path: frozen/delta4
+      - name: 5 originals x 2 repeats x 7 arms, per-arm 10s, serial one CPU, verify every proof
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_deltacoop4/paired.py \
+            shard --shard ${{ matrix.shard }} | tee delta4_shard.log
+          grep -q '^DELTA4_SHARD_PASS ' delta4_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4_shards/${{ matrix.shard }}/manifest.json
+            delta4_shards/${{ matrix.shard }}/trials.jsonl
+            delta4_shard.log
+
+  aggregate:
+    needs: real60_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta4-proof-first-frozen
+          path: frozen/delta4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: delta4-shard-*
+          path: delta4_downloads
+          merge-multiple: false
+      - name: Reconcile all 840 original-source attempts, proof status and family bootstrap
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/delta4/delta4_bench_frozen.tgz
+          sha256sum -c build/DELTA4_FROZEN.sha256
+          python3 -u research/drnas_deltacoop4/paired.py aggregate | tee delta4_final.log
+          grep -q '^DELTA4_FINAL ' delta4_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("delta4_final/report.json"))
+          assert r["attempts"]==840 and r["sources"]==60 and r["cap_s"]==10.0
+          assert r["one_cpu_per_solver"] and not r["blind_holdout"] and not r["promotion"]
+          print("DELTA4_RECONCILED",r["attempts"],r["fields"]["D4"]["math"]["bridge_injected"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: delta4-real60-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            delta4_final/
+            delta4_final.log
