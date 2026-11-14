@@ -1,0 +1,75 @@
+name: DRNAS PCMAX MIXED UNSAT1 certified remaining random 34
+on:
+  push:
+    branches: [experiment/drnas-pcmax-mixed-unsat1-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-mixed-unsat1.yml
+      - research/pcmax_capacity/check_mixed_unsat.py
+      - research/pcmax_capacity/propose_mixed_unsat.py
+      - research/pcmax_capacity/benchmark_mixed_unsat1.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-mixed-unsat1-20261114
+  cancel-in-progress: false
+jobs:
+  independent_proof_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile unchanged CLAUSE-HALL2 native optional guard
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+      - name: Existing Hall safety regression
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall.py \
+            --binary build/drnas-pcmax --output results/mixed-hall-smoke
+      - name: Audit same seeded 116 original test CNFs and independent proofs
+        run: |
+          python3 research/pcmax_capacity/benchmark_mixed_unsat1.py \
+            --binary build/drnas-pcmax --out results/mixed-unsat1 \
+            --native-budget-ms 700 --proof-budget-ms 50
+      - name: Print conservative findings including UNKNOWN
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path("results/mixed-unsat1/summary.json")
+          if not p.exists():
+              print("No complete result, consult failing job and partial trials.")
+              raise SystemExit(0)
+          s=json.loads(p.read_text())
+          lines=["# Exact frozen-116 certified proof audit", "",
+             "Research-stage external bounded proof producers, NOT integrated production CDCL, and NOT DRAT/LRAT.",
+             f"Cases: {s['total']}; expected UNSAT: {s['expected_unsat']}; SAT controls: {s['sat_controls']}.",
+             f"Native Hall2: {s['hall2_certified']}; newly certified: {s['newly_certified']}; combined: {s['combined_certified']}; false UNSAT: {s['false_unsat']}.",
+             "", "| Family | Total | Hall2 | Added proof | UNKNOWN |", "|---|---:|---:|---:|---:|"]
+          for family,row in s['families'].items():
+              lines.append(f"| {family} | {row['total']} | {row['hall2']} | {row['new']} | {row['unresolved']} |")
+          lines.append("")
+          lines.append("Verified new methods: "+json.dumps(s['methods'],sort_keys=True))
+          report=chr(10).join(lines)+chr(10)
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(report)
+          PY
+      - name: Archive exact original CNF, source SHA, certs, traces, source and binary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-mixed-unsat1-original116-proofs
+          retention-days: 60
+          path: |
+            results/mixed-unsat1/
+            results/mixed-hall-smoke/
+            research/pcmax_capacity/benchmark_mixed_unsat1.py
+            research/pcmax_capacity/propose_mixed_unsat.py
+            research/pcmax_capacity/check_mixed_unsat.py
+            research/pcmax_capacity/check_clause_hall.py
+            src/pcmax_clause_hall.hpp
+            build/drnas-pcmax
