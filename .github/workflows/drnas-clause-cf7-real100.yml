@@ -1,0 +1,126 @@
+name: DRNAS CF7 REAL100 B2L32 CF5 BASE Kissat CaDiCaL verified
+on:
+  push:
+    branches:
+      - experiment/drnas-clause-cf7-real100-five-arm-20261114
+    paths:
+      - .github/workflows/drnas-clause-cf7-real100.yml
+      - research/drnas_clause_cf7_real100.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-cf7-real100-20261114
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: frozen/original_proof
+      - name: Build pinned CF5 and CF6 and select 100 original SAT2024 CNFs
+        run: |
+          set -euo pipefail
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          tar -xzf frozen/original_proof/real36_binaries.tgz
+          sha256sum -c build/REAL36_SHA256SUMS
+          python3 -m pip install --user remotezip
+          python3 -m py_compile research/drnas_clause_cf7_real100.py
+          python3 -u research/drnas_clause_cf6_build.py | tee cf7_build.log
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_clause_cf7_real100.py collect | tee cf7_collect.log
+          grep -q '^CF7_FROZEN ' cf7_collect.log
+          tar -czf cf7_binaries.tgz build/drnas-clause-cf6 build/drnas-clause-cf5 build/cadical build/kissat build/drat-trim
+          echo 'CF7 100 original SAT2024 sources, five paired arms, 8s cap, no blind claim.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf7-source-manifest
+          retention-days: 45
+          path: |
+            cf7_inputs.tgz
+            cf7/manifest.json
+            cf7_collect.log
+            cf7_build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf7-compiled-binaries
+          retention-days: 45
+          path: cf7_binaries.tgz
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf7-source-manifest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf7-compiled-binaries
+          path: .
+      - name: Single logical CPU paired five-arm original CNF trials
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          tar -xzf cf7_binaries.tgz
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_clause_cf7_real100.py shard --shard ${{ matrix.shard }} | tee cf7_shard.log
+          grep -q '^CF7_SHARD_PASS ' cf7_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf7-shard-${{ matrix.shard }}
+          retention-days: 45
+          path: cf7/shards/${{ matrix.shard }}/
+  report:
+    needs: paired
+    runs-on: ubuntu-24.04
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf7-source-manifest
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cf7-shard-*
+          path: cf7/downloads
+      - name: Final verified PAR2 report
+        run: |
+          set -euo pipefail
+          test -f cf7/manifest.json
+          python3 -u research/drnas_clause_cf7_real100.py final | tee cf7_final.log
+          grep -q '^CF7_FINAL ' cf7_final.log
+          cat cf7/final/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cf7-real100-final
+          retention-days: 60
+          path: |
+            cf7/final/report.json
+            cf7_final.log
