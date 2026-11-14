@@ -111,12 +111,12 @@ def make_cnf(graph_id,kind,n,edges,colors,seed,variant):
             loc=low[i] if variant.startswith("low") else high[i]
             col=choice_colors[i]
             target=offset+3*loc+col+1
-            link_role.append({"slot":i,"attached":True,"vertex":loc,
+            link_role.append({"slot":i,"y_variable":y,"attached":True,"vertex":loc,
                               "degree":degrees[loc],"color_index":col,
                               "target_variable":target})
         else:
             target=dummy[i]
-            link_role.append({"slot":i,"attached":False,"vertex":None,
+            link_role.append({"slot":i,"y_variable":y,"attached":False,"vertex":None,
                               "degree":None,"color_index":None,
                               "target_variable":target})
         clauses += [[-y,target],[y,-target]]
@@ -156,6 +156,7 @@ def write(folder):
                          for c in clauses]
                 for link in links:
                     link["target_variable"]=perm[link["target_variable"]]
+                    link["y_variable"]=perm[link["y_variable"]]
                 order=list(range(len(clauses)))
                 random.Random(seed^0x57AB1E).shuffle(order)
                 clauses=[clauses[i] for i in order]
@@ -167,7 +168,8 @@ def write(folder):
                 " ".join(map(str,c))+" 0\n" for c in clauses)
             path=folder/(graph_id+"__"+variant+".cnf")
             path.write_text(text)
-            entry={"name":graph_id+"__"+variant,"graph_id":graph_id,
+            entry={"name":graph_id+"__"+variant,
+                   "family":"graphablation/"+kind,"graph_id":graph_id,
                    "graph_kind":kind,"graph_vertices":n,"graph_edges":len(edges),
                    "graph_edges_explicit":edges,"graph_sha256":common["graph_sha256"],
                    "graph_degree":common["graph_degree"],
