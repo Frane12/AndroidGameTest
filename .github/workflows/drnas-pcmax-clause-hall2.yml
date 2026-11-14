@@ -1,0 +1,88 @@
+name: DRNAS PCMAX CLAUSE-HALL2 signed/permuted random UNSAT
+on:
+  push:
+    branches: [experiment/drnas-pcmax-clause-hall2-20261114]
+    paths:
+      - .github/workflows/drnas-pcmax-clause-hall2.yml
+      - src/pcmax_clause_hall.hpp
+      - research/pcmax_capacity/test_clause_hall2_edges.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-clause-hall2-20261114
+  cancel-in-progress: false
+jobs:
+  hall2_proof_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile optional native Hall2 module without modifying main CDCL
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+      - name: Existing safety regression and independent clause certificate checker
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall.py \
+            --binary build/drnas-pcmax --output results/hall2-smoke
+      - name: Exactly same 116 frozen-seed UNSAT and SAT-control instances
+        run: |
+          python3 research/pcmax_capacity/random_unsat_probe.py \
+            --binary build/drnas-pcmax --out results/hall2-random116 --budget-ms 700
+      - name: Additional randomized wide signed/permuted SAT near-miss controls
+        run: |
+          python3 research/pcmax_capacity/test_clause_hall2_edges.py \
+            --binary build/drnas-pcmax --out results/hall2-adversarial
+      - name: Original unmodified 2026 scheduling and exam CNFs proof-first replay
+        run: |
+          python3 research/pcmax_capacity/benchmark_official2026_clause1.py \
+            --binary build/drnas-pcmax --out results/hall2-official2026 \
+            --budget-ms 1000 --repetitions 2
+      - name: Summarize exact results and failures
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path("results/hall2-random116/summary.json")
+          if not p.exists():
+              print("No completed random result: examine failed step.")
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          lines=["# CLAUSE-HALL2 comparison with frozen 116-instance seed", "",
+                 f"Total {d['total']}; certified {d['unsat_certified']}; false UNSAT {d['sat_false_positive']}.", "",
+                 "| Family | Total | Certified | UNKNOWN |",
+                 "|---|---:|---:|---:|"]
+          for k,x in d["families"].items():
+              lines.append(f"| {k} | {x['total']} | {x['certified']} | {x['unknown']} |")
+          e=Path("results/hall2-adversarial/summary.json")
+          if e.exists():
+              a=json.loads(e.read_text())
+              lines.extend(["",f"Extra SAT controls {a['sat_controls']}; false UNSAT {a['false_unsat']}; extra certified UNSAT {a['unsat_certified']}."])
+          f=Path("results/hall2-official2026/summary.json")
+          if f.exists():
+              o=json.loads(f.read_text())
+              lines.extend(["",f"Original 2026 sources {o['selected_sources']}; trials {o['trials']}; verified UNSAT {o['unsat_verified']}."])
+          report="\n".join(lines)+"\n"
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(report)
+          PY
+      - name: Archive original formulas, SHA, binary, source, certificates and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-clause-hall2-frozen116-and-official
+          retention-days: 60
+          path: |
+            results/hall2-smoke/
+            results/hall2-random116/
+            results/hall2-adversarial/
+            results/hall2-official2026/
+            src/pcmax_clause_hall.hpp
+            research/pcmax_capacity/random_unsat_probe.py
+            research/pcmax_capacity/test_clause_hall2_edges.py
+            research/pcmax_capacity/check_clause_hall.py
+            build/drnas-pcmax
