@@ -1,0 +1,175 @@
+name: DRNAS FUSION1B original-CNF PAR2 vs CORE FUSION1A SIGNAL8
+on:
+  push:
+    branches: [experiment/drnas-fusion1b-par2-20261114]
+    paths:
+      - .github/workflows/drnas-fusion1b-par2.yml
+      - research/drnas_fusion1b_par2/benchmark.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fusion1b-par2-40-source-paired-20261114
+  cancel-in-progress: false
+
+jobs:
+  frozen_par2_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43605655197
+          name: fusion1-cold-native-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/fusion1b
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43604975095
+          name: fusion1-cold-native-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/fusion1a
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43387395060
+          name: gate-real36-inputs
+          github-token: ${{ github.token }}
+          path: frozen/real36
+      - name: Restore frozen A and B, strict SHA, original real36 metadata
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/fusion1b/fusion1_frozen.tgz
+          mkdir -p frozen/fusion1a/native
+          tar -xzf frozen/fusion1a/fusion1_frozen.tgz -C frozen/fusion1a/native
+          tar -xzf frozen/real36/real36_inputs.tgz
+          sha256sum -c build/FUSION1_FROZEN.sha256
+          (cd frozen/fusion1a/native && sha256sum -c build/FUSION1_FROZEN.sha256)
+          python3 -m py_compile research/drnas_fusion1b_par2/benchmark.py
+      - name: Freeze 40 outcomes-blind source SHAs; independently certify preflight and prove CORE/SHADOW equivalence
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "FUSION1B_PAR2_PREFLIGHT_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_fusion1b_par2/benchmark.py smoke \
+            | tee fusion_par2_smoke.log
+          grep -q '^FUSION1B_PAR2_SOURCES ' fusion_par2_smoke.log
+          grep -q '^FUSION1B_PAR2_PREFLIGHT_PASS ' fusion_par2_smoke.log
+          sha256sum -c build/FUSION1_FROZEN.sha256
+          (cd frozen/fusion1a/native && sha256sum -c build/FUSION1_FROZEN.sha256)
+          tar -czf fusion_par2_frozen.tgz \
+            build/drnas-fusion1 build/drnas-deltax-signal \
+            build/drat-trim build/FUSION1_FROZEN.sha256 \
+            frozen/fusion1a/native/build/drnas-fusion1 \
+            frozen/fusion1a/native/build/drnas-deltax-signal \
+            frozen/fusion1a/native/build/drat-trim \
+            frozen/fusion1a/native/build/FUSION1_FROZEN.sha256 \
+            fusion1b_par2_inputs
+          echo "PAR2 E2E 6s (timeout=12s); 40 source SHA; original model/DRAT proof first; frozen A & B; no main" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion1b-par2-pinned-inputs-and-binaries
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            fusion_par2_frozen.tgz
+            fusion_par2_smoke.log
+            fusion1b_par2_preflight/
+            fusion1b_par2_inputs/manifest.json
+            fusion1b_par2_inputs/freeze.json
+
+  paired_PAR2:
+    needs: frozen_par2_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: fusion1b-par2-pinned-inputs-and-binaries
+          path: frozen/par2
+      - name: Run paired serial single-CPU 5 arms x 2 reps on 10 source CNFs per shard
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/par2/fusion_par2_frozen.tgz
+          sha256sum -c build/FUSION1_FROZEN.sha256
+          (cd frozen/fusion1a/native && sha256sum -c build/FUSION1_FROZEN.sha256)
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "FUSION1B_PAR2_SHARD_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_fusion1b_par2/benchmark.py \
+            shard --shard ${{ matrix.shard }} | tee fusion_par2_shard.log
+          grep -q '^FUSION1B_PAR2_SHARD_PASS ' fusion_par2_shard.log
+          echo "Original SHA/ SAT witness/ DRAT certified, wall PAR2 & CPU/RSS logged with 6s solve cap" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion-par2-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            fusion1b_par2_shards/${{ matrix.shard }}/
+            fusion_par2_shard.log
+
+  reconcile_PAR2:
+    needs: paired_PAR2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: fusion1b-par2-pinned-inputs-and-binaries
+          path: frozen/par2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fusion-par2-shard-*
+          merge-multiple: false
+          path: fusion1b_par2_downloads
+      - name: Validate all 400 paired attempts and source-bootstrap 95 percent confidence intervals
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/par2/fusion_par2_frozen.tgz
+          python3 -u research/drnas_fusion1b_par2/benchmark.py aggregate \
+            | tee fusion_par2_final.log
+          grep -q '^FUSION1B_PAR2_FINAL ' fusion_par2_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("fusion1b_par2_final/report.json"))
+          assert r["status"]=="COMPLETE" and r["cases"]==40
+          assert r["trials"]==400 and r["reps"]==2
+          assert r["cap_s"]==6 and r["timeout_PAR2_penalty_s"]==12
+          assert r["one_logical_cpu_per_solver"]
+          assert r["independent_model_and_original_unsat_DRAT"]
+          assert r["core_SHADOW_CDCL_identical_when_verified"]
+          assert r["retrospective_not_blind"] and r["no_promotion"] and r["main_untouched"]
+          print("FUSION1B_PAR2_VERIFIED_COMPLETE",
+                {a:{"solved":s["verified_solved"],"PAR2":s["PAR2_sum_s"]}
+                 for a,s in r["overall"].items()})
+          PY
+          echo "Paired source-stratified original SAT2024 + graph + hard PAR2 report; no promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion1b-par2-verified-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            fusion1b_par2_final/
+            fusion_par2_final.log
