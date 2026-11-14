@@ -126,7 +126,18 @@ def run_one(src,mode,rep,cap,folder):
     g5={}
     dx={}
     cdcl={}
-    if not killed:
+    if not killed and not events(stderr,"MATH_GUARD4_STATS"):
+        # A solver killed by RLIMIT_FSIZE/SIGXFSZ cannot emit its final stats.
+        # This is an UNVERIFIED failure charged full PAR2, never a solve.
+        if p.returncode in (153, 128+signal.SIGXFSZ, -signal.SIGXFSZ):
+            status="RESOURCE_LIMIT"
+            print("MG5_RESOURCE_LIMIT "+json.dumps({
+                "id":src["id"],"mode":mode,"rep":rep,"returncode":p.returncode,
+                "stderr_tail":stderr[-320:]}),flush=True)
+        else:
+            raise RuntimeError(("MATHGUARD_STATS_MISSING_UNEXPECTED",
+                src["id"],mode,rep,p.returncode,stderr[-1000:],stdout[-300:]))
+    if not killed and status!="RESOURCE_LIMIT":
         g,verified_logged=check_lemmas(stderr,clauses,mode)
         g5_events=events(stderr,"MATH_GUARD5_STATS")
         assert len(g5_events)==1,("MISSING_GUARD5_TELEMETRY",src["id"],mode)
