@@ -34,8 +34,8 @@ def exact_sat(clauses,nvars):
         if satisfied(clauses,model): return model
     return None
 def write_cnf(path,clauses,nvars):
-    raw=(f"p cnf {nvars} {len(clauses)}\\n" +
-         "".join(" ".join(map(str,c))+" 0\\n" for c in clauses)).encode()
+    raw=(f"p cnf {nvars} {len(clauses)}\n" +
+         "".join(" ".join(map(str,c))+" 0\n" for c in clauses)).encode()
     path.write_bytes(raw)
     return raw
 def add_noise(rng,clauses,start):
@@ -210,7 +210,7 @@ def main():
                  "witness_sat_checked":label=="SAT","certificate":proof_out,
                  "telemetry":telemetry}
             records.append(row)
-            stream.write(json.dumps(row,sort_keys=True)+"\\n")
+            stream.write(json.dumps(row,sort_keys=True)+"\n")
             stream.flush()
             print("RANDOM_UNSAT_TRIAL "+json.dumps({k:row[k] for k in
                   ("index","family","expected","status","reason","seconds",
@@ -228,7 +228,7 @@ def main():
            "unknown":sum(r["status"]=="UNKNOWN" for r in rs),
            "reasons":dict(collections.Counter(r["reason"] for r in rs)),
            "certified_seconds":sorted(r["seconds"] for r in rs if r["status"]=="CERTIFIED_UNSAT")}
-    (args.out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\\n")
+    (args.out/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
     print("RANDOM_UNSAT_SUMMARY "+json.dumps(summary,sort_keys=True),flush=True)
     assert summary["sat_false_positive"]==0
 
