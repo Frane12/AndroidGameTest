@@ -1,0 +1,159 @@
+name: DRNAS DELTAX GUARD MIX1 fresh mixed CNFs vs retrospective SAT2024
+on:
+  push:
+    branches: [experiment/drnas-deltax-guard-mix1-20261114]
+    paths:
+      - .github/workflows/drnas-deltax-guard-mix1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-deltax-guard-mix1-single-run
+  cancel-in-progress: false
+
+jobs:
+  frozen_mixed_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43596056826
+          name: deltax-guard1-frozen-preflight
+          github-token: ${{ github.token }}
+          path: frozen/guard1
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43587320318
+          name: delta3-proof-first-preflight
+          github-token: ${{ github.token }}
+          path: frozen/delta3
+      - name: Restore ORIGINAL SAT2024 sources and SHA-frozen GUARD1 binary without rebuilding
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/guard1/deltax_guard_frozen.tgz
+          tar -xzf frozen/delta3/delta3_bench_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          python3 -m py_compile \
+            research/drnas_deltax_guard/mix1_sources.py \
+            research/drnas_deltax_guard/mix1_paired.py
+      - name: Generate SHA-disjoint mixed formulas and verify short independent source/model/proof preflight
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_MIX1_ONE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_guard/mix1_paired.py preflight \
+            | tee deltax_mix1_preflight.log
+          grep -q '^DELTAX_MIX1_SOURCES ' deltax_mix1_preflight.log
+          grep -q '^DELTAX_MIX1_PREFLIGHT_PASS ' deltax_mix1_preflight.log
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          sha256sum -c build/DELTA3_FROZEN.sha256
+          tar -czf deltax_mix1_frozen.tgz \
+            build/drnas-deltax-guard build/drat-trim \
+            build/DELTAX_GUARD_FROZEN.sha256 \
+            deltax_mix1_inputs real36_frozen
+          echo "Mix1 source SHA and safety preflight PASS; frozen GUARD1 binary unchanged" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-mix1-frozen-preflight
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            deltax_mix1_frozen.tgz
+            deltax_mix1_preflight.log
+            deltax_mix1_preflight/
+            deltax_mix1_inputs/manifest.json
+
+  mixed_paired:
+    needs: frozen_mixed_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-mix1-frozen-preflight
+          path: frozen/mix1
+      - name: Four serial frozen GUARD1 arms on mixed 3SAT/XOR/PHP/graph/SAT2024 sources
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/mix1/deltax_mix1_frozen.tgz
+          sha256sum -c build/DELTAX_GUARD_FROZEN.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DELTAX_MIX1_SHARD_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" \
+            python3 -u research/drnas_deltax_guard/mix1_paired.py \
+            shard --shard ${{ matrix.shard }} | tee deltax_mix1_shard.log
+          grep -q '^DELTAX_MIX1_SHARD_PASS ' deltax_mix1_shard.log
+          echo "Source-model and UNSAT proof verified; UNKNOWN not accepted" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-mix1-shard-${{ matrix.shard }}
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            deltax_mix1_shards/${{ matrix.shard }}/
+            deltax_mix1_shard.log
+
+  final_report:
+    needs: mixed_paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deltax-mix1-frozen-preflight
+          path: frozen/mix1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deltax-mix1-shard-*
+          merge-multiple: false
+          path: deltax_mix1_downloads
+      - name: Reconcile all 128 mixed paired attempts, safety gates and source-family performance
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/mix1/deltax_mix1_frozen.tgz
+          python3 -u research/drnas_deltax_guard/mix1_paired.py aggregate \
+            | tee deltax_mix1_final.log
+          grep -q '^DELTAX_MIX1_FINAL ' deltax_mix1_final.log
+          python3 - <<'PY'
+          import json
+          r=json.load(open("deltax_mix1_final/report.json"))
+          assert r["status"]=="COMPLETE" and r["sources"]==32 and r["trials"]==128
+          assert r["new_synthetic_sources"]==24 and r["retrospective_real2024_sources"]==8
+          assert r["single_logical_cpu_per_solver"] and r["solver_unchanged_from_guard1"]
+          assert not r["blind_holdout"] and not r["no_general_speed_claim"] is False and not r["no_promotion"] is False
+          print("DELTAX_MIX1_COMPLETE",r["matched_all_three"],
+                r["guard_conflict_better_vs_join"],
+                r["guard_conflict_worse_vs_join"])
+          PY
+          echo "MIX1 report: separate new synthetic and retrospective real SAT2024; no promotion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deltax-mix1-paired-final
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            deltax_mix1_final/
+            deltax_mix1_final.log
