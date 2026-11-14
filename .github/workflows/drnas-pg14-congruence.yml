@@ -1,0 +1,122 @@
+name: DRNAS PG14 native congruence preprocessing verified real gaps
+on:
+  push:
+    branches:
+      - experiment/drnas-pg14-native-congruence-20261114
+    paths:
+      - .github/workflows/drnas-pg14-congruence.yml
+      - research/drnas_pg14_congruence.inc
+      - research/drnas_pg14_build.py
+      - research/drnas_pg14_bench.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-pg14-congruence-20261114
+  cancel-in-progress: false
+jobs:
+  frozen_build_and_smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-compiled-binaries
+          github-token: ${{ github.token }}
+          path: .
+      - name: Compile native congruence preprocessing, pin originals, smoke proof checker
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          tar -xzf cf7_binaries.tgz
+          echo '9768340a8bed3bac3e43f0fb29780c4d5165c50283f90eae141733a7b76106fc  src/drnas_x5.cpp' | sha256sum -c -
+          python3 -m py_compile research/drnas_pg14_build.py research/drnas_pg14_bench.py
+          python3 -u research/drnas_pg14_build.py | tee pg14_build.log
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_pg14_bench.py smoke | tee pg14_smoke.log
+          grep -q '^PG14_SMOKE_PASS ' pg14_smoke.log
+          tar -czf pg14_frozen.tgz build/drnas-pg14 build/drnas-clause-cf6 build/drat-trim build/kissat build/cadical
+          echo "PG14 smoke: all original-CNF SAT models and UNSAT DRAT checked; read-only main" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pg14-frozen-binaries
+          retention-days: 45
+          path: |
+            pg14_frozen.tgz
+            pg14_build.log
+            pg14_smoke.log
+  matched_case:
+    needs: frozen_build_and_smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        source_id: [12,13,82]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: pg14-frozen-binaries
+          path: .
+      - name: Paired 8s and 20s original-CNF certified case
+        run: |
+          set -euo pipefail
+          tar -xzf cf7_inputs.tgz
+          tar -xzf pg14_frozen.tgz
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u research/drnas_pg14_bench.py case --id ${{ matrix.source_id }} | tee pg14_case.log
+          grep -q '^PG14_CASE_PASS ' pg14_case.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pg14-case-${{ matrix.source_id }}
+          retention-days: 45
+          path: pg14/${{ matrix.source_id }}/
+  report:
+    needs: matched_case
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pg14-case-*
+          path: pg14/downloads
+      - name: Certified PAR2 report, no promotion
+        run: |
+          set -euo pipefail
+          python3 -u research/drnas_pg14_bench.py final | tee pg14_final.log
+          grep -q '^PG14_FINAL ' pg14_final.log
+          cat pg14/final/report.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pg14-congruence-final
+          retention-days: 60
+          path: |
+            pg14/final/report.json
+            pg14_final.log
