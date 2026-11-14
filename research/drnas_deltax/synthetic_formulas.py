@@ -69,7 +69,7 @@ def write(folder):
     out=[]
     for case in generate():
         text=("p cnf %d %d\n"%(case["n"],len(case["clauses"]))+
-             "".join(" ".join(map(str,row))+" 0\n" for row in case["clauses"])
+             "".join(" ".join(map(str,row))+" 0\n" for row in case["clauses"]))
         p=folder/(case["name"]+".cnf")
         p.write_text(text)
         out.append({k:v for k,v in case.items() if k!="clauses"}|
