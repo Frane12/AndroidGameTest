@@ -1,0 +1,70 @@
+name: DRNAS MATH-GUARD2 certified diamond one-core graph-colouring
+
+on:
+  push:
+    branches: [experiment/drnas-mathguard2-diamond3c-20261114]
+    paths:
+      - research/drnas_mathguard2/**
+      - .github/workflows/drnas-mathguard2-diamond3c.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-mathguard2-diamond3c
+  cancel-in-progress: false
+
+jobs:
+  certified_graph3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned independent UNSAT DRAT checker
+        run: |
+          set -euo pipefail
+          mkdir -p external
+          git clone https://github.com/marijnheule/drat-trim.git external/drat-trim
+          git -C external/drat-trim checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          make -C external/drat-trim
+          test -x external/drat-trim/drat-trim
+      - name: Independent resolution and RUP certificate audit plus isolated native build
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/drnas_mathguard2/build.py research/drnas_mathguard2/benchmark.py
+          python3 -u research/drnas_mathguard2/build.py | tee mathguard2_build.log
+          grep -q '^MATH_GUARD2_CERTIFICATE_PASS ' mathguard2_build.log
+          grep -q '^MATH_GUARD2_BUILD ' mathguard2_build.log
+      - name: Serial paired BASE GUARD1 GUARD2 on one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          taskset -c "$CPU" python3 -u research/drnas_mathguard2/benchmark.py | tee mathguard2_benchmark.log
+          grep -q '^GRAPH3_G2_FINAL ' mathguard2_benchmark.log
+      - name: Final generated report audit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('mathguard2_graph3/report.json').read_text())
+          assert r['one_cpu'] and r['one_solver_process_at_a_time']
+          assert r['runs']==r['graphs']*3*3
+          assert not r['holdout'] and not r['promotion']
+          print('MATH_GUARD2_AUDITED',r)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathguard2-graph3c-audit
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            mathguard2_build.log
+            mathguard2_benchmark.log
+            build/MATH_GUARD2_BUILD.json
+            mathguard2_graph3/report.json
+            mathguard2_graph3/trials.json
