@@ -1,0 +1,68 @@
+name: DRNAS MG6B real8 original-CNF VeriPB pilot
+on:
+  push:
+    branches: [experiment/drnas-mg6b-real8-pilot-20261115]
+    paths:
+      - research/mg6b_real8_pilot.py
+      - .github/workflows/drnas-mg6b-real8.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-mg6b-real8-20261115
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned external VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Build source-frozen native BDD reference
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          python3 -m py_compile research/mg6_general_capacity.py research/mg6b_real8_pilot.py research/pcmax_capacity/emit_veripb_capacity_weighted2.py
+      - name: Eight authentic original CNFs with sequential VeriPB proof check
+        run: |
+          set -euo pipefail
+          python3 -u research/mg6b_real8_pilot.py
+      - name: Always show exact outcomes
+        if: always()
+        run: |
+          if test -s results/mg6b_real8/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/mg6b_real8/summary.json").read_text())
+          msg=("# MG6B real8, known original PCMAX CNFs\n\n"
+               +f"Checked: {d['cases']}; MG6 VeriPB: {d['mg6_veripb_unsat']}; "
+               +f"BDD VeriPB: {d['bdd_veripb_unsat']}; "
+               +f"SAT controls: {d['sat_controls']}; "
+               +f"errors: {len(d['failures'])}.\n\n"
+               +"Retrospective family-targeted test; NOT blind or PAR2.\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-mg6b-real8-original-verified-audit
+          retention-days: 30
+          path: |
+            research/mg6b_real8_pilot.py
+            results/mg6b_real8/summary.json
+            results/mg6b_real8/rows.json
+            results/mg6b_real8/*/*.log
