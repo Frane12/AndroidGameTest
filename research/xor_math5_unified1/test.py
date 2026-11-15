@@ -76,9 +76,9 @@ def main():
         neg=eo(groups)
         run_one(t,"eo_odd_unsat",neg,6,20,require_math5=True)
         # Removing only a positive ALO constraint makes this case SAT.
-        run_one(t,"eo_missing_alo_sat",neg[1:],6,10)
+        run_one(t,"eo_missing_alo_sat",eo(groups[1:]),6,10)
         # Removing one pairwise mutex also prevents a sound EO derivation.
-        gone=neg.index([-1,-2])
+        gone=neg.index([-1,-3])
         run_one(t,"eo_missing_mutex_sat",neg[:gone]+neg[gone+1:],6,10)
         run_one(t,"xor3_conflict_unsat",xor(3,0)+xor(3,1),3,20,require_math5=True)
         run_one(t,"xor3_sat",xor(3,1),3,10)
