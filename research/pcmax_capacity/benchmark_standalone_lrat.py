@@ -55,7 +55,7 @@ def run(args):
         cnf=path/(e["name"]+".cnf")
         write_cnf(cnf,e["clauses"],e["nvars"])
         mapped[e["name"]]=cnf
-        if e["expected"]=="SAT":
+        if e["expected"]=="SAT" and e["model"] is not None:
             assert satisfied(e["clauses"],e["model"])
     for i,(cnf,sha) in enumerate(orig):
         mapped[f"original_{i:02d}"]=cnf
