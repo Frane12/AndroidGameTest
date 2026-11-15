@@ -1,0 +1,83 @@
+name: DRNAS REALBLIND67 audit-only replay of frozen evidence
+on:
+  push:
+    branches:
+      - experiment/drnas-realblind67-audit-only-20261115
+    paths:
+      - research/unified_realblind100/benchmark.py
+      - .github/workflows/drnas-realblind67-audit-only.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-realblind67-audit-replay
+  cancel-in-progress: false
+jobs:
+  audit_frozen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download immutable 2026-11-15 original solver inputs and outputs
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43712040086
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          name: realblind100-frozen
+      - name: Download all 804 recorded trials and original failed audit
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43712040086
+          repository: Frane12/AndroidGameTest
+          github-token: ${{ github.token }}
+          name: realblind100-final
+      - name: Independently replay report without re-solving or changing raw trials
+        run: |
+          set -euo pipefail
+          tar -xzf realblind100-frozen.tgz
+          test -f unified_realblind100_results/final.json
+          cp unified_realblind100_results/final.json original_failed_audit.json
+          sha256sum unified_realblind100_results/shard-*/trials.jsonl > trial-sha256-before.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('unified_realblind100_results')
+          old=json.loads(Path('original_failed_audit.json').read_text())
+          assert old['source_count']==67 and old['attempts']==804
+          assert old['status']=='CRITICAL' and len(old['critical'])==11
+          assert all(x['status']=='TIMEOUT' and x['rc']==-9 and not x['accepted']
+                     for x in old['critical'])
+          assert len(list(root.glob('shard-*/trials.jsonl')))==10
+          PY
+          python3 -u research/unified_realblind100/benchmark.py report | tee realblind_repaired_audit.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path('original_failed_audit.json').read_text())
+          b=json.loads(Path('unified_realblind100_results/final.json').read_text())
+          assert b['status']=='COMPLETE' and b['source_count']==67 and b['attempts']==804
+          assert not b['critical'] and b['raw_critical_count']==11
+          assert len(b['timeout_telemetry_warnings'])==11
+          assert a['totals']==b['totals'] and a['paired']==b['paired']
+          assert a['best_reference']==b['best_reference']
+          print('REALBLIND67_AUDIT_REPLAY_OK original=43712040086 trials=804 warnings=11',
+                'same_par2=true same_solutions=true',flush=True)
+          PY
+          sha256sum -c trial-sha256-before.txt
+          cp unified_realblind100_results/final.json repaired_audit.json
+          cat realblind_repaired_audit.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realblind67-repaired-audit-only
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            repaired_audit.json
+            original_failed_audit.json
+            realblind_repaired_audit.log
+            trial-sha256-before.txt

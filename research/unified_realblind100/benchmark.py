@@ -227,11 +227,18 @@ def trial(src,arm,rep):
         accepted=certified and elapsed<=CAP
         strict=accepted and kind in ("MODEL","DRAT","FRAT")
         stats={}
+        telemetry_truncated_on_timeout=False
         for line in solve["stderr"].splitlines():
             for prefix in ("SAT_CONSTRUCT_STATS ","MATH5_UNIFIED_STATS "):
                 if line.startswith(prefix):
                     try:stats[prefix.strip()]=json.loads(line[len(prefix):])
-                    except ValueError:critical=True
+                    except ValueError:
+                        # SIGKILL can leave a partial JSON stats line on stderr.
+                        # This is NOT a bad SAT model or a bad UNSAT proof.
+                        if solve["expired"]:
+                            telemetry_truncated_on_timeout=True
+                        else:
+                            critical=True
         if certified and ((solve["returncode"]==10 and src["catalog_label"]=="unsat")
                           or (solve["returncode"]==20 and src["catalog_label"]=="sat")):
             reason="CERTIFIED_RESULT_DIFFERS_FROM_UNVERIFIED_CATALOG_LABEL"
@@ -240,6 +247,7 @@ def trial(src,arm,rep):
             arm=arm,rep=rep,rc=solve["returncode"],status=status,
             accepted=accepted,strict_accepted=strict,certificate_kind=kind,
             critical=critical,reason=reason,
+            telemetry_truncated_on_timeout=telemetry_truncated_on_timeout,
             solver_s=round(solver_s,6),checker_s=round(checker_s,6),
             e2e_s=round(elapsed,6),PAR2_s=round(elapsed if accepted else 2*CAP,6),
             PAR2_strict_s=round(elapsed if strict else 2*CAP,6),
@@ -267,6 +275,26 @@ def shard(idx):
     print("REALBLIND100_SHARD "+json.dumps(dict(shard=idx,source_count=len(selected),
         trials=len(records),summary=sums),sort_keys=True),flush=True)
 
+def interrupted_timeout_telemetry(r):
+    """Reclassify ONLY legacy incomplete telemetry at a killed time limit.
+
+    The frozen trial code set critical=True on JSON decode errors even after
+    SIGKILL timed out the solver. It could not set other critical reasons on
+    expired executions; never touch accepted proofs or non-timeout failures.
+    Original trial files and their raw critical flags remain immutable.
+    """
+    return (r.get("critical") is True
+        and r.get("status")=="TIMEOUT"
+        and r.get("rc")==-signal.SIGKILL
+        and r.get("accepted") is False
+        and r.get("strict_accepted") is False
+        and r.get("certificate_kind") is None
+        and r.get("proof_sha256") is None
+        and r.get("proof_bytes")==0
+        and r.get("stats")=={}
+        and r.get("reason") is None
+        and r.get("solver_s",0)>=CAP-0.10)
+
 def report():
     sources=frozen_sources()["sources"]
     n=len(sources)
@@ -280,7 +308,12 @@ def report():
     assert {(r["id"],r["rep"],r["arm"]) for r in rows}==expected
     by_id={s["id"]:s for s in sources}
     assert all(r["source_sha256"]==by_id[r["id"]]["sha256"] for r in rows)
-    problems=[r for r in rows if r["critical"]]
+    warnings=[dict(id=r["id"],arm=r["arm"],rep=r["rep"],
+                   source_sha256=r["source_sha256"],status=r["status"],
+                   rc=r["rc"],raw_critical=r["critical"],
+                   classification="TRUNCATED_TIMEOUT_TELEMETRY")
+              for r in rows if interrupted_timeout_telemetry(r)]
+    problems=[r for r in rows if r["critical"] and not interrupted_timeout_telemetry(r)]
     for source in sources:
         statuses={r["status"].split("_")[0] for r in rows if r["id"]==source["id"] and r["accepted"]}
         if "SAT" in statuses and "UNSAT" in statuses:
@@ -317,11 +350,16 @@ def report():
         real_origins=True,no_xor_source_filter=True,
         independent_certificates_required=True,
         original_source_sha256=sha(DATA/"manifest.json"),
-        best_reference=best_reference,totals=totals,paired=boots,critical=problems)
+        best_reference=best_reference,totals=totals,paired=boots,
+        raw_critical_count=sum(bool(r["critical"]) for r in rows),
+        timeout_telemetry_warnings=warnings,
+        original_trials_unchanged=True,
+        critical=problems)
     save(OUT/"final.json",final)
     print("REALBLIND100_FINAL "+json.dumps(dict(status=final["status"],
         sources=n,trials=len(rows),best_reference=best_reference,
-        totals=totals,paired=boots,critical_count=len(problems)),sort_keys=True),flush=True)
+        totals=totals,paired=boots,critical_count=len(problems),
+        timeout_telemetry_warnings=len(warnings)),sort_keys=True),flush=True)
     if problems:raise SystemExit("Critical invalid answers/proofs: review frozen audit")
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
