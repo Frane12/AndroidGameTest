@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 #include "drnas_sat_construct.hpp"
+#include "drnas_sat_local.hpp"
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -101,6 +102,9 @@ class Solver {
     void configureX59(bool enabled) { x59_stamp_glue_=enabled; }
     void configureSatClause1(int mode) { sat_clause1_mode_=mode; }
     void configureSatConstruct(double budget_ms) { sat_construct_ms_=budget_ms; }
+    void configureSatLocal(double budget_ms,bool shadow) {
+        sat_local_ms_=budget_ms;sat_local_shadow_=shadow;
+    }
     void writeProofClause(const std::vector<int>& lits) {
         if (!proof_ || x46_clone_) return;
         for (int lit:lits) *proof_ << lit << ' ';
@@ -269,6 +273,65 @@ class Solver {
         return Backdoor::LEARNED;
     }
 
+    // LOCAL-HYBRID1: collect original source clauses only. Source-closed
+    // components may produce a complete checked model. Overlapping XOR
+    // subsets only guide phases; they are NEVER asserted as constraints.
+    // Optional root units require a real BCP failed-literal/RUP witness.
+    void runLocalHybrid() {
+        if (sat_local_ms_<=0 || x46_clone_ || timedOut() ||
+            n_<=0 || n_>15000 || original_count_>130000)return;
+        const auto started=Clock::now();
+        int64_t literals=0;
+        for(const Clause& c:clauses_)if(!c.learnt)literals+=c.lits.size();
+        if(literals>600000)return;
+        satconstruct::CNF original;
+        original.reserve(static_cast<size_t>(original_count_));
+        for(const Clause& c:clauses_)if(!c.learnt)original.push_back(c.lits);
+        const double spent=std::chrono::duration<double,std::milli>(
+            Clock::now()-started).count();
+        const double remaining=sat_local_ms_-spent;
+        if(remaining>0.1 && !timedOut()) {
+            auto found=satlocal::analyze(n_,original,remaining);
+            sat_local_components_=found.source_components;
+            sat_local_solved_=found.solved_components;
+            sat_local_xor_=found.xor_patterns;
+            sat_local_hint_count_=found.hinted_variables;
+            if(!sat_local_shadow_ && found.full()) {
+                leaf_model_=std::move(found.full_model);
+                if(!verifyModel())throw std::runtime_error(
+                    "SAT-LOCAL: full original-CNF model failed validation");
+                sat_local_full_=true;
+            } else if(!sat_local_shadow_) {
+                sat_local_hints_=std::move(found.hints);
+                // Probe only candidate polarities at the root. If assuming
+                // the opposite causes BCP conflict, the hinted unit is RUP
+                // and is logged to the *same* original-CNF DRAT proof.
+                // Otherwise it remains a reversible CDCL phase heuristic.
+                for(int v=0;v<n_ && sat_local_root_probes_<6 && !root_unsat_;++v) {
+                    if(v>=static_cast<int>(sat_local_hints_.size()) ||
+                       !sat_local_hints_[v] || values_[v] ||
+                       decisionLevel()!=0 || timedOut())continue;
+                    if(std::chrono::duration<double,std::milli>(
+                        Clock::now()-started).count()>=sat_local_ms_)break;
+                    const int implied=sat_local_hints_[v]*(v+1);
+                    const auto check=probe(-implied);
+                    ++sat_local_root_probes_;
+                    if(!check.contradiction)continue;
+                    const int cid=storeClause({implied},true);
+                    units_.push_back(cid);
+                    if(!enqueue(implied,cid))
+                        throw std::runtime_error("RUP unit root assignment conflict");
+                    ++sat_local_rup_units_;
+                    const Prop p=propagate(-1);
+                    if(p.result==PropResult::CONFLICT)root_unsat_=true;
+                    if(p.result==PropResult::TIMEOUT)break;
+                }
+            }
+        }
+        sat_local_elapsed_s_=std::chrono::duration<double>(
+            Clock::now()-started).count();
+    }
+
     Result solve() {
         if (timedOut()) return Result::UNKNOWN;
         if (root_unsat_) return Result::UNSAT;
@@ -309,6 +372,14 @@ class Solver {
             p = propagate(-1);
             if (p.result == PropResult::CONFLICT) return Result::UNSAT;
             if (p.result == PropResult::TIMEOUT) return Result::UNKNOWN;
+            if(sat_local_ms_>0.0 && !timedOut()) {
+                runLocalHybrid();
+                if(sat_local_full_)return Result::SAT;
+                if(root_unsat_)return Result::UNSAT;
+                p=propagate(-1);
+                if(p.result==PropResult::CONFLICT)return Result::UNSAT;
+                if(p.result==PropResult::TIMEOUT)return Result::UNKNOWN;
+            }
         }
         while (true) {
             if (timedOut() || x46CloneBudgetReached()) return Result::UNKNOWN;
@@ -363,7 +434,12 @@ class Solver {
                 return Result::SAT;
             }
             const int64_t next_decision=stats_.decisions+1;
-            const int baseline_lit=phase_[v]*(v+1);
+            // Hints are proposed phases, NEVER propagated assignments.
+            const int baseline_lit=(sat_local_ms_>0.0 && !sat_local_shadow_ &&
+                stats_.decisions<64 && stats_.conflicts<32 &&
+                v<static_cast<int>(sat_local_hints_.size()) &&
+                sat_local_hints_[v]!=0)
+                ?sat_local_hints_[v]*(v+1):phase_[v]*(v+1);
             int chosen_lit=satClause1Literal(v,baseline_lit);
             // Two detached snapshots have identical selected-variable,
             // watch lists, heap, phases, learnt clauses, and restart schedule.
@@ -602,6 +678,14 @@ class Solver {
     const std::string& satConstructMethod() const { return sat_construct_method_; }
     double satConstructSeconds() const { return sat_construct_elapsed_s_; }
     bool satConstructFound() const { return sat_construct_found_; }
+    bool satLocalFound() const {return sat_local_full_;}
+    int satLocalComponents() const{return sat_local_components_;}
+    int satLocalSolvedComponents() const{return sat_local_solved_;}
+    int satLocalXorPatterns() const{return sat_local_xor_;}
+    int satLocalHintCount() const{return sat_local_hint_count_;}
+    int satLocalRootProbes() const{return sat_local_root_probes_;}
+    int satLocalRupUnits() const{return sat_local_rup_units_;}
+    double satLocalSeconds() const{return sat_local_elapsed_s_;}
     double elapsed() const { return std::chrono::duration<double>(Clock::now() - begun_).count(); }
     const char* mode() const { return mode_.c_str(); }
 
@@ -613,6 +697,11 @@ class Solver {
     double sat_construct_ms_=0.0, sat_construct_elapsed_s_=0.0;
     bool sat_construct_found_=false;
     std::string sat_construct_method_="OFF";
+    double sat_local_ms_=0.0,sat_local_elapsed_s_=0.0;
+    bool sat_local_shadow_=false,sat_local_full_=false;
+    int sat_local_components_=0,sat_local_solved_=0,sat_local_xor_=0;
+    int sat_local_hint_count_=0,sat_local_root_probes_=0,sat_local_rup_units_=0;
+    std::vector<int8_t> sat_local_hints_;
     int64_t sat_clause1_scans_=0, sat_clause1_flips_=0;
     int64_t sat_clause1_probe_pairs_=0, sat_clause1_failed_literals_=0;
     double sat_clause1_wall_s_=0.0;
@@ -1414,7 +1503,8 @@ int run(int argc, char** argv) {
     bool x58_hotwatch=false;
     bool x59_stamp_glue=false;
     int compare_at=0,x46_conflicts=0, sat_clause_mode=0;
-    double sat_construct_ms=0.0;
+    double sat_construct_ms=0.0, sat_local_ms=0.0;
+    bool sat_local_shadow=false;
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
@@ -1434,6 +1524,8 @@ int run(int argc, char** argv) {
         else if (opt=="--sat-clause1-score") sat_clause_mode=1;
         else if (opt=="--sat-clause1-probe") sat_clause_mode=2;
         else if (opt=="--sat-construct-ms" && i+1<argc) sat_construct_ms=std::stod(argv[++i]);
+        else if (opt=="--sat-local-ms" && i+1<argc) sat_local_ms=std::stod(argv[++i]);
+        else if (opt=="--sat-local-shadow") sat_local_shadow=true;
         else if (opt=="--stats") show_stats=true;
         else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
@@ -1452,6 +1544,9 @@ int run(int argc, char** argv) {
     }
     if (!std::isfinite(sat_construct_ms)||sat_construct_ms<0||sat_construct_ms>1000)
         throw std::runtime_error("invalid --sat-construct-ms");
+    if (!std::isfinite(sat_local_ms)||sat_local_ms<0||sat_local_ms>50 ||
+        (sat_local_shadow && sat_local_ms==0))
+        throw std::runtime_error("invalid --sat-local-ms/shadow");
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
@@ -1502,6 +1597,7 @@ int run(int argc, char** argv) {
             solver->configureX59(x59_stamp_glue);
             solver->configureSatClause1(sat_clause_mode);
             solver->configureSatConstruct(sat_construct_ms);
+            solver->configureSatLocal(sat_local_ms,sat_local_shadow);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
@@ -1591,6 +1687,16 @@ int run(int argc, char** argv) {
                  <<"}\n";
     }
     if (show_stats) {
+        std::cerr<<"SAT_LOCAL_STATS {\"enabled\":"<<(sat_local_ms>0?"true":"false")
+                 <<",\"shadow\":"<<(sat_local_shadow?"true":"false")
+                 <<",\"full\":"<<(solver->satLocalFound()?"true":"false")
+                 <<",\"components\":"<<solver->satLocalComponents()
+                 <<",\"solved_components\":"<<solver->satLocalSolvedComponents()
+                 <<",\"xor_patterns\":"<<solver->satLocalXorPatterns()
+                 <<",\"hints\":"<<solver->satLocalHintCount()
+                 <<",\"root_probes\":"<<solver->satLocalRootProbes()
+                 <<",\"rup_units\":"<<solver->satLocalRupUnits()
+                 <<",\"wall_s\":"<<solver->satLocalSeconds()<<"}\n";
         std::cerr<<"SAT_CONSTRUCT_STATS {\"enabled\":"<<(sat_construct_ms>0?"true":"false")
                  <<",\"found\":"<<(solver->satConstructFound()?"true":"false")
                  <<",\"method\":\""<<solver->satConstructMethod()
