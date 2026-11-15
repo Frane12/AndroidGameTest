@@ -1,0 +1,142 @@
+name: DRNAS MATH5 BLIND30 frozen prospective verified PAR2
+on:
+  push:
+    branches: [experiment/drnas-math5-blind30-20261115]
+    paths:
+      - research/math5_blind/**
+      - .github/workflows/drnas-math5-blind30.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math5-blind30-20261115
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f12bcdc6d3e6b50fd1c94cd144ea04426ef713f1
+          path: global_snapshot
+          sparse-checkout: research/memory/global
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43646454422
+          name: drnas-math4-real24-frozen-sources-and-binaries
+          github-token: ${{ github.token }}
+          path: pinned_reference
+      - name: Build immutable MATH5 and validate benchmark on known controls
+        run: |
+          set -euo pipefail
+          tar -xzf pinned_reference/math4-frozen.tgz
+          chmod +x build/*
+          python3 -m py_compile research/math5_blind/*.py
+          python3 research/math5/build.py | tee math5_build.log
+          PYTHONHASHSEED=0 python3 -u research/math5_blind/selftest.py | tee math5_preflight.log
+          grep -q '^BLIND_PREFLIGHT_PASS' math5_preflight.log
+      - name: Freeze all source selection before any blind solver run
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/math5_blind/freeze.py | tee math5_freeze.log
+          PYTHONHASHSEED=0 python3 -u research/math5_blind/benchmark.py prepare | tee math5_prepare.log
+          grep -q '^BLIND_READY ' math5_prepare.log
+          tar -czf math5-blind-frozen.tgz build/drnas-math5 build/drnas-math4-local \
+            build/kissat build/cadical build/drat-trim math5_blind_inputs \
+            math5_blind_results/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: math5-blind30-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: math5-blind-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-blind30-selection-audit
+          retention-days: 60
+          path: |
+            math5_blind_inputs/*.json
+            math5_blind_results/protocol.json
+            research/math5_blind/
+            math5_*.log
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math5-blind30-frozen
+      - name: Sequential paired trials on exactly one logical CPU
+        run: |
+          set -euo pipefail
+          tar -xzf math5-blind-frozen.tgz
+          PYTHONHASHSEED=0 python3 -u research/math5_blind/benchmark.py shard \
+            --index ${{ matrix.shard }} | tee math5_shard.log
+          grep -q '^BLIND_SHARD_COMPLETE ' math5_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-blind30-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            math5_blind_results/shard-${{ matrix.shard }}/
+            math5_shard.log
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math5-blind30-selection-audit
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: math5-blind30-shard-*
+          path: downloaded
+      - name: Enforce complete matrix and report both certification tracks
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(6):
+              hits=list(Path('downloaded').glob(f'math5-blind30-shard-{i}/**/trials.jsonl'))
+              assert len(hits)==1,(i,hits)
+              dst=Path('math5_blind_results')/f'shard-{i}'
+              dst.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(hits[0],dst/'trials.jsonl')
+          PY
+          python3 -u research/math5_blind/benchmark.py report | tee math5_final.log
+          cat math5_blind_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-blind30-final-report
+          retention-days: 60
+          path: |
+            math5_blind_results/README.md
+            math5_blind_results/summary.json
+            math5_blind_results/trials.jsonl
+            math5_blind_results/protocol.json
+            math5_blind_inputs/manifest.json
+            math5_final.log
