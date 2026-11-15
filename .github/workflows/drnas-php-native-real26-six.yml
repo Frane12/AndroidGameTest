@@ -1,0 +1,182 @@
+name: DRNAS PHP native C++ single-run original-CNF VeriPB proof standard6
+on:
+  push:
+    branches: [experiment/drnas-real26-php-nativecpp1-20261115]
+    paths:
+      - .github/workflows/drnas-php-native-real26-six.yml
+      - research/native_source_payload/drnas_php_native.cpp.zlib64
+      - research/pcmax_capacity/benchmark_native_php6.py
+      - CMakeLists.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: drnas-php-nativecpp1-20261115
+  cancel-in-progress: false
+
+jobs:
+  single_process_native_veripb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore original C++ source and check frozen SHA-256
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,hashlib,pathlib,zlib
+          inp=pathlib.Path("research/native_source_payload/drnas_php_native.cpp.zlib64")
+          raw=zlib.decompress(base64.b64decode(inp.read_text().strip(),validate=True))
+          expect="7df5caa375faa8f68e79717bf8148cba727cbb81bda1d27ffaaa787a16dc20ae"
+          assert len(raw)==13084,(len(raw),"Unexpected frozen native source bytes")
+          assert hashlib.sha256(raw).hexdigest()==expect,"Native C++ source integrity failure"
+          out=pathlib.Path("src/drnas_php_native.cpp")
+          out.write_bytes(raw)
+          print("NATIVE_SOURCE_RESTORED",expect,len(raw))
+          PY
+          sha256sum src/drnas_php_native.cpp
+      - name: Build single-process C++ structural proof producer
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-php-native -j2
+          sha256sum build/drnas-php-native
+          git rev-parse HEAD
+      - name: Install pinned independent VeriPB 3.0.2 checker
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --version
+          sha256sum "$GITHUB_WORKSPACE/veripb-tool/bin/veripb"
+      - name: Positive PHP and adversarial SAT/overwriting/error controls
+        run: |
+          set -euo pipefail
+          mkdir -p native-smoke
+          cat > native-smoke/unsat.cnf <<'CNF'
+          p cnf 6 9
+          1 2 0
+          3 4 0
+          5 6 0
+          -1 -3 0
+          -1 -5 0
+          -3 -5 0
+          -2 -4 0
+          -2 -6 0
+          -4 -6 0
+          CNF
+          cat > native-smoke/sat.cnf <<'CNF'
+          p cnf 6 8
+          1 2 0
+          3 4 0
+          5 6 0
+          -1 -3 0
+          -1 -5 0
+          -2 -4 0
+          -2 -6 0
+          -4 -6 0
+          CNF
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "LOGICAL_CPU=$CPU"
+          set +e
+          taskset -c "$CPU" build/drnas-php-native native-smoke/unsat.cnf \
+            --proof native-smoke/unsat.pbp > native-smoke/positive.log 2>&1
+          positive_rc=$?
+          taskset -c "$CPU" build/drnas-php-native native-smoke/sat.cnf \
+            --proof native-smoke/sat.pbp > native-smoke/sat.log 2>&1
+          sat_rc=$?
+          taskset -c "$CPU" build/drnas-php-native native-smoke/unsat.cnf \
+            --proof native-smoke/unsat.pbp > native-smoke/no-overwrite.log 2>&1
+          overwrite_rc=$?
+          set -e
+          test "$positive_rc" -eq 20
+          test "$sat_rc" -eq 0
+          test "$overwrite_rc" -eq 1
+          test -s native-smoke/unsat.pbp
+          test ! -e native-smoke/sat.pbp
+          grep -q 's UNKNOWN' native-smoke/sat.log
+          grep -q 's UNSATISFIABLE' native-smoke/positive.log
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+            native-smoke/unsat.cnf native-smoke/unsat.pbp \
+            > native-smoke/valid-veripb.log 2>&1
+          if "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+               native-smoke/sat.cnf native-smoke/unsat.pbp \
+               > native-smoke/forged-veripb.log 2>&1; then
+            echo 'CRITICAL: external verifier accepted original proof on weakened SAT CNF'
+            exit 1
+          fi
+          echo "NATIVE_SINGLE_RUN_VALID_VERIPB_AND_FALSE_UNSAT_REJECTION_PASS"
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43729190294
+          pattern: real26-shard-*
+          path: frozen-real26-originals
+          merge-multiple: false
+          github-token: ${{ github.token }}
+      - name: Six byte-original SAT2026 CNFs generated and checked without Python solver
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          mkdir -p results
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/benchmark_native_php6.py \
+            --sources frozen-real26-originals \
+            --native "$GITHUB_WORKSPACE/build/drnas-php-native" \
+            --veripb "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" \
+            --out results/native-php6 | tee results/native-php6-run.log
+      - name: Publish only if six standard original-CNF proofs are externally accepted
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/native-php6/summary.json").read_text())
+          assert d["standard_verified"]==d["total"]==6
+          msg=["# NATIVE C++ PHP: original-CNF VeriPB 3.0 verification",
+               "", "Six source-original SAT2026 exam-scheduling formulas; no Python used by native executable.",
+               "Each native invocation writes a standard .pbp and returns UNSAT from source-verified mathematical structure.",
+               "External VeriPB must accept original CNF + proof before result is counted as standard verified.",
+               "", "| Source | Variables | Clauses | Native seconds | External check seconds | Proof bytes | Standard accepted |",
+               "|---|---:|---:|---:|---:|---:|---|"]
+          for r in d["rows"]:
+              msg.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+                  r["original_id"][:12]+"…",r["variables"],r["clauses"],
+                  r["native"]["elapsed_s"],r["checker"]["elapsed_s"],
+                  r["proof_bytes"],r["status"]))
+          msg.extend(["", "Retrospective source-bound specialist benchmark, not a blind multi-family SAT solver contest."])
+          out="\n".join(msg)+"\n"
+          print(out)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(out)
+          pathlib.Path("results/native-php6-summary.md").write_text(out)
+          PY
+      - name: Commit readable native C++ source to experimental branch after passing proof checks
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/drnas_php_native.cpp
+          if git diff --cached --quiet; then
+            echo "Source already committed"
+          else
+            git commit -m "feat(native): verified single-process C++ original-CNF VeriPB proof emission"
+            git push origin HEAD:experiment/drnas-real26-php-nativecpp1-20261115
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-native-php6-original-veripb3-proofs-and-logs
+          retention-days: 60
+          compression-level: 6
+          path: |
+            src/drnas_php_native.cpp
+            results/native-php6/
+            results/native-php6-summary.md
+            results/native-php6-run.log
+            native-smoke/
+            research/pcmax_capacity/benchmark_native_php6.py
