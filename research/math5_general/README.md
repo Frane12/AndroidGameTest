@@ -1,3 +1,7 @@
+# Current build default
+
+On this branch, new runs rebuild MATH5 through `research/math5/build.py` and require binary DRAT without an extra option. The freshly built binary and implementation files are hashed before measurement by `refresh_current.py`. Frozen MATH4 and external references are preserved. The historical protocol below describes the earlier GENERAL100 run; running that old commit again reproduces its text format.
+
 # MATH5 GENERAL100
 
 General evaluation of the latest frozen MATH5 build, using all 100 original SAT2024 CNFs from CF7 REAL100. No source is added, dropped, or replaced based on outcomes. These are previously exposed formulas, so this is a retrospective general test, not a new blind holdout. The 100 normalized filename groups are heuristic groups, not proof of 100 independent problem families. The earlier train/validation/holdout labels are not reused: all 100 formulas are evaluation cases, with no learning or promotion.

@@ -8,9 +8,10 @@ import benchmark as b
 ORIGINAL=b.command
 VARIANT='TEXT'
 def command(arm,cnf,proof,cert,cap):
-    b.BIN[arm]='build/drnas-math5' if VARIANT=='BASE' else 'build/drnas-math5-proofio'
+    b.BIN[arm]='build/drnas-math5-text' if VARIANT=='BASE' else 'build/drnas-math5-proofio'
     c=ORIGINAL(arm,cnf,proof,cert,cap)
-    if VARIANT=='BINARY':c+=['--proof-binary']
+    if VARIANT=='TEXT':c+=['--proof-text']
+    # BINARY deliberately supplies no format flag: test the production default.
     return c
 b.command=command
 
