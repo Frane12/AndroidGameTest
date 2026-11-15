@@ -57,8 +57,9 @@ def generated():
     n,clauses=generate(0x10292025+5)
     k=n//3
     # Canonical planted IN node 0 is sound under this generator.
-    removed=[c for c in clauses if sorted(c) in
-       ([1,k+1,2*k+1],[-1,-k-1],[-1,-2*k-1],[-k-1,-2*k-1])]
+    targets={tuple(sorted(c)) for c in (
+        [1,k+1,2*k+1],[-1,-k-1],[-1,-2*k-1],[-k-1,-2*k-1])}
+    removed=[c for c in clauses if tuple(sorted(c)) in targets]
     # A positive, and two negative source-backed units carry its state.
     keep=[c for c in clauses if c not in removed]
     keep.extend([[1],[-(k+1)],[-(2*k+1)]])
