@@ -54,31 +54,35 @@ def main():
                 "--pcmax-certificate",cert.resolve()],12)
             (case/"native.log").write_text(msg[-12000:])
             record.update(native_rc=rc,native_s=sec)
-            if rc!=20 or not cert.exists():raise RuntimeError("native did not provide certificate")
-            evidence=check(cnf.read_bytes(),json.loads(cert.read_text()))
-            record.update(demand=evidence["required"],capacity=evidence["capacity_sum"])
-            if evidence["status"]!="UNSAT_STRUCTURAL_CERTIFICATE_VERIFIED":
-                raise RuntimeError("structural check rejected")
-            proof=case/"weighted.pbp"
-            rc,sec,msg=run([sys.executable,GEN,"--cnf",cnf,"--certificate",cert,
-                             "--output",proof],45,True)
-            (case/"emitter.log").write_text(msg[-10000:])
-            record.update(generator_rc=rc,generator_s=sec)
-            if rc!=0 or not proof.is_file() or not proof.stat().st_size:
-                record["status"]="PROOF_NOT_EMITTED"
-            else:
-                record["proof_bytes"]=proof.stat().st_size
-                rc,sec,msg=run([VERI,"--cnf",cnf,proof],120)
-                (case/"veripb.log").write_text(msg[-12000:])
-                record.update(checker_rc=rc,checker_s=sec)
-                if rc==0 and "s VERIFIED UNSATISFIABLE" in msg:
-                    record.update(status="VERIFIED_UNSAT",accepted=True)
+            if rc==0 and "s UNKNOWN" in msg and not cert.exists():
+                record["status"]="NATIVE_UNKNOWN"
+            elif rc==20 and cert.exists():
+                evidence=check(cnf.read_bytes(),json.loads(cert.read_text()))
+                record.update(demand=evidence["required"],capacity=evidence["capacity_sum"])
+                if evidence["status"]!="UNSAT_STRUCTURAL_CERTIFICATE_VERIFIED":
+                    raise RuntimeError("structural check rejected")
+                proof=case/"weighted.pbp"
+                rc,sec,msg=run([sys.executable,GEN,"--cnf",cnf,"--certificate",cert,
+                                 "--output",proof],45,True)
+                (case/"emitter.log").write_text(msg[-10000:])
+                record.update(generator_rc=rc,generator_s=sec)
+                if rc!=0 or not proof.is_file() or not proof.stat().st_size:
+                    record["status"]="PROOF_NOT_EMITTED"
                 else:
-                    record["status"]="REJECTED_OR_TIMED_OUT"
-                    # Never treat an unaccepted proof as UNSAT.
-            if record["accepted"] and e["expected_status"]=="SAT":
-                record["status"]="FATAL_SAT_CONTROL_CONFLICT"
-                record["accepted"]=False
+                    record["proof_bytes"]=proof.stat().st_size
+                    rc,sec,msg=run([VERI,"--cnf",cnf,proof],120)
+                    (case/"veripb.log").write_text(msg[-12000:])
+                    record.update(checker_rc=rc,checker_s=sec)
+                    if rc==0 and "s VERIFIED UNSATISFIABLE" in msg:
+                        record.update(status="VERIFIED_UNSAT",accepted=True)
+                    else:
+                        record["status"]="REJECTED_OR_TIMED_OUT"
+                        # Never treat an unaccepted proof as UNSAT.
+                if record["accepted"] and e["expected_status"]=="SAT":
+                    record["status"]="FATAL_SAT_CONTROL_CONFLICT"
+                    record["accepted"]=False
+            else:
+                raise RuntimeError("native returned an unexpected or uncertified result")
         except Exception as ex:
             record["status"]="AUDIT_ERROR"
             record["error"]=str(ex)[:300]
