@@ -1,0 +1,177 @@
+name: DRNAS CHESS ROOKS 100 500 1000 paired native VeriPB Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-chess-rooks-100-500-1000-20261115]
+    paths:
+      - .github/workflows/drnas-chess-rooks-scale.yml
+      - research/pcmax_capacity/chess_rooks_generate.py
+      - research/pcmax_capacity/chess_rooks_benchmark.py
+      - src/drnas_php_native.cpp
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-chess-rooks-scale-20261115
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore pinned source-matched reference solvers and compile native C++
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          test -x build/kissat
+          test -x build/cadical
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-php-native -j2
+          python3 -m py_compile research/pcmax_capacity/chess_rooks_generate.py \
+            research/pcmax_capacity/chess_rooks_benchmark.py
+          sha256sum build/drnas-php-native build/kissat build/cadical
+          git rev-parse HEAD
+      - name: Install pinned independent VeriPB checker
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --version
+          sha256sum "$GITHUB_WORKSPACE/veripb-tool/bin/veripb"
+      - name: Serial source-frozen permuted chess rook SAT and UNSAT trial
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "CHESS_ROOKS_CPU=$CPU; SHARD=${{ matrix.shard }}"
+          taskset -c "$CPU" python3 -u \
+            research/pcmax_capacity/chess_rooks_benchmark.py \
+            --shard ${{ matrix.shard }} \
+            --out results/chess-rooks-shard-${{ matrix.shard }} \
+            --native "$GITHUB_WORKSPACE/build/drnas-php-native" \
+            --kissat "$GITHUB_WORKSPACE/build/kissat" \
+            --cadical "$GITHUB_WORKSPACE/build/cadical" \
+            --veripb "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" \
+            --cap 20 | tee chess-rooks-${{ matrix.shard }}.log
+      - name: Publish complete source-paired trial table
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          shard=${{ matrix.shard }}
+          p=pathlib.Path(f"results/chess-rooks-shard-{shard}/summary.json")
+          if not p.exists():
+              print("No completed summary: see partial trials.jsonl")
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          lines=[f"## Chess rook scaling shard {shard}",
+                 "", "Synthetic rectangular chessboards, one column per rook, original CNF.",
+                 "Dense 100-rook vs sparse 500/1000-rook encodings ARE NOT equal difficulty.",
+                 "Source permutation seed/sha frozen BEFORE solver calls.",
+                 "Independent VeriPB 3.0.2 verifies native UNSAT; reference statuses are raw.",
+                 "", "| Case | Board rows x cols | Encoding | Vars | Clauses | DRNAS | Kissat | CaDiCaL |",
+                 "|---|---|---|---:|---:|---|---|---|"]
+          for case in d["cases"]:
+              grouped={r["arm"]:r for r in d["trials"] if r["case"]==case["id"]}
+              def out(name):
+                  r=grouped.get(name)
+                  if not r:return "not run"
+                  t=r["wall_s"]+(r["proof_verifier_s"] or 0 if name=="DRNAS_NATIVE" else 0)
+                  return r["status"]+" ("+str(round(t,3))+" s)"
+              lines.append("| {} | {}x{} | {} | {} | {} | {} | {} | {} |".format(
+                  case["id"],case["rows"],case["rooks"],case["mode"],case["variables"],
+                  case["clauses"],out("DRNAS_NATIVE"),out("KISSAT"),out("CADICAL")))
+          lines.append("")
+          lines.append(f"Independent native VeriPB proofs: {d['native_verified']}; critical failures: {d['critical']}.")
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-chess-rooks-shard-${{ matrix.shard }}
+          retention-days: 45
+          compression-level: 6
+          path: |
+            results/chess-rooks-shard-${{ matrix.shard }}/
+            chess-rooks-${{ matrix.shard }}.log
+
+  summary:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-chess-rooks-shard-*
+          merge-multiple: false
+          path: inputs
+      - name: Verify coverage and combine complete 100 500 1000 comparison
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          cases=[];trials=[]
+          for shard in range(2):
+              p=pathlib.Path(f"inputs/drnas-chess-rooks-shard-{shard}/results/chess-rooks-shard-{shard}/summary.json")
+              if not p.exists():continue
+              data=json.loads(p.read_text())
+              cases.extend(data["cases"]);trials.extend(data["trials"])
+          lines=["# DRNAS Chess Rooks 100/500/1000 synthetic permuted benchmark",
+                 "",f"Frozen sources {len(cases)}/8, paired trials {len(trials)}/24.",
+                 "No external blind claim; sparse-cycle boards are deliberately much easier than dense 100-rook boards.",
+                 "Native proof includes external VeriPB 3.0.2 acceptance; reference results are raw statuses.",
+                 "", "| Rooks | Rows | Encoding | Variables | Clauses | DRNAS+VeriPB | Kissat | CaDiCaL |",
+                 "|---:|---:|---|---:|---:|---|---|---|"]
+          for case in sorted(cases,key=lambda x:x["id"]):
+              rs={r["arm"]:r for r in trials if r["case"]==case["id"]}
+              def output(name):
+                  r=rs.get(name)
+                  if not r:return "missing"
+                  total=r["wall_s"]+(r["proof_verifier_s"] or 0 if name=="DRNAS_NATIVE" else 0)
+                  return r["status"]+" ("+str(round(total,3))+" s)"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  case["rooks"],case["rows"],case["mode"],case["variables"],
+                  case["clauses"],output("DRNAS_NATIVE"),output("KISSAT"),output("CADICAL")))
+          bad=[r for r in trials if r["status"].startswith(("CRITICAL","INVALID","EXECUTION_ERROR","UNSAT_VERIPB_REJECTED"))]
+          verified=sum(r["standard_verified"] for r in trials)
+          lines.extend(["",f"Source-proven independent VeriPB UNSAT: {verified}/4.",
+                        f"Audit errors: {len(bad)}; all SAT controls have generator-verified clause witnesses."])
+          msg="\n".join(lines)+"\n";print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          pathlib.Path("chess-rooks-final.md").write_text(msg)
+          if len(cases)!=8 or len(trials)!=24 or verified!=4 or bad:
+              raise SystemExit("Incomplete or failed pre-registered benchmark")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-chess-rooks-combined
+          retention-days: 45
+          path: chess-rooks-final.md
