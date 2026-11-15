@@ -1,0 +1,75 @@
+name: DRNAS ARG3 original SAT2025 graph constructive SAT verified AB
+on:
+  push:
+    branches: [experiment/drnas-cdcl-real2025-299-diag1-20261115]
+    paths:
+      - src/drnas_sat_arg3.hpp
+      - src/drnas_x59.cpp
+      - research/cdcl299/test_arg3.py
+      - research/cdcl299/arg3_benchmark.py
+      - .github/workflows/drnas-arg3-original299.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-arg3-original299
+  cancel-in-progress: false
+jobs:
+  native_source_model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Exact original SHA and frozen solver reference
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/sources/real2025-originals-frozen.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          sha256sum src/drnas_sat_arg3.hpp sat_real2025_inputs/manifest.json build/cadical
+          python3 -m py_compile research/cdcl299/*.py
+      - name: Compile one-process ARG3 native C++ with original CDCL fallback
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra \
+            src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum src/drnas_x59.cpp build/drnas-sat-native-x59
+      - name: Check generated graph controls and verified original #299 model
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 python3 -u research/cdcl299/test_arg3.py | tee arg3_controls.log
+          grep -q '^ARG3_SOURCE_CONTROLS ' arg3_controls.log
+      - name: Compare native ARG3 budgets against plain X59 and CaDiCaL
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 PYTHONHASHSEED=0 \
+            python3 -u research/cdcl299/arg3_benchmark.py | tee arg3_live.log
+          grep -q '^CDCL299_FINAL ' arg3_live.log
+      - name: Archive source-sha-verifiable models and per-trial metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-arg3-original299-verified
+          retention-days: 45
+          if-no-files-found: warn
+          path: |
+            cdcl299_arg3_results/
+            arg3_controls.log
+            arg3_live.log
