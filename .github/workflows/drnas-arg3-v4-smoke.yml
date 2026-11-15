@@ -1,0 +1,65 @@
+name: DRNAS ARG3-V4 three-label clause repair native SAT model soundness
+on:
+  push:
+    branches: [experiment/drnas-arg3-undec-repair-v4-20261115]
+    paths:
+      - src/drnas_sat_arg3_v4.hpp
+      - src/drnas_x59.cpp
+      - research/arg3_v4/**
+      - .github/workflows/drnas-arg3-v4-smoke.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-arg3-v4-smoke-20261115
+  cancel-in-progress: false
+jobs:
+  original_source_model_safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43714913984
+          repository: Frane12/AndroidGameTest
+          name: arg3-realarg-frozen-originals
+          github-token: ${{ github.token }}
+          path: frozen/realarg
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/real2025
+      - name: Restore exact original source freeze files
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/realarg/arg3-realarg-frozen.tgz
+          tar -xzf frozen/real2025/real2025-originals-frozen.tgz
+          sha256sum arg3_realarg_inputs/manifest.json sat_real2025_inputs/manifest.json
+          python3 -m py_compile research/arg3_v4/smoke.py
+      - name: Compile native one-process X59 and source-backed 3-state repair
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG -Wall -Wextra \
+              src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum src/drnas_sat_arg3_v4.hpp build/drnas-sat-native-x59
+      - name: Independently check all SAT models including genuine UNDEC sources
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+            python3 -u research/arg3_v4/smoke.py | tee arg3_v4_smoke.log
+          grep -q '^ARG3_V4_CONTROLS ' arg3_v4_smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arg3-v4-original-model-checks
+          path: arg3_v4_smoke.log
+          if-no-files-found: warn
+          retention-days: 45
