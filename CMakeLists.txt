@@ -53,3 +53,9 @@ add_executable(drnas-queens-2sat src/drnas_queens_2sat.cpp)
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-queens-2sat PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+# DRNAS 2SAT-GUARD1 native proof-first mixed-CNF binary implication filter.
+add_executable(drnas-2sat-guard src/drnas_2sat_guard.cpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(drnas-2sat-guard PRIVATE -O3 -Wall -Wextra -Wpedantic)
+endif()
