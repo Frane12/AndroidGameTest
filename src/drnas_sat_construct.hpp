@@ -316,6 +316,196 @@ inline bool try_gf2(int n,const CNF& f,Outcome& out,Clock::time_point deadline){
   }
   return false;
 }
+
+// --- SAT-UNIFIED2: extra exact constructive classes, proof-free SAT ONLY ---
+inline bool try_pure_polarity(int n,const CNF& f,Outcome& out,
+                             Clock::time_point deadline){
+  std::vector<uint8_t> sign(n,0);
+  for(size_t i=0;i<f.size();++i) {
+    if((i&1023)==0&&due(deadline))return false;
+    for(int lit:f[i])sign[std::abs(lit)-1]|=(lit>0?1:2);
+  }
+  std::vector<int8_t> model(n,-1);
+  for(int v=0;v<n;++v){
+    if(sign[v]==3)return false;
+    if(sign[v]==1)model[v]=1;
+  }
+  return finish(n,f,std::move(model),"PURE_POLARITY",out);
+}
+inline bool try_small_exact(int n,const CNF& f,Outcome& out,
+                            Clock::time_point deadline){
+  if(n>14||due(deadline))return false;
+  for(uint32_t mask=0;mask<(1U<<n);++mask){
+    if((mask&63U)==0&&due(deadline))return false;
+    std::vector<int8_t> model(n,-1);
+    for(int v=0;v<n;++v)if((mask>>v)&1U)model[v]=1;
+    if(finish(n,f,std::move(model),"SMALL_EXACT",out))return true;
+  }
+  return false; // even exhaustive failure is UNKNOWN, never UNSAT
+}
+// A CNF is renamable-Horn if variables can be flipped such that every
+// transformed clause has <=1 positive literal. The flipping feasibility
+// is expressible as 2-SAT over pairwise constraints inside clauses.
+inline bool try_renamable_horn(int n,const CNF& f,Outcome& out,
+                              Clock::time_point deadline){
+  int64_t pairs=0;
+  for(const auto& c:f){
+    if(c.size()>12)return false;
+    pairs+=(int64_t)c.size()*(c.size()-1)/2;
+    if(pairs>50000)return false;
+  }
+  CNF flips;
+  flips.reserve((size_t)pairs);
+  for(size_t ci=0;ci<f.size();++ci){
+    if((ci&255)==0&&due(deadline))return false;
+    for(size_t j=0;j<f[ci].size();++j){
+      for(size_t k=j+1;k<f[ci].size();++k){
+        // Original positive literal requires flipped bit 1 to suppress;
+        // original negative requires flipped bit 0. The following disjunction
+        // guarantees that not both become positive.
+        flips.push_back({f[ci][j],f[ci][k]});
+      }
+    }
+  }
+  Outcome flags;
+  if(!try_twosat(n,flips,flags,deadline))return false;
+  CNF renamed;renamed.reserve(f.size());
+  for(const auto& c:f){
+    std::vector<int> row;row.reserve(c.size());
+    for(int lit:c)row.push_back(flags.model[std::abs(lit)-1]>0?-lit:lit);
+    renamed.push_back(std::move(row));
+  }
+  Outcome horn;
+  if(!try_horn(n,renamed,horn,deadline))return false;
+  for(int v=0;v<n;++v)if(flags.model[v]>0)horn.model[v]=-horn.model[v];
+  if(!finish(n,f,std::move(horn.model),"RENAMABLE_HORN",out))return false;
+  return true;
+}
+inline bool try_components(int n,const CNF& f,Outcome& out,
+                           Clock::time_point deadline){
+  if(n>5000||f.empty()||due(deadline))return false;
+  DSU uf(n);
+  std::vector<uint8_t> used(n,0);
+  for(size_t ci=0;ci<f.size();++ci){
+    if((ci&1023)==0&&due(deadline))return false;
+    if(f[ci].empty())return false;
+    int first=std::abs(f[ci][0])-1; used[first]=1;
+    for(int lit:f[ci]){
+      int v=std::abs(lit)-1; used[v]=1;uf.join(first,v);
+    }
+  }
+  // No component splitting benefit if source is a single connected CNF.
+  std::map<int,CNF> groups;
+  for(const auto& clause:f)
+    groups[uf.root(std::abs(clause[0])-1)].push_back(clause);
+  if(groups.size()<2||groups.size()>2048)return false;
+  std::vector<int8_t> model(n,-1);
+  std::vector<int> remap(n,0);
+  for(auto& [root,source]:groups){
+    if(due(deadline))return false;
+    std::vector<int> vars;
+    for(const auto& clause:source)
+      for(int lit:clause)vars.push_back(std::abs(lit)-1);
+    std::sort(vars.begin(),vars.end());
+    vars.erase(std::unique(vars.begin(),vars.end()),vars.end());
+    for(size_t i=0;i<vars.size();++i)remap[vars[i]]=(int)i+1;
+    CNF local;local.reserve(source.size());
+    for(const auto& clause:source){
+      std::vector<int> row;row.reserve(clause.size());
+      for(int lit:clause){
+        int id=remap[std::abs(lit)-1];
+        row.push_back(lit>0?id:-id);
+      }
+      local.push_back(std::move(row));
+    }
+    Outcome part;
+    const int local_n=(int)vars.size();
+    bool solved=try_horn(local_n,local,part,deadline)||
+      try_twosat(local_n,local,part,deadline)||
+      try_pure_polarity(local_n,local,part,deadline)||
+      try_matching(local_n,local,part,deadline)||
+      try_gf2(local_n,local,part,deadline)||
+      try_renamable_horn(local_n,local,part,deadline)||
+      try_small_exact(local_n,local,part,deadline);
+    if(!solved)return false;
+    for(size_t i=0;i<vars.size();++i)model[vars[i]]=part.model[i];
+    for(int v:vars)remap[v]=0;
+  }
+  return finish(n,f,std::move(model),"DECOMPOSED",out);
+}
+// Source-sound root unit BCP plus pure-literal elimination.
+// No clause or satisfiability conclusion is trusted without full-model check.
+inline bool try_simplified(int n,const CNF& f,Outcome& out,
+                           Clock::time_point deadline){
+  std::vector<int8_t> fixed(n,0);
+  bool any_change=false;
+  for(int pass=0;pass<8;++pass){
+    if(due(deadline))return false;
+    bool changed=false;
+    for(const auto& clause:f){
+      if(due(deadline))return false;
+      bool sat=false;int unresolved=0,last=0;
+      for(int lit:clause){
+        int8_t x=fixed[std::abs(lit)-1];
+        if(x==(lit>0?1:-1)){sat=true;break;}
+        if(x==0){++unresolved;last=lit;}
+      }
+      if(sat)continue;
+      if(unresolved==0)return false;
+      if(unresolved==1){
+        int v=std::abs(last)-1;
+        int8_t val=(last>0?1:-1);
+        if(fixed[v]&&fixed[v]!=val)return false;
+        if(!fixed[v]){fixed[v]=val;changed=true;}
+      }
+    }
+    // Polarity calculated on residual clauses only.
+    std::vector<uint8_t> sign(n,0);
+    for(const auto& clause:f){
+      bool sat=false;
+      for(int lit:clause)if(fixed[std::abs(lit)-1]==(lit>0?1:-1)){
+        sat=true;break;
+      }
+      if(sat)continue;
+      for(int lit:clause)if(fixed[std::abs(lit)-1]==0)
+        sign[std::abs(lit)-1]|=(lit>0?1:2);
+    }
+    for(int v=0;v<n;++v)if(!fixed[v]&&(sign[v]==1||sign[v]==2)){
+      fixed[v]=(sign[v]==1?1:-1);changed=true;
+    }
+    if(!changed)break;
+    any_change=true;
+  }
+  if(!any_change)return false;
+  CNF residual;residual.reserve(f.size());
+  for(const auto& clause:f){
+    bool sat=false;std::vector<int> row;
+    for(int lit:clause){
+      int8_t x=fixed[std::abs(lit)-1];
+      if(x==(lit>0?1:-1)){sat=true;break;}
+      if(x==0)row.push_back(lit);
+    }
+    if(sat)continue;
+    if(row.empty())return false;
+    residual.push_back(std::move(row));
+  }
+  if(residual.empty()){
+    for(int8_t& x:fixed)if(!x)x=-1;
+    return finish(n,f,std::move(fixed),"UNIT_PURE",out);
+  }
+  Outcome sub;
+  bool solved=try_horn(n,residual,sub,deadline)||
+      try_twosat(n,residual,sub,deadline)||
+      try_pure_polarity(n,residual,sub,deadline)||
+      try_matching(n,residual,sub,deadline)||
+      try_gf2(n,residual,sub,deadline)||
+      try_renamable_horn(n,residual,sub,deadline)||
+      try_components(n,residual,sub,deadline);
+  if(!solved)return false;
+  for(int v=0;v<n;++v)if(fixed[v])sub.model[v]=fixed[v];
+  return finish(n,f,std::move(sub.model),"SIMPLIFIED",out);
+}
+
 inline Outcome analyze(int n,const CNF& f, Limits limit={}) {
   Outcome out;
   if(n<=0||n>limit.max_vars||(int)f.size()>limit.max_clauses
@@ -333,6 +523,11 @@ inline Outcome analyze(int n,const CNF& f, Limits limit={}) {
   if(!due(deadline)&&try_twosat(n,f,out,deadline))return out;
   if(!due(deadline)&&try_matching(n,f,out,deadline))return out;
   if(!due(deadline)&&try_gf2(n,f,out,deadline))return out;
+  if(!due(deadline)&&try_pure_polarity(n,f,out,deadline))return out;
+  if(!due(deadline)&&try_renamable_horn(n,f,out,deadline))return out;
+  if(!due(deadline)&&try_simplified(n,f,out,deadline))return out;
+  if(!due(deadline)&&try_components(n,f,out,deadline))return out;
+  if(!due(deadline)&&try_small_exact(n,f,out,deadline))return out;
   return out;
 }
 } // namespace satconstruct
