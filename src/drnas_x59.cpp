@@ -24,6 +24,7 @@
 #include "drnas_sat_construct.hpp"
 #include "drnas_sat_arg3.hpp"
 #include "drnas_sat_arg3_v3.hpp"
+#include "drnas_sat_arg3_v4.hpp"
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -105,6 +106,7 @@ class Solver {
     void configureSatConstruct(double budget_ms) { sat_construct_ms_=budget_ms; }
     void configureArg3(double budget_ms) { arg3_ms_=budget_ms; }
     void configureArg3V3(double budget_ms) { arg3_v3_ms_=budget_ms; }
+    void configureArg3V4(double budget_ms) { arg3_v4_ms_=budget_ms; }
     void writeProofClause(const std::vector<int>& lits) {
         if (!proof_ || x46_clone_) return;
         for (int lit:lits) *proof_ << lit << ' ';
@@ -276,6 +278,31 @@ class Solver {
     Result solve() {
         if (timedOut()) return Result::UNKNOWN;
         if (root_unsat_) return Result::UNSAT;
+        // V4: bounded native three-valued original-clause repair, separately
+        // opt-in. Original X59 CDCL search proceeds unchanged on UNKNOWN.
+        if(arg3_v4_ms_>0 && !x46_clone_ &&
+           n_<=3*drnas_arg3_v4::MAX_GROUPS &&
+           original_count_<=110000 && !timedOut()) {
+            const auto started=Clock::now();
+            drnas_arg3_v4::CNF source;
+            source.reserve(static_cast<size_t>(original_count_));
+            for(const Clause& c:clauses_)if(!c.learnt)source.push_back(c.lits);
+            const double prep_ms=std::chrono::duration<double,std::milli>(
+                Clock::now()-started).count();
+            if(prep_ms<arg3_v4_ms_ && !timedOut()) {
+                auto candidate=drnas_arg3_v4::construct(
+                    n_,source,arg3_v4_ms_-prep_ms);
+                arg3_v4_stats_=candidate.stats;
+                arg3_v4_stats_.wall_ms=std::chrono::duration<double,std::milli>(
+                    Clock::now()-started).count();
+                if(candidate.sat()){
+                    leaf_model_=std::move(candidate.model);
+                    if(!verifyModel())throw std::runtime_error(
+                        "ARG3-V4 original CNF SAT model invalid");
+                    return Result::SAT;
+                }
+            }else arg3_v4_stats_.wall_ms=prep_ms;
+        }
         // V3 is separately opt-in for safe root-unit and missing-triple
         // graph-model construction. A failed attempt only falls through.
         if (arg3_v3_ms_>0 && !x46_clone_ &&
@@ -658,6 +685,7 @@ class Solver {
     const std::string& satConstructMethod() const { return sat_construct_method_; }
     const drnas_arg3::Stats& arg3Stats() const { return arg3_stats_; }
     const drnas_arg3::Stats& arg3V3Stats() const { return arg3_v3_stats_; }
+    const drnas_arg3_v4::Stats& arg3V4Stats() const { return arg3_v4_stats_; }
     double satConstructSeconds() const { return sat_construct_elapsed_s_; }
     bool satConstructFound() const { return sat_construct_found_; }
     double elapsed() const { return std::chrono::duration<double>(Clock::now() - begun_).count(); }
@@ -669,7 +697,8 @@ class Solver {
     bool x59_stamp_glue_=false;
     int sat_clause1_mode_=0;
     double sat_construct_ms_=0.0, sat_construct_elapsed_s_=0.0;
-    double arg3_ms_=0.0, arg3_v3_ms_=0.0;
+    double arg3_ms_=0.0, arg3_v3_ms_=0.0, arg3_v4_ms_=0.0;
+    drnas_arg3_v4::Stats arg3_v4_stats_{};
     drnas_arg3::Stats arg3_stats_{},arg3_v3_stats_{};
     bool sat_construct_found_=false;
     std::string sat_construct_method_="OFF";
@@ -1474,7 +1503,7 @@ int run(int argc, char** argv) {
     bool x58_hotwatch=false;
     bool x59_stamp_glue=false;
     int compare_at=0,x46_conflicts=0, sat_clause_mode=0;
-    double sat_construct_ms=0.0, arg3_ms=0.0, arg3_v3_ms=0.0;
+    double sat_construct_ms=0.0, arg3_ms=0.0, arg3_v3_ms=0.0, arg3_v4_ms=0.0;
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
@@ -1496,6 +1525,7 @@ int run(int argc, char** argv) {
         else if (opt=="--sat-construct-ms" && i+1<argc) sat_construct_ms=std::stod(argv[++i]);
         else if (opt=="--arg3-ms" && i+1<argc) arg3_ms=std::stod(argv[++i]);
         else if (opt=="--arg3-v3-ms" && i+1<argc) arg3_v3_ms=std::stod(argv[++i]);
+        else if (opt=="--arg3-v4-ms" && i+1<argc) arg3_v4_ms=std::stod(argv[++i]);
         else if (opt=="--stats") show_stats=true;
         else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
@@ -1512,6 +1542,8 @@ int run(int argc, char** argv) {
         else if (input.empty()) input=opt;
         else throw std::runtime_error("multiple input files");
     }
+    if (!std::isfinite(arg3_v4_ms)||arg3_v4_ms<0||arg3_v4_ms>1000)
+        throw std::runtime_error("invalid --arg3-v4-ms");
     if (!std::isfinite(arg3_v3_ms)||arg3_v3_ms<0||arg3_v3_ms>1000)
         throw std::runtime_error("invalid --arg3-v3-ms");
     if (!std::isfinite(arg3_ms)||arg3_ms<0||arg3_ms>1000)
@@ -1570,6 +1602,7 @@ int run(int argc, char** argv) {
             solver->configureSatConstruct(sat_construct_ms);
             solver->configureArg3(arg3_ms);
             solver->configureArg3V3(arg3_v3_ms);
+            solver->configureArg3V4(arg3_v4_ms);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
@@ -1659,6 +1692,25 @@ int run(int argc, char** argv) {
                  <<"}\n";
     }
     if (show_stats) {
+        const auto& v4=solver->arg3V4Stats();
+        std::cerr<<"SAT_ARG3V4_STATS {\"enabled\":"<<(arg3_v4_ms>0?"true":"false")
+                 <<",\"eligible\":"<<(v4.eligible?"true":"false")
+                 <<",\"recognized\":"<<(v4.recognized?"true":"false")
+                 <<",\"found\":"<<(v4.found?"true":"false")
+                 <<",\"groups\":"<<v4.groups
+                 <<",\"original_units\":"<<v4.original_units
+                 <<",\"root_implied\":"<<v4.root_implied
+                 <<",\"exact_triples\":"<<v4.exact_triples
+                 <<",\"repaired_triples\":"<<v4.repaired_triples
+                 <<",\"forced_groups\":"<<v4.forced_groups
+                 <<",\"initial_unsat\":"<<v4.initial_unsat
+                 <<",\"best_unsat\":"<<v4.best_unsat
+                 <<",\"best_undec\":"<<v4.best_undec
+                 <<",\"restarts\":"<<v4.restarts
+                 <<",\"moves\":"<<v4.moves
+                 <<",\"invalid_candidates\":"<<v4.wrong_candidates
+                 <<",\"total_literals\":"<<v4.total_literals
+                 <<",\"wall_ms\":"<<v4.wall_ms<<"}\n";
         const auto& v3=solver->arg3V3Stats();
         std::cerr<<"SAT_ARG3V3_STATS {\"enabled\":"<<(arg3_v3_ms>0?"true":"false")
                  <<",\"recognized\":"<<(v3.recognized?"true":"false")
