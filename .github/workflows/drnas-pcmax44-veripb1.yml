@@ -1,0 +1,188 @@
+name: DRNAS PCMAX44 VeriPB 3 original-CNF cutting planes source proof
+on:
+  push:
+    branches: [experiment/drnas-pcmax44-veripb-cuttingplanes1-20261115]
+    paths:
+      - .github/workflows/drnas-pcmax44-veripb1.yml
+      - research/pcmax_capacity/emit_veripb_capacity1.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pcmax44-veripb1-20261115
+  cancel-in-progress: false
+
+jobs:
+  source_proof:
+    name: One-CPU full-original CNF VeriPB proof and adversarial checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 34
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned independent VeriPB 3.0.2 (2026 grammar)
+        run: |
+          set -euo pipefail
+          cargo --version
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --version
+      - name: Compile original DRNAS native PCMAX capacity detector
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/emit_veripb_capacity1.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          mkdir -p results/veripb44 originals
+          sha256sum build/drnas-pcmax research/pcmax_capacity/emit_veripb_capacity1.py
+      - name: Check standard VeriPB arithmetic on independent 3x2 pigeonhole control
+        run: |
+          set -euo pipefail
+          cat > results/veripb44/pigeonhole.cnf <<'CNF'
+          p cnf 6 9
+          1 2 0
+          3 4 0
+          5 6 0
+          -1 -3 0
+          -1 -5 0
+          -3 -5 0
+          -2 -4 0
+          -2 -6 0
+          -4 -6 0
+          CNF
+          cat > results/veripb44/pigeonhole.pbp <<'PBP'
+          pseudo-Boolean proof version 3.0
+          f 9 ;
+          pol 4 5 + 6 + 2 d ;
+          pol 7 8 + 9 + 2 d ;
+          pol 1 2 + 3 + 10 + 11 + ;
+          output NONE ;
+          conclusion UNSAT ;
+          end pseudo-Boolean proof ;
+          PBP
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+            results/veripb44/pigeonhole.cnf results/veripb44/pigeonhole.pbp \
+            > results/veripb44/smoke-verifier.log 2>&1
+          cat results/veripb44/smoke-verifier.log | tail -12
+          cat > results/veripb44/known_sat.cnf <<'CNF'
+          p cnf 1 1
+          1 0
+          CNF
+          cat > results/veripb44/forged_unsat.pbp <<'PBP'
+          pseudo-Boolean proof version 3.0
+          f 1 ;
+          rup 1 ~x1 >= 1 ;
+          output NONE ;
+          conclusion UNSAT ;
+          end pseudo-Boolean proof ;
+          PBP
+          if "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+               results/veripb44/known_sat.cnf results/veripb44/forged_unsat.pbp \
+               > results/veripb44/forged-rejected.log 2>&1; then
+            echo "INVALID: external VeriPB checker accepted a false UNSAT proof"
+            exit 1
+          fi
+          echo "VERIPB_GRAMMAR_SMOKE_AND_FALSE_UNSAT_REJECTION_PASS"
+      - name: Retrieve the exact original PCMAX44 and validate SHA-256
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,sys
+          sys.path.insert(0,'research/pcmax_capacity')
+          from benchmark import materialize
+          s='c55ab8fe2c9e10f0579f806802bc32d04913f12cd6ce28e6662b8d59d114c174'
+          data=json.loads(pathlib.Path('research/pcmax_capacity/sources20.json').read_text())
+          matches=[x for x in data['entries'] if x['sha256']==s]
+          assert len(matches)==1, 'frozen original is not unique'
+          src=materialize(matches[0],pathlib.Path('originals'),True)
+          raw=src.read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==s
+          print('PCMAX44_ORIGINAL_CONFIRMED',json.dumps({'sha256':s,'size_bytes':len(raw),'name':src.name}))
+          PY
+      - name: Regenerate source-verifiable 16 greater than 15 native certificate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess,sys
+          sys.path.insert(0,'research/pcmax_capacity')
+          from check_capacity import check
+          src=pathlib.Path('originals/pcmax-scheduling-m11-1517-6802-UNSAT.sanitized.cnf')
+          cert=pathlib.Path('results/veripb44/capacity.json').resolve()
+          run=subprocess.run(['build/drnas-pcmax',str(src.resolve()),
+               '--mode','core','--time','7','--pcmax-only',
+               '--pcmax-capacity','--pcmax-budget-ms','5000',
+               '--pcmax-certificate',str(cert)],capture_output=True,text=True,timeout=12)
+          assert run.returncode==20 and cert.is_file(),(run.returncode,run.stdout[-700:],run.stderr[-700:])
+          evidence=check(src.read_bytes(),json.loads(cert.read_text()))
+          assert evidence['status']=='UNSAT_STRUCTURAL_CERTIFICATE_VERIFIED'
+          assert (evidence['required'],evidence['capacity_sum'])==(16,15)
+          print('PCMAX44_NATIVE_STRUCTURAL_PASS',json.dumps({'required':16,'capacity':15,'original_sha256':evidence['source_sha256']}))
+          PY
+      - name: Produce pure RUP plus cutting-planes proof from original CNF
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/emit_veripb_capacity1.py \
+            --cnf originals/pcmax-scheduling-m11-1517-6802-UNSAT.sanitized.cnf \
+            --certificate results/veripb44/capacity.json \
+            --output results/veripb44/pcmax44_original.pbp \
+            | tee results/veripb44/producer.log
+          test -s results/veripb44/pcmax44_original.pbp
+          sha256sum results/veripb44/pcmax44_original.pbp
+          wc -lc results/veripb44/pcmax44_original.pbp
+      - name: Independently check complete untouched original CNF via pinned VeriPB
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          set +e
+          timeout --signal=TERM 900 "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+            originals/pcmax-scheduling-m11-1517-6802-UNSAT.sanitized.cnf \
+            results/veripb44/pcmax44_original.pbp \
+            > results/veripb44/verifier-original.log 2>&1
+          rc=$?
+          set -e
+          elapsed=$(( $(date +%s) - start ))
+          echo "VERIPB_ORIGINAL_CHECK return_code=$rc elapsed_s=$elapsed"
+          tail -35 results/veripb44/verifier-original.log
+          printf '{"return_code":%s,"checker_elapsed_s":%s}\n' "$rc" "$elapsed" > results/veripb44/verifier-status.json
+          if [ "$rc" -ne 0 ]; then
+            echo "NO STANDARD VERIFIED CERTIFICATE — inspect the external checker diagnostics"
+            exit 1
+          fi
+          echo "PCMAX44_VERIPB_ORIGINAL_UNSAT_VERIFIED"
+      - name: Result summary, never count producer output alone
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          root=pathlib.Path('results/veripb44')
+          st=root/'verifier-status.json'
+          data=json.loads(st.read_text()) if st.exists() else {}
+          passed=(data.get('return_code')==0)
+          msg=(f"# PCMAX44 source-bound VeriPB proof\n\n"
+               f"Independent VeriPB original-CNF accepted: {passed}.\n\n"
+               f"Checker exit code: {data.get('return_code','not executed')}; "
+               f"elapsed: {data.get('checker_elapsed_s','not executed')} s.\n\n"
+               "Structural mathematical proof 16>15 and all BDD RUP/CP deductions "
+               "are not a valid competition-standard claim unless the pinned external "
+               "checker finishes successfully.\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fd:fd.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-pcmax44-veripb1-original-source-pbproof-and-checker
+          retention-days: 60
+          path: |
+            originals/pcmax-scheduling-m11-1517-6802-UNSAT.sanitized.cnf
+            results/veripb44/
+            research/pcmax_capacity/emit_veripb_capacity1.py
+            research/pcmax_capacity/check_capacity.py
