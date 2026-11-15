@@ -285,7 +285,7 @@ class Solver {
             const double prep_ms=std::chrono::duration<double,std::milli>(
                 Clock::now()-begin).count();
             if(prep_ms<arg3_ms_ && !timedOut()){
-                auto result=drnas_arg3::construct(n_,source,arg3_ms_-prep_ms);
+                auto result=drnas_arg3::construct_robust(n_,source,arg3_ms_-prep_ms);
                 arg3_stats_=result.stats;
                 arg3_stats_.wall_ms=std::chrono::duration<double,std::milli>(
                     Clock::now()-begin).count();
@@ -1629,6 +1629,7 @@ int run(int argc, char** argv) {
         std::cerr<<"SAT_ARG3_STATS {\"enabled\":"<<(arg3_ms>0?"true":"false")
                  <<",\"recognized\":"<<(a.recognized?"true":"false")
                  <<",\"found\":"<<(a.found?"true":"false")
+                 <<",\"renaming_normalized\":"<<(a.normalized?"true":"false")
                  <<",\"groups\":"<<a.groups
                  <<",\"edges\":"<<a.edges
                  <<",\"blockers\":"<<a.blockers
