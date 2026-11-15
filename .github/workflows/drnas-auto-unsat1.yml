@@ -1,0 +1,113 @@
+name: DRNAS AUTO-UNSAT1 source-verified structural and DRUP audit
+on:
+  push:
+    branches: [experiment/drnas-auto-unsat1-20261115]
+    paths:
+      - .github/workflows/drnas-auto-unsat1.yml
+      - research/pcmax_capacity/auto_unsat.py
+      - research/pcmax_capacity/benchmark_auto_unsat.py
+      - research/pcmax_capacity/propose_mixed_unsat.py
+      - research/pcmax_capacity/check_mixed_unsat.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-auto-unsat1-20261115
+  cancel-in-progress: false
+jobs:
+  source_verified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build one-process native Hall3 detector
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          python3 -m py_compile research/pcmax_capacity/auto_unsat.py \
+            research/pcmax_capacity/benchmark_auto_unsat.py \
+            research/pcmax_capacity/check_mixed_unsat.py \
+            research/pcmax_capacity/propose_mixed_unsat.py
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Extract pinned independent DRAT proof checker
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/math5/math5-blind-frozen.tgz build/drat-trim
+          chmod +x build/drat-trim
+          test -x build/drat-trim
+          sha256sum build/drnas-pcmax build/drat-trim
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - name: 135 synthetics plus 18 original frozen CNFs; independently check every UNSAT
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python3 -u research/pcmax_capacity/benchmark_auto_unsat.py \
+            --binary build/drnas-pcmax --drat-trim build/drat-trim \
+            --pcmax20 pcmax20 --unseen3 pcmax-unseen3-results/original_cnfs \
+            --out results/auto-unsat1 --budget-ms 1500 | tee results/auto-unsat1.log
+          grep -q '^AUTO_UNSAT_FINAL ' results/auto-unsat1.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('results/auto-unsat1/summary.json').read_text())
+          assert x['total']==153 and x['false_unsat']==0
+          assert x['drat_checker_negative_control_rejected']
+          print('AUTO_UNSAT_CHECKS_PASS')
+          PY
+      - name: Publish strict distinction between structural proof and standard DRAT
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('results/auto-unsat1/summary.json')
+          if not p.is_file():
+              print('INCOMPLETE: inspect failing stage and partial logs')
+          else:
+              s=json.loads(p.read_text())
+              report="# AUTO-UNSAT1 experimental proof audit\n\n"
+              for name,row in s['by_cohort'].items():
+                  report+=f"- {name}: {row['sources']} CNFs; structural={row['structural_unsat']}, standard-DRAT={row['strict_drat_unsat']}, UNKNOWN={row['unknown']}\n"
+              report+="\nStructural-only certificates are **not** DRAT/LRAT; no universal generalization.\n"
+              print(report)
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fd:fd.write(report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-auto-unsat1-original18-synthetic135-independent-proofs
+          retention-days: 60
+          path: |
+            results/auto-unsat1/summary.json
+            results/auto-unsat1/trials.jsonl
+            results/auto-unsat1/proofs/
+            results/auto-unsat1.log
+            research/pcmax_capacity/auto_unsat.py
+            research/pcmax_capacity/benchmark_auto_unsat.py
+            research/pcmax_capacity/check_mixed_unsat.py
+            research/pcmax_capacity/check_hall3_hybrid.py
