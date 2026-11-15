@@ -1,0 +1,109 @@
+name: DRNAS standalone one-command CNF to DRUP LRAT smoke
+on:
+  push:
+    branches: [experiment/drnas-standalone-lrat1-20261115]
+    paths:
+      - .github/workflows/drnas-prove-standalone-smoke.yml
+      - research/pcmax_capacity/drnas_prove.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-prove-standalone-smoke-20261115
+  cancel-in-progress: false
+jobs:
+  one_command:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the DRNAS native structural front-end
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          python3 -m py_compile research/pcmax_capacity/drnas_prove.py \
+            research/pcmax_capacity/strict_rup_lrat.py \
+            research/pcmax_capacity/standalone_lrat.py
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore independent DRAT and LRAT checkers, not SAT backends
+        run: |
+          set -euo pipefail
+          mkdir -p upstream
+          tar -xzf frozen/math5/math5-blind-frozen.tgz build/drat-trim
+          chmod +x build/drat-trim
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/lrat-check.c \
+            -o upstream/lrat-check.c
+          gcc upstream/lrat-check.c -std=c99 -DLONGTYPE -O2 -o build/lrat-check
+          test ! -f build/kissat
+      - name: Four UNSAT and one SAT - no SAT solver used - complete original proof
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python3 -u - <<'PY' | tee results/standalone-prove-smoke.log
+          import json,random,sys
+          from pathlib import Path
+          sys.path.insert(0,'research/pcmax_capacity')
+          from random_unsat_probe import write_cnf,unsat_2sat,xor_parity_conflict
+          from test_hall3_hybrid import instance
+          from drnas_prove import run
+          base=Path('results/standalone-prove-smoke')
+          base.mkdir(parents=True,exist_ok=False)
+          examples=[
+            ('binary_2sat','UNSAT',unsat_2sat(random.Random(17))[:2]),
+            ('xor_parity','UNSAT',xor_parity_conflict(random.Random(18))[:2]),
+            ('hybrid_bdd','UNSAT',(instance(4),None)),
+            ('capacity_3x2','UNSAT',(
+              [(1,2),(3,4),(5,6),(-1,-3),(-1,-5),(-3,-5),(-2,-4),(-2,-6),(-4,-6)],6)),
+            ('hybrid_sat','SAT',(instance(2),None))
+          ]
+          rows=[]
+          for name,label,(clauses,vars_) in examples:
+            vars_=vars_ or max(abs(l) for c in clauses for l in c)
+            file=base/(name+'.cnf')
+            write_cnf(file,clauses,vars_)
+            r=run(file,Path('build/drnas-pcmax'),Path('build/drat-trim'),
+                  Path('build/lrat-check'),base/(name+'.result'),
+                  native_ms=1250,standard_s=6.0,checker_s=12,max_nodes=6000)
+            assert r['source_sha256'] and r['single_logical_cpu']
+            assert r['uses_external_sat_solver']==False
+            if label=='SAT':
+              assert r['status']=='UNKNOWN' and not r['lrat_verified'],(name,r)
+            else:
+              assert r['status']=='UNSAT_STANDARD_VERIFIED',(name,r)
+              assert (base/(name+'.result')/'proof.drat').is_file()
+              assert (base/(name+'.result')/'proof.lrat').is_file()
+            rows.append({'name':name,'label':label,'status':r['status'],
+                         'method':r['method'],'standard':r['lrat_verified']})
+            print('DRNAS_PROVE_SMOKE '+json.dumps(rows[-1],sort_keys=True),flush=True)
+          (base/'summary.json').write_text(json.dumps({'cases':rows,'status':'PASS'},indent=2)+'\n')
+          print('DRNAS_PROVE_SMOKE_FINAL '+json.dumps({'status':'PASS','total':len(rows),
+                'standard_unsat':sum(x['standard'] for x in rows)},sort_keys=True))
+          PY
+          grep -q '^DRNAS_PROVE_SMOKE_FINAL ' results/standalone-prove-smoke.log
+      - name: Archive all original sources, proofs and verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-one-command-standalone-proofs-smoke
+          retention-days: 60
+          path: |
+            results/standalone-prove-smoke/
+            results/standalone-prove-smoke.log
+            research/pcmax_capacity/drnas_prove.py
+            research/pcmax_capacity/strict_rup_lrat.py
+            research/pcmax_capacity/standalone_lrat.py
