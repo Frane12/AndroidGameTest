@@ -1,4 +1,4 @@
-name: DRNAS SAT LOCAL-HYBRID1 mixed structure soundness
+name: DRNAS SAT LOCAL-HYBRID1 mixed original 3888 certified paired trials
 on:
   push:
     branches: [experiment/drnas-sat-local-hybrid1-20261115]
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Compile one-core native constructor and integrated CDCL
+      - name: Compile native C++ constructor and integrated local CDCL
         run: |
           set -euo pipefail
           mkdir -p build
@@ -32,7 +32,7 @@ jobs:
           g++ -O3 -std=c++20 -DNDEBUG -Wall -Wextra \
             src/drnas_x59.cpp -o build/drnas-sat-local-x59
           sha256sum src/drnas_sat_local.hpp src/drnas_x59.cpp build/drnas-sat-local-x59
-      - name: Bounded mixed-structure SAT witness and UNSAT negative controls
+      - name: 56 mixed SAT/UNSAT controls under three arms
         run: |
           set -euo pipefail
           python3 -m py_compile research/sat_local1/*.py
@@ -46,3 +46,147 @@ jobs:
             src/drnas_sat_local.hpp
             research/sat_local1/selftest.py
           retention-days: 45
+  freeze:
+    needs: soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43731136744
+          name: sat-construct-real600-frozen
+          github-token: ${{ github.token }}
+          path: frozen/satlib
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: frozen/cf7
+      - name: Restore source-pinned original SATLIB600 and REAL100 official archive
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/satlib/sat-construct-real600-frozen.tgz
+          tar -xzf frozen/cf7/cf7_inputs.tgz
+          test -f cf7/manifest.json
+          test -f sat_construct_600_inputs/manifest.json
+          sha256sum cf7/manifest.json sat_construct_600_inputs/manifest.json
+      - name: Compile LOCAL1 from source, pin reference binaries, verify dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libboost-program-options1.83.0 libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1
+          g++ -O3 -std=c++20 -DNDEBUG -Wall -Wextra src/drnas_x59.cpp -o build/drnas-sat-local-x59
+          python3 -m py_compile research/sat_local1/*.py
+          chmod +x build/kissat build/cadical build/cms build/frat-rs build/drat-trim
+          LD_LIBRARY_PATH=build/cms-libs/usr/lib/x86_64-linux-gnu build/cms --version
+          sha256sum build/drnas-sat-local-x59 build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+      - name: Preregister 600+24 sources and SHA manifest before comparison
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/sat_local1/benchmark.py freeze | tee local1_freeze.log
+          grep -q '^LOCAL1_FROZEN ' local1_freeze.log
+          tar -czf local1-frozen.tgz sat_construct_600_inputs cf7 local1_inputs \
+            build/drnas-sat-local-x59 build/kissat build/cadical build/cms \
+            build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local1-frozen-sources-and-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: local1-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local1-preregistration
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            local1_inputs/manifest.json
+            research/sat_local1/README.md
+            local1_freeze.log
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: local1-frozen-sources-and-binaries
+      - name: Restore source and verified reference executable snapshots
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libboost-program-options1.83.0 libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1
+          tar -xzf local1-frozen.tgz
+          chmod +x build/drnas-sat-local-x59 build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+      - name: Serial six-arm paired E2E trials pinned to one logical CPU
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            python3 -u research/sat_local1/benchmark.py shard --index ${{ matrix.shard }} | tee local1_shard.log
+          grep -q '^LOCAL1_SHARD_COMPLETE ' local1_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            sat_local1_results/shard-${{ matrix.shard }}/
+            local1_shard.log
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: local1-frozen-sources-and-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: local1-shard-*
+          path: downloaded
+      - name: Verify 3888-row complete source-and-arm matrix
+        run: |
+          set -euo pipefail
+          tar -xzf local1-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(4):
+              hits=list(Path('downloaded').glob(f'local1-shard-{i}/**/trials.jsonl'))
+              assert len(hits)==1,(i,hits)
+              d=Path('sat_local1_results')/f'shard-{i}'
+              d.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(hits[0],d/'trials.jsonl')
+          PY
+          python3 -u research/sat_local1/benchmark.py report | tee local1_final.log
+          cat sat_local1_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local1-final-report
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            sat_local1_results/summary.json
+            sat_local1_results/README.md
+            local1_inputs/manifest.json
+            local1_final.log
