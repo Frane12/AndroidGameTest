@@ -123,7 +123,7 @@ def trial(source,arm,rep,folder,cap=None):
             try:telemetry.append(json.loads(l[len('c PCMAX_CAPACITY '):]))
             except ValueError:pass
     row=dict(id=source['id'],family=source['family'],file_id=source.get('file_id'),source_sha256=source['sha256'],arm=arm,rep=rep,
-        status=status,verified=verified,accepted=accepted,strict_accepted=strict,standard_accepted=standard,certificate_kind=kind,
+        status=status,solver_exit_code=result['rc'],solver_error_tail=result['stderr'][-2000:] if status=='SOLVER_ERROR' else None,verified=verified,accepted=accepted,strict_accepted=strict,standard_accepted=standard,certificate_kind=kind,
         solver_s=result['wall_s'],checker_s=checkwall,e2e_s=elapsed,solver_cpu_s=result['cpu_s'],maxrss_kib=result['maxrss_kib'],
         checker_cpu_s=check['cpu_s'] if check else None,checker_maxrss_kib=check['maxrss_kib'] if check else None,
         PAR2_s=elapsed if accepted else 2*cap,PAR2_strict_s=elapsed if strict else 2*cap,PAR2_standard_s=elapsed if standard else 2*cap,
