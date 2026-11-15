@@ -33,7 +33,7 @@ def manifest():
     assert data["source_count"]==60
     assert len(data["sources"])==60
     assert {r["id"] for r in data["sources"]}==set(range(60))
-    assert len({r["sha256"] for r in data["sources"]})==100
+    assert len({r["sha256"] for r in data["sources"]})==60
     assert collections.Counter(r["family"] for r in data["sources"])=={
         f:10 for f in ("pure_xor3","pure_xor4","pure_xor5","pure_xor6",
                       "mixed_xor5","partial_xor3")}
