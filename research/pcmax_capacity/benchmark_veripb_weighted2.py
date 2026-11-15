@@ -36,7 +36,7 @@ def main():
     cpu=min(os.sched_getaffinity(0));os.sched_setaffinity(0,{cpu})
     OUT.mkdir(parents=True,exist_ok=True)
     (OUT/"originals").mkdir(exist_ok=True)
-    indices=[0,2,5,10]
+    indices=list(range(20))
     result=[]
     for i in indices:
         e=manifest[i]
