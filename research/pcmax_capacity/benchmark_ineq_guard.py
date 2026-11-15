@@ -80,7 +80,7 @@ def main():
             arms=["CDCL_BASE","INEQ_GUARD"] if rep%2==0 else ["INEQ_GUARD","CDCL_BASE"]
             for arm in arms:
                 path=a.output/(f"{case}-rep{rep}-{arm}.json")
-                extra=(["--ineq-guard","--pcmax-only","--pcmax-budget-ms","150",
+                extra=(["--ineq-guard","--pcmax-budget-ms","150",
                         "--pcmax-certificate",str(path.resolve())]
                        if arm=="INEQ_GUARD" else [])
                 label,elapsed,stdout=invoke(a.binary,src,extra)
@@ -97,7 +97,7 @@ def main():
                         assert label=="UNSAT" and cert_status=="UNSAT_INEQ_SOURCE_CERTIFIED",(case,label,stdout)
                         assert kind==("triangle" if case.startswith("triangle") else "chsh4"),(case,kind)
                     else:
-                        assert label=="UNKNOWN" and not path.exists(),("false UNSAT",case,label)
+                        assert label=="SAT" and not path.exists(),("false UNSAT or SAT fallback failure",case,label)
                 else:
                     assert label==expected,("baseline solver wrong",case,label,expected)
                 row={"case":case,"rep":rep,"arm":arm,"expected":expected,
@@ -134,9 +134,7 @@ def main():
     for arm in ("CDCL_BASE","INEQ_GUARD"):
         part=[r for r in rows if r["arm"]==arm]
         per_arm[arm]={"trials":len(part),
-                      "verified_oracle_correct":sum(r["status"]==r["expected"] or
-                                                   (arm=="INEQ_GUARD" and r["expected"]=="SAT" and
-                                                    r["status"]=="UNKNOWN") for r in part),
+                      "verified_oracle_correct":sum(r["status"]==r["expected"] for r in part),
                       "certified_unsat":sum(bool(r["proof"]) for r in part),
                       "median_seconds":round(statistics.median(r["seconds"] for r in part),6),
                       "sum_par2_seconds":round(sum(r["seconds"] if r["status"]==r["expected"]
@@ -145,7 +143,7 @@ def main():
             "repetitions":3,"trials":len(rows),"false_unsat":0,
             "corrupt_certificates_rejected":3,"arms":per_arm,"rows":rows,
             "not_blind_holdout":True,"original_cnf_checks":True,
-            "not_drat_lrat":True}
+            "not_drat_lrat":True,"full_cdcl_fallback":True}
     (a.output/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     print("INEQ_FINAL "+json.dumps({k:v for k,v in report.items() if k!="rows"},sort_keys=True),flush=True)
 
