@@ -38,7 +38,7 @@ runners. Each runner pins solver/checker sequentially to one logical CPU. Arms:
 UNIFIED_OFF, UNIFIED_STRICT, UNIFIED_FULL, Kissat, CaDiCaL, CryptoMiniSat.
 Both custom-inclusive and standard-only PAR2 are reported. Frozen original
 sources/reference binaries come from run 43712040086; they are not changed.
-This is NOT a new blind holdout. Compact console summaries; full rows in artifacts.
+This is NOT a new blind holdout. Live compact per-trial console records after each timed measurement; full rows in artifacts.
 
 ## Promotion gate
 

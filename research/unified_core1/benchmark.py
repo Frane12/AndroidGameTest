@@ -264,6 +264,8 @@ def shard(idx):
                 for arm in arms:
                     row=trial(src,arm,rep)
                     f.write(json.dumps(row,sort_keys=True)+"\n");f.flush()
+                    progress={k:row[k] for k in ("id","arm","rep","status","accepted","certificate_kind","solver_s","checker_s","e2e_s","PAR2_s","PAR2_strict_s")}
+                    print("UNIFIED_CORE1_TRIAL "+json.dumps(progress,sort_keys=True),flush=True)
     records=[json.loads(l) for l in (dest/"trials.jsonl").read_text().splitlines()]
     assert len(records)==len(selected)*REPS*len(ARMS)
     sums={a:dict(solved=sum(r["accepted"] for r in records if r["arm"]==a),
