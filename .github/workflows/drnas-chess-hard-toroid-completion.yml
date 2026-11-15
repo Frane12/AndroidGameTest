@@ -1,0 +1,172 @@
+name: DRNAS CHESS HARD 16 toroidal and blocked N-Queens completion benchmark
+on:
+  push:
+    branches: [experiment/drnas-chess-hard-toroid-completion-20261115]
+    paths:
+      - .github/workflows/drnas-chess-hard-toroid-completion.yml
+      - research/pcmax_capacity/chess_hard_generator.py
+      - research/pcmax_capacity/chess_hard_benchmark.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-chess-hard-20261115
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore frozen Kissat and CaDiCaL plus drat-trim and build general X5
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          test -x build/kissat
+          test -x build/cadical
+          test -x build/drat-trim
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax-base drnas-php-native drnas-queens-2sat -j2
+          python3 -m py_compile research/pcmax_capacity/chess_hard_generator.py \
+            research/pcmax_capacity/chess_hard_benchmark.py
+          sha256sum build/drnas-pcmax-base build/drnas-php-native build/drnas-queens-2sat \
+            build/kissat build/cadical build/drat-trim
+          git rev-parse HEAD
+      - name: One core serial original CNF source-frozen five-arm hard chess tests
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "DRNAS_CHESS_HARD_CPU=$CPU SHARD=${{ matrix.shard }}"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/chess_hard_benchmark.py \
+            --shard ${{ matrix.shard }} --out results/chess-hard-${{ matrix.shard }} \
+            --x5 "$GITHUB_WORKSPACE/build/drnas-pcmax-base" \
+            --php "$GITHUB_WORKSPACE/build/drnas-php-native" \
+            --two-sat "$GITHUB_WORKSPACE/build/drnas-queens-2sat" \
+            --kissat "$GITHUB_WORKSPACE/build/kissat" \
+            --cadical "$GITHUB_WORKSPACE/build/cadical" \
+            --drat-trim "$GITHUB_WORKSPACE/build/drat-trim" \
+            --cap 15 | tee chess-hard-${{ matrix.shard }}.log
+      - name: Compact complete shard results, proof vs raw status separated
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          shard=${{ matrix.shard }}
+          file=pathlib.Path(f"results/chess-hard-{shard}/summary.json")
+          if not file.exists():
+              print("Partial result only: see trials.jsonl or earlier runner logs")
+              raise SystemExit(0)
+          d=json.loads(file.read_text())
+          lines=[f"## Chess harder task — shard {shard}",
+                 "", "Full toroidal or blocked N-Queens Completion CNF; all inputs generated and frozen before solver calls.",
+                 "DRAT certification requires independent original-CNF drat-trim; raw solver return codes not proof.",
+                 "N-Queens Completion is NP-complete; simple unrestricted N-Queens is not a hard general benchmark.",
+                 "", "| Input | Family | N | Variables | Clauses | DRNAS X5 | PHP | 2SAT | Kissat | CaDiCaL |",
+                 "|---|---|---:|---:|---:|---|---|---|---|---|"]
+          for c in d['cases']:
+              matches={r['arm']:r for r in d['rows'] if r['case']==c['id']}
+              def show(arm):
+                  r=matches.get(arm)
+                  return r['status']+" "+str(round(r['elapsed_s'],3))+"s" if r else "not-run"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  c['id'],c['family'],c['n'],c['variables'],c['clauses'],
+                  show('DRNAS_X5'),show('DRNAS_PHP'),show('DRNAS_2SAT'),
+                  show('KISSAT'),show('CADICAL')))
+          lines+=["",f"Standard DRAT UNSAT verified: {d['verified_unsat']}. "+
+                   f"Independently checked SAT models: {d['verified_sat']}. "+
+                   f"False SAT/UNSAT contradictions: {d['invalid']}."]
+          s="\n".join(lines)+"\n"
+          print(s)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:out.write(s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-chess-hard-shard-${{ matrix.shard }}
+          retention-days: 45
+          compression-level: 6
+          path: |
+            results/chess-hard-${{ matrix.shard }}/
+            chess-hard-${{ matrix.shard }}.log
+
+  final:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-chess-hard-shard-*
+          path: inputs
+          merge-multiple: false
+      - name: Strict 16 source 80 paired trial coverage and summary
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          sources=[];rows=[]
+          for shard in range(4):
+              p=pathlib.Path(f"inputs/drnas-chess-hard-shard-{shard}/results/chess-hard-{shard}/summary.json")
+              if p.exists():
+                  j=json.loads(p.read_text())
+                  sources.extend(j['cases']);rows.extend(j['rows'])
+          lines=["# DRNAS hard chess SAT — toroidal N-Queens + blocked N-Queens Completion",
+                 "",f"Preregistered full original CNFs {len(sources)}/16; paired attempts {len(rows)}/80.",
+                 "Synthetic sources; full row/column/diagonal CNFs. Toroidal math labels from Pólya theorem.",
+                 "UNSAT requires original-CNF external DRAT check. SAT models checked only if a complete model is emitted.",
+                 "", "| Case | N | Family | Pinned | Blocks | Variables | Clauses | X5 | Kissat | CaDiCaL |",
+                 "|---|---:|---|---:|---:|---:|---:|---|---|---|"]
+          for c in sorted(sources,key=lambda x:x['id']):
+              m={x['arm']:x for x in rows if x['case']==c['id']}
+              def s(k):
+                  x=m.get(k)
+                  return (x['status']+" "+str(round(x['elapsed_s'],3))+"s") if x else "missing"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  c['id'],c['n'],c['family'],c['pinned_queens'],
+                  c['forbidden_squares'],c['variables'],c['clauses'],
+                  s('DRNAS_X5'),s('KISSAT'),s('CADICAL')))
+          verified_unsat=sum(x['unsat_standard_verified'] for x in rows)
+          verified_sat=sum(x['sat_model_verified'] for x in rows)
+          contradictions=[x for x in rows if x['status'].startswith('CRITICAL')]
+          lines+=["",f"Standard externally verified UNSAT: {verified_unsat}; independent source SAT models verified: {verified_sat}.",
+                  f"Critical contradictions: {len(contradictions)}.",
+                  "These tasks do NOT imply a general polynomial SAT solver; timeout is no solution within the stated cap."]
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          pathlib.Path('hard-chess-final.md').write_text(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          if len(sources)!=16 or len(rows)!=80 or contradictions:
+              raise SystemExit("INCOMPLETE_OR_CRITICAL_HARD_CHESS_EXPERIMENT")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-chess-hard-final
+          retention-days: 45
+          path: hard-chess-final.md
