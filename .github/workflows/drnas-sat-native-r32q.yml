@@ -1,0 +1,62 @@
+name: DRNAS SAT-NATIVE R32Q original SATComp2026 certified GF2 comparison
+on:
+  push:
+    branches: [experiment/drnas-sat-construct-native1-20261115]
+    paths:
+      - research/sat_native1/benchmark_r32q.py
+      - .github/workflows/drnas-sat-native-r32q.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sat-native-r32q-20261115
+  cancel-in-progress: false
+jobs:
+  exact_original:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 41656883104
+          repository: Frane12/AndroidGameTest
+          name: r32p-official-2026-size-bounded-frozen-originals
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 41613064879
+          repository: Frane12/AndroidGameTest
+          name: r28-identical-binaries
+          github-token: ${{ github.token }}
+          path: compiled
+      - name: Check exact official SAT2026 source and pinned R28 binary
+        run: |
+          set -euo pipefail
+          (cd frozen && sha256sum -c source.sha256)
+          (cd compiled && sha256sum -c binary.sha256)
+          chmod +x compiled/kissat compiled/r28_gf2
+      - name: Compile both one-process native implementations
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_sat_construct.cpp -o build/drnas-sat-construct
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          python3 -m py_compile research/sat_native1/benchmark_r32q.py
+      - name: Match original source on one logical CPU, 3 times each arm
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+            python3 -u research/sat_native1/benchmark_r32q.py
+      - name: Save full original-source SAT witness checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-native-r32q-2026
+          path: sat_native_r32q_results/
+          if-no-files-found: warn
+          retention-days: 45
