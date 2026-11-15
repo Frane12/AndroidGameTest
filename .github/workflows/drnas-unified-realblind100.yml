@@ -1,0 +1,212 @@
+name: DRNAS UNIFIED REALBLIND100 original SAT2026 certified six-arm PAR2
+on:
+  push:
+    branches:
+      - experiment/drnas-unified-realblind100-20261115
+    paths:
+      - research/unified_realblind100/**
+      - research/xor_math5_unified1/build.py
+      - research/xor_math5_unified1/test.py
+      - .github/workflows/drnas-unified-realblind100.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-unified-realblind100-20261115
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile native base and guarded UNIFIED1, check proof interfaces
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev
+          mkdir -p build
+          python3 -m py_compile research/unified_realblind100/*.py research/xor_math5_unified1/*.py
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          python3 -u research/xor_math5_unified1/build.py | tee realblind_build.log
+          python3 -u research/xor_math5_unified1/test.py | tee realblind_test.log
+          grep -q '^UNIFIED_MATH5_PREFLIGHT_PASS' realblind_test.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: realblind100-native-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            build/drnas-sat-native-x59
+            build/drnas-x59-xor-math5-unified1
+            realblind_build.log
+            realblind_test.log
+  freeze:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f12bcdc6d3e6b50fd1c94cd144ea04426ef713f1
+          path: global_snapshot
+          sparse-checkout: research/memory/global
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: realblind100-native-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          repository: Frane12/AndroidGameTest
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: frozen/cf7
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          repository: Frane12/AndroidGameTest
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen/cms
+      - name: Restore pinned reference executables and historical manifests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1 libboost-program-options1.83.0
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          tar -xzf frozen/cf7/cf7_inputs.tgz
+          cp frozen/cms/cms frozen/cms/frat-rs build/
+          mkdir -p build/cms-libs/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 build/cms-libs/usr/lib/x86_64-linux-gnu/
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+          LD_LIBRARY_PATH=build/cms-libs/usr/lib/x86_64-linux-gnu build/cms --version
+      - name: Select 100 originals without reading any solver results
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/unified_realblind100/freeze.py > realblind_source_freeze.log
+          grep -q '^REALBLIND_FROZEN ' realblind_source_freeze.log
+          tail -n 3 realblind_source_freeze.log
+          PYTHONHASHSEED=0 python3 -u research/unified_realblind100/benchmark.py prepare | tee realblind_prepare.log
+          grep -q '^REALBLIND100_READY ' realblind_prepare.log
+      - name: Freeze all solver binaries, original CNFs and protocol for the entire run
+        run: |
+          set -euo pipefail
+          tar -czf realblind100-frozen.tgz \
+            build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            unified_realblind100_inputs unified_realblind100_results/protocol.json
+          sha256sum realblind100-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: realblind100-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: realblind100-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realblind100-freeze-audit
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            unified_realblind100_inputs/*.json
+            unified_realblind100_results/protocol.json
+            realblind_source_freeze.log
+            realblind_prepare.log
+            realblind_build.log
+            realblind_test.log
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: realblind100-frozen
+      - name: Restore identical binaries and source formulas
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1 libboost-program-options1.83.0
+          tar -xzf realblind100-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+      - name: Six sequential solvers on one logical CPU per attempt
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONHASHSEED=0 \
+          python3 -u research/unified_realblind100/benchmark.py shard --index ${{ matrix.shard }} | tee realblind_shard.log
+          grep -q '^REALBLIND100_SHARD ' realblind_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realblind100-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            unified_realblind100_results/shard-${{ matrix.shard }}/
+            realblind_shard.log
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: realblind100-freeze-audit
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: realblind100-shard-*
+          path: pulled
+      - name: Require complete 1200-trial matrix and report certified PAR2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(10):
+              matches=list((Path('pulled')/f'realblind100-shard-{i}').glob('**/trials.jsonl'))
+              assert len(matches)==1,(i,matches)
+              out=Path('unified_realblind100_results')/f'shard-{i}'
+              out.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(matches[0],out/'trials.jsonl')
+          PY
+          python3 -u research/unified_realblind100/benchmark.py report | tee realblind_final.log
+          grep -q '^REALBLIND100_FINAL ' realblind_final.log
+          cat realblind_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realblind100-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            unified_realblind100_results/final.json
+            realblind_final.log
+            unified_realblind100_results/shard-*/trials.jsonl
