@@ -1,0 +1,171 @@
+name: DRNAS MAXPAR2 medium-hard27 original SAT2026 five-arm verified
+on:
+  push:
+    branches: [experiment/drnas-maxpar2-mediumhard27-20261115]
+    paths:
+      - .github/workflows/drnas-maxpar2-mediumhard27.yml
+      - research/maxpar2/**
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-maxpar2-mediumhard27-20261115
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43643413210
+          name: hall3-prepared
+          github-token: ${{ github.token }}
+          path: pinned-reference
+      - name: Frozen reference binaries and MATH4 native build
+        run: |
+          set -euo pipefail
+          tar -xzf pinned-reference/hall3-prepared.tgz
+          python3 -m py_compile research/maxpar2/*.py research/math4/benchmark_unseen15.py
+          g++ -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror \
+            -DDRNAS_PCMAX_MODULE src/drnas_hall3.cpp -lcrypto -o build/drnas-math4
+          python3 -u research/math4/native_smoke.py --binary build/drnas-math4 \
+            --out maxpar2_preflight | tee native_preflight.log
+          test -x build/kissat && test -x build/cadical
+          test -x build/drnas-cf7-frozen && test -x build/drat-trim
+      - name: Freeze exactly the preregistered original SAT2026 instances
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/maxpar2/freeze.py | tee maxpar2_freeze.log
+          grep -q '^MAXPAR2_FROZEN ' maxpar2_freeze.log
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/maxpar2/benchmark.py prepare | tee maxpar2_prepare.log
+          grep -q '^MAXPAR2_READY ' maxpar2_prepare.log
+          sha256sum build/drnas-math4 build/drnas-cf7-frozen build/kissat \
+            build/cadical build/drat-trim research/maxpar2/selection.json \
+            research/maxpar2/benchmark.py research/math4/benchmark_unseen15.py \
+            > maxpar2-frozen.sha256
+          tar -czf maxpar2-frozen.tgz build/drnas-math4 build/drnas-cf7-frozen \
+            build/kissat build/cadical build/drat-trim \
+            maxpar2_inputs/cnf maxpar2_inputs/manifest.json \
+            maxpar2_results/protocol.json maxpar2-frozen.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maxpar2-source-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            maxpar2-frozen.tgz
+            maxpar2-frozen.sha256
+            maxpar2_freeze.log
+            maxpar2_prepare.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maxpar2-meta
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            maxpar2_inputs/manifest.json
+            maxpar2_results/protocol.json
+            research/maxpar2/selection.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: maxpar2-freeze-evidence
+          retention-days: 60
+          path: |
+            maxpar2_preflight/
+            native_preflight.log
+            maxpar2_freeze.log
+            maxpar2_prepare.log
+            maxpar2_inputs/manifest.json
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maxpar2-source-frozen
+      - name: Validate pristine binaries and run sequential one-logical-CPU paired trials
+        run: |
+          set -euo pipefail
+          tar -xzf maxpar2-frozen.tgz
+          sha256sum -c maxpar2-frozen.sha256
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "MAXPAR2_SINGLE_LOGICAL_CPU=$CPU"
+          PYTHONHASHSEED=0 taskset -c "$CPU" python3 -u \
+            research/maxpar2/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee maxpar2_shard.log
+          grep -q '^MAXPAR2_SHARD_PASS ' maxpar2_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: maxpar2-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            maxpar2_results/shard-${{ matrix.shard }}/
+            maxpar2_shard.log
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maxpar2-meta
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maxpar2-shard-*
+          path: downloaded
+      - name: Verify all expected paired trials with no dropped failures
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path("maxpar2_results")
+          root.mkdir(exist_ok=True)
+          for i in range(6):
+              hits=list(Path("downloaded").glob(f"maxpar2-shard-{i}/**/trials.jsonl"))
+              assert len(hits)==1,(i,hits)
+              shutil.copytree(hits[0].parent,root/f"shard-{i}")
+          PY
+          PYTHONHASHSEED=0 python3 -u research/maxpar2/benchmark.py report \
+            | tee maxpar2_final.log
+          grep -q '^MAXPAR2_FINAL ' maxpar2_final.log
+          cat maxpar2_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: maxpar2-mediumhard27-final-report
+          retention-days: 60
+          path: |
+            maxpar2_results/README.md
+            maxpar2_results/summary.json
+            maxpar2_results/trials.jsonl
+            maxpar2_inputs/manifest.json
+            maxpar2_final.log
+            research/maxpar2/
