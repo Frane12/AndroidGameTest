@@ -1,0 +1,140 @@
+name: DRNAS STANDALONE DRAT LRAT no SAT backend frozen proof audit
+on:
+  push:
+    branches: [experiment/drnas-standalone-lrat1-20261115]
+    paths:
+      - .github/workflows/drnas-standalone-lrat1.yml
+      - research/pcmax_capacity/standalone_lrat.py
+      - research/pcmax_capacity/benchmark_standalone_lrat.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-standalone-lrat1-20261115
+  cancel-in-progress: false
+jobs:
+  independent_proof_generation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and source module checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/standalone_lrat.py \
+            research/pcmax_capacity/benchmark_standalone_lrat.py \
+            research/pcmax_capacity/bridge_standard.py
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43701567926
+          name: drnas-auto-unsat1-original18-synthetic135-independent-proofs
+          github-token: ${{ github.token }}
+          path: .
+      - name: Confirm immutable 153-case source proofs
+        run: |
+          set -euo pipefail
+          test -s results/auto-unsat1/trials.jsonl
+          test -s results/auto-unsat1/summary.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('results/auto-unsat1/summary.json').read_text())
+          assert d['total']==153 and d['false_unsat']==0
+          assert d['by_cohort']['synthetic']['structural_unsat']==105
+          assert d['by_cohort']['original_SAT2024']['structural_unsat']==8
+          print("SOURCE_FROZEN_153_PASS")
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore pinned independent checkers (NO SAT backend binary)
+        run: |
+          set -euo pipefail
+          mkdir -p build upstream
+          tar -xzf frozen/math5/math5-blind-frozen.tgz build/drat-trim
+          chmod +x build/drat-trim
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/lrat-check.c \
+            -o upstream/lrat-check.c
+          gcc upstream/lrat-check.c -std=c99 -DLONGTYPE -O2 -o build/lrat-check
+          sha256sum build/drat-trim build/lrat-check upstream/lrat-check.c
+          test -x build/drat-trim && test -x build/lrat-check
+          test ! -f build/kissat
+      - name: Standalone generator 153 CNFs, direct LRAT hints, original-source independent checks
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_standalone_lrat.py \
+            --base results/auto-unsat1 \
+            --pcmax20 pcmax20 \
+            --unseen3 pcmax-unseen3-results/original_cnfs \
+            --drat-trim build/drat-trim --lrat-check build/lrat-check \
+            --out results/standalone-lrat1 \
+            --synthetic-budget-s 2.0 --original-budget-s 7.0 \
+            --max-nodes 5000 --checker-s 12 \
+            | tee standalone-lrat1.log
+          grep -q '^STANDALONE_FINAL ' standalone-lrat1.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path("results/standalone-lrat1/summary.json").read_text())
+          assert s['source_count']==153 and s['false_unsat']==0
+          assert s['backend_sat_solvers_used']==0 and s['drat_to_lrat_converter_used'] is False
+          assert s['negative_controls_pass']
+          assert s['results']['synthetic']['direct_lrat_verified']>0
+          print("STANDALONE_DIRECT_LRAT_PASS")
+          PY
+      - name: Publish strict coverage and limitations
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path("results/standalone-lrat1/summary.json")
+          if p.is_file():
+            s=json.loads(p.read_text())
+            lines=["# DRNAS independent standalone DRAT / direct LRAT generator","","No Kissat, CaDiCaL or CMS used in proof generation. Original CNF verified by two external checkers.",""]
+            for cohort,r in s['results'].items():
+              lines.append(f"- {cohort}: {r['sources']} sources; {r['previously_structural']} structural UNSAT; direct LRAT {r['direct_lrat_verified']}; from scratch {r['new_no_solver_search']}; pre-existing DRUP rehinted {r['from_rup_proof']}.")
+            lines.append("")
+            lines.append("No proof counted from a structural certificate alone. Bounded UNKNOWN cases remain unresolved.")
+            report="\n".join(lines)+"\n"
+          else:report="Incomplete: check logs; no certified aggregate result.\n"
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:out.write(report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-standalone-lrat1-direct-original-153
+          retention-days: 60
+          path: |
+            results/standalone-lrat1/summary.json
+            results/standalone-lrat1/trials.jsonl
+            results/standalone-lrat1/proofs/
+            standalone-lrat1.log
+            research/pcmax_capacity/standalone_lrat.py
+            research/pcmax_capacity/benchmark_standalone_lrat.py
+            upstream/lrat-check.c
