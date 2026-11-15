@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frozen XORBLIND1, paired and independently SAT-witness verified.
+"""Frozen XORHARD2, paired and independently SAT-witness verified.
 No tuning or source selection based on solver outcomes.
 """
 import argparse,collections,hashlib,json,os,random,signal,statistics,subprocess,sys,time
@@ -219,7 +219,7 @@ def report():
       per_source_95pct_bootstrap_saving_CI=[bootstrap[30],bootstrap[1170]],
       bootstrap_trials=1200,
       method="resample source, preserving paired repetitions")
-    final=dict(protocol="XORBLIND1-PINNED-V1",
+    final=dict(protocol="XORHARD2-PINNED-V1",
        source_manifest_sha256=FROZEN_SHA,total_sources=60,total_trials=len(all_rows),
        reps=REPS,cap_s=CAP,synthetic_source_blind=True,not_original_official=True,
        arms=ARMS,summary=summary,paired=paired)
