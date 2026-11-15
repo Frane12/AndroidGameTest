@@ -105,7 +105,7 @@ def main():
                      "proof":cert_status,"kind":kind,
                      "sha256":hashlib.sha256(raw).hexdigest()}
                 rows.append(row)
-                print("INEQ_TRIAL "+json.dumps(row,sort_keys=True),flush=True)
+                # Keep CI output compact; preserve every trial in report.json.
     assert first_proof is not None
     raw,proof,clauses,nvars=first_proof
     forged=copy.deepcopy(proof);forged["source_sha256"]="0"*64
