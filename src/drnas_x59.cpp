@@ -23,6 +23,7 @@
 #include <vector>
 #include "drnas_sat_construct.hpp"
 #include "drnas_sat_local.hpp"
+#include "drnas_sat_trail.hpp"
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -104,6 +105,9 @@ class Solver {
     void configureSatConstruct(double budget_ms) { sat_construct_ms_=budget_ms; }
     void configureSatLocal(double budget_ms,bool shadow) {
         sat_local_ms_=budget_ms;sat_local_shadow_=shadow;
+    }
+    void configureSatTrail(double budget_ms,bool shadow) {
+        sat_trail_ms_=budget_ms;sat_trail_shadow_=shadow;
     }
     void writeProofClause(const std::vector<int>& lits) {
         if (!proof_ || x46_clone_) return;
@@ -332,6 +336,56 @@ class Solver {
             Clock::now()-started).count();
     }
 
+    // TRAIL1: BCP-safe residual construction, no learned clause injection.
+    void runTrailReconstruct() {
+        if(sat_trail_ms_<=0.0 || x46_clone_ || n_<=0 || n_>2048 ||
+           original_count_>12000 || stats_.decisions<trail_next_decision_ ||
+           trail_attempts_>=4 || timedOut() ||
+           trail_used_s_*1000.0>=sat_trail_ms_)return;
+        const auto start=Clock::now();
+        ++trail_attempts_;
+        const int schedule[4]={4,12,32,1000000000};
+        trail_next_decision_=schedule[trail_attempts_-1];
+        int64_t literals=0;
+        for(const Clause& c:clauses_)if(!c.learnt){
+            literals+=static_cast<int64_t>(c.lits.size());
+            if(literals>75000)break;
+        }
+        if(literals<=75000){
+            satconstruct::CNF original;
+            original.reserve(static_cast<size_t>(original_count_));
+            for(const Clause& c:clauses_)if(!c.learnt)
+                original.push_back(c.lits);
+            double spent=std::chrono::duration<double,std::milli>(
+                Clock::now()-start).count();
+            double left=std::min(2.5,sat_trail_ms_-trail_used_s_*1000.0-spent);
+            if(left>0.1 && !timedOut()){
+                auto found=sattrail::analyze(n_,original,values_,left);
+                trail_residual_clauses_=found.residual_clauses;
+                trail_residual_variables_=found.residual_variables;
+                trail_components_=found.components;
+                trail_solved_components_=found.solved_components;
+                trail_xor_patterns_=found.xor_patterns;
+                trail_hints_found_+=found.hints_count;
+                if(found.sat()){
+                    ++trail_full_candidates_;
+                    if(!sat_trail_shadow_){
+                        leaf_model_=std::move(found.full_model);
+                        if(!verifyModel())
+                            throw std::runtime_error("TRAIL1 invalid original model");
+                        trail_full_used_=true;
+                    }
+                }else if(!sat_trail_shadow_ && found.hints_count>0){
+                    // Conditional residual assignments are ONLY PHASE hints.
+                    // They cannot assert SAT, UNSAT, units or clauses.
+                    trail_hints_=std::move(found.hints);
+                    trail_hint_level_=decisionLevel();
+                }
+            }
+        }
+        trail_used_s_+=std::chrono::duration<double>(Clock::now()-start).count();
+    }
+
     Result solve() {
         if (timedOut()) return Result::UNKNOWN;
         if (root_unsat_) return Result::UNSAT;
@@ -423,6 +477,10 @@ class Solver {
             }
             endTransition(false);
             settleFeedback(false);
+            if(sat_trail_ms_>0.0 && !x46_clone_){
+                runTrailReconstruct();
+                if(trail_full_used_)return Result::SAT;
+            }
             const Backdoor backdoor=tryTwoSat();
             if (backdoor==Backdoor::SAT) return Result::SAT;
             if (backdoor==Backdoor::UNSAT) return Result::UNSAT;
@@ -435,11 +493,18 @@ class Solver {
             }
             const int64_t next_decision=stats_.decisions+1;
             // Hints are proposed phases, NEVER propagated assignments.
-            const int baseline_lit=(sat_local_ms_>0.0 && !sat_local_shadow_ &&
+            int baseline_lit=(sat_local_ms_>0.0 && !sat_local_shadow_ &&
                 stats_.decisions<64 && stats_.conflicts<32 &&
                 v<static_cast<int>(sat_local_hints_.size()) &&
                 sat_local_hints_[v]!=0)
                 ?sat_local_hints_[v]*(v+1):phase_[v]*(v+1);
+            if(sat_trail_ms_>0.0 && !sat_trail_shadow_ &&
+               trail_hint_level_>=0 && decisionLevel()>=trail_hint_level_ &&
+               stats_.decisions<=96 &&
+               v<static_cast<int>(trail_hints_.size()) && trail_hints_[v]){
+                baseline_lit=trail_hints_[v]*(v+1);
+                ++trail_phases_used_;
+            }
             int chosen_lit=satClause1Literal(v,baseline_lit);
             // Two detached snapshots have identical selected-variable,
             // watch lists, heap, phases, learnt clauses, and restart schedule.
@@ -686,6 +751,17 @@ class Solver {
     int satLocalRootProbes() const{return sat_local_root_probes_;}
     int satLocalRupUnits() const{return sat_local_rup_units_;}
     double satLocalSeconds() const{return sat_local_elapsed_s_;}
+    bool satTrailFound() const{return trail_full_used_;}
+    int satTrailCandidates() const{return trail_full_candidates_;}
+    int satTrailAttempts() const{return trail_attempts_;}
+    int satTrailResidualClauses() const{return trail_residual_clauses_;}
+    int satTrailResidualVariables() const{return trail_residual_variables_;}
+    int satTrailComponents() const{return trail_components_;}
+    int satTrailSolvedComponents() const{return trail_solved_components_;}
+    int satTrailXorPatterns() const{return trail_xor_patterns_;}
+    int satTrailHints() const{return trail_hints_found_;}
+    int satTrailPhasesUsed() const{return trail_phases_used_;}
+    double satTrailSeconds() const{return trail_used_s_;}
     double elapsed() const { return std::chrono::duration<double>(Clock::now() - begun_).count(); }
     const char* mode() const { return mode_.c_str(); }
 
@@ -702,6 +778,13 @@ class Solver {
     int sat_local_components_=0,sat_local_solved_=0,sat_local_xor_=0;
     int sat_local_hint_count_=0,sat_local_root_probes_=0,sat_local_rup_units_=0;
     std::vector<int8_t> sat_local_hints_;
+    double sat_trail_ms_=0.0,trail_used_s_=0.0;
+    bool sat_trail_shadow_=false,trail_full_used_=false;
+    int trail_attempts_=0,trail_full_candidates_=0,trail_next_decision_=1;
+    int trail_residual_clauses_=0,trail_residual_variables_=0;
+    int trail_components_=0,trail_solved_components_=0,trail_xor_patterns_=0;
+    int trail_hints_found_=0,trail_phases_used_=0,trail_hint_level_=-1;
+    std::vector<int8_t> trail_hints_;
     int64_t sat_clause1_scans_=0, sat_clause1_flips_=0;
     int64_t sat_clause1_probe_pairs_=0, sat_clause1_failed_literals_=0;
     double sat_clause1_wall_s_=0.0;
@@ -1016,6 +1099,10 @@ class Solver {
     void newDecisionLevel() { trail_lim_.push_back(static_cast<int>(trail_.size())); }
     void cancelUntil(int target) {
         if (decisionLevel() <= target) return;
+        if(trail_hint_level_>=0 && target<trail_hint_level_){
+            trail_hint_level_=-1;
+            trail_hints_.clear();
+        }
         const int first = trail_lim_[target];
         for (int i=static_cast<int>(trail_.size())-1; i>=first; --i) {
             const int v = std::abs(trail_[i])-1;
@@ -1503,8 +1590,8 @@ int run(int argc, char** argv) {
     bool x58_hotwatch=false;
     bool x59_stamp_glue=false;
     int compare_at=0,x46_conflicts=0, sat_clause_mode=0;
-    double sat_construct_ms=0.0, sat_local_ms=0.0;
-    bool sat_local_shadow=false;
+    double sat_construct_ms=0.0, sat_local_ms=0.0,sat_trail_ms=0.0;
+    bool sat_local_shadow=false,sat_trail_shadow=false;
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
@@ -1526,6 +1613,8 @@ int run(int argc, char** argv) {
         else if (opt=="--sat-construct-ms" && i+1<argc) sat_construct_ms=std::stod(argv[++i]);
         else if (opt=="--sat-local-ms" && i+1<argc) sat_local_ms=std::stod(argv[++i]);
         else if (opt=="--sat-local-shadow") sat_local_shadow=true;
+        else if (opt=="--sat-trail-ms" && i+1<argc) sat_trail_ms=std::stod(argv[++i]);
+        else if (opt=="--sat-trail-shadow") sat_trail_shadow=true;
         else if (opt=="--stats") show_stats=true;
         else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
@@ -1547,6 +1636,9 @@ int run(int argc, char** argv) {
     if (!std::isfinite(sat_local_ms)||sat_local_ms<0||sat_local_ms>50 ||
         (sat_local_shadow && sat_local_ms==0))
         throw std::runtime_error("invalid --sat-local-ms/shadow");
+    if (!std::isfinite(sat_trail_ms)||sat_trail_ms<0||sat_trail_ms>40 ||
+        (sat_trail_shadow && sat_trail_ms==0))
+        throw std::runtime_error("invalid --sat-trail-ms/shadow");
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
@@ -1598,6 +1690,7 @@ int run(int argc, char** argv) {
             solver->configureSatClause1(sat_clause_mode);
             solver->configureSatConstruct(sat_construct_ms);
             solver->configureSatLocal(sat_local_ms,sat_local_shadow);
+            solver->configureSatTrail(sat_trail_ms,sat_trail_shadow);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
@@ -1687,6 +1780,19 @@ int run(int argc, char** argv) {
                  <<"}\n";
     }
     if (show_stats) {
+        std::cerr<<"SAT_TRAIL_STATS {\"enabled\":"<<(sat_trail_ms>0?"true":"false")
+                 <<",\"shadow\":"<<(sat_trail_shadow?"true":"false")
+                 <<",\"full\":"<<(solver->satTrailFound()?"true":"false")
+                 <<",\"full_candidates\":"<<solver->satTrailCandidates()
+                 <<",\"attempts\":"<<solver->satTrailAttempts()
+                 <<",\"residual_clauses\":"<<solver->satTrailResidualClauses()
+                 <<",\"residual_variables\":"<<solver->satTrailResidualVariables()
+                 <<",\"components\":"<<solver->satTrailComponents()
+                 <<",\"solved_components\":"<<solver->satTrailSolvedComponents()
+                 <<",\"xor_patterns\":"<<solver->satTrailXorPatterns()
+                 <<",\"hints\":"<<solver->satTrailHints()
+                 <<",\"phase_uses\":"<<solver->satTrailPhasesUsed()
+                 <<",\"wall_s\":"<<solver->satTrailSeconds()<<"}\n";
         std::cerr<<"SAT_LOCAL_STATS {\"enabled\":"<<(sat_local_ms>0?"true":"false")
                  <<",\"shadow\":"<<(sat_local_shadow?"true":"false")
                  <<",\"full\":"<<(solver->satLocalFound()?"true":"false")
