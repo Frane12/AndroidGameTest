@@ -136,7 +136,7 @@ inline Result construct(int vars,const CNF& clauses,double ms_budget=50.0){
             if(layers!=7||triple[k]++)return done();
         }else if(c.size()>=4){
             int positive=0,negative=0,positiveA=-1,negativeB=-1;
-            bool allA=true,allNegB=true,allPosA=true;
+            bool allNegB=true,allPosA=true;
             std::vector<int> plus,minus;
             plus.reserve(c.size());minus.reserve(c.size());
             for(int l:c){
@@ -145,9 +145,8 @@ inline Result construct(int vars,const CNF& clauses,double ms_budget=50.0){
                     if(l>n)allPosA=false;
                     if(l<=n){positiveA=l-1;plus.push_back(l-1);}
                     else return done();
-                    allNegB=false;
                 }else{
-                    ++negative;allA=false;
+                    ++negative;
                     if(-l<=n||-l>2*n)allNegB=false;
                     else{negativeB=-l-n-1;minus.push_back(-l-n-1);}
                 }
