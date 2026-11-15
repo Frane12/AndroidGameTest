@@ -1,0 +1,151 @@
+name: DRNAS REAL26 six original CNFs VeriPB 3.0 standard UNSAT proof
+on:
+  push:
+    branches: [experiment/drnas-real26-clique-veripb-standard1-20261115]
+    paths:
+      - .github/workflows/drnas-real26-clique-veripb-standard1.yml
+      - research/pcmax_capacity/emit_veripb_source_clique.py
+      - research/pcmax_capacity/verify_veripb_real26_six.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-real26-veripb-standard1-20261115
+  cancel-in-progress: false
+
+jobs:
+  independent_standard_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    env:
+      PYTHONHASHSEED: "0"
+      RAYON_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent VeriPB version 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --version
+          sha256sum "$GITHUB_WORKSPACE/veripb-tool/bin/veripb"
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43729190294
+          pattern: real26-shard-*
+          path: frozen-originals
+          merge-multiple: false
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43730476222
+          name: drnas-real26-original-cnf-structural-autopsy
+          path: frozen-capacity
+          github-token: ${{ github.token }}
+      - name: Compile-check source-bound polynomial proof emitter
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/emit_veripb_source_clique.py \
+            research/pcmax_capacity/check_php_partition.py \
+            research/pcmax_capacity/verify_veripb_real26_six.py
+          git rev-parse HEAD
+          sha256sum research/pcmax_capacity/emit_veripb_source_clique.py \
+            research/pcmax_capacity/check_php_partition.py \
+            research/pcmax_capacity/verify_veripb_real26_six.py
+      - name: VeriPB standard positive and forged proof negative controls
+        run: |
+          set -euo pipefail
+          mkdir -p standard-smoke
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          out=pathlib.Path("standard-smoke")
+          groups=[[1,2],[3,4],[5,6]]
+          pairs=[(1,3),(1,5),(3,5),(2,4),(2,6),(4,6)]
+          lines=["p cnf 6 9"]
+          lines+=[" ".join(map(str,g))+" 0" for g in groups]
+          lines+=[f"-{a} -{b} 0" for a,b in pairs]
+          raw=("\n".join(lines)+"\n").encode()
+          (out/"original.cnf").write_bytes(raw)
+          cert=dict(format="DRNAS-source-clique-capacity-v1",
+                    source_sha256=hashlib.sha256(raw).hexdigest(),
+                    source_variables=6,source_clauses=9,selected_groups=groups,
+                    capacity_cliques=[[1,3,5],[2,4,6]],demand=3,capacity=2)
+          (out/"structural.json").write_text(json.dumps(cert)+"\n")
+          # SAT after removing one essential pair clause
+          bad=raw.decode().replace("-3 -5 0\n","").replace("p cnf 6 9","p cnf 6 8")
+          (out/"weakened.cnf").write_text(bad)
+          PY
+          python3 -u research/pcmax_capacity/emit_veripb_source_clique.py \
+            --cnf standard-smoke/original.cnf \
+            --certificate standard-smoke/structural.json \
+            --output standard-smoke/original.pbp | tee standard-smoke/producer.log
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+            standard-smoke/original.cnf standard-smoke/original.pbp \
+            > standard-smoke/valid-checker.log 2>&1
+          if "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --cnf \
+               standard-smoke/weakened.cnf standard-smoke/original.pbp \
+               > standard-smoke/forged-checker.log 2>&1; then
+            echo "CRITICAL: VeriPB accepted a proof against weakened SAT CNF"
+            exit 1
+          fi
+          echo "VERIPB3_STANDARD_POSITIVE_AND_FORGED_SOURCE_REJECTION_PASS"
+      - name: Regenerate six full-original VeriPB proofs and independently check
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+          echo "VERIPB_LOGICAL_CPU=$CPU"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/verify_veripb_real26_six.py \
+            --archived frozen-originals \
+            --certificates frozen-capacity \
+            --veripb "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" \
+            --out standard-results \
+            --verifier-cap-s 300 | tee standard-results-run.log
+      - name: Publish compact audited results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path("standard-results/summary.json")
+          if not p.exists():
+              print("No completed independent standard verification.")
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          lines=["# DRNAS REAL26 — six source-original VeriPB 3.0 proof verification",
+                 "",f"Independently accepted originals: {d['verified']}/{d['total']}",
+                 "No CNF modifications or CDCL; structural discovery and external verification separate.",
+                 "VeriPB 3.0.2 pinned; one logical CPU; source SHA-256 frozen.",
+                 "", "| Original | Variables | Clauses | VeriPB checked | Producer seconds | Checker seconds | Proof bytes |",
+                 "|---|---:|---:|---|---:|---:|---:|"]
+          for r in d["rows"]:
+              prod=r.get("producer",{})
+              lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+                  r["file_id"][:12]+"…",r["variables"],r["clauses"],
+                  r["status"],prod.get("producer_s","—"),
+                  r.get("checker_s","—"),prod.get("proof_bytes","—")))
+          lines+=["","This establishes standard VeriPB verification only for independently accepted originals; not general SAT competition PAR2."]
+          body="\n".join(lines)+"\n"
+          print(body)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(body)
+          pathlib.Path("summary-standard.md").write_text(body)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-real26-six-original-veripb3-standards
+          retention-days: 60
+          compression-level: 6
+          path: |
+            standard-results/
+            standard-smoke/
+            standard-results-run.log
+            summary-standard.md
+            research/pcmax_capacity/emit_veripb_source_clique.py
+            research/pcmax_capacity/check_php_partition.py
+            research/pcmax_capacity/verify_veripb_real26_six.py
