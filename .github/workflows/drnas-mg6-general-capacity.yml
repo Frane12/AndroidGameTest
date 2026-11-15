@@ -1,0 +1,134 @@
+name: DRNAS MG6 general clause-capacity proof pilot
+on:
+  push:
+    branches: [experiment/drnas-mathguard6-general-capacity-20261115]
+    paths:
+      - research/mg6_general_capacity.py
+      - .github/workflows/drnas-mg6-general-capacity.yml
+      - research/MG6_GENERAL_CAPACITY.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-mg6-general-capacity-20261115
+  cancel-in-progress: false
+jobs:
+  source_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Independent VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Generate blinded-to-detector exact DIMACS controls
+        run: |
+          set -euo pipefail
+          mkdir -p results/mg6
+          python3 - <<'PY'
+          from pathlib import Path
+          import random
+          out=Path("results/mg6")
+          def write(name,n,clauses):
+              path=out/(name+".cnf")
+              path.write_text(f"p cnf {n} {len(clauses)}\n"+ "".join(" ".join(map(str,c))+" 0\n" for c in clauses))
+          def php(n,m):
+              cs=[tuple(i*m+j+1 for j in range(m)) for i in range(n)]
+              for j in range(m):
+                  for i in range(n):
+                      for k in range(i+1,n):
+                          cs.append((-(i*m+j+1),-(k*m+j+1)))
+              return cs
+          for n,m in [(4,3),(5,4),(7,6),(3,3),(5,5)]:
+              write(f"php_{n}_{m}",n*m,php(n,m))
+          # 40 SAT CNFs guaranteed SAT by a planted model, different clause patterns.
+          rng=random.Random(6112026)
+          for i in range(40):
+              model={v:rng.choice([False,True]) for v in range(1,25)}
+              clauses=[]
+              for _ in range(90):
+                  vars_=rng.sample(range(1,25),rng.randint(2,5))
+                  lits=[v if rng.randrange(2) else -v for v in vars_]
+                  if not any((lit>0)==model[abs(lit)] for lit in lits):
+                      lits[0] = -lits[0]
+                  clauses.append(tuple(lits))
+              write(f"sat_planted_{i:02d}",24,clauses)
+          PY
+      - name: Independent proof audit, no claimed UNSAT without checker
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,subprocess,sys
+          root=pathlib.Path("results/mg6")
+          checker=pathlib.Path("veripb-tool/bin/veripb").resolve()
+          expected={"php_4_3","php_5_4","php_7_6"}
+          seen=set();failures=[];rows=[]
+          for path in sorted(root.glob("*.cnf")):
+              name=path.stem
+              proof=path.with_suffix(".pbp")
+              report=path.with_suffix(".json")
+              p=subprocess.run([sys.executable,"research/mg6_general_capacity.py",
+                                "--cnf",str(path),"--proof",str(proof),"--report",str(report)],
+                                capture_output=True,text=True,timeout=30)
+              if p.returncode:
+                  failures.append(name+": producer failure")
+                  continue
+              result=json.loads(report.read_text())
+              status="UNKNOWN"
+              if result["status"]=="PROOF_EMITTED_UNCHECKED":
+                  c=subprocess.run([str(checker),"--cnf",str(path),str(proof)],
+                                   capture_output=True,text=True,timeout=120)
+                  log=(c.stdout or "")+(c.stderr or "")
+                  (root/(name+".veripb.log")).write_text(log)
+                  if c.returncode==0 and "s VERIFIED UNSATISFIABLE" in log:
+                      status="VERIPB_UNSAT_VERIFIED"
+                      seen.add(name)
+                  else:
+                      status="REJECTED"
+                      failures.append(name+": independent proof rejected")
+              if name.startswith("sat_") or name in ("php_3_3","php_5_5"):
+                  if status!="UNKNOWN":failures.append(name+": SAT control rejected")
+              if name in expected and status!="VERIPB_UNSAT_VERIFIED":
+                  failures.append(name+": expected certified UNSAT not found")
+              rows.append({"name":name,"status":status,"groups":result.get("groups"),
+                           "cliques":result.get("cliques"),"proof_steps":result.get("proof_steps")})
+              print("MG6_CASE "+json.dumps(rows[-1],sort_keys=True),flush=True)
+          summary={"completed":len(rows),"verified_unsat":len(seen),
+                   "sat_controls_unknown":sum(r["status"]=="UNKNOWN" for r in rows),
+                   "failures":failures,"rows":rows}
+          (root/"summary.json").write_text(json.dumps(summary,indent=2)+"\n")
+          print("MG6_TOTAL "+json.dumps({k:v for k,v in summary.items() if k!="rows"},sort_keys=True))
+          if failures or seen!=expected:sys.exit(1)
+          PY
+      - name: Publish proof results, even on error
+        if: always()
+        run: |
+          if test -s results/mg6/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/mg6/summary.json").read_text())
+          msg=(f"# MG6 original clause clique-capacity pilot\n\n"
+               f"Independent VeriPB accepted UNSAT: {d['verified_unsat']}\n\n"
+               f"SAT/UNKNOWN controls: {d['sat_controls_unknown']}\n\n"
+               f"Failures: {len(d['failures'])}\n\n"
+               "Synthetic pilot only. No original-real CNF improvement or PAR2 claim.\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-mg6-general-capacity-proof-pilot
+          retention-days: 30
+          path: |
+            research/mg6_general_capacity.py
+            results/mg6/
