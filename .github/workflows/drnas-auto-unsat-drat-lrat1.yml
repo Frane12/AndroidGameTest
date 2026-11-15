@@ -1,0 +1,138 @@
+name: DRNAS AUTO-UNSAT DRAT LRAT independently checked original CNF bridge
+on:
+  push:
+    branches: [experiment/drnas-auto-unsat-drat-lrat1-20261115]
+    paths:
+      - .github/workflows/drnas-auto-unsat-drat-lrat1.yml
+      - research/pcmax_capacity/bridge_standard.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-auto-unsat-drat-lrat1-20261115
+  cancel-in-progress: false
+jobs:
+  drat_lrat_proof_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile unchanged native Hall3+Hall2 and Python proof bridge
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          python3 -m py_compile research/pcmax_capacity/bridge_standard.py \
+            research/pcmax_capacity/auto_unsat.py \
+            research/pcmax_capacity/benchmark_auto_unsat.py
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore frozen Kissat and DRAT-trim; compile pinned independent LRAT-check
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/math5/math5-blind-frozen.tgz build/drat-trim build/kissat
+          chmod +x build/drat-trim build/kissat
+          mkdir -p upstream
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/lrat-check.c \
+            -o upstream/lrat-check.c
+          gcc upstream/lrat-check.c -std=c99 -DLONGTYPE -O2 -o build/lrat-check
+          sha256sum upstream/lrat-check.c build/drat-trim build/lrat-check build/kissat
+          printf 'p cnf 1 2\n1 0\n-1 0\n' > upstream/unsat.cnf
+          printf '0\n' > upstream/unsat.drat
+          build/drat-trim upstream/unsat.cnf upstream/unsat.drat -L upstream/unsat.lrat
+          build/lrat-check upstream/unsat.cnf upstream/unsat.lrat
+          test -s upstream/unsat.lrat
+          printf 'p cnf 1 1\n1 0\n' > upstream/sat.cnf
+          if build/lrat-check upstream/sat.cnf upstream/unsat.lrat | grep -q 'c VERIFIED'; then
+            echo 'ERROR: LRAT checker falsely accepted a SAT formula'
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - name: Repeat frozen AUTO-UNSAT 153 independent structural and DRAT trials
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python3 -u research/pcmax_capacity/benchmark_auto_unsat.py \
+            --binary build/drnas-pcmax --drat-trim build/drat-trim \
+            --pcmax20 pcmax20 --unseen3 pcmax-unseen3-results/original_cnfs \
+            --out results/auto-unsat1 --budget-ms 1500 | tee results/auto-unsat1.log
+          grep -q '^AUTO_UNSAT_FINAL ' results/auto-unsat1.log
+      - name: Strict original-CNF DRAT to LRAT, and source-only structural core proof attempt
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/bridge_standard.py \
+            --base results/auto-unsat1 --out results/drat-lrat1 \
+            --pcmax20 pcmax20 --unseen3 pcmax-unseen3-results/original_cnfs \
+            --kissat build/kissat --drat-trim build/drat-trim \
+            --lrat-check build/lrat-check \
+            --synthetic-solver-s 1.0 --original-solver-s 3.0 \
+            --checker-s 15 | tee results/drat-lrat1.log
+          grep -q '^STANDARD_FINAL ' results/drat-lrat1.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('results/drat-lrat1/summary.json').read_text())
+          assert s['total_sources']==153 and s['false_unsat']==0
+          assert s['negative_controls_pass']
+          assert s['results']['synthetic']['previous_drat_verified']>=43
+          assert s['results']['synthetic']['total_lrat_verified']>=1
+          print('DRAT_LRAT_STRICT_ORIGINAL_CHECKS_PASS')
+          PY
+      - name: Accurate result summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('results/drat-lrat1/summary.json')
+          if p.exists():
+            s=json.loads(p.read_text())
+            lines=['# DRNAS DRAT / LRAT bridge proof audit','',
+              'A standard proof is counted ONLY after both DRAT-trim and independent LRAT-check pass on the full original CNF.','']
+            for cohort,r in s['results'].items():
+              lines.append(f"- {cohort}: {r['sources']} CNFs, structural={r['structural_verified']}, previously DRAT={r['previous_drat_verified']}, newly DRAT={r['new_drat_verified']}, independently LRAT={r['total_lrat_verified']}.")
+            lines+=['','Structural-only UNSAT does not imply DRAT/LRAT. No aggregate PAR2 or universal speedup claims.']
+            report='\n'.join(lines)+'\n'
+          else: report='No complete strict result. Inspect logs and partial trials.\n'
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-auto-unsat-drat-lrat1-strict-153-sources
+          retention-days: 60
+          path: |
+            results/drat-lrat1/summary.json
+            results/drat-lrat1/trials.jsonl
+            results/drat-lrat1/cases/
+            results/drat-lrat1.log
+            results/auto-unsat1/summary.json
+            results/auto-unsat1/trials.jsonl
+            results/auto-unsat1.log
+            research/pcmax_capacity/bridge_standard.py
+            upstream/lrat-check.c
