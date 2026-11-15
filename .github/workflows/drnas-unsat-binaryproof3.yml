@@ -1,0 +1,165 @@
+name: DRNAS BINARYPROOF3 original18 compact DRAT and standard LRAT audit
+on:
+  push:
+    branches: [experiment/drnas-unsat-binaryproof3-20261115]
+    paths:
+      - .github/workflows/drnas-unsat-binaryproof3.yml
+      - src/drnas_x5.cpp
+      - research/pcmax_capacity/benchmark_proofcore2.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-binaryproof3-original18-20261115
+  cancel-in-progress: false
+
+jobs:
+  proof_audit:
+    name: Native binary DRAT; source-only cert and original LRAT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile frozen search with new proof IO only
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/benchmark_proofcore2.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          sha256sum build/drnas-pcmax build/drnas-pcmax-base
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43701567926
+          name: drnas-auto-unsat1-original18-synthetic135-independent-proofs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Pin external proof checkers, no external SAT solving
+        run: |
+          set -euo pipefail
+          mkdir -p upstream
+          tar -xzf frozen/math5/math5-blind-frozen.tgz build/drat-trim
+          chmod +x build/drat-trim
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/lrat-check.c \
+            -o upstream/lrat-check.c
+          gcc -std=c99 -DLONGTYPE -O2 upstream/lrat-check.c -o build/lrat-check
+          sha256sum build/drat-trim build/lrat-check
+      - name: Prove binary DRAT validity vs old text and reject forged proof
+        run: |
+          set -euo pipefail
+          mkdir -p results/binaryproof3-smoke
+          python3 - <<'PY'
+          import pathlib, subprocess, time, json
+          root=pathlib.Path("results/binaryproof3-smoke")
+          src=root/"tiny_unsat.cnf"
+          src.write_text("p cnf 1 2\n1 0\n-1 0\n")
+          checks={}
+          for fmt,extra in (("binary",[]),("text",["--proof-text"])):
+            dst=root/(fmt+".drat")
+            p=subprocess.run(["build/drnas-pcmax-base",str(src),"--mode","core",
+                              "--time","1.0","--proof",str(dst),*extra],
+                             capture_output=True,text=True,timeout=5)
+            assert p.returncode==20,(fmt,p.returncode,p.stdout[-350:],p.stderr[-500:])
+            proof=dst.read_bytes()
+            assert proof
+            if fmt=="binary":
+              assert proof[0]==ord("a"),proof[:20]
+            else:
+              assert proof[-2:]==b"0\n" and not proof.startswith(b"a")
+            lrat=root/(fmt+".lrat")
+            check=subprocess.run(["build/drat-trim",str(src),str(dst),"-L",str(lrat)],
+                                 capture_output=True,text=True,timeout=12)
+            assert check.returncode==0 and "VERIFIED" in (check.stdout+check.stderr), (fmt,check.stdout[-600:],check.stderr[-600:])
+            lrat_check=subprocess.run(["build/lrat-check",str(src),str(lrat)],
+                                      capture_output=True,text=True,timeout=12)
+            assert lrat_check.returncode==0 and "c VERIFIED" in (lrat_check.stdout+lrat_check.stderr), (fmt,lrat_check.stdout[-400:])
+            checks[fmt]={"proof_bytes":len(proof),"lrat_bytes":lrat.stat().st_size}
+          assert checks["binary"]["proof_bytes"] <= checks["text"]["proof_bytes"]
+          fake=root/"forged_empty.drat"
+          fake.write_bytes(b"a\x00")
+          sat=root/"sat_control.cnf"
+          sat.write_text("p cnf 1 1\n1 0\n")
+          p=subprocess.run(["build/drat-trim",str(sat),str(fake)],capture_output=True,text=True,timeout=8)
+          assert p.returncode!=0 or "NOT VERIFIED" in p.stdout+p.stderr, "FALSE_UNSAT_FAKE_BINARY"
+          (root/"report.json").write_text(json.dumps(checks,indent=2)+"\n")
+          print("BINARYPROOF3_SMOKE_PASS "+json.dumps(checks,sort_keys=True))
+          PY
+      - name: Original18 independent structural and native binary-DRAT LRAT comparison
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_proofcore2.py \
+            --pcmax20 pcmax20 \
+            --unseen3 pcmax-unseen3-results/original_cnfs \
+            --prior results/auto-unsat1 \
+            --native build/drnas-pcmax \
+            --base build/drnas-pcmax-base \
+            --drat-trim build/drat-trim \
+            --lrat-check build/lrat-check \
+            --output results/binaryproof3 \
+            --solver-cap 8 --checker-cap 12 | tee binaryproof3-summary.log
+          grep -q '^PROOFCORE_FINAL ' binaryproof3-summary.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path("results/binaryproof3/summary.json").read_text())["summary"]
+          assert s["sources"]==18 and s["baseline_structural"]==8 and s["false_unsat"]==0
+          print("BINARYPROOF3_ORIGINAL_FINAL "+json.dumps(s,sort_keys=True))
+          PY
+      - name: Report difference to frozen text proof pilot
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path("results/binaryproof3/summary.json")
+          if p.exists():
+            s=json.loads(p.read_text())["summary"]
+            report=("# DRNAS native binary DRAT original18\n\n"
+                    +f"Source UNSAT {s['total_source_certified']}, standard LRAT {s['standard_lrat_verified']}, new source {s['new_structural']}, false UNSAT {s['false_unsat']}.\n\n"
+                    +"Previous text proof pilot: source UNSAT 8, standard LRAT 0, eight core proof streams hit 48MiB file cap. No blind holdout. Only externally checked original CNF LRAT counts as standard.\n")
+          else:report="Incomplete, no certified claim. Inspect workflow.\n"
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-binaryproof3-original18-compact-certifications
+          retention-days: 60
+          path: |
+            binaryproof3-summary.log
+            results/binaryproof3-smoke/report.json
+            results/binaryproof3/summary.json
+            results/binaryproof3/trials.jsonl
+            results/binaryproof3/original_*/source_certificate.json
+            results/binaryproof3/original_*/*.drat.gz
+            results/binaryproof3/original_*/*.lrat.gz
+            src/drnas_x5.cpp
+            research/pcmax_capacity/benchmark_proofcore2.py
