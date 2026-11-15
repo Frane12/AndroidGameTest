@@ -127,6 +127,10 @@ def make(case,root):
     altered=[tuple(rename[abs(x)]*(1 if x>0 else -1) for x in clause)
              for clause in clauses]
     rng.shuffle(altered)
+    if case["expected"]=="SAT":
+        shuffled_true={rename[v] for v in truth}
+        assert all(any((abs(lit) in shuffled_true)==(lit>0) for lit in clause)
+                   for clause in altered),"permuted original-CNF SAT witness invalid"
     filepath=root/(case["id"]+".cnf")
     sha=hashlib.sha256()
     with filepath.open("wb") as f:
