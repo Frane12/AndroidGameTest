@@ -1,0 +1,170 @@
+name: DRNAS QUEENS BLOCKED focus60 three unresolved frozen CNFs
+on:
+  push:
+    branches: [experiment/drnas-queens-blocked-focus60-20261115]
+    paths:
+      - .github/workflows/drnas-queens-blocked-focus60.yml
+      - research/pcmax_capacity/blocked_nqueens_focus60.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-queens-blocked-focus60-20261115
+  cancel-in-progress: false
+
+jobs:
+  focus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - case: r40k06
+            shard: 1
+          - case: r56k06
+            shard: 3
+          - case: r56k09
+            shard: 0
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43746699667
+          name: drnas-blocked-queens-shard-${{ matrix.shard }}
+          path: pinned-inputs
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          path: .
+          github-token: ${{ github.token }}
+      - name: Restore original source, binary references and compile unchanged X5
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          test -x build/kissat
+          test -x build/cadical
+          test -x build/drat-trim
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax-base -j2
+          python3 -m py_compile research/pcmax_capacity/blocked_nqueens_phase_benchmark.py \
+            research/pcmax_capacity/blocked_nqueens_focus60.py
+          git rev-parse HEAD
+          sha256sum build/drnas-pcmax-base build/kissat build/cadical build/drat-trim
+      - name: Run 60 second source-pinned original CNF on each arm, one logical CPU
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "FOCUS_SOURCE=${{ matrix.case }} CPU=$CPU"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/blocked_nqueens_focus60.py \
+            --originals pinned-inputs --case ${{ matrix.case }} \
+            --x5 "$GITHUB_WORKSPACE/build/drnas-pcmax-base" \
+            --kissat "$GITHUB_WORKSPACE/build/kissat" \
+            --cadical "$GITHUB_WORKSPACE/build/cadical" \
+            --drat-trim "$GITHUB_WORKSPACE/build/drat-trim" \
+            --out results/focus-${{ matrix.case }} --cap 60 | tee focus-${{ matrix.case }}.log
+      - name: Report all 60 second focus outcomes
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          name="${{ matrix.case }}"
+          p=pathlib.Path(f"results/focus-{name}/summary.json")
+          if not p.exists():
+              print(f"No complete focused replay {name}; see partial logs")
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          rows=d["rows"]
+          lines=[f"## 60-second focused N-Queens original CNF {name}", "",
+                 "Original source bytes SHA-256 compared to prior frozen manifest.",
+                 "Solver timing without proof; standard DRAT and model validation separated.",
+                 "", "| Solver | Result | Solver seconds | Proof replay seconds | Checker seconds |",
+                 "|---|---|---:|---:|---:|"]
+          for r in rows:
+              lines.append("| {} | {} | {} | {} | {} |".format(
+                  r["arm"],r["status"],r["wall_s"],
+                  r.get("proof_replay_s"),r.get("proof_check_s")))
+          lines.extend(["",f"Independently checked SAT: {d['verified_sat']}, "+
+                        f"standard DRAT UNSAT: {d['verified_unsat']}."])
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-blocked-focus60-${{ matrix.case }}
+          retention-days: 45
+          path: |
+            results/focus-${{ matrix.case }}/
+            focus-${{ matrix.case }}.log
+
+  summary:
+    needs: focus
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-blocked-focus60-*
+          merge-multiple: false
+          path: previous
+      - name: Strict coverage and SAT UNSAT standard auditing of three originals
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          names=["r40k06","r56k06","r56k09"]
+          table=[];allrows=[]
+          for name in names:
+              p=pathlib.Path(f"previous/drnas-blocked-focus60-{name}/results/focus-{name}/summary.json")
+              if not p.exists():continue
+              d=json.loads(p.read_text())
+              assert d["protocol"]["source_id"]==name
+              assert len(d["rows"])==3
+              allrows.extend(d["rows"])
+              table.append((name,{r["arm"]:r for r in d["rows"]}))
+          lines=["# DRNAS N-Queens blocked critical zone — 60s replay",
+                 "",f"Frozen source CNFs: {len(table)}/3, runs: {len(allrows)}/9.",
+                 "One logical CPU, same SHA-256 original bytes, solution timing excludes DRAT replay.",
+                 "", "| Source | DRNAS X5 | Kissat | CaDiCaL |",
+                 "|---|---|---|---|"]
+          for name,by in table:
+              def cell(arm):
+                  r=by.get(arm)
+                  return r["status"]+" ("+str(round(r["wall_s"],3))+"s)" if r else "NOT_RUN"
+              lines.append("| {} | {} | {} | {} |".format(name,cell("DRNAS_X5"),
+                           cell("KISSAT"),cell("CADICAL")))
+          accepted=sum(r["standard_verified"] for r in allrows)
+          models=sum(r["sat_model_verified"] for r in allrows)
+          lines.extend(["",f"Standard DRAT accepted: {accepted}; source SAT models: {models}.",
+                       "This is a longer retrospective recheck of 3 explicitly selected difficult instances, not a new blind set."])
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          pathlib.Path("blocked-focus60-final.md").write_text(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          if len(table)!=3 or len(allrows)!=9:
+              raise SystemExit("FOCUS60_INCOMPLETE")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-blocked-focus60-final
+          retention-days: 45
+          path: blocked-focus60-final.md
