@@ -19,6 +19,7 @@ import time
 from benchmark_auto_unsat import make_synthetic, original_sources
 from random_unsat_probe import write_cnf, satisfied
 from standalone_lrat import produce
+from strict_rup_lrat import check as strict_lrat_check, InvalidLRAT
 
 def check(command,seconds):
     try:
@@ -34,7 +35,14 @@ def independent_checks(cnf,drat,lrat,drat_trim,lrat_check,seconds):
     rc2,raw2=check([lrat_check,cnf,lrat],seconds)
     ok1=rc1==0 and "VERIFIED" in raw1 and "NOT VERIFIED" not in raw1
     ok2=rc2==0 and "c VERIFIED" in raw2 and "NOT VERIFIED" not in raw2
-    return ok1,ok2,raw1[-300:],raw2[-300:]
+    try:
+        strict_lrat_check(cnf.read_bytes(),lrat.read_bytes())
+        ok3=True
+        detail3="STRICT_RUP_LRAT_VERIFIED"
+    except (InvalidLRAT,ValueError,UnicodeDecodeError) as exc:
+        ok3=False
+        detail3="INVALID_STRICT_RUP_LRAT: "+str(exc)
+    return ok1,ok2,ok3,raw1[-300:],raw2[-300:],detail3
 
 def run(args):
     if hasattr(os,"sched_setaffinity"):
@@ -95,12 +103,12 @@ def run(args):
                 assert produced["source_sha256"]==prior["source_sha256"]
                 drat=proof_out/"proof.drat"
                 lrat=proof_out/"proof.lrat"
-                ok_drat,ok_lrat,detail1,detail2=independent_checks(
+                ok_drat,ok_lrat,ok_strict,detail1,detail2,detail3=independent_checks(
                     cnf,drat,lrat,args.drat_trim,args.lrat_check,args.checker_s)
                 row["drat_verified"]=ok_drat
-                row["lrat_verified"]=ok_lrat
-                if not (ok_drat and ok_lrat):
-                    row["reason"]="checker_rejected:"+detail1[-200:]+":"+detail2[-200:]
+                row["lrat_verified"]=ok_drat and ok_lrat and ok_strict
+                if not (ok_drat and ok_lrat and ok_strict):
+                    row["reason"]="checker_rejected:"+detail1[-200:]+":"+detail2[-200:]+":"+detail3[-200:]
                 else:
                     row["reason"]="DIRECT_DRUP_AND_LRAT_ORIGINAL_VERIFIED"
                     row["proof_sha256"]=hashlib.sha256(lrat.read_bytes()).hexdigest()
@@ -117,7 +125,7 @@ def run(args):
                             fake.write_text(" ".join(one)+"\n"+"\n".join(lines[1:])+"\n")
                             code,out=check([args.lrat_check,cnf,fake],args.checker_s)
                             assert not (code==0 and "c VERIFIED" in out and "NOT VERIFIED" not in out),name
-                if prior["expected"]=="SAT" and (ok_drat or ok_lrat):
+                if prior["expected"]=="SAT" and (ok_drat or ok_lrat or ok_strict):
                     raise AssertionError(("false UNSAT on SAT",name))
         rows.append(row)
         with (args.out/"trials.jsonl").open("a") as f:
@@ -136,7 +144,15 @@ def run(args):
     rc1,output1=check([args.drat_trim,sat,fake_drat],4)
     rc2,output2=check([args.lrat_check,sat,fake_lrat],4)
     assert rc1!=0 or "VERIFIED" not in output1 or "NOT VERIFIED" in output1
-    assert rc2!=0 or "c VERIFIED" not in output2 or "NOT VERIFIED" in output2
+    try:
+        strict_lrat_check(sat.read_bytes(),fake_lrat.read_bytes())
+    except InvalidLRAT:
+        strict_rejected=True
+    else:
+        strict_rejected=False
+    assert strict_rejected, "independent LRAT RUP verifier accepted SAT"
+    assert not (rc1==0 and "VERIFIED" in output1 and rc2==0
+                and "c VERIFIED" in output2 and not strict_rejected), "combined checkers accepted SAT"
     cohorts={}
     families=collections.defaultdict(lambda:{"source_verified":0,"drat_verified":0,
                                               "lrat_verified":0,"generated":0})
