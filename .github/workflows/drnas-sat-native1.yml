@@ -1,0 +1,87 @@
+name: DRNAS SAT-CONSTRUCT-NATIVE1 four-method original-CNF SAT witnesses
+on:
+  push:
+    branches: [experiment/drnas-sat-construct-native1-20261115]
+    paths:
+      - src/drnas_sat_construct.hpp
+      - src/drnas_sat_construct.cpp
+      - src/drnas_x59.cpp
+      - research/sat_native1/**
+      - .github/workflows/drnas-sat-native1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sat-native1-20261115
+  cancel-in-progress: false
+jobs:
+  soundness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native constructor and fused one-core CDCL
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG -Wall -Wextra \
+            src/drnas_sat_construct.cpp -o build/drnas-sat-construct
+          g++ -O3 -std=c++20 -DNDEBUG -Wall -Wextra \
+            src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum src/drnas_sat_construct.hpp src/drnas_sat_construct.cpp \
+            src/drnas_x59.cpp build/drnas-sat-construct build/drnas-sat-native-x59
+          python3 -m py_compile research/sat_native1/*.py
+      - name: Deterministic SAT, UNSAT and original-model regression controls
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+            python3 -u research/sat_native1/test_native.py
+  original:
+    needs: soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore frozen originals and pinned reference binaries
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/sources/cf7_inputs.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          chmod +x build/kissat build/cadical
+          sha256sum cf7/manifest.json build/kissat build/cadical
+      - name: Compile exact native experiment code
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_sat_construct.cpp -o build/drnas-sat-construct
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          python3 -m py_compile research/sat_native1/benchmark.py
+      - name: Original100 direct native, paired worker64, real20 fused ablation
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            python3 -u research/sat_native1/benchmark.py
+      - name: Archive full hash manifest, results, and per-source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sat-native1-original100
+          path: sat_native1_results/
+          if-no-files-found: warn
+          retention-days: 45
