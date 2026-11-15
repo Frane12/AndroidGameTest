@@ -51,15 +51,25 @@ jobs:
           matched=[e for e in entries if e['sha256']==sha]
           assert len(matched)==1, 'SOURCE_MANIFEST_NOT_UNIQUE'
           e=matched[0]
-          candidates=list(root.rglob(e['name']))
-          assert len(candidates)==1, ('FROZEN_ORIGINAL_MISSING_OR_AMBIGUOUS', candidates)
-          original=candidates[0].read_bytes()
+          candidates=list(root.rglob(e['name'])) if root.exists() else []
+          if len(candidates)==1:
+            original=candidates[0].read_bytes()
+            provenance='frozen-run-artifact'
+          else:
+            import lzma, urllib.request
+            request=urllib.request.Request(e['url'],headers={'User-Agent':'DRNAS-PCMAX-capacity-audit/1.0'})
+            with urllib.request.urlopen(request,timeout=120) as response:
+              raw=response.read(30_000_001)
+            assert len(raw)<=30_000_000, 'SOURCE_DOWNLOAD_TOO_LARGE'
+            original=lzma.decompress(raw) if raw.startswith(b'\\xfd7zXZ\\x00') else raw
+            provenance='pinned-original-url'
+          assert original, 'EMPTY_SOURCE'
           assert hashlib.sha256(original).hexdigest()==sha, 'FROZEN_SOURCE_HASH_MISMATCH'
           dst=pathlib.Path('original-cnfs')/e['name']
           dst.parent.mkdir(parents=True,exist_ok=True)
           dst.write_bytes(original)
           pathlib.Path('pcmax44_manifest.json').write_text(json.dumps({'source':'SAT2024 immutable PCMAX44','entries':[e]},indent=2)+'\n')
-          print('PCMAX44_SOURCE_FROZEN',json.dumps({'name':e['name'],'sha256':sha,'bytes':len(original)}))
+          print('PCMAX44_SOURCE_FROZEN',json.dumps({'name':e['name'],'sha256':sha,'bytes':len(original),'provenance':provenance}))
           PY
       - name: Three serial single-CPU runs with separate source-bound verifier
         run: |
