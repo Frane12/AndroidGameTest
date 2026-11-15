@@ -1,0 +1,157 @@
+name: DRNAS PCMAX real SAT2026 new16 source-disjoint original CNFs
+on:
+  push:
+    branches: [experiment/drnas-pcmax-real2026-new16-20261115]
+    paths:
+      - .github/workflows/drnas-pcmax-real2026-new16.yml
+      - research/pcmax_capacity/real2026_new16.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-pcmax-real2026-new16
+  cancel-in-progress: false
+
+jobs:
+  paired_shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          github-token: ${{ github.token }}
+          path: .
+      - name: Restore existing frozen reference Kissat CaDiCaL and check hashes
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          test -x build/kissat
+          test -x build/cadical
+          sha256sum build/kissat build/cadical
+      - name: Build unchanged native capacity guard, never modify main
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          python3 -m py_compile research/pcmax_capacity/real2026_new16.py
+          sha256sum build/drnas-pcmax research/pcmax_capacity/check_capacity.py
+          git rev-parse HEAD
+      - name: Original 2026 CNFs versus serial one-logical-CPU structural guard and references
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "REAL26_CPU=$CPU shard=${{ matrix.shard }}"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/real2026_new16.py \
+            --shard ${{ matrix.shard }} --out results/real26/shard-${{ matrix.shard }}
+      - name: Compact per-shard audit
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path('results/real26/shard-${{ matrix.shard }}/summary.json')
+          if not p.exists():
+              print('No complete shard summary; inspect previous step.')
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          lines=[f"## Original2026 REAL16 shard {d['shard']}", '',
+                 f"Downloaded {d['inputs_ok']}/{d['attempted']}, structural verified {d['structural_verified']}.",
+                 "No modified/re-encoded CNFs; one logical CPU per solver and a separate source-bound structural verifier.",
+                 "Kissat/CaDiCaL answers are not independently DRAT/model verified in this probe.",'',
+                 '| Original source | Family | Variables | Clauses | DRNAS | Kissat | CaDiCaL |',
+                 '|---|---|---:|---:|---|---|---|']
+          for c in d['cases']:
+              matching={r['arm']:r for r in d['rows'] if r['source_id']==c['md5']}
+              def val(a):
+                  if a not in matching:return '—'
+                  r=matching[a]
+                  return r['status']+' '+str(round(r['wall_s'],3))+'s'
+              lines.append(f"| {c['md5'][:12]}… | {c['family']} | {c.get('variables','—')} | {c.get('clauses','—')} | {val('DRNAS_STRUCTURAL')} | {val('KISSAT')} | {val('CADICAL')} |")
+          report='\n'.join(lines)+'\n'
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real26-shard-${{ matrix.shard }}
+          retention-days: 45
+          compression-level: 6
+          if-no-files-found: warn
+          path: results/real26/shard-${{ matrix.shard }}/
+
+  summary:
+    needs: paired_shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real26-shard-*
+          path: all-results
+          merge-multiple: false
+      - name: Verify frozen 16-source coverage and report all results
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          roots=sorted(pathlib.Path('all-results').glob('real26-shard-*'))
+          allcases=[];allrows=[]
+          for root in roots:
+              p=root/'summary.json'
+              if not p.exists():continue
+              d=json.loads(p.read_text())
+              allcases+=d['cases']
+              allrows+=d['rows']
+          unique={c['md5'] for c in allcases}
+          lines=['# DRNAS PCMAX — 16 preregistered original SAT2026 scheduling CNFs',
+                 '',f"Shards {len(roots)}/4; inputs {len(allcases)}/16; unique source IDs {len(unique)}/16.",
+                 'Structural: independently checked source-bound capacity certificates, not DRAT/LRAT.',
+                 'References: raw exit codes only, not independently certified.',
+                 'Original CNF bytes unchanged; no synthetic inputs and no re-encoding.',
+                 '', '| Source ID | Family | N vars | N clauses | Structure | Kissat | CaDiCaL |',
+                 '|---|---|---:|---:|---|---|---|']
+          for c in sorted(allcases,key=lambda x:x['index']):
+              found={r['arm']:r for r in allrows if r['source_id']==c['md5']}
+              def val(arm):
+                  r=found.get(arm)
+                  return r['status']+' ('+str(round(r['wall_s'],3))+' s)' if r else c.get('input_status','NO RESULT')
+              lines.append(f"| {c['md5'][:12]}… | {c['family']} | {c.get('variables','—')} | {c.get('clauses','—')} | {val('DRNAS_STRUCTURAL')} | {val('KISSAT')} | {val('CADICAL')} |")
+          verified=sum(r['verified'] for r in allrows)
+          bad=[r for r in allrows if r['status'].startswith(('INVALID','CRITICAL','ERROR'))]
+          lines.extend(['', f"Independent structural UNSAT certificates: {verified}.",
+                        f"Audit errors: {len(bad)}.", 
+                        'A negative result on these original encodings does not negate the positive targeted PCMAX result.'])
+          msg='\n'.join(lines)+'\n'
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          pathlib.Path('combined-summary.md').write_text(msg)
+          if len(unique)!=16 or len(roots)!=4 or bad:
+              raise SystemExit('Incomplete or unsafe source-disjoint benchmark')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-pcmax-real26-new16-final-audit
+          retention-days: 45
+          path: combined-summary.md
