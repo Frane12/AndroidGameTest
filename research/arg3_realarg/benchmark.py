@@ -10,7 +10,7 @@ sys.path.insert(0,str(ROOT/"research/sat_real2025"))
 import benchmark as B
 SOURCE_DIR=ROOT/"arg3_realarg_inputs"
 OUT=ROOT/"arg3_realarg_results"
-FREEZE_SHA="__FROZEN_SHA__"  # Set only from successful prior source-only freeze.
+FREEZE_SHA="8fe5ccfb1a05557bdbf43b8b801d8cbdb5160aff988d0956ded3904c1d8a70d8"  # Set only from successful prior source-only freeze.
 B.SRC=SOURCE_DIR
 B.OUT=OUT
 B.FREEZE_SHA=FREEZE_SHA
