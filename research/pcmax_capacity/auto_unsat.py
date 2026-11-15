@@ -200,7 +200,8 @@ def run_one(src,binary,out,budget_ms=1200,drat_checker=None):
         return max(0,int((deadline-time.perf_counter())*1000))
     # Prefer Hall for wide scheduling formulas, otherwise low-cost logical cores.
     wide=any(len(c)>8 for c in clauses)
-    stages=["hall","mixed"] if wide else ["mixed","hall"]
+    # Hall2 handles signed/permuted wide columns missed by a budgeted Hall3.
+    stages=["hall2","hall","mixed"] if wide else ["mixed","hall"]
     chosen=None
     for stage in stages:
         available=remain_ms()
@@ -218,10 +219,11 @@ def run_one(src,binary,out,budget_ms=1200,drat_checker=None):
                 row.update(status="UNSAT_STRUCTURAL_VERIFIED",method=p["method"],
                            structural_verified=True,certificate_format=p["format"])
         else:
-            cert=out/"native_hall.json"
-            limit=min(available,750)
+            cert=out/("native_"+stage+".json")
+            limit=min(available,220 if stage=="hall2" else 750)
+            flag="--pcmax-hall2" if stage=="hall2" else "--pcmax-hall3"
             command=[str(binary.resolve()),str(src.resolve()),"--mode","core",
-                     "--time",str(limit/1000+1),"--pcmax-only","--pcmax-hall3",
+                     "--time",str(limit/1000+1),"--pcmax-only",flag,
                      "--pcmax-budget-ms",str(limit),
                      "--pcmax-certificate",str(cert.resolve())]
             try:
