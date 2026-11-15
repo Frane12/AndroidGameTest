@@ -1,0 +1,120 @@
+name: DRNAS ARG3 REAL2025 frozen19 certified ON OFF regression
+on:
+  push:
+    branches: [experiment/drnas-cdcl-real2025-299-diag1-20261115]
+    paths:
+      - research/cdcl299/regression.py
+      - .github/workflows/drnas-arg3-real2025-regression.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-arg3-real2025-regression-20261115
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/source
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/binaries
+      - name: Restore original SHA-locked real inputs and pinned DRAT checker
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/source/real2025-originals-frozen.tgz
+          tar -xzf frozen/binaries/math5-blind-frozen.tgz
+          sha256sum sat_real2025_inputs/manifest.json build/drat-trim
+          python3 -m py_compile research/cdcl299/regression.py
+      - name: Compile one native binary with ARG3 opt-in
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum build/drnas-sat-native-x59 src/drnas_sat_arg3.hpp
+      - name: Source-certified paired OFF/ARG3 8s E2E trials on exactly one CPU
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+            python3 -u research/cdcl299/regression.py shard --index ${{ matrix.shard }} |
+            tee regression_shard.log
+          grep -q '^REAL2025_SHARD ' regression_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arg3-real2025-shard-${{ matrix.shard }}
+          path: |
+            cdcl299_regression_results/shard-${{ matrix.shard }}/
+            regression_shard.log
+          retention-days: 45
+          if-no-files-found: warn
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/source
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: arg3-real2025-shard-*
+          path: pulled
+      - name: Complete 76 original paired source-verifiable trials and report
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/source/real2025-originals-frozen.tgz
+          mkdir -p cdcl299_regression_results
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(4):
+              root=Path('pulled')/f'arg3-real2025-shard-{i}'
+              rs=list(root.rglob('trials.jsonl'))
+              ms=list(root.rglob('meta.json'))
+              assert len(rs)==1 and len(ms)==1,(i,rs,ms)
+              dest=Path('cdcl299_regression_results')/f'shard-{i}'
+              dest.mkdir(parents=True,exist_ok=True)
+              shutil.copy2(rs[0],dest/'trials.jsonl')
+              shutil.copy2(ms[0],dest/'meta.json')
+          PY
+          python3 -u research/cdcl299/regression.py report | tee arg3_regression_final.log
+          grep -q '^ARG3_REGRESSION_FINAL ' arg3_regression_final.log
+          cat arg3_regression_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arg3-real2025-final-evidence
+          path: |
+            cdcl299_regression_results/regression.json
+            cdcl299_regression_results/trials.jsonl
+            arg3_regression_final.log
+          retention-days: 60
+          if-no-files-found: warn
