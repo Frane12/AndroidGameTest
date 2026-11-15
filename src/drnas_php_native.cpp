@@ -116,7 +116,7 @@ static Source parse(const fs::path &cnf,Budget &budget) {
                 bool distinct=std::adjacent_find(grp.begin(),grp.end())==grp.end();
                 if(distinct) {
                     group_map.emplace(std::move(grp),seen);
-                    require(group_map.size()<=256,"positive_group_gate");
+                    require(group_map.size()<=2048,"positive_group_gate");
                 }
             }
             pending.clear();
