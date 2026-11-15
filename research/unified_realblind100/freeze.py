@@ -2,7 +2,7 @@
 """Original-source REALBLIND100 frozen before solver evaluation; no XOR selection.
 
 Based on MATH5 BLIND30 outcome-free selector but excludes additional known
-frozen source manifests (CF7 and MATH5 BLIND30) and requires exactly 100.
+frozen source manifests (CF7 and MATH5 BLIND30) and now accepts an availability-limited subset (up to 100).
 Selection is blind to runtime, NOT proof of novelty across every past run.
 """
 import collections, gzip, hashlib, json, lzma, re, sqlite3, sys, tempfile, urllib.request
@@ -121,12 +121,13 @@ def main():
     choose('unsat',len(selected)+P['catalog_unsat_target']);unsat_count=len(selected)-sat_count
     choose(None,P['target_sources'])
     manifest=dict(protocol=P['name'],sources=selected,attempts=attempts,target=P['target_sources'],selected=len(selected),
+        selection_shortfall=P['target_sources']-len(selected),posthoc_availability_amendment=P['availability_amendment'],
         catalog_sha256=digest(catraw),track_sha256=digest(trackraw),prespec_sha256=digest((SELF/'prespec.json').read_bytes()),
         exclusion_sha256=digest((OUT/'exclusion_audit.json').read_bytes()),catalog_sat_controls=sat_count,
         catalog_unsat_controls=unsat_count,selection_before_any_solver=True,blindness=P['blindness'])
     save(OUT/'manifest.json',manifest)
     assert len(selected)>=P['min_sources'], ('insufficient_inputs',len(selected))
-    assert len(selected)==P['target_sources'],('incomplete_source_freeze',len(selected))
+    assert len(selected)<=P['target_sources'],('excess_source_freeze',len(selected))
     assert sat_count>=P['min_catalog_sat'],('insufficient_SAT_controls',sat_count)
     assert unsat_count>=P['min_catalog_unsat'],('insufficient_UNSAT_controls',unsat_count)
     print('REALBLIND_FROZEN '+json.dumps(dict(sources=len(selected),families=dict(fc),manifest_sha256=digest((OUT/'manifest.json').read_bytes()))),flush=True)

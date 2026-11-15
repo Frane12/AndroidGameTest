@@ -36,10 +36,14 @@ def save(path,obj):
     path.write_text(json.dumps(obj,indent=2,sort_keys=True)+"\n")
 def frozen_sources():
     m=json.loads((DATA/"manifest.json").read_text())
-    assert m["selected"]==100 and len(m["sources"])==100,m.get("selected")
+    n=m["selected"]
+    assert P["min_sources"]<=n<=P["target_sources"] and len(m["sources"])==n,m.get("selected")
+    assert m["target"]==P["target_sources"]
+    assert m["catalog_sat_controls"]>=P["min_catalog_sat"]
+    assert m["catalog_unsat_controls"]>=P["min_catalog_unsat"]
     assert m["prespec_sha256"]==sha(HERE/"prespec.json")
-    assert len({s["sha256"] for s in m["sources"]})==100
-    assert {s["id"] for s in m["sources"]}==set(range(100))
+    assert len({s["sha256"] for s in m["sources"]})==n
+    assert {s["id"] for s in m["sources"]}==set(range(n))
     for s in m["sources"]:
         assert sha(ROOT/s["path"])==s["sha256"],("SOURCE_CHANGED",s["id"])
     return m
@@ -54,9 +58,11 @@ def affinity():
 def prepare():
     affinity()
     m=frozen_sources()
+    n=len(m["sources"])
     fingerprints=pinned()
     proto=dict(prespec_sha256=sha(HERE/"prespec.json"),
-        source_manifest_sha256=sha(DATA/"manifest.json"),source_count=100,
+        source_manifest_sha256=sha(DATA/"manifest.json"),source_count=n,
+        target_sources=P["target_sources"],availability_amendment=P["availability_amendment"],
         code_git_sha=os.environ.get("GITHUB_SHA"),binary_sha256=fingerprints,
         arms=ARMS,reps=REPS,cap_s=CAP,shards=SHARDS,
         source_disjoint_from_recorded_history=True,
@@ -67,7 +73,7 @@ def prepare():
         no_automatic_promotion=True)
     save(OUT/"protocol.json",proto)
     print("REALBLIND100_READY "+json.dumps(dict(sources=len(m["sources"]),
-          expected_trials=100*REPS*len(ARMS),
+          expected_trials=n*REPS*len(ARMS),
           protocol_sha256=sha(OUT/"protocol.json")),sort_keys=True),flush=True)
 def restore():
     affinity()
@@ -243,7 +249,7 @@ def shard(idx):
     assert 0<=idx<SHARDS
     sources,proto=restore()
     selected=[s for s in sources if s["id"]%SHARDS==idx]
-    assert len(selected)==10
+    assert selected,("EMPTY_SHARD",idx)
     dest=OUT/f"shard-{idx}"
     dest.mkdir(parents=True,exist_ok=False)
     with (dest/"trials.jsonl").open("w") as f:
@@ -254,22 +260,23 @@ def shard(idx):
                     row=trial(src,arm,rep)
                     f.write(json.dumps(row,sort_keys=True)+"\n");f.flush()
     records=[json.loads(l) for l in (dest/"trials.jsonl").read_text().splitlines()]
-    assert len(records)==120
+    assert len(records)==len(selected)*REPS*len(ARMS)
     sums={a:dict(solved=sum(r["accepted"] for r in records if r["arm"]==a),
         par2_s=round(sum(r["PAR2_s"] for r in records if r["arm"]==a),6))
         for a in ARMS}
-    print("REALBLIND100_SHARD "+json.dumps(dict(shard=idx,source_count=10,
+    print("REALBLIND100_SHARD "+json.dumps(dict(shard=idx,source_count=len(selected),
         trials=len(records),summary=sums),sort_keys=True),flush=True)
 
 def report():
     sources=frozen_sources()["sources"]
+    n=len(sources)
     rows=[]
     for idx in range(SHARDS):
         path=OUT/f"shard-{idx}"/"trials.jsonl"
         assert path.is_file(),("MISSING_SHARD",idx)
         rows += [json.loads(x) for x in path.read_text().splitlines()]
-    expected={(i,rep,a) for i in range(100) for rep in range(REPS) for a in ARMS}
-    assert len(rows)==len(expected)==1200
+    expected={(i,rep,a) for i in range(n) for rep in range(REPS) for a in ARMS}
+    assert len(rows)==len(expected)==n*REPS*len(ARMS)
     assert {(r["id"],r["rep"],r["arm"]) for r in rows}==expected
     by_id={s["id"]:s for s in sources}
     assert all(r["source_sha256"]==by_id[r["id"]]["sha256"] for r in rows)
@@ -291,20 +298,21 @@ def report():
             PAR2_strict_s=round(sum(r["PAR2_strict_s"] for r in rr),6),
             statuses=dict(collections.Counter(r["status"] for r in rr)))
     per_source={i:{a:statistics.mean(r["PAR2_s"] for r in rows
-        if r["id"]==i and r["arm"]==a) for a in ARMS} for i in range(100)}
+        if r["id"]==i and r["arm"]==a) for a in ARMS} for i in range(n)}
     best_reference=min(("Kissat","CaDiCaL","CryptoMiniSat"),key=lambda a:totals[a]["PAR2_s"])
-    deltas={a:[per_source[i][best_reference]-per_source[i][a] for i in range(100)]
+    deltas={a:[per_source[i][best_reference]-per_source[i][a] for i in range(n)]
             for a in ("X59_OFF","X59_ON25","X59_ON25_MATH5_100")}
     rng=random.Random(20261115)
     boots={}
     for a,changes in deltas.items():
-        samples=sorted(sum(changes[rng.randrange(100)] for _ in range(100)) for _ in range(2000))
+        samples=sorted(sum(changes[rng.randrange(n)] for _ in range(n)) for _ in range(2000))
         boots[a]=dict(reference=best_reference,aggregate_saving_s=round(sum(changes),6),
             bootstrap95_s=[samples[50],samples[1950]],
             wins=sum(v>0.0001 for v in changes),
             losses=sum(v<-0.0001 for v in changes),
             ties=sum(abs(v)<=0.0001 for v in changes))
-    final=dict(status="CRITICAL" if problems else "COMPLETE",source_count=100,
+    final=dict(status="CRITICAL" if problems else "COMPLETE",source_count=n,
+        target_sources=P["target_sources"],availability_amendment=P["availability_amendment"],
         attempts=len(rows),catalog_labels=dict(collections.Counter(s["catalog_label"] for s in sources)),
         real_origins=True,no_xor_source_filter=True,
         independent_certificates_required=True,
@@ -312,7 +320,7 @@ def report():
         best_reference=best_reference,totals=totals,paired=boots,critical=problems)
     save(OUT/"final.json",final)
     print("REALBLIND100_FINAL "+json.dumps(dict(status=final["status"],
-        sources=100,trials=len(rows),best_reference=best_reference,
+        sources=n,trials=len(rows),best_reference=best_reference,
         totals=totals,paired=boots,critical_count=len(problems)),sort_keys=True),flush=True)
     if problems:raise SystemExit("Critical invalid answers/proofs: review frozen audit")
 if __name__=="__main__":
