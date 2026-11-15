@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "drnas_sat_construct.hpp"
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -99,6 +100,7 @@ class Solver {
     void configureX58(bool enabled) { x58_blocker_compact_skip_=enabled; }
     void configureX59(bool enabled) { x59_stamp_glue_=enabled; }
     void configureSatClause1(int mode) { sat_clause1_mode_=mode; }
+    void configureSatConstruct(double budget_ms) { sat_construct_ms_=budget_ms; }
     void writeProofClause(const std::vector<int>& lits) {
         if (!proof_ || x46_clone_) return;
         for (int lit:lits) *proof_ << lit << ' ';
@@ -270,6 +272,38 @@ class Solver {
     Result solve() {
         if (timedOut()) return Result::UNKNOWN;
         if (root_unsat_) return Result::UNSAT;
+        // Opt-in same-process constructive SAT, with strict fallback.
+        // A candidate only causes a SAT return after scanning ALL source clauses.
+        // Otherwise the original CDCL search proceeds unchanged.
+        if (sat_construct_ms_>0.0 && !x46_clone_ &&
+            n_<=15000 && original_count_<=130000 && !timedOut()) {
+            const auto started=Clock::now();
+            int64_t count=0;
+            for (const auto& c:clauses_)if(!c.learnt)count+=c.lits.size();
+            if(count<=600000 && !timedOut()){
+                satconstruct::CNF original;
+                original.reserve(static_cast<size_t>(original_count_));
+                for(const auto& c:clauses_)if(!c.learnt)original.push_back(c.lits);
+                const double spent=std::chrono::duration<double,std::milli>(
+                    Clock::now()-started).count();
+                satconstruct::Limits lim;
+                lim.max_ms=std::max(0.0,sat_construct_ms_-spent);
+                auto candidate=satconstruct::analyze(n_,original,lim);
+                if(candidate.sat()){
+                    leaf_model_=std::move(candidate.model);
+                    if(!verifyModel())throw std::runtime_error(
+                        "SAT-CONSTRUCT: original-CNF verification failed");
+                    sat_construct_method_=candidate.method;
+                    sat_construct_found_=true;
+                    sat_construct_elapsed_s_=std::chrono::duration<double>(
+                        Clock::now()-started).count();
+                    return Result::SAT;
+                }
+            }
+            sat_construct_method_="UNKNOWN";
+            sat_construct_elapsed_s_=std::chrono::duration<double>(
+                Clock::now()-started).count();
+        }
         Prop p;
         if (!x46_clone_) {
             p = propagate(-1);
@@ -565,6 +599,9 @@ class Solver {
     int64_t satClauseProbes() const { return sat_clause1_probe_pairs_; }
     int64_t satClauseFailed() const { return sat_clause1_failed_literals_; }
     double satClauseSeconds() const { return sat_clause1_wall_s_; }
+    const std::string& satConstructMethod() const { return sat_construct_method_; }
+    double satConstructSeconds() const { return sat_construct_elapsed_s_; }
+    bool satConstructFound() const { return sat_construct_found_; }
     double elapsed() const { return std::chrono::duration<double>(Clock::now() - begun_).count(); }
     const char* mode() const { return mode_.c_str(); }
 
@@ -573,6 +610,9 @@ class Solver {
     bool x58_blocker_compact_skip_=false;
     bool x59_stamp_glue_=false;
     int sat_clause1_mode_=0;
+    double sat_construct_ms_=0.0, sat_construct_elapsed_s_=0.0;
+    bool sat_construct_found_=false;
+    std::string sat_construct_method_="OFF";
     int64_t sat_clause1_scans_=0, sat_clause1_flips_=0;
     int64_t sat_clause1_probe_pairs_=0, sat_clause1_failed_literals_=0;
     double sat_clause1_wall_s_=0.0;
@@ -1374,6 +1414,7 @@ int run(int argc, char** argv) {
     bool x58_hotwatch=false;
     bool x59_stamp_glue=false;
     int compare_at=0,x46_conflicts=0, sat_clause_mode=0;
+    double sat_construct_ms=0.0;
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
@@ -1392,6 +1433,7 @@ int run(int argc, char** argv) {
         else if (opt=="--x59-stamp-glue") x59_stamp_glue=true;
         else if (opt=="--sat-clause1-score") sat_clause_mode=1;
         else if (opt=="--sat-clause1-probe") sat_clause_mode=2;
+        else if (opt=="--sat-construct-ms" && i+1<argc) sat_construct_ms=std::stod(argv[++i]);
         else if (opt=="--stats") show_stats=true;
         else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
@@ -1408,6 +1450,8 @@ int run(int argc, char** argv) {
         else if (input.empty()) input=opt;
         else throw std::runtime_error("multiple input files");
     }
+    if (!std::isfinite(sat_construct_ms)||sat_construct_ms<0||sat_construct_ms>1000)
+        throw std::runtime_error("invalid --sat-construct-ms");
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
@@ -1457,6 +1501,7 @@ int run(int argc, char** argv) {
             solver->configureX58(x58_hotwatch);
             solver->configureX59(x59_stamp_glue);
             solver->configureSatClause1(sat_clause_mode);
+            solver->configureSatConstruct(sat_construct_ms);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
@@ -1546,6 +1591,10 @@ int run(int argc, char** argv) {
                  <<"}\n";
     }
     if (show_stats) {
+        std::cerr<<"SAT_CONSTRUCT_STATS {\"enabled\":"<<(sat_construct_ms>0?"true":"false")
+                 <<",\"found\":"<<(solver->satConstructFound()?"true":"false")
+                 <<",\"method\":\""<<solver->satConstructMethod()
+                 <<"\",\"wall_s\":"<<solver->satConstructSeconds()<<"}\n";
         std::cerr<<"SAT_CLAUSE1_STATS {\"mode\":"<<sat_clause_mode
                  <<",\"scans\":"<<solver->satClauseScans()
                  <<",\"phase_flips\":"<<solver->satClauseFlips()
