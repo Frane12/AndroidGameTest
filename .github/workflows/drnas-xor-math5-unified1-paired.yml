@@ -1,0 +1,152 @@
+name: DRNAS XOR MATH5 UNIFIED1 frozen60 paired SAT verification
+on:
+  push:
+    branches:
+      - experiment/drnas-xor-math5-unified1-20261115
+    paths:
+      - .github/workflows/drnas-xor-math5-unified1-paired.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xor-math5-unified1-paired-20261115
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check the single-process combined solver
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev
+          mkdir -p build
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_sat_construct.cpp -o build/drnas-sat-construct
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          python3 -u research/xor_math5_unified1/build.py | tee native_build.log
+          python3 -u research/xor_math5_unified1/test.py | tee native_test.log
+          grep -q '^UNIFIED_MATH5_PREFLIGHT_PASS' native_test.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xor-math5-unified1-compiled
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            build/drnas-sat-construct
+            build/drnas-sat-native-x59
+            build/drnas-x59-xor-math5-unified1
+            native_build.log
+            native_test.log
+  paired:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4,5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xor-math5-unified1-compiled
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43708271049
+          repository: Frane12/AndroidGameTest
+          name: xorhard2-frozen-60
+          github-token: ${{ github.token }}
+          path: frozen/xorhard2
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          repository: Frane12/AndroidGameTest
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen/cms
+      - name: Restore frozen sources and reference executables
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1 libboost-program-options1.83.0
+          tar -xzf frozen/xorhard2/xorhard2-frozen.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          cp frozen/cms/cms build/cms
+          mkdir -p build/cms-libs/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 build/cms-libs/usr/lib/x86_64-linux-gnu/
+          chmod +x build/drnas-sat-construct build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 build/kissat build/cadical build/cms
+          python3 -m py_compile research/xor_math5_unified1/benchmark.py
+      - name: One logical core per solver and sequential paired source orders
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONHASHSEED=0 python3 -u research/xor_math5_unified1/benchmark.py shard --index ${{ matrix.shard }} | tee xor_math5_shard.log
+          grep -q '^XOR_MATH5_UNIFIED_SHARD ' xor_math5_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xor-math5-unified1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            xor_math5_unified1_results/shard-${{ matrix.shard }}/
+            xor_math5_shard.log
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43708271049
+          repository: Frane12/AndroidGameTest
+          name: xorhard2-frozen-60
+          github-token: ${{ github.token }}
+          path: frozen/xorhard2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xor-math5-unified1-shard-*
+          path: pulled
+      - name: Enforce complete 720-row frozen source matched matrix
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/xorhard2/xorhard2-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(6):
+              src=Path('pulled')/f'xor-math5-unified1-shard-{i}'/'xor_math5_unified1_results'/f'shard-{i}'
+              assert (src/'trials.jsonl').is_file(),(i,str(src))
+              dest=Path('xor_math5_unified1_results')/f'shard-{i}'
+              shutil.copytree(src,dest)
+          PY
+          python3 -u research/xor_math5_unified1/benchmark.py report | tee xor_math5_final.log
+          grep -q '^XOR_MATH5_UNIFIED_FINAL ' xor_math5_final.log
+          cat xor_math5_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xor-math5-unified1-final
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            xor_math5_unified1_results/final.json
+            xor_math5_unified1_results/trials.jsonl
+            xor_math5_final.log
