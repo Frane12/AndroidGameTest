@@ -78,7 +78,7 @@ def get(url, out, max_bytes):
 def unpack(archive, cnf):
     with archive.open("rb") as fd:
         magic=fd.read(6)
-    reader=lzma.open if magic==b"\\xfd7zXZ\\x00" else open
+    reader=lzma.open if magic==b"\xfd7zXZ\x00" else open
     total=0
     sha=hashlib.sha256()
     with reader(archive,"rb") as inp, cnf.open("wb") as out:
