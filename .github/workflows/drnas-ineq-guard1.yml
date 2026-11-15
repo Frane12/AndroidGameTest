@@ -1,0 +1,120 @@
+name: DRNAS INEQ1 triangle CHSH native guard certified paired audit
+on:
+  push:
+    branches: [experiment/drnas-ineq-guard1-20261115]
+    paths:
+      - .github/workflows/drnas-ineq-guard1.yml
+      - src/ineq_guard.hpp
+      - src/drnas_hall3.cpp
+      - research/pcmax_capacity/check_ineq_guard.py
+      - research/pcmax_capacity/benchmark_ineq_guard.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-ineq-guard1-20261115
+  cancel-in-progress: false
+
+jobs:
+  native_certified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile native INEQ-GUARD and unchanged CDCL fallback
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/check_ineq_guard.py research/pcmax_capacity/benchmark_ineq_guard.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-hall3 -j2
+      - name: Source-only inequality certificates, negative controls and paired baseline
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_ineq_guard.py \
+            --binary build/drnas-hall3 --output results/ineq1 \
+            | tee ineq1-summary.log
+          grep -q '^INEQ_FINAL ' ineq1-summary.log
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43705862825
+          name: pcmax44-source-cnf-structural-certificates-3x
+          github-token: \${{ github.token }}
+          path: .
+      - name: Real PCMAX44 complement check - no false UNSAT, preserve capacity result
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee ineq1-real44.log
+          import hashlib,json,os,pathlib,subprocess,sys,time
+          sys.path.insert(0,"research/pcmax_capacity")
+          from check_ineq_guard import verify as check_ineq
+          from check_capacity import check as check_capacity
+          src=pathlib.Path("original-cnfs/pcmax-scheduling-m11-1517-6802-UNSAT.sanitized.cnf")
+          assert src.is_file(), "FROZEN_ORIGINAL_NOT_IN_ARTIFACT"
+          data=src.read_bytes()
+          sha="c55ab8fe2c9e10f0579f806802bc32d04913f12cd6ce28e6662b8d59d114c174"
+          assert hashlib.sha256(data).hexdigest()==sha, "SOURCE_MISMATCH"
+          binary=pathlib.Path("build/drnas-hall3").resolve()
+          out=pathlib.Path("results/ineq1")
+          result={}
+          for arm,flag,verify_fn in [
+            ("INEQ_ONLY","--ineq-guard",check_ineq),
+            ("CAPACITY_ONLY","--pcmax-capacity",check_capacity),
+          ]:
+            cert=(out/(arm.lower()+"-real44.json")).resolve()
+            command=[str(binary),str(src.resolve()),"--mode","core","--time","6.5",
+                     "--pcmax-only",flag,"--pcmax-budget-ms","5000",
+                     "--pcmax-certificate",str(cert)]
+            t=time.perf_counter()
+            p=subprocess.run(command,text=True,capture_output=True,timeout=9)
+            elapsed=time.perf_counter()-t
+            assert p.returncode in (0,20), (arm,p.returncode,p.stderr[-900:])
+            if p.returncode==20:
+              assert cert.exists(), "UNSAT_WITHOUT_CERTIFICATE"
+              checked=verify_fn(data,json.loads(cert.read_text()))
+              status=checked["status"]
+            else:
+              assert not cert.exists(), "UNKNOWN_WRITES_PROOF"
+              status="UNKNOWN"
+            result[arm]={"status":status,"seconds":round(elapsed,6)}
+          assert result["CAPACITY_ONLY"]["status"]=="UNSAT_STRUCTURAL_CERTIFICATE_VERIFIED",result
+          (out/"real44.json").write_text(json.dumps(result,indent=2)+"\n")
+          print("INEQ_REAL44 "+json.dumps(result,sort_keys=True))
+          PY
+      - name: Publish summary and limits
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os,json,pathlib
+          p=pathlib.Path("results/ineq1/report.json")
+          if p.is_file():
+            d=json.loads(p.read_text())
+            msg="INEQ1 native pilot: "+str(d["distinct_sources"])+" distinct synthetic cases, "+str(d["trials"])+" paired arm trials. "+str(d["arms"])+". False UNSAT: "+str(d["false_unsat"])+". Source-only structural proof, NOT DRAT/LRAT. Not blind holdout."
+          else:msg="INEQ1 incomplete: inspect workflow logs; no results claim."
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ineq1-source-certified-triangle-chsh-results
+          retention-days: 60
+          path: |
+            results/ineq1/report.json
+            results/ineq1/real44.json
+            results/ineq1/*INEQ_GUARD.json
+            results/ineq1/capacity_only-real44.json
+            ineq1-summary.log
+            ineq1-real44.log
+            src/ineq_guard.hpp
+            research/pcmax_capacity/check_ineq_guard.py
+            research/pcmax_capacity/benchmark_ineq_guard.py
