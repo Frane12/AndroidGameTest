@@ -19,8 +19,8 @@
 namespace drnas_arg3 {
 using Clock=std::chrono::steady_clock;
 using CNF=std::vector<std::vector<int>>;
-constexpr int MAX_GROUPS=512;
-constexpr int WORDS=8;
+constexpr int MAX_GROUPS=1024;
+constexpr int WORDS=16;
 struct Mask {
     std::array<uint64_t,WORDS> bits{};
     void set(int v){bits[static_cast<size_t>(v>>6)]|=uint64_t(1)<<(v&63);}
