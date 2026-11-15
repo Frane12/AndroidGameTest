@@ -1,0 +1,75 @@
+name: DRNAS PCMAX Weighted VeriPB2 four original CNFs
+on:
+  push:
+    branches: [experiment/drnas-pcmax-veripb-weighted2-20261115]
+    paths:
+      - .github/workflows/drnas-pcmax-veripb-weighted2.yml
+      - research/pcmax_capacity/emit_veripb_capacity_weighted2.py
+      - research/pcmax_capacity/benchmark_veripb_weighted2.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcmax-veripb-weighted2-20261115
+  cancel-in-progress: false
+
+jobs:
+  weighted_pb_source_proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Compile native PCMAX and syntax checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/emit_veripb_capacity_weighted2.py
+          python3 -m py_compile research/pcmax_capacity/benchmark_veripb_weighted2.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum build/drnas-pcmax research/pcmax_capacity/emit_veripb_capacity_weighted2.py
+      - name: Original source verified native BDD and independent weighted VeriPB check
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_veripb_weighted2.py
+      - name: Always publish truthful verified-only summary
+        if: always()
+        run: |
+          if test -s results/weighted2/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          rows=json.loads(pathlib.Path('results/weighted2/summary.json').read_text())
+          out="# DRNAS Weighted VeriPB2 retrospective audit\n\n"
+          out+="Previously known frozen source CNFs, NOT blind or a PAR2 comparison.\n\n"
+          out+="| Original CNF | Source demand | Capacity | Generator | Independent VeriPB |\n|---|---:|---:|---|---|\n"
+          for r in rows:
+            out+=f"| {r['name']} | {r.get('demand','—')} | {r.get('capacity','—')} | {r.get('generator_rc','—')} | {r['status']} |\n"
+          print(out)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(out)
+          PY
+          fi
+      - name: Save all original source proof and external checker diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-weighted-veripb2
+          retention-days: 60
+          compression-level: 6
+          path: |
+            results/weighted2/
+            research/pcmax_capacity/emit_veripb_capacity_weighted2.py
+            research/pcmax_capacity/benchmark_veripb_weighted2.py
+            research/pcmax_capacity/check_capacity.py
