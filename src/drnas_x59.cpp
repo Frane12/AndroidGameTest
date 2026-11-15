@@ -98,6 +98,7 @@ class Solver {
     }
     void configureX58(bool enabled) { x58_blocker_compact_skip_=enabled; }
     void configureX59(bool enabled) { x59_stamp_glue_=enabled; }
+    void configureSatClause1(int mode) { sat_clause1_mode_=mode; }
     void writeProofClause(const std::vector<int>& lits) {
         if (!proof_ || x46_clone_) return;
         for (int lit:lits) *proof_ << lit << ' ';
@@ -329,7 +330,7 @@ class Solver {
             }
             const int64_t next_decision=stats_.decisions+1;
             const int baseline_lit=phase_[v]*(v+1);
-            int chosen_lit=baseline_lit;
+            int chosen_lit=satClause1Literal(v,baseline_lit);
             // Two detached snapshots have identical selected-variable,
             // watch lists, heap, phases, learnt clauses, and restart schedule.
             // Work done by either probe is NEVER committed to the real solver.
@@ -559,6 +560,11 @@ class Solver {
     int assignment(int v) const { return !leaf_model_.empty() ? leaf_model_[v] : (values_[v] == 0 ? phase_[v] : values_[v]); }
     const Stats& stats() const { return stats_; }
     double probeSeconds() const { return probing_seconds_; }
+    int64_t satClauseScans() const { return sat_clause1_scans_; }
+    int64_t satClauseFlips() const { return sat_clause1_flips_; }
+    int64_t satClauseProbes() const { return sat_clause1_probe_pairs_; }
+    int64_t satClauseFailed() const { return sat_clause1_failed_literals_; }
+    double satClauseSeconds() const { return sat_clause1_wall_s_; }
     double elapsed() const { return std::chrono::duration<double>(Clock::now() - begun_).count(); }
     const char* mode() const { return mode_.c_str(); }
 
@@ -566,6 +572,10 @@ class Solver {
     bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;
     bool x58_blocker_compact_skip_=false;
     bool x59_stamp_glue_=false;
+    int sat_clause1_mode_=0;
+    int64_t sat_clause1_scans_=0, sat_clause1_flips_=0;
+    int64_t sat_clause1_probe_pairs_=0, sat_clause1_failed_literals_=0;
+    double sat_clause1_wall_s_=0.0;
     std::vector<uint32_t> x59_level_stamps_;
     uint32_t x59_epoch_=0;
     std::ostream* proof_=nullptr; // externally owned; speculative clones cannot log
@@ -1175,6 +1185,66 @@ class Solver {
         probing_=false;
         return r;
     }
+    // SAT-CLAUSE1: bounded residual-clause phase heuristic. This NEVER
+    // asserts a clause, SAT or UNSAT; source models are verified in solve().
+    // BCP contradictions from the optional probe affect phase only.
+    int satClause1Literal(int v, int baseline_lit) {
+        if (!sat_clause1_mode_ || stats_.decisions >= 16 ||
+            (stats_.decisions != 0 && stats_.decisions % 4 != 0) ||
+            n_ > 1200 || original_count_ > 15000 || timedOut())
+            return baseline_lit;
+        if (sat_clause1_wall_s_ > std::max(0.002, 0.05 * elapsed()))
+            return baseline_lit;
+        const auto started=Clock::now();
+        double positive=0.0, negative=0.0;
+        unsigned inspected=0;
+        bool aborted=false;
+        for (const Clause& c : clauses_) {
+            if (c.deleted || c.learnt) continue;
+            if ((++inspected & 127U)==0U &&
+                std::chrono::duration<double,std::milli>(Clock::now()-started).count()>2.0) {
+                aborted=true;
+                break;
+            }
+            bool sat=false, pos=false, neg=false;
+            int residual=0;
+            for (int lit : c.lits) {
+                const int val=value(lit);
+                if (val==1) {sat=true;break;}
+                if (val==0) {
+                    ++residual;
+                    if (lit==v+1)pos=true;
+                    if (lit==-v-1)neg=true;
+                }
+            }
+            if (sat || residual<2 || (!pos && !neg))continue;
+            const double weight=1.0/(static_cast<double>(residual)*residual);
+            if (pos)positive+=weight;
+            if (neg)negative+=weight;
+        }
+        int chosen=baseline_lit;
+        if (!aborted) {
+            ++sat_clause1_scans_;
+            if (positive+negative>0.1 &&
+                std::abs(positive-negative)>0.07*std::max(positive,negative))
+                chosen=(positive>=negative?1:-1)*(v+1);
+            // Optional bounded root lookahead: two in-process BCP probes.
+            if (sat_clause1_mode_==2 && stats_.decisions==0 &&
+                n_<=800 && original_count_<=8000 &&
+                std::chrono::duration<double,std::milli>(Clock::now()-started).count()<1.0) {
+                const Probe yes=probe(v+1);
+                const Probe no=probe(-v-1);
+                ++sat_clause1_probe_pairs_;
+                if (yes.contradiction != no.contradiction) {
+                    chosen=(yes.contradiction?-1:1)*(v+1);
+                    ++sat_clause1_failed_literals_;
+                }
+            }
+            if (chosen!=baseline_lit)++sat_clause1_flips_;
+        }
+        sat_clause1_wall_s_+=std::chrono::duration<double>(Clock::now()-started).count();
+        return chosen;
+    }
     int selectVariable() {
         rebuildHeapIfNeeded();
         // Fast path preserves frozen score and variable-ID tie breaking.
@@ -1303,7 +1373,7 @@ int run(int argc, char** argv) {
     bool show_stats=false, trace_trail=false, compare_flip=false,x46_shadow=false;
     bool x58_hotwatch=false;
     bool x59_stamp_glue=false;
-    int compare_at=0,x46_conflicts=0;
+    int compare_at=0,x46_conflicts=0, sat_clause_mode=0;
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
@@ -1320,6 +1390,8 @@ int run(int argc, char** argv) {
         else if (opt=="--x5-restarts") x5_restarts=true;
         else if (opt=="--x58-hotwatch") x58_hotwatch=true;
         else if (opt=="--x59-stamp-glue") x59_stamp_glue=true;
+        else if (opt=="--sat-clause1-score") sat_clause_mode=1;
+        else if (opt=="--sat-clause1-probe") sat_clause_mode=2;
         else if (opt=="--stats") show_stats=true;
         else if (opt=="--trace-trail") trace_trail=true;
         else if (opt=="--branch-at" && i+1<argc) compare_at=std::stoi(argv[++i]);
@@ -1384,6 +1456,7 @@ int run(int argc, char** argv) {
                                 proof_path.empty()?nullptr:&proof);
             solver->configureX58(x58_hotwatch);
             solver->configureX59(x59_stamp_glue);
+            solver->configureSatClause1(sat_clause_mode);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
@@ -1473,6 +1546,12 @@ int run(int argc, char** argv) {
                  <<"}\n";
     }
     if (show_stats) {
+        std::cerr<<"SAT_CLAUSE1_STATS {\\\"mode\\\":"<<sat_clause_mode
+                 <<",\\\"scans\\\":"<<solver->satClauseScans()
+                 <<",\\\"phase_flips\\\":"<<solver->satClauseFlips()
+                 <<",\\\"probe_pairs\\\":"<<solver->satClauseProbes()
+                 <<",\\\"failed_literals\\\":"<<solver->satClauseFailed()
+                 <<",\\\"cpu_budget_wall_s\\\":"<<solver->satClauseSeconds()<<"}\\n";
         const Stats& s=solver->stats();
         std::cerr<<"X58_STATS {\"hotwatch\":"<<(x58_hotwatch?"true":"false")
                  <<",\"redundant_writes_skipped\":"<<s.x58_blocker_write_skips<<"}\n";
