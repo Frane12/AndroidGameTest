@@ -1,0 +1,153 @@
+name: DRNAS MATH5 GENERAL100 six-arm verified PAR2
+on:
+  push:
+    branches: [experiment/drnas-math5-general100-20261115]
+    paths:
+      - research/math5_general/**
+      - .github/workflows/drnas-math5-general100.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math5-general100-20261115
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen/cms
+      - name: Restore exact binaries and verify every proof interface
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          tar -xzf frozen/sources/cf7_inputs.tgz
+          cp frozen/cms/cms frozen/cms/frat-rs build/
+          mkdir -p build/cms-libs/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 build/cms-libs/usr/lib/x86_64-linux-gnu/
+          chmod +x build/drnas-math5 build/drnas-math4-local build/kissat build/cadical build/drat-trim build/cms build/frat-rs
+          python3 -m py_compile research/math5_general/*.py
+          PYTHONHASHSEED=0 python3 -u research/math5_general/selftest.py | tee general_preflight.log
+          grep -q '^GENERAL_PREFLIGHT_PASS' general_preflight.log
+      - name: Freeze all 100 original CNFs and hashes before evaluation
+        run: |
+          set -euo pipefail
+          PYTHONHASHSEED=0 python3 -u research/math5_general/freeze.py | tee general_freeze.log
+          PYTHONHASHSEED=0 python3 -u research/math5_general/benchmark.py prepare | tee general_prepare.log
+          grep -q '^GENERAL_READY ' general_prepare.log
+          tar -czf math5-general-frozen.tgz build/drnas-math5 build/drnas-math4-local build/kissat build/cadical build/drat-trim build/cms build/frat-rs build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 math5_general_inputs math5_general_results/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: math5-general100-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: math5-general-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-general100-audit
+          retention-days: 60
+          path: |
+            math5_general_inputs/manifest.json
+            math5_general_results/protocol.json
+            research/math5_general/
+            general_*.log
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math5-general100-frozen
+      - name: Sequential paired trials on exactly one logical CPU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libboost-program-options1.83.0
+          tar -xzf math5-general-frozen.tgz
+          PYTHONHASHSEED=0 python3 -u research/math5_general/benchmark.py shard --index ${{ matrix.shard }} | tee general_shard.log
+          grep -q '^GENERAL_SHARD_COMPLETE ' general_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-general100-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            math5_general_results/shard-${{ matrix.shard }}/
+            general_shard.log
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math5-general100-audit
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: math5-general100-shard-*
+          path: downloaded
+      - name: Enforce all 1800 measurements and report certification tracks
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(10):
+              hits=list(Path('downloaded').glob(f'math5-general100-shard-{i}/**/trials.jsonl'))
+              assert len(hits)==1,(i,hits)
+              dst=Path('math5_general_results')/f'shard-{i}'
+              dst.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(hits[0],dst/'trials.jsonl')
+          PY
+          python3 -u research/math5_general/benchmark.py report | tee general_final.log
+          cat math5_general_results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-general100-final-report
+          retention-days: 60
+          path: |
+            math5_general_results/README.md
+            math5_general_results/summary.json
+            math5_general_results/trials.jsonl
+            math5_general_results/protocol.json
+            math5_general_inputs/manifest.json
+            general_final.log
