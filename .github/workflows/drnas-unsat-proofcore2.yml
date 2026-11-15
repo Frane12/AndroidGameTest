@@ -1,0 +1,136 @@
+name: DRNAS UNSAT PROOFCORE2 original18 native source plus independent DRAT LRAT
+on:
+  push:
+    branches: [experiment/drnas-unsat-proofcore2-20261115]
+    paths:
+      - .github/workflows/drnas-unsat-proofcore2.yml
+      - research/pcmax_capacity/benchmark_proofcore2.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-unsat-proofcore2-original18-20261115
+  cancel-in-progress: false
+
+jobs:
+  proof_audit:
+    name: Frozen original CNF original18 proof-first same logical CPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native structural detector and unchanged DRNAS CDCL proof generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/benchmark_proofcore2.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          sha256sum build/drnas-pcmax build/drnas-pcmax-base research/pcmax_capacity/benchmark_proofcore2.py
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43701567926
+          name: drnas-auto-unsat1-original18-synthetic135-independent-proofs
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43631559465
+          name: pcmax20-original-cnfs
+          github-token: ${{ github.token }}
+          path: pcmax20
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43639609986
+          name: pcmax-unseen3-originals-weighted-benchmark
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore pinned independent DRAT checker and upstream LRAT checker
+        run: |
+          set -euo pipefail
+          mkdir -p upstream
+          tar -xzf frozen/math5/math5-blind-frozen.tgz build/drat-trim
+          chmod +x build/drat-trim
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/marijnheule/drat-trim/2e3b2dc0ecf938addbd779d42877b6ed69d9a985/lrat-check.c \
+            -o upstream/lrat-check.c
+          gcc -std=c99 -DLONGTYPE -O2 upstream/lrat-check.c -o build/lrat-check
+          sha256sum build/drat-trim build/lrat-check upstream/lrat-check.c
+          test -s results/auto-unsat1/trials.jsonl
+          test -s pcmax20/report.json
+          test -s pcmax-unseen3-results/source_manifest.json
+      - name: New complementary proof coverage and standalone DRNAS core-CDCL standard audit
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_proofcore2.py \
+            --pcmax20 pcmax20 \
+            --unseen3 pcmax-unseen3-results/original_cnfs \
+            --prior results/auto-unsat1 \
+            --native build/drnas-pcmax \
+            --base build/drnas-pcmax-base \
+            --drat-trim build/drat-trim \
+            --lrat-check build/lrat-check \
+            --output results/proofcore2 \
+            --solver-cap 8 --checker-cap 12 | tee proofcore2-summary.log
+          grep -q '^PROOFCORE_FINAL ' proofcore2-summary.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("results/proofcore2/summary.json").read_text())
+          s=r["summary"]
+          assert s["sources"]==18 and s["baseline_structural"]==8
+          assert s["false_unsat"]==0
+          assert s["standard_lrat_verified"]==sum(x["strict_lrat_verified"] for x in r["rows"] if x.get("strict_lrat_verified"))
+          assert r["inequality_guard_off"]
+          print("PROOFCORE2_PROTOCOL_PASS",json.dumps(s,sort_keys=True))
+          PY
+      - name: Summary of proof quality (no unverified claims)
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          report=pathlib.Path("results/proofcore2/summary.json")
+          if report.is_file():
+            s=json.loads(report.read_text())["summary"]
+            msg=("# Original18 source-checked native UNSAT proof audit\n\n"
+                 +f"Baseline structural: {s['baseline_structural']}/18; new structural: {s['new_structural']}; "
+                 +f"total structural: {s['total_source_certified']}; "
+                 +f"strict original-CNF DRAT/LRAT: {s['standard_lrat_verified']}; "
+                 +f"false UNSAT: {s['false_unsat']}.\n\n"
+                 +"Original SAT2024 developmental set, not blind holdout. "
+                 +"No external SAT solver used; independent checkers only. "
+                 +"Zero proof remains UNKNOWN for standard certification.\n")
+          else:
+            msg="Incomplete run: do not claim certification; inspect failure log.\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-proofcore2-original18-verified-summary-and-proofs
+          retention-days: 60
+          path: |
+            proofcore2-summary.log
+            results/proofcore2/summary.json
+            results/proofcore2/trials.jsonl
+            results/proofcore2/original_*/source_certificate.json
+            results/proofcore2/original_*/*.drat.gz
+            results/proofcore2/original_*/*.lrat.gz
+            results/proofcore2/original_*/original_subset.cnf
+            research/pcmax_capacity/benchmark_proofcore2.py
