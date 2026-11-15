@@ -1,0 +1,185 @@
+name: DRNAS NQUEENS BLOCKED phase sweep 24 source-frozen four-arm proof-aware
+on:
+  push:
+    branches: [experiment/drnas-queens-blocked-phase1-20261115]
+    paths:
+      - .github/workflows/drnas-queens-blocked-phase1.yml
+      - research/pcmax_capacity/blocked_nqueens_phase_generate.py
+      - research/pcmax_capacity/blocked_nqueens_phase_benchmark.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-blocked-nqueens-phase1-20261115
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          path: .
+          github-token: ${{ github.token }}
+      - name: Restore pinned reference Kissat CaDiCaL drat-trim and native DRNAS builds
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          test -x build/kissat
+          test -x build/cadical
+          test -x build/drat-trim
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax-base drnas-php-native -j2
+          python3 -m py_compile research/pcmax_capacity/blocked_nqueens_phase_generate.py \
+            research/pcmax_capacity/blocked_nqueens_phase_benchmark.py
+          sha256sum build/drnas-pcmax-base build/drnas-php-native \
+            build/kissat build/cadical build/drat-trim
+          git rev-parse HEAD
+      - name: Pin independent standard VeriPB 3.0.2 for any PHP structural UNSAT
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --version
+      - name: Source-frozen 24-case blocked queen sweep, one logical CPU per solver, serial arms
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "BLOCKED_QUEENS_CPU=$CPU SHARD=${{ matrix.shard }}"
+          taskset -c "$CPU" python3 -u \
+            research/pcmax_capacity/blocked_nqueens_phase_benchmark.py \
+            --shard ${{ matrix.shard }} --out results/blocked-nqueens-shard-${{ matrix.shard }} \
+            --x5 "$GITHUB_WORKSPACE/build/drnas-pcmax-base" \
+            --php "$GITHUB_WORKSPACE/build/drnas-php-native" \
+            --kissat "$GITHUB_WORKSPACE/build/kissat" \
+            --cadical "$GITHUB_WORKSPACE/build/cadical" \
+            --drat-trim "$GITHUB_WORKSPACE/build/drat-trim" \
+            --veripb "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" \
+            --cap 12 | tee blocked-nqueens-${{ matrix.shard }}.log
+      - name: Record all outcomes including UNKNOWN and failed proof checks
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          shard=${{ matrix.shard }}
+          p=pathlib.Path(f"results/blocked-nqueens-shard-{shard}/summary.json")
+          if not p.is_file():
+              print("No complete shard summary; inspect partial trials.jsonl.")
+              raise SystemExit(0)
+          data=json.loads(p.read_text())
+          lines=[f"## Blocked N-Queens random phase sweep shard {shard}", "",
+                 "Source CNF is frozen before any solver, complete original chess constraints.",
+                 "No solver receives a SAT/UNSAT label; no failed cases are discarded.",
+                 "Reference performance uses NO proof logging; separate proof replay and drat-trim are reported.",
+                 "", "| Source | N | Allowed/row | Blocked | DRNAS X5 | Kissat | CaDiCaL | PHP |",
+                 "|---|---:|---:|---:|---|---|---|---|"]
+          for c in data["cases"]:
+              rs={r["arm"]:r for r in data["trials"] if r["case"]==c["id"]}
+              def cell(arm):
+                  r=rs.get(arm)
+                  if not r:return "NO_RUN"
+                  return r["status"]+" "+str(round(r["wall_s"],3))+"s"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  c["id"],c["n"],c["degree"],c["blocked_density"],
+                  cell("DRNAS_X5"),cell("KISSAT"),cell("CADICAL"),cell("DRNAS_PHP")))
+          lines.extend(["",f"Verified SAT models: {data['models_verified']}, "+
+                        f"verified UNSAT proofs: {data['unsat_proofs_verified']}, "+
+                        f"audit errors: {data['errors']}."])
+          body="\n".join(lines)+"\n"
+          print(body)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fd:fd.write(body)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-blocked-queens-shard-${{ matrix.shard }}
+          retention-days: 45
+          compression-level: 6
+          path: |
+            results/blocked-nqueens-shard-${{ matrix.shard }}/
+            blocked-nqueens-${{ matrix.shard }}.log
+
+  final:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-blocked-queens-shard-*
+          path: source-shards
+          merge-multiple: false
+      - name: Validate exact source and trial coverage and summarize all 24 cases
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib,collections
+          sources=[];trials=[]
+          for shard in range(4):
+              p=pathlib.Path(f"source-shards/drnas-blocked-queens-shard-{shard}/results/blocked-nqueens-shard-{shard}/summary.json")
+              if not p.exists():continue
+              result=json.loads(p.read_text())
+              sources+=result["cases"]
+              trials+=result["trials"]
+          lines=["# DRNAS blocked N-Queens — full phase-sweep report","",
+                 f"Pre-registered synthetic source CNFs {len(sources)}/24, paired trials {len(trials)}/96.",
+                 "Complete row, column and diagonal constraints with random forbidden squares.",
+                 "One logical CPU per solver; 12s solver cap, external DRAT replay separated.",
+                 "Unknown labels are NEVER retrospectively assumed SAT or UNSAT.",
+                 "", "| Input | N | Allowed/row | Blocked | DRNAS X5 | Kissat | CaDiCaL | PHP |",
+                 "|---|---:|---:|---:|---|---|---|---|"]
+          for c in sorted(sources,key=lambda x:(x["n"],x["id"])):
+              rs={r["arm"]:r for r in trials if r["case"]==c["id"]}
+              def cell(arm):
+                  r=rs.get(arm)
+                  return r["status"]+" "+str(round(r["wall_s"],3))+"s" if r else "MISSING"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  c["id"],c["n"],c["degree"],c["blocked_density"],
+                  cell("DRNAS_X5"),cell("KISSAT"),cell("CADICAL"),cell("DRNAS_PHP")))
+          verify_sat=sum(r["model_verified"] for r in trials)
+          verify_unsat=sum(r["proof_verified"] for r in trials)
+          failures=[r for r in trials if r["status"].startswith(
+              ("CRITICAL","INVALID","EXECUTION_ERROR","UNSAT_PROOF_REJECTED"))]
+          ids={c["id"] for c in sources}
+          per_case=collections.Counter(r["case"] for r in trials)
+          cover=(len(ids)==24 and len(sources)==24 and len(trials)==96 and
+                 set(per_case)==ids and all(v==4 for v in per_case.values()))
+          lines.extend(["",f"Externally verified UNSAT trials: {verify_unsat}; original-CNF SAT models: {verify_sat}.",
+                        f"Errors: {len(failures)}. Complete 4-arm coverage: {cover}.",
+                        "These are retrospectively generated random sources, not official prospective benchmarks;",
+                        "near-threshold hardness is an empirical observation, not guaranteed by the source distribution."])
+          report="\n".join(lines)+"\n"
+          pathlib.Path("blocked-queens-final.md").write_text(report)
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as fd:fd.write(report)
+          if not cover or failures:raise SystemExit("INCOMPLETE_OR_INVALID_BLOCKED_QUEENS_BENCHMARK")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-blocked-queens-combined
+          retention-days: 45
+          path: blocked-queens-final.md
