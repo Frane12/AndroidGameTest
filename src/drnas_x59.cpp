@@ -1546,12 +1546,12 @@ int run(int argc, char** argv) {
                  <<"}\n";
     }
     if (show_stats) {
-        std::cerr<<"SAT_CLAUSE1_STATS {\\\"mode\\\":"<<sat_clause_mode
-                 <<",\\\"scans\\\":"<<solver->satClauseScans()
-                 <<",\\\"phase_flips\\\":"<<solver->satClauseFlips()
-                 <<",\\\"probe_pairs\\\":"<<solver->satClauseProbes()
-                 <<",\\\"failed_literals\\\":"<<solver->satClauseFailed()
-                 <<",\\\"cpu_budget_wall_s\\\":"<<solver->satClauseSeconds()<<"}\\n";
+        std::cerr<<"SAT_CLAUSE1_STATS {\"mode\":"<<sat_clause_mode
+                 <<",\"scans\":"<<solver->satClauseScans()
+                 <<",\"phase_flips\":"<<solver->satClauseFlips()
+                 <<",\"probe_pairs\":"<<solver->satClauseProbes()
+                 <<",\"failed_literals\":"<<solver->satClauseFailed()
+                 <<",\"wall_s\":"<<solver->satClauseSeconds()<<"}\n";
         const Stats& s=solver->stats();
         std::cerr<<"X58_STATS {\"hotwatch\":"<<(x58_hotwatch?"true":"false")
                  <<",\"redundant_writes_skipped\":"<<s.x58_blocker_write_skips<<"}\n";
