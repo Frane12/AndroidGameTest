@@ -1,0 +1,99 @@
+name: DRNAS PCMAX structural scale 195k variables one-CPU
+on:
+  push:
+    branches: [experiment/drnas-pcmax-structural-scale-20261115]
+    paths:
+      - .github/workflows/drnas-pcmax-structural-scale-20261115.yml
+      - research/pcmax_capacity/scale_capacity_20261115.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcmax-structural-scale-20261115
+  cancel-in-progress: false
+
+jobs:
+  scale_one_cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build unchanged native PCMAX detector and source-matched X5 CDCL
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          python3 -m py_compile research/pcmax_capacity/scale_capacity_20261115.py
+          sha256sum build/drnas-pcmax build/drnas-pcmax-base research/pcmax_capacity/scale_capacity_20261115.py
+          git rev-parse HEAD
+      - name: Try system-packaged Kissat and CaDiCaL reference CDCL solvers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq || echo "WARNING: apt metadata unavailable"
+          sudo apt-get install -y -qq kissat cadical || echo "WARNING: one or both external solvers unavailable; X5 CDCL remains required"
+          mkdir -p results/pcmax_scale_20261115
+          {
+            echo "compiler: $(g++ --version | head -1)"
+            for s in kissat cadical; do
+              if command -v "$s"; then
+                "$s" --version 2>&1 | head -5 || true
+                sha256sum "$(command -v "$s")"
+              else
+                echo "$s unavailable"
+              fi
+            done
+          } | tee results/pcmax_scale_20261115/versions.txt
+      - name: Serial source-paired structural proof and CDCL scale measurements
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "SCALE_CPU=$CPU"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/scale_capacity_20261115.py --cap 12 |
+            tee results/pcmax_scale_20261115/run.log
+      - name: Compact audit summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path('results/pcmax_scale_20261115/summary.json')
+          if not p.exists():
+              print('No completed summary; see run.log')
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          rows=[json.loads(s) for s in pathlib.Path('results/pcmax_scale_20261115/trials.jsonl').read_text().splitlines()]
+          lines=['# PCMAX structural scaling on generated scheduling, NOT blind SAT',
+                 '', 'Every solver uses one logical CPU, serial arms. 12 s cap.',
+                 'PCMAX certificates are checked against the original CNF by a separate Python program.',
+                 'They are NOT competition-standard DRAT/LRAT. CDCL exit codes here are raw, not independently proof-verified.',
+                 'Horn-only padding tests input-size overhead, not CDCL hardness.','',
+                 '| Input | Vars | Clauses | DRNAS structural verified | X5 CDCL | Kissat | CaDiCaL |',
+                 '|---|---:|---:|---|---|---|---|']
+          for case in d['cases']:
+              results={r['arm']:r for r in rows if r['name']==case['name']}
+              def state(key):
+                  r=results.get(key)
+                  if not r:return 'not installed'
+                  return (r['status']+' ('+str(round(r['wall_s'],3))+' s)')
+              lines.append(f"| {case['name']} | {case['variables']} | {case['clauses']} | {state('structural')} | {state('x5_cdcl')} | {state('kissat')} | {state('cadical')} |")
+          lines.extend(['','Synthetic generated input comparison; never claim general PAR2 superiority from these cases.'])
+          print('\n'.join(lines))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('\n'.join(lines)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-pcmax-structural-scale-sources-certificates-results
+          retention-days: 45
+          compression-level: 6
+          path: |
+            research/pcmax_capacity/scale_capacity_20261115.py
+            results/pcmax_scale_20261115/
