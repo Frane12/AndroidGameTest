@@ -232,14 +232,27 @@ class Solver {
         if (n < 0 || n > 20000000) throw std::runtime_error("unsupported DIMACS variable count");
     }
 
-    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {
+    void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof, bool binary_proof=true) {
         x5_minimize_=minimize; x5_retain_=retain; x5_gc_=gc;
-        x5_restarts_=restarts; proof_=proof;
+        x5_restarts_=restarts; proof_=proof; proof_binary_=binary_proof;
     }
     void writeProofClause(const std::vector<int>& lits) {
         if (!proof_ || x46_clone_) return;
-        for (int lit:lits) *proof_ << lit << ' ';
-        *proof_ << "0\n";
+        if (proof_binary_) {
+            proof_->put('a');
+            for (int lit:lits) {
+                uint32_t code=static_cast<uint32_t>(lit<0?-int64_t(lit):int64_t(lit))*2u+uint32_t(lit<0);
+                while(code>=128u) {
+                    proof_->put(static_cast<char>((code&127u)|128u));
+                    code>>=7;
+                }
+                proof_->put(static_cast<char>(code));
+            }
+            proof_->put(char(0));
+        } else {
+            for (int lit:lits) *proof_ << lit << ' ';
+            *proof_ << "0\n";
+        }
         if (!*proof_) throw std::runtime_error("proof write failed");
     }
     void addOriginal(std::vector<int> lits) {
@@ -703,6 +716,7 @@ class Solver {
   private:
     bool x5_minimize_=true, x5_retain_=false, x5_gc_=true, x5_restarts_=false;
     std::ostream* proof_=nullptr; // externally owned; speculative clones cannot log
+    bool proof_binary_=true;
     double clause_inc_=1.0,fast_glue_=8.0,slow_glue_=8.0;
     int64_t last_restart_=0;
     std::vector<uint8_t> minimize_marks_;
@@ -1401,6 +1415,7 @@ int run(int argc, char** argv) {
     int compare_at=0,x46_conflicts=0;
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
+    bool proof_text=false;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
 #ifdef DRNAS_PCMAX_MODULE
     bool pcmax_enabled=false, pcmax_only=false, pcmax_clause_guard=false, pcmax_hall2=false, pcmax_hall3=false;
@@ -1413,6 +1428,7 @@ int run(int argc, char** argv) {
         else if (opt=="--time" && i+1<argc) seconds=std::stod(argv[++i]);
         else if (opt=="--transitions" && i+1<argc) trace_file=argv[++i];
         else if (opt=="--proof" && i+1<argc) proof_path=argv[++i];
+        else if (opt=="--proof-text") proof_text=true;
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
         else if (opt=="--pcmax-clause-guard") { pcmax_enabled=true; pcmax_clause_guard=true; }
@@ -1481,7 +1497,7 @@ int run(int argc, char** argv) {
     std::ofstream proof;
     if(!proof_path.empty()) {
         if(proof_path==input)throw std::runtime_error("proof would overwrite input");
-        proof.open(proof_path);
+        proof.open(proof_path,std::ios::binary);
         if(!proof)throw std::runtime_error("cannot create proof");
     }
 #ifdef DRNAS_PCMAX_MODULE
@@ -1560,7 +1576,7 @@ int run(int argc, char** argv) {
 #endif
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,
-                                proof_path.empty()?nullptr:&proof);
+                                proof_path.empty()?nullptr:&proof,!proof_text);
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
