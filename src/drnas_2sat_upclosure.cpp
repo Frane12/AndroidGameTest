@@ -141,6 +141,14 @@ void close_units_and_extract(CNF& src,Deadline&budget){
         for(int ci:occurrences[vertex(l)]) satisfied[ci]=1;
         for(int ci:occurrences[vertex(-l)]){
             if(satisfied[ci])continue;
+            // Other initial/queued assignments may already satisfy this clause.
+            // They must not be misclassified as a propagation conflict.
+            bool already_true=false;
+            for(int x:src.original[ci]){
+                int8_t v=assignment[std::abs(x)-1];
+                if(v!=0&&v==(x>0?1:-1)){already_true=true;break;}
+            }
+            if(already_true){satisfied[ci]=1;continue;}
             --remaining[ci];
             if(remaining[ci]==0){src.unit_conflict=true;return;}
             if(remaining[ci]==1){
