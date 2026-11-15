@@ -59,3 +59,9 @@ add_executable(drnas-2sat-guard src/drnas_2sat_guard.cpp)
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-2sat-guard PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+# Experimental UP-closure + hidden 2-SAT proof-first detector. Standalone, single core.
+add_executable(drnas-2sat-upclosure src/drnas_2sat_upclosure.cpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(drnas-2sat-upclosure PRIVATE -O3 -Wall -Wextra -Wpedantic)
+endif()
