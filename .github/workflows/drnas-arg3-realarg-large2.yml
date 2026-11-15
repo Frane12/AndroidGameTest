@@ -1,0 +1,174 @@
+name: DRNAS ARG3 LARGE2 1024-argument real SAT2025 category comparison
+on:
+  push:
+    branches: [experiment/drnas-arg3-realarg-large2-20261115]
+    paths:
+      - research/arg3_realarg/benchmark.py
+      - .github/workflows/drnas-arg3-realarg-large2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-arg3-realarg-large2-20261115
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43714913984
+          repository: Frane12/AndroidGameTest
+          name: arg3-realarg-frozen-originals
+          github-token: ${{ github.token }}
+          path: frozen/originals
+      - name: Verify original freeze manifest and complete 11-source inventory
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/originals/arg3-realarg-frozen.tgz
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path("arg3_realarg_inputs/manifest.json")
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=="8fe5ccfb1a05557bdbf43b8b801d8cbdb5160aff988d0956ded3904c1d8a70d8"
+          a=json.loads(p.read_text())
+          assert a["ready_count"]==11 and len(a["attempts"])==19
+          assert a["no_solvers_executed"] and a["no_outcome_labels_used"]
+          for r in a["ready_sources"]:
+              f=pathlib.Path(r["path"])
+              assert hashlib.sha256(f.read_bytes()).hexdigest()==r["sha256"]
+          print("ARG3_ORIGINAL_PREFLIGHT_PASS",a["ready_count"])
+          PY
+          python3 -m py_compile research/arg3_realarg/benchmark.py
+  paired:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43714913984
+          repository: Frane12/AndroidGameTest
+          name: arg3-realarg-frozen-originals
+          github-token: ${{ github.token }}
+          path: frozen/originals
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          repository: Frane12/AndroidGameTest
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen/cms
+      - name: Restore frozen GBD originals, reference binaries and checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1 libboost-program-options1.83.0
+          tar -xzf frozen/originals/arg3-realarg-frozen.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          cp frozen/cms/cms frozen/cms/frat-rs build/
+          mkdir -p build/cms-libs/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/
+          chmod +x build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+          sha256sum arg3_realarg_inputs/manifest.json build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+          LD_LIBRARY_PATH=build/cms-libs/usr/lib/x86_64-linux-gnu build/cms --version
+      - name: Build same exact X59 with ARG3-V2 opt-in, no extra solver
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum src/drnas_x59.cpp src/drnas_sat_arg3.hpp build/drnas-sat-native-x59
+      - name: Large ARG3 graph independent soundness controls
+        run: |
+          set -euo pipefail
+          python3 -u research/arg3_realarg/test_large2.py | tee large2_safety.log
+          grep -q '^ARG3_LARGE2_SAFETY ' large2_safety.log
+      - name: Run randomized-order paired one-logical-CPU original models and proofs
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            PYTHONHASHSEED=0 python3 -u research/arg3_realarg/benchmark.py \
+               shard --index ${{ matrix.shard }} | tee realarg_shard.log
+          grep -q '^REAL2025_SHARD ' realarg_shard.log
+      - name: Preserve per-original hashes, SAT models check and certified PAR2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arg3-large2-shard-${{ matrix.shard }}
+          path: |
+            arg3_realarg_results/shard-${{ matrix.shard }}/
+            realarg_shard.log
+          if-no-files-found: warn
+          retention-days: 60
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43714913984
+          repository: Frane12/AndroidGameTest
+          name: arg3-realarg-frozen-originals
+          github-token: ${{ github.token }}
+          path: frozen/originals
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: arg3-large2-shard-*
+          path: pulled
+      - name: Complete 110 source-matched verified SAT and UNSAT measurements
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/originals/arg3-realarg-frozen.tgz
+          mkdir -p arg3_realarg_results
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(4):
+              p=Path("pulled")/f"arg3-large2-shard-{i}"
+              rows=list(p.rglob("trials.jsonl"))
+              meta=list(p.rglob("meta.json"))
+              assert len(rows)==1 and len(meta)==1,(i,rows,meta)
+              dest=Path("arg3_realarg_results")/f"shard-{i}"
+              dest.mkdir(parents=True,exist_ok=True)
+              shutil.copy2(rows[0],dest/"trials.jsonl")
+              shutil.copy2(meta[0],dest/"meta.json")
+          PY
+          python3 -u research/arg3_realarg/benchmark.py report | tee arg3_realarg_final.log
+          grep -q '^ARG3_REALARG_FINAL ' arg3_realarg_final.log
+          cat arg3_realarg_final.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload full traceable source-paired matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arg3-large2-final-report
+          path: |
+            arg3_realarg_inputs/manifest.json
+            arg3_realarg_results/final.json
+            arg3_realarg_results/trials.jsonl
+            arg3_realarg_final.log
+          if-no-files-found: warn
+          retention-days: 60
