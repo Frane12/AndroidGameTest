@@ -1,0 +1,117 @@
+name: DRNAS CHALLENGE19 synthetic UNSAT paired certified
+on:
+  push:
+    branches:
+      - experiment/drnas-challenge19-paired-20261115
+    paths:
+      - .github/workflows/drnas-challenge19.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-challenge19-paired-20261115
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned CNF generator and native build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev python3-venv
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -q 'networkx==3.6.1'
+          mkdir -p build
+      - name: Regenerate exactly the 19 local frozen CNFs and independently compare their SHA256
+        run: |
+          set -euo pipefail
+          .venv/bin/python research/challenge19/generate.py > challenge19_generate.log
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          root=Path("research/challenge19")
+          a=json.loads((root/"manifest.json").read_text())["benchmarks"]
+          assert len(a)==19
+          assert sum(x["expected"]=="SAT" for x in a)==7
+          assert sum(x["expected"]=="UNSAT" for x in a)==12
+          for item in a:
+              f=root/item["file"]
+              assert hashlib.sha256(f.read_bytes()).hexdigest()==item["sha256"]
+          print("CHALLENGE19_GENERATED",len(a))
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore reference Kissat CaDiCaL DRAT checker and compile two DRNAS modules
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          chmod +x build/kissat build/cadical build/drat-trim
+          g++ -std=c++20 -O3 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          python3 -u research/xor_math5_unified1/build.py > challenge19_build.log
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >> challenge19_build.log
+          cmake --build build --target drnas-pcmax -j2 >> challenge19_build.log
+          python3 research/xor_math5_unified1/test.py > challenge19_preflight.log
+          grep -q '^UNIFIED_MATH5_PREFLIGHT_PASS' challenge19_preflight.log
+          test -x build/drnas-x59-xor-math5-unified1
+          test -x build/drnas-pcmax
+          test -x build/kissat
+          test -x build/cadical
+          test -x build/drat-trim
+          sha256sum build/drnas-x59-xor-math5-unified1 build/drnas-pcmax build/kissat build/cadical build/drat-trim
+      - name: Run exact 19 x 4 frozen-source comparison on one logical CPU
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONHASHSEED=0 \
+          python3 -u research/challenge19/benchmark.py | tee challenge19.log
+          grep -q '^CHALLENGE19_FINAL ' challenge19.log
+      - name: Summarize verified conclusions and all unknowns
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('challenge19_results/summary.json')
+          if not p.is_file():
+              s='### CHALLENGE19\nNo complete results: inspect logs and preflight.\n'
+          else:
+              d=json.loads(p.read_text())
+              s='### CHALLENGE19 (synthetic; not blind or industrial)\n\n'
+              s+='19 frozen CNFs, 4 arms, one CPU per solver, 5 s solver cap, 8 s verified E2E cap.\n\n'
+              s+='| Arm | SAT verified | UNSAT verified | Unknown | Errors | PAR2 verified (s) |\n'
+              s+='|---|---:|---:|---:|---:|---:|\n'
+              for arm,x in d['summary'].items():
+                  s+=f"| {arm} | {x['verified_sat']} | {x['verified_unsat']} | {x['unknown']} | {x['invalid']} | {x['PAR2_verified_sum_s']} |\n"
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(s)
+          print(s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-challenge19-results
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            challenge19_results/summary.json
+            challenge19_results/trials.csv
+            challenge19_results/*/trial.json
+            challenge19_results/*/solver.stdout
+            challenge19_results/*/solver.stderr
+            challenge19_results/*/checker.stdout
+            challenge19_results/*/checker.stderr
+            challenge19_results/*/structural.json
+            research/challenge19/manifest.json
+            research/challenge19/cnf/*.cnf
+            research/challenge19/certs/*.json
+            research/challenge19/witnesses/*.json
+            challenge19*.log
