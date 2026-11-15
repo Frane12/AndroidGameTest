@@ -112,7 +112,7 @@ inline Outcome construct(int vars,const CNF& f,double budget_ms=100.0) {
     }
     out.stats.exact_triples=
         static_cast<int>(std::count(triples.begin(),triples.end(),uint8_t(1)));
-    if(out.stats.exact_triples<n-n/20)return finish();
+    if(out.stats.exact_triples<n-std::max(1,n/20))return finish();
     std::vector<uint8_t> allowed(n,0);
     for(int g=0;g<n;++g){
         if(triples[g]==1){
