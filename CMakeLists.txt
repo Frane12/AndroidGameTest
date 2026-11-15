@@ -47,3 +47,9 @@ endif()
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-pcmax-base PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+# Experimental standalone 2-CNF implication-graph proof-first solver for queen diagonal tests.
+add_executable(drnas-queens-2sat src/drnas_queens_2sat.cpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(drnas-queens-2sat PRIVATE -O3 -Wall -Wextra -Wpedantic)
+endif()
