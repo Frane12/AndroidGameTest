@@ -50,6 +50,7 @@ struct Mask {
 struct Stats {
     bool recognized=false,found=false,normalized=false;
     int groups=0,edges=0,blockers=0,iterations=0;
+    int root_units=0,root_implied=0,repaired_groups=0,invalid_candidates=0;
     int stable_candidates=0,blocked_candidates=0,best_undominated=-1;
     double wall_ms=0.0;
 };
