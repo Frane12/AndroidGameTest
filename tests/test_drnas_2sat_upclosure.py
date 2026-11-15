@@ -20,6 +20,17 @@ permute=lib["permute"]
 check=lib["check"]
 rng=random.Random(20261115)
 
+def canonical_clauses(clauses):
+    # Ordinary CNF clauses are SETS of literals. Duplicate removal and
+    # tautology elimination preserve the original Boolean formula.
+    result=[]
+    for c in clauses:
+        seen=set(c)
+        if any(-l in seen for l in seen):
+            continue
+        result.append(tuple(sorted(seen,key=lambda x:(abs(x),x))))
+    return result
+
 def execute(exe,n,clauses,tmp,key):
     f=tmp/(key+".cnf")
     proof=tmp/(key+".drat")
@@ -30,7 +41,11 @@ def execute(exe,n,clauses,tmp,key):
     assert r.returncode in (0,20),(key,r.stdout,r.stderr)
     if r.returncode==20:
         try:
-            rup_check(clauses,proof.read_text())
+            normalized=canonical_clauses(clauses)
+            if n<=8:
+                assert sat(n,clauses)==sat(n,normalized)
+                assert not sat(n,clauses),("unsound_unsat",key)
+            rup_check(normalized,proof.read_text())
         except AssertionError:
             print(f"RUP_DIAGNOSTIC key={key} n={n} clauses={clauses} proof={proof.read_text()!r} trueSAT={sat(n,clauses)}",flush=True)
             raise
