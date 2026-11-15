@@ -1,0 +1,111 @@
+name: DRNAS UNIFIED CORE1 six-arm original67 regression
+on:
+  push:
+    branches: [experiment/drnas-unified-core1-20261115]
+    paths: ['research/unified_core1/**', '.github/workflows/drnas-unified-core1.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43712040086
+          name: realblind100-frozen
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore references and build candidate
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/realblind100-frozen.tgz
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev libboost-program-options1.83.0
+          chmod +x build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+          python3 research/unified_core1/build.py > build.log 2>&1
+          python3 research/unified_core1/test.py | tee preflight.log
+          python3 research/unified_core1/benchmark.py prepare
+          tar -czf unified-core1-frozen.tgz build/unified_core1/manifest.json build/drnas-unified-core1 build/kissat build/cadical build/cms build/drat-trim build/frat-rs build/cms-libs unified_realblind100_inputs unified_core1_results/protocol.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unified-core1-frozen
+          path: unified-core1-frozen.tgz
+          retention-days: 60
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unified-core1-build
+          path: |
+            build.log
+            preflight.log
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: unified-core1-frozen
+      - name: Paired original-source regression
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-program-options1.83.0
+          tar -xzf unified-core1-frozen.tgz
+          chmod +x build/* 2>/dev/null || true
+          python3 -u research/unified_core1/benchmark.py shard --index ${{ matrix.shard }} > paired.log 2>&1
+          tail -n 3 paired.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unified-core1-shard-${{ matrix.shard }}
+          path: |
+            unified_core1_results
+            paired.log
+          retention-days: 60
+  aggregate:
+    needs: [prepare, paired]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: unified-core1-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: unified-core1-shard-*
+          path: pulled
+      - name: Audit complete paired evidence
+        run: |
+          set -euo pipefail
+          tar -xzf unified-core1-frozen.tgz
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          for d in Path('pulled').glob('*/unified_core1_results/shard-*'):
+              shutil.copytree(d,Path('unified_core1_results')/d.name,dirs_exist_ok=True)
+          PY
+          python3 research/unified_core1/benchmark.py report | tee final.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unified-core1-final
+          path: |
+            unified_core1_results
+            final.log
+          retention-days: 60
