@@ -1,0 +1,73 @@
+name: DRNAS PCMAX VeriPB20 retrospective verified coverage
+on:
+  push:
+    branches: [experiment/drnas-pcmax-veripb20-coverage1-20261115]
+    paths:
+      - .github/workflows/drnas-pcmax-veripb20-coverage1.yml
+      - research/pcmax_capacity/benchmark_veripb20_coverage1.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drnas-pcmax-veripb20-coverage1-20261115
+  cancel-in-progress: false
+
+jobs:
+  retrospective_proof_coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 33
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin external standard VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Build existing native PCMAX module without changing SAT core
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/benchmark_veripb20_coverage1.py
+          python3 -m py_compile research/pcmax_capacity/emit_veripb_capacity1.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum build/drnas-pcmax research/pcmax_capacity/emit_veripb_capacity1.py
+      - name: Retrospective all 20 exact originals, one logical CPU per solver, independent VeriPB
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_capacity/benchmark_veripb20_coverage1.py
+      - name: Audit summary even if proof generator fails
+        if: always()
+        run: |
+          if [ -f results/veripb20/summary.json ]; then
+            python3 - <<'PY'
+          import json,pathlib,os
+          d=json.loads(pathlib.Path('results/veripb20/summary.json').read_text())
+          summary=("# VeriPB original20 proof coverage (retrospective, NOT blind)\n\n"
+                   f"Source verified: {d['completed']}/{d['source_count']}\n\n"
+                   f"Independently accepted VeriPB UNSAT proofs: {d['verified_veripb_count']}\n\n"
+                   f"Errors: {len(d['errors'])}; false UNSAT on SAT controls: {d['false_unsat_on_sat_controls']}\n\n"
+                   "This is source-bound proof coverage, not a competitive PAR2 claim.\n")
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(summary)
+          PY
+          fi
+      - name: Archive proof files and per-case diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-veripb20-source-audit
+          retention-days: 60
+          compression-level: 6
+          path: |
+            research/pcmax_capacity/benchmark_veripb20_coverage1.py
+            research/pcmax_capacity/sources20.json
+            results/veripb20/
