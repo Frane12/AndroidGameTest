@@ -116,7 +116,7 @@ def shard(idx):
        for arm in ARMS}),sort_keys=True),flush=True)
 
 def report():
-    srcs,_=freeze()
+    srcs=base.manifest()["sources"]
     rows=[]
     for idx in range(SHARDS):
         out=RESULTS/f"shard-{idx}"
