@@ -1,0 +1,58 @@
+name: DRNAS SAT-CLAUSE1 REAL20 original SAT2024 SAT-only E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-sat-clause1-20261115]
+    paths:
+      - research/sat_clause_real20/**
+      - .github/workflows/drnas-sat-clause-real20.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-sat-clause-real20-20261115
+  cancel-in-progress: false
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: frozen/cf7
+      - name: Restore source-pinned original SAT2024 REAL100 archive
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/cf7/cf7_inputs.tgz
+          sha256sum cf7/manifest.json
+          test -f cf7/manifest.json
+      - name: Build native same-process OFF SCORE PROBE variants
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-clause1
+          python3 -m py_compile research/sat_clause_real20/benchmark.py
+      - name: Run one-logical-core model verified original CNFs
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            python3 -u research/sat_clause_real20/benchmark.py --shard ${{ matrix.shard }}
+      - name: Save original hashes and all per-source rows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sat-clause-real20-shard-${{ matrix.shard }}
+          path: sat_clause_real20_results/${{ matrix.shard }}/
+          if-no-files-found: warn
+          retention-days: 30
