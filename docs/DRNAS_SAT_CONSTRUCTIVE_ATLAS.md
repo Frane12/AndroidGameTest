@@ -100,3 +100,64 @@ expected-net-benefit margin, then fallback to CDCL without lost correctness.
 Benchmarks must report by structural family, not only pooled average:
 solver CPU, checker time, SAT witness, independent UNSAT proof when relevant,
 timeout and memory limits, per-source PAR2 wins/losses and bootstrap uncertainty.
+
+
+## XORHARD2 frozen 60 large-XOR final result
+
+**Run:** https://github.com/Frane12/AndroidGameTest/actions/runs/43708587050
+
+After freezing 60 deterministic, previously untested synthetic SAT sources,
+the initial evaluation run stopped before solver invocation because a
+manifest assertion mistakenly expected the earlier 100-case dataset.
+Only the count check was corrected; generator, input hashes and native
+mathematics were unchanged. The corrected run completed all 720 trials:
+6 solver configurations, 2 paired repetitions per original CNF, cap 2.0 s
+including startup and independently checked original-CNF SAT models.
+PAR2 assigns 4.0 s to each timeout or unverified trial. One logical CPU
+per solver process; 6 CI shards are parallel infrastructure only.
+
+| Solver arm | SAT verified / 120 | PAR2 sum (s) | Median E2E (s) |
+| --- | ---: | ---: | ---: |
+| X59 + 100ms construction | **120** | **3.762259** | **0.010690** |
+| X59 + 25ms construction | **120** | **3.794823** | **0.011119** |
+| CryptoMiniSat 5.11.15 | 102 | 175.071668 | 1.522602 |
+| CaDiCaL 3.0.1 | 42 | 317.106400 | 2.003942 |
+| Kissat 4.0.4 | 42 | 317.210734 | 2.002825 |
+| X59 OFF | 42 | 319.200291 | 2.002258 |
+
+The integrated method returned 100 original-CNF-verified SAT witnesses
+via native GF(2) (50 unique sources, 2 repetitions). The other 20 solved
+attempts came from the original CDCL fallback on the 10 partial-XOR
+sources. No false SAT was detected; all sources were SAT by construction.
+No UNSAT certification was involved in this SAT-only benchmark.
+
+Per family, 20 trials per arm:
+
+| Family | X59 OFF (solved) | X59 ON 100ms (solved) | CMS (solved) |
+| --- | ---: | ---: | ---: |
+| Pure XOR-3 | 20 | 20 | 20 |
+| Pure XOR-4 | 2 | 20 | 6 |
+| Pure XOR-5 | 0 | 20 | 18 |
+| Pure XOR-6 | 0 | 20 | 20 |
+| Mixed XOR-5 | 0 | 20 | 18 |
+| Partial XOR-3 | 20 | 20 | 20 |
+
+SOURCE-level paired average PAR2 changes (X59 ON100 vs OFF):
+50 better, 10 worse, no ties. The 10 worse cases are partial XOR-3:
+with 20 repetitions ON PAR2=2.612 vs OFF=2.592 seconds, a small
+negative overhead. Positive bootstrap saving CI over the deliberately
+XOR-heavy cohort does not imply any gain on general SAT competition.
+
+The total PAR2 ratio OFF/ON is ~84.8 and CMS/ON ~46.5. These are
+**penalized PAR2 score ratios with timeout censoring**, not exact
+equal-completion solver-time speedup factors. Formulas were generated
+with known planted witnesses and explicitly designed structural XOR
+patterns. This is a prospective *source-unseen synthetic test*, NOT an
+independent official source holdout or evidence of worldwide general
+superiority. The benchmark favors the class GF(2) recognition was
+designed to solve; the mixed/general baseline remains essential.
+
+The next scientific milestone is a preregistered, source-SHA-disjoint
+blind real-original cohort and a separate diverse general benchmark,
+with a fixed guard, independent SAT/UNSAT verification and per-family
+regression budgets.
