@@ -1,0 +1,148 @@
+name: DRNAS XORBLIND1 frozen 100 CNF six-arm verified SAT PAR2
+on:
+  push:
+    branches: [experiment/drnas-sat-unified-xorblind1-20261115]
+    paths:
+      - research/xor_blind1/benchmark.py
+      - .github/workflows/drnas-xorblind1-evaluate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xorblind1-eval-v1-20261115
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile exactly one native C++ solver and source constructor
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_sat_construct.cpp -o build/drnas-sat-construct
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          python3 -m py_compile research/xor_blind1/benchmark.py
+          python3 -u research/sat_native1/test_native.py
+          python3 -u research/sat_unified2/test_unified.py
+  paired:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43707163289
+          repository: Frane12/AndroidGameTest
+          name: xorblind1-frozen-source-100
+          github-token: ${{ github.token }}
+          path: frozen/xorblind1
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          repository: Frane12/AndroidGameTest
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen/cms
+      - name: Restore exact source archive and solver references
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1 libboost-program-options1.83.0
+          tar -xzf frozen/xorblind1/xor-blind1-source-freeze.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          cp frozen/cms/cms build/cms
+          mkdir -p build/cms-libs/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/
+          chmod +x build/kissat build/cadical build/cms
+          sha256sum xor_blind1_inputs/manifest.json build/kissat build/cadical build/cms
+          LD_LIBRARY_PATH=build/cms-libs/usr/lib/x86_64-linux-gnu build/cms --version
+      - name: Compile independent native ON/OFF and construct-only binary
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_sat_construct.cpp -o build/drnas-sat-construct
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+      - name: Exact one-core per solver, sequential paired randomized-order trials
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            PYTHONHASHSEED=0 python3 -u research/xor_blind1/benchmark.py \
+              shard --index ${{ matrix.shard }} | tee xor_shard.log
+          grep -q '^XOR_BLIND_SHARD ' xor_shard.log
+      - name: Retain full original SHA, model-check and per-trial E2E times
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xorblind1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            xor_blind1_results/shard-${{ matrix.shard }}/
+            xor_shard.log
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43707163289
+          repository: Frane12/AndroidGameTest
+          name: xorblind1-frozen-source-100
+          github-token: ${{ github.token }}
+          path: frozen/xorblind1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xorblind1-shard-*
+          path: pulled
+      - name: Enforce complete 1200-row source-paired matrix and report
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/xorblind1/xor-blind1-source-freeze.tgz
+          mkdir -p xor_blind1_results
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          for i in range(10):
+              root=Path('pulled')/f'xorblind1-shard-{i}'/'xor_blind1_results'/f'shard-{i}'
+              assert (root/'trials.jsonl').is_file(),(i,str(root))
+              dest=Path('xor_blind1_results')/f'shard-{i}'
+              shutil.copytree(root,dest)
+          PY
+          python3 -u research/xor_blind1/benchmark.py report | tee xor_final.log
+          grep -q '^XOR_BLIND_FINAL ' xor_final.log
+          cat xor_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorblind1-final
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            xor_blind1_inputs/manifest.json
+            xor_blind1_results/final.json
+            xor_blind1_results/trials.jsonl
+            xor_final.log
