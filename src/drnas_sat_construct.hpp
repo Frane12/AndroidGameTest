@@ -5,6 +5,8 @@
 // All functions have a monotonic wall-clock deadline and source size guards.
 #include <algorithm>
 #include <bit>
+#include <cmath>
+#include <cstdlib>
 #include <chrono>
 #include <cstdint>
 #include <functional>
