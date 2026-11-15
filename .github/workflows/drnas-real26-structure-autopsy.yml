@@ -5,6 +5,8 @@ on:
     paths:
       - .github/workflows/drnas-real26-structure-autopsy.yml
       - research/pcmax_capacity/structural_autopsy_real26.py
+      - research/pcmax_capacity/source_php_real26.py
+      - research/pcmax_capacity/check_php_partition.py
   workflow_dispatch:
 
 permissions:
@@ -37,6 +39,66 @@ jobs:
           find archived-real26 -name '*.cnf' | head -25
           python3 -u research/pcmax_capacity/structural_autopsy_real26.py archived-real26 results/real26-autopsy |
             tee autopsy.log
+      - name: Test independent verifier on valid and tampered 3-groups-2-resources witnesses
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess, sys
+          folder=pathlib.Path("results/php_selftest");folder.mkdir(parents=True,exist_ok=True)
+          pairs=[(1,3),(1,5),(3,5),(2,4),(2,6),(4,6)]
+          groups=[[1,2],[3,4],[5,6]]
+          raw="p cnf 6 9\n"+"".join(" ".join(map(str,g))+" 0\n" for g in groups)+"".join(f"-{a} -{b} 0\n" for a,b in pairs)
+          path=folder/"valid.cnf";path.write_text(raw)
+          cert=dict(format="DRNAS-source-clique-capacity-v1",source_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+                    source_variables=6,source_clauses=9,selected_groups=groups,
+                    capacity_cliques=[[1,3,5],[2,4,6]],demand=3,capacity=2)
+          cp=folder/"cert.json";cp.write_text(json.dumps(cert))
+          checker="research/pcmax_capacity/check_php_partition.py"
+          good=subprocess.run([sys.executable,checker,str(path),str(cp)],capture_output=True,text=True)
+          assert good.returncode==0,(good.stdout,good.stderr)
+          # Forged proof on a satisfiable weakened CNF must be rejected even if hash is updated.
+          badraw=raw.replace("-3 -5 0\n","")
+          badpath=folder/"weakened.cnf";badpath.write_text(badraw.replace("p cnf 6 9","p cnf 6 8"))
+          fake=cert.copy();fake["source_clauses"]=8
+          fake["source_sha256"]=hashlib.sha256(badpath.read_bytes()).hexdigest()
+          fakefile=folder/"forged.json";fakefile.write_text(json.dumps(fake))
+          rejected=subprocess.run([sys.executable,checker,str(badpath),str(fakefile)],
+                                  capture_output=True,text=True)
+          assert rejected.returncode!=0,(rejected.stdout,rejected.stderr)
+          print("SOURCE_CLIQUE_VALID_AND_TAMPERED_CERTIFICATE_TESTS_PASS")
+          PY
+      - name: Reconstruct direct PHP capacity on original REAL2026 CNFs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/source_php_real26.py research/pcmax_capacity/check_php_partition.py
+          python3 -u research/pcmax_capacity/source_php_real26.py --archive archived-real26 --out results/real26-php |
+            tee php.log
+      - name: Report independent original-CNF verified direct capacity results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path("results/real26-php/cases.json")
+          if not p.exists():
+              print("No completed direct PHP source audit")
+              raise SystemExit(0)
+          rows=json.loads(p.read_text())
+          lines=["# Direct generalized pigeonhole from ORIGINAL SAT2026 CNF, no CDCL",
+                 "", "Original clauses only: disjoint positive demand clauses and a partition into complete binary-mutex capacity cliques.",
+                 "All positive UNSAT certificates independently re-read from source by a separate checker.",
+                 "", "| Source | Family | Groups | Resource cliques | Deficit | Exact source-bound result | Full discovery + checker |",
+                 "|---|---|---:|---:|---:|---|---:|"]
+          for r in rows:
+              dt=r.get("discovery_s",0)
+              ct=r.get("checker_s") or 0
+              lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+                  r["source_id"][:12]+"…",r["family"],r.get("groups","—"),
+                  r.get("resources","—"),r.get("deficit","—"),r["status"],
+                  round(dt+ct,4) if r.get("discovery_s") is not None else "—"))
+          lines.extend(["","Structural proof checker is source-bound, NOT DRAT/LRAT/VeriPB competition proof."])
+          message="\n".join(lines)+"\n"
+          print(message)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(message)
+          PY
       - name: Print input-structure findings
         if: always()
         run: |
@@ -68,5 +130,8 @@ jobs:
           retention-days: 45
           path: |
             results/real26-autopsy/
+            results/real26-php/
+            results/php_selftest/
+            php.log
             autopsy.log
             research/pcmax_capacity/structural_autopsy_real26.py
