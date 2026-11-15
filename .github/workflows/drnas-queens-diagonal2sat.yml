@@ -1,0 +1,224 @@
+name: DRNAS NQUEENS diagonal-only UNSAT native 2SAT DRAT versus Kissat CaDiCaL
+on:
+  push:
+    branches: [experiment/drnas-queens-diagonal2sat-20261115]
+    paths:
+      - .github/workflows/drnas-queens-diagonal2sat.yml
+      - research/pcmax_capacity/queens_cnf_generate.py
+      - research/pcmax_capacity/queens_benchmark.py
+      - src/drnas_queens_2sat.cpp
+      - CMakeLists.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-queens-diagonal2sat-20261115
+  cancel-in-progress: false
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 34
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43386621130
+          name: gate-real36-native
+          path: .
+          github-token: ${{ github.token }}
+      - name: Restore pinned Kissat CaDiCaL drat-trim and build DRNAS N-Queens prover
+        run: |
+          set -euo pipefail
+          tar -xzf real36_binaries.tgz
+          test -x build/kissat
+          test -x build/cadical
+          test -x build/drat-trim
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-queens-2sat drnas-php-native -j2
+          python3 -m py_compile research/pcmax_capacity/queens_cnf_generate.py \
+            research/pcmax_capacity/queens_benchmark.py
+          sha256sum build/drnas-queens-2sat build/drnas-php-native \
+            build/kissat build/cadical build/drat-trim
+          git rev-parse HEAD
+      - name: Pinned independent VeriPB 3.0.2 checker for legacy PHP
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" --version
+          sha256sum "$GITHUB_WORKSPACE/veripb-tool/bin/veripb"
+      - name: Exact native DRAT positive, satisfiable and tampered-proofs controls
+        run: |
+          set -euo pipefail
+          mkdir -p queen-selftest
+          cat > queen-selftest/unsat.cnf <<'CNF'
+          p cnf 2 4
+          1 2 0
+          -1 2 0
+          1 -2 0
+          -1 -2 0
+          CNF
+          cat > queen-selftest/sat.cnf <<'CNF'
+          p cnf 2 3
+          1 2 0
+          -1 2 0
+          1 -2 0
+          CNF
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          set +e
+          taskset -c "$CPU" build/drnas-queens-2sat queen-selftest/unsat.cnf \
+            --proof queen-selftest/unsat.drat > queen-selftest/unsat.log 2>&1
+          unsat_rc=$?
+          taskset -c "$CPU" build/drnas-queens-2sat queen-selftest/sat.cnf \
+            --proof queen-selftest/sat.drat > queen-selftest/sat.log 2>&1
+          sat_rc=$?
+          taskset -c "$CPU" build/drnas-queens-2sat queen-selftest/unsat.cnf \
+            --proof queen-selftest/unsat.drat > queen-selftest/repeat.log 2>&1
+          repeat_rc=$?
+          set -e
+          test "$unsat_rc" -eq 20
+          test "$sat_rc" -eq 0
+          test "$repeat_rc" -eq 1
+          test -s queen-selftest/unsat.drat
+          test ! -e queen-selftest/sat.drat
+          build/drat-trim queen-selftest/unsat.cnf queen-selftest/unsat.drat \
+            > queen-selftest/valid-verifier.log 2>&1
+          grep -q "s VERIFIED" queen-selftest/valid-verifier.log
+          if build/drat-trim queen-selftest/sat.cnf queen-selftest/unsat.drat \
+             > queen-selftest/tampered-verifier.log 2>&1; then
+            echo "CRITICAL: standard DRAT checker accepted proof on SAT source"
+            exit 1
+          fi
+          echo "QUEEN2_NATIVE_DRAT_POSITIVE_AND_SAT_NEGATIVE_CONTROLS_PASS"
+      - name: Full frozen paired N-Queens and diagonal-only UNSAT source comparison
+        run: |
+          set -euo pipefail
+          CPU="$(python3 -c 'import os;print(min(os.sched_getaffinity(0)))')"
+          echo "QUEENS_CPU=$CPU shard=${{ matrix.shard }}"
+          taskset -c "$CPU" python3 -u research/pcmax_capacity/queens_benchmark.py \
+            --shard ${{ matrix.shard }} \
+            --out results/queens-shard-${{ matrix.shard }} \
+            --two-sat "$GITHUB_WORKSPACE/build/drnas-queens-2sat" \
+            --php "$GITHUB_WORKSPACE/build/drnas-php-native" \
+            --kissat "$GITHUB_WORKSPACE/build/kissat" \
+            --cadical "$GITHUB_WORKSPACE/build/cadical" \
+            --drat-trim "$GITHUB_WORKSPACE/build/drat-trim" \
+            --veripb "$GITHUB_WORKSPACE/veripb-tool/bin/veripb" \
+            --cap 12 | tee queens-shard-${{ matrix.shard }}.log
+      - name: Compact result summary even after a benchmark failure
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          shard=${{ matrix.shard }}
+          p=pathlib.Path(f"results/queens-shard-{shard}/summary.json")
+          if not p.exists():
+              print("No complete summary; see partial trials.jsonl")
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          lines=[f"## DRNAS N-Queens source-shard {shard}","",
+                 "Synthetic original CNFs shuffled before any solver calls.",
+                 "2-CNF diagonal-only UNSAT proven by native SCC, DRAT checked by pinned drat-trim.",
+                 "Standard N Queens use full row, column and diagonal attack constraints.",
+                 "Legacy PHP is separate. Reference statuses do not have independent proof/model checks.",
+                 "", "| Case | N | Kind | Vars | Clauses | 2SAT+DRAT | PHP+VeriPB | Kissat | CaDiCaL |",
+                 "|---|---:|---|---:|---:|---|---|---|---|"]
+          for case in d["cases"]:
+              rs={r["arm"]:r for r in d["rows"] if r["case_id"]==case["id"]}
+              def cell(arm):
+                  r=rs.get(arm)
+                  if not r:return "missing"
+                  return r["status"]+" "+str(round(r["wall_s"]+(r["external_checker_s"] or 0),3))+"s"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  case["id"],case["n"],case["kind"]+
+                  (" diag" if case.get("diagonals",False) else " no-diag"),
+                  case["variables"],case["clauses"],
+                  cell("DRNAS_2SAT"),cell("DRNAS_PHP"),cell("KISSAT"),cell("CADICAL")))
+          lines+=["",f"Independent 2SAT DRAT: {d['independent_2sat_drat']}; "+
+                   f"legacy PHP VeriPB: {d['independent_php_veripb']}; critical: {d['critical']}."]
+          body="\n".join(lines)+"\n";print(body)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(body)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-queens-diagonal2sat-shard-${{ matrix.shard }}
+          retention-days: 45
+          compression-level: 6
+          path: |
+            results/queens-shard-${{ matrix.shard }}/
+            queens-shard-${{ matrix.shard }}.log
+            queen-selftest/
+
+  summary:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-queens-diagonal2sat-shard-*
+          merge-multiple: false
+          path: inputs
+      - name: Verify 12 frozen queen sources, 48 paired trials and standard proof counts
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          sources=[];runs=[]
+          for shard in (0,1):
+              p=pathlib.Path(f"inputs/drnas-queens-diagonal2sat-shard-{shard}/results/queens-shard-{shard}/summary.json")
+              if not p.exists():continue
+              d=json.loads(p.read_text());sources+=d["cases"];runs+=d["rows"]
+          lines=["# DRNAS N-Queens — standard plus diagonal-driven 2SAT UNSAT",
+                 "",f"Preregistered frozen inputs: {len(sources)}/12; serial paired trials: {len(runs)}/48.",
+                 "Not blind competition CNFs. Native DRAT checked independently; reference results raw.",
+                 "", "| N | Kind | Variables | Clauses | DRNAS 2SAT+DRAT | Legacy PHP | Kissat | CaDiCaL |",
+                 "|---:|---|---:|---:|---|---|---|---|"]
+          for c in sorted(sources,key=lambda c:c["id"]):
+              rs={r["arm"]:r for r in runs if r["case_id"]==c["id"]}
+              def cell(a):
+                  r=rs.get(a)
+                  if not r:return "missing"
+                  return r["status"]+" "+str(round(r["wall_s"]+(r["external_checker_s"] or 0),3))+"s"
+              lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                  c["n"],c["kind"]+(" diagonal" if c.get("diagonals",False) else " control"),
+                  c["variables"],c["clauses"],cell("DRNAS_2SAT"),cell("DRNAS_PHP"),
+                  cell("KISSAT"),cell("CADICAL")))
+          proofs=sum(r["verified"] and r["arm"]=="DRNAS_2SAT" for r in runs)
+          bad=[r for r in runs if r["status"].startswith(("CRITICAL","INVALID","EXECUTION_ERROR"))]
+          lines+=["",f"Independent native DRAT proofs: {proofs}. Audit problems: {len(bad)}.",
+                  "Cycle2 diagonal-on UNSAT is additionally confirmed by an independent SCC oracle; controls carry verified concrete SAT assignments."]
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          pathlib.Path("queens-final.md").write_text(msg)
+          if len(sources)!=12 or len(runs)!=48 or proofs<3 or bad:
+              raise SystemExit("Incomplete or unverified queen benchmark")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-queens-diagonal2sat-combined
+          retention-days: 45
+          path: queens-final.md
