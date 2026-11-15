@@ -103,6 +103,11 @@ def parse_cnf(raw):
         raise ValueError("incomplete DIMACS")
     return n, clauses
 
+def canonical_dimacs(n, clauses):
+    """Lossless re-encoding of original logical clauses, omitting SATLIB % trailer."""
+    body = "".join(" ".join(map(str, c)) + " 0\n" for c in clauses)
+    return (f"p cnf {n} {len(clauses)}\n" + body).encode("ascii")
+
 def download(url):
     last = None
     for attempt in range(3):
@@ -122,7 +127,8 @@ def freeze():
     if INPUT.exists():
         raise RuntimeError("input freeze directory exists; do not silently reselect")
     (INPUT / "cnf").mkdir(parents=True)
-    items, archive_log, used = [], [], set()
+    (INPUT / "original").mkdir(parents=True)
+    items, archive_log, used, used_normalized = [], [], set(), set()
     for family, suffix, label in FAMILIES:
         url = BASE + suffix
         blob = download(url)
@@ -165,11 +171,24 @@ def freeze():
                 raise RuntimeError("duplicate SHA across frozen sources")
             used.add(identity)
             ix = len(items)
-            rel = f"cnf/{ix:03d}-{identity[:16]}.cnf"
-            (INPUT / rel).write_bytes(raw)
+            actual_n, original_clauses = parse_cnf(raw)
+            assert actual_n == n and len(original_clauses) == m
+            canonical = canonical_dimacs(n, original_clauses)
+            canonical_sha = sha(canonical)
+            if canonical_sha in used_normalized:
+                raise RuntimeError("duplicate logical DIMACS CNF across frozen sources")
+            used_normalized.add(canonical_sha)
+            rel = f"cnf/{ix:03d}-{canonical_sha[:16]}.cnf"
+            original_rel = f"original/{ix:03d}-{identity[:16]}.cnf"
+            (INPUT / original_rel).write_bytes(raw)
+            (INPUT / rel).write_bytes(canonical)
+            assert parse_cnf(canonical)[1] == original_clauses
             items.append(dict(id=ix, family=family, catalog_label=label,
-                              path=rel, source_member=name, sha256=identity,
-                              vars=n, clauses=m, bytes=len(raw)))
+                              path=rel, original_path=original_rel, source_member=name,
+                              sha256=canonical_sha, original_sha256=identity,
+                              normalization="same ordered source clauses; SATLIB terminal % trailer removed",
+                              vars=n, clauses=m, bytes=len(canonical),
+                              original_bytes=len(raw)))
         emit("CONSTRUCT600_FREEZE_FAMILY", dict(
             family=family, valid_available=len(choices), selected=100,
             archive_sha256=sha(blob)))
@@ -179,6 +198,7 @@ def freeze():
                     retrospective_public_suite=True, blind_holdout=False,
                     cap_s=CAP, shards=SHARDS, arms=ARMS,
                     one_logical_cpu_per_solver=True, original_CNF_only=True,
+                    normalization="original clauses are preserved verbatim as integer sequences; only DIMACS serialization is standardized",
                     seed=20261115, sources=items, archives=archive_log)
     save(INPUT / "manifest.json", manifest)
     emit("CONSTRUCT600_FROZEN", dict(
@@ -204,9 +224,15 @@ def validate_inputs():
         path = INPUT / item["path"]
         if file_sha(path) != item["sha256"]:
             raise RuntimeError("source SHA mismatch: " + str(path))
+        original = INPUT / item["original_path"]
+        if file_sha(original) != item["original_sha256"]:
+            raise RuntimeError("original SATLIB source SHA changed")
         n, clauses = parse_cnf(path.read_bytes())
-        if (n, len(clauses)) != (item["vars"], item["clauses"]):
-            raise RuntimeError("source header changed")
+        original_n, original_clauses = parse_cnf(original.read_bytes())
+        if ((n, len(clauses)) != (item["vars"], item["clauses"]) or
+                original_n != n or original_clauses != clauses or
+                path.read_bytes() != canonical_dimacs(n, original_clauses)):
+            raise RuntimeError("source original/canonical logical clauses differ")
     return manifest
 
 def command(arm, cnf, proof):
@@ -288,7 +314,8 @@ def model_ok(path, stdout):
 
 def trial(source, arm, shard, temp):
     cnf = INPUT / source["path"]
-    if file_sha(cnf) != source["sha256"]:
+    original = INPUT / source["original_path"]
+    if file_sha(cnf) != source["sha256"] or file_sha(original) != source["original_sha256"]:
         raise RuntimeError("source drift")
     folder = temp / f"trial-{source['id']:03d}-{arm}"
     folder.mkdir()
@@ -301,7 +328,7 @@ def trial(source, arm, shard, temp):
     elif p["rc"] == 10:
         if "s SATISFIABLE" not in p["stdout"].splitlines():
             status = "INVALID_STATUS"
-        elif not model_ok(cnf, p["stdout"]):
+        elif not model_ok(original, p["stdout"]):
             status = "INVALID_SAT_MODEL"
         else:
             status, proof_kind = "SAT_VERIFIED", "MODEL"
@@ -347,6 +374,7 @@ def trial(source, arm, shard, temp):
             except ValueError:
                 pass
     return dict(id=source["id"], sha256=source["sha256"],
+                original_sha256=source["original_sha256"],
                 family=source["family"], expected=source["catalog_label"],
                 shard=shard, arm=arm, status=status, accepted=accepted,
                 certificate=proof_kind, method=method,
@@ -405,7 +433,9 @@ def report():
     observed = [(r["id"], r["arm"]) for r in rows]
     if len(observed) != len(set(observed)) or set(observed) != expected:
         raise RuntimeError(f"incomplete/duplicate matrix {len(observed)} / {len(expected)}")
-    if any(r["sha256"] != manifest["sources"][r["id"]]["sha256"] for r in rows):
+    if any((r["sha256"] != manifest["sources"][r["id"]]["sha256"] or
+            r["original_sha256"] != manifest["sources"][r["id"]]["original_sha256"])
+           for r in rows):
         raise RuntimeError("source SHA mismatch during trials")
     totals, by_family = {}, {}
     for arm in ARMS:
@@ -443,9 +473,10 @@ def report():
         caveat="Standalone constructor deliberately never proves UNSAT; compare SAT-only separately.")
     save(OUT / "summary.json", summary)
     lines = ["# DRNAS SAT reconstruction: SATLIB REAL600", "",
-        "600 public, unmodified CNFs; 100 per family; 400 catalog SAT / 200 catalog UNSAT.",
+        "600 public SATLIB CNFs with identical original ordered clauses; 100 per family; 400 catalog SAT / 200 catalog UNSAT.",
         "Retrospective public suite, NOT a blind benchmark. One logical CPU per solver.",
-        "Every SAT model independently checked on the original DIMACS.",
+        "Original SATLIB file bytes retained separately. The only transformation is DIMACS serialization removing terminal % postambles.", 
+        "Every SAT model independently checked on the raw original SATLIB clauses.",
         "Only independently checked DRAT/FRAT UNSAT is scored as verified.",
         "E2E cap 2 s, PAR2 failure penalty 4 s. One attempt per source/arm.",
         "", "| Solver | Verified SAT | Verified UNSAT | PAR2 all (s) | PAR2 SAT-only (s) |",
