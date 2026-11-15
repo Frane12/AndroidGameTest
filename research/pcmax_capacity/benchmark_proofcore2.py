@@ -134,6 +134,7 @@ def main():
                                             "--proof",proof_file],
                                             timeout_s=args.solver_cap+2)
                 row.update(core_cdcl_status=rc,core_cdcl_wall_s=elapsed)
+                assert rc!=10,("NATIVE_CDCL_FALSE_SAT_ON_SOURCE_PROVEN_UNSAT_CORE",name)
                 if rc==20 and proof_file.is_file() and proof_file.stat().st_size>0:
                     good,detail=checked_standard(src,proof_file,folder/"proof.lrat",
                          args.drat_trim,args.lrat_check,args.checker_cap)
@@ -143,14 +144,22 @@ def main():
                     row["proof_check_diagnostic"]=detail[:240]
                     if good:
                         # Independent strict LRAT source check, no producer trust.
-                        from strict_rup_lrat import check as strict_check
-                        strict_check(raw,(folder/"proof.lrat").read_bytes())
-                        row["strict_lrat_verified"]=True
-                        for f in (proof_file,folder/"proof.lrat"):
-                            row[f.name+"_sha256"]=hashlib.sha256(f.read_bytes()).hexdigest()
-                            with f.open("rb") as fd, gzip.open(str(f)+".gz","wb",compresslevel=9) as gz:
-                                for chunk in iter(lambda:fd.read(1024*1024),b""):gz.write(chunk)
-                            f.unlink()
+                        strict_cmd=[sys.executable,ROOT/"research/pcmax_capacity/strict_rup_lrat.py",
+                                    src,folder/"proof.lrat"]
+                        strict_rc,strict_out,strict_err,strict_s=bounded(strict_cmd,
+                             timeout_s=args.checker_cap,size_mb=48)
+                        row["strict_lrat_verified"]=strict_rc==0
+                        row["strict_check_s"]=strict_s
+                        if strict_rc!=0:
+                            row["standard_lrat_verified"]=False
+                            row["standard_drat_verified"]=False
+                            row["reason"]="strict_RUP_LRAT_rejected_or_timeout"
+                        if row["standard_lrat_verified"]:
+                            for f in (proof_file,folder/"proof.lrat"):
+                                row[f.name+"_sha256"]=hashlib.sha256(f.read_bytes()).hexdigest()
+                                with f.open("rb") as fd, gzip.open(str(f)+".gz","wb",compresslevel=9) as gz:
+                                    for chunk in iter(lambda:fd.read(1024*1024),b""):gz.write(chunk)
+                                f.unlink()
                 else:
                     row["reason"]="core_cdcl_unfinished"
                 if proof_file.exists():proof_file.unlink() # no unverified massive files
@@ -166,6 +175,14 @@ def main():
             ("id","name","label_from_manifest","prior_structural","new_source_certificate",
              "source_certified","core_clauses","core_cdcl_status","standard_lrat_verified","reason")},
             sort_keys=True),flush=True)
+    # Forged DRAT on SAT must never be accepted by the external checkers.
+    sat_control=args.output/"sat_negative_control.cnf"
+    sat_control.write_text("p cnf 1 1\n1 0\n")
+    invalid=args.output/"forged_empty.drat"
+    invalid.write_text("0\n")
+    fake_ok,why=checked_standard(sat_control,invalid,args.output/"forged.lrat",
+                                 args.drat_trim,args.lrat_check,3)
+    assert not fake_ok,("FALSE_UNSAT_FORGED_DRAT_ACCEPTED",why)
     counts={"sources":len(output),"catalog_unsat":sum(x["label_from_manifest"]=="UNSAT" for x in output),
             "catalog_sat":sum(x["label_from_manifest"]=="SAT" for x in output),
             "baseline_structural":sum(x["prior_structural"] for x in output),
