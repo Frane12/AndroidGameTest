@@ -1,0 +1,168 @@
+name: DRNAS REAL2025 original blind-source unified five-arm verified PAR2
+on:
+  push:
+    branches: [experiment/drnas-sat-real2025-blind1-20261115]
+    paths:
+      - research/sat_real2025/benchmark.py
+      - .github/workflows/drnas-real2025-evaluate.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-real2025-verified-eval-20261115
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - name: Verify immutable source manifest and compiler readiness
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/sources/real2025-originals-frozen.tgz
+          sha256sum sat_real2025_inputs/manifest.json
+          python3 -m py_compile research/sat_real2025/benchmark.py
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          p=pathlib.Path('sat_real2025_inputs/manifest.json')
+          j=json.loads(p.read_text())
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='47cc882a3893b2ecaf543341040d41c417eb13d8eb940198d37143715f65db4e'
+          assert j['ready_count']==19
+          for r in j['ready_sources']:
+              x=pathlib.Path(r['path'])
+              assert hashlib.sha256(x.read_bytes()).hexdigest()==r['sha256']
+          print('REAL2025_PREFLIGHT_PASS',len(j['ready_sources']))
+          PY
+  paired:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43368689724
+          repository: Frane12/AndroidGameTest
+          name: drnas-x5-frozen-binaries
+          github-token: ${{ github.token }}
+          path: frozen/cms
+      - name: Restore original source, trusted reference binaries and proof checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcryptominisat5-5.11t64=5.11.15+dfsg1-1.1build1 libboost-program-options1.83.0
+          tar -xzf frozen/sources/real2025-originals-frozen.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          cp frozen/cms/cms frozen/cms/frat-rs build/
+          mkdir -p build/cms-libs/usr/lib/x86_64-linux-gnu
+          cp -L /usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/
+          chmod +x build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+          sha256sum build/kissat build/cadical build/cms build/drat-trim build/frat-rs
+          LD_LIBRARY_PATH=build/cms-libs/usr/lib/x86_64-linux-gnu build/cms --version
+      - name: Compile pinned X59 native OFF and math-construct-ON in same executable
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum build/drnas-sat-native-x59 src/drnas_sat_construct.hpp
+      - name: Paired verified original SAT2025 trials, one logical CPU per solver
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            PYTHONHASHSEED=0 python3 -u research/sat_real2025/benchmark.py \
+              shard --index ${{ matrix.shard }} | tee real2025_shard.log
+          grep -q '^REAL2025_SHARD ' real2025_shard.log
+      - name: Archive per-source hashes, independent proofs and E2E timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real2025-shard-${{ matrix.shard }}
+          path: |
+            sat_real2025_results/shard-${{ matrix.shard }}/
+            real2025_shard.log
+          if-no-files-found: warn
+          retention-days: 45
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: real2025-shard-*
+          path: downloaded
+      - name: Enforce complete 190-row verified and source-consistent matrix
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/sources/real2025-originals-frozen.tgz
+          mkdir -p sat_real2025_results
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(4):
+              hits=list((Path('downloaded')/f'real2025-shard-{i}').rglob('trials.jsonl'))
+              assert len(hits)==1,(i,hits)
+              dst=Path('sat_real2025_results')/f'shard-{i}'
+              dst.mkdir(parents=True)
+              shutil.copy2(hits[0],dst/'trials.jsonl')
+              metas=list((Path('downloaded')/f'real2025-shard-{i}').rglob('meta.json'))
+              assert len(metas)==1,(i,metas)
+              shutil.copy2(metas[0],dst/'meta.json')
+          PY
+          python3 -u research/sat_real2025/benchmark.py report | tee real2025_final.log
+          grep -q '^REAL2025_FINAL ' real2025_final.log
+          cat real2025_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real2025-final-evidence
+          path: |
+            sat_real2025_inputs/manifest.json
+            sat_real2025_results/final.json
+            sat_real2025_results/trials.jsonl
+            real2025_final.log
+          if-no-files-found: warn
+          retention-days: 60
