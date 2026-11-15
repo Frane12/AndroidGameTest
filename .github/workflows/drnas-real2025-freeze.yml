@@ -1,0 +1,60 @@
+name: DRNAS REAL2025 first-time source-only freeze
+on:
+  push:
+    branches: [experiment/drnas-sat-real2025-blind1-20261115]
+    paths:
+      - research/sat_real2025/freeze.py
+      - .github/workflows/drnas-real2025-freeze.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-real2025-source-freeze
+  cancel-in-progress: false
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43613581688
+          repository: Frane12/AndroidGameTest
+          name: cf7-source-manifest
+          github-token: ${{ github.token }}
+          path: frozen/cf7
+      - name: Restore prior frozen source hashes and inspect script
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/cf7/cf7_inputs.tgz
+          test -f cf7/manifest.json
+          python3 -m py_compile research/sat_real2025/freeze.py
+          sha256sum research/sat_real2025/freeze.py cf7/manifest.json
+      - name: Freeze official original 2025 SHA without invoking any SAT solver
+        run: |
+          set -euo pipefail
+          python3 -u research/sat_real2025/freeze.py | tee real2025_source.log
+          grep -q '^REAL2025_FREEZE ' real2025_source.log
+          tar -czf real2025-originals-frozen.tgz sat_real2025_inputs
+          sha256sum real2025-originals-frozen.tgz sat_real2025_inputs/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real2025-source-freeze-audit
+          path: |
+            sat_real2025_inputs/manifest.json
+            sat_real2025_inputs/source.sha256
+            real2025_source.log
+          if-no-files-found: warn
+          retention-days: 60
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: real2025-originals-frozen
+          path: real2025-originals-frozen.tgz
+          if-no-files-found: error
+          retention-days: 60
