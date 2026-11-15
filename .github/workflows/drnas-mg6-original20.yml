@@ -1,0 +1,56 @@
+name: DRNAS MG6 original20 proof-first coverage audit
+on:
+  push:
+    branches: [experiment/drnas-mathguard6-general-capacity-20261115]
+    paths:
+      - research/mg6_real20_pilot.py
+      - .github/workflows/drnas-mg6-original20.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-mg6-real20-20261115
+  cancel-in-progress: false
+jobs:
+  original20:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent VeriPB
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Source-frozen original20 audit, single logical CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/mg6_real20_pilot.py
+      - name: Show honest outcomes
+        if: always()
+        run: |
+          if test -s results/mg6_real20/totals.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/mg6_real20/totals.json").read_text())
+          msg=f"# MG6 retrospective original20\n\nChecked: {d['completed']}\n\nVeriPB-accepted UNSAT: {d['verified']}\n\nUNKNOWN: {d['unknown']}\n\nErrors: {len(d['failures'])}\n\nThis is coverage, NOT a blind benchmark or a verified PAR2 comparison.\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-mg6-original20-veripb-audit
+          retention-days: 30
+          compression-level: 6
+          path: |
+            results/mg6_real20/*.json
+            results/mg6_real20/*.veripb.log
+            research/mg6_real20_pilot.py
