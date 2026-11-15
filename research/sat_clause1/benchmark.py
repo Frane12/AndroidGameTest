@@ -12,6 +12,7 @@ CAP=1.0
 ARMS={"OFF":[], "CLAUSE_SCORE":["--sat-clause1-score"],
       "CLAUSE_PROBE":["--sat-clause1-probe"]}
 SEED=20261115
+TIER='small'
 
 def planted(seed, n=44, ratio=4.1):
     r=random.Random(seed); witness=[bool(r.randrange(2)) for _ in range(n)]
@@ -76,6 +77,16 @@ def matching(seed, resources=11, jobs=9):
 
 def make_case(family,index):
     seed=SEED+1009*index+{"planted":17,"color":29,"parity":41,"matching":53}[family]
+    if TIER=="medium":
+        seed+=100000000
+        if family=="planted":return planted(seed,n=100+20*(index%3),ratio=4.12)
+        if family=="color":return colorable(seed,vertices=22+4*(index%3))
+        if family=="parity":
+            n=38+4*(index%3)
+            return parity(seed,n=n,eqs=n+6)
+        if family=="matching":
+            n=21+3*(index%3)
+            return matching(seed,resources=n,jobs=n-3)
     return {"planted":planted,"color":colorable,"parity":parity,
             "matching":matching}[family](seed)
 
@@ -133,13 +144,17 @@ def trial(source,arm,rep,cnf):
                 arm=arm,rep=rep,status=status,accepted=accepted,
                 e2e_s=elapsed,PAR2_s=elapsed if accepted else 2*CAP,**debug)
 
-def main():
+def run_tier(tier):
+    global CAP,TIER
+    TIER=tier
+    CAP=1.0 if tier=='small' else 2.0
     if not BIN.is_file():raise RuntimeError(f"missing {BIN}")
-    OUT.mkdir(parents=True,exist_ok=True)
+    out=OUT/tier
+    out.mkdir(parents=True,exist_ok=True)
     # Separate source identities; no outcomes or labels feed any policy.
     sources=[]
     for family in ("planted","color","parity","matching"):
-        for index in range(12):
+        for index in range(12 if tier=='small' else 8):
             n,clauses=make_case(family,index)
             text=cnf_text(n,clauses)
             sid=f"{family}-{index:02d}"
@@ -173,16 +188,18 @@ def main():
                            flips=sum(r.get("phase_flips",0) for r in xs),
                            probes=sum(r.get("probe_pairs",0) for r in xs),
                            failed_literals=sum(r.get("failed_literals",0) for r in xs))
-        print("SAT_CLAUSE1_SUMMARY "+json.dumps(dict(family=family,arms=sums),sort_keys=True),flush=True)
+        print("SAT_CLAUSE1_SUMMARY "+json.dumps(dict(tier=tier,family=family,arms=sums),sort_keys=True),flush=True)
     manifest=[{k:s[k] for k in ("id","family","n","sha256")} for s in sources]
-    (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
-    (OUT/"trials.json").write_text(json.dumps(saved,indent=2,sort_keys=True)+"\n")
-    (OUT/"protocol.json").write_text(json.dumps(dict(cap_s=CAP,repetitions=2,
+    (out/"manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
+    (out/"trials.json").write_text(json.dumps(saved,indent=2,sort_keys=True)+"\n")
+    (out/"protocol.json").write_text(json.dumps(dict(tier=tier,cap_s=CAP,repetitions=2,
                cpu=cpu,source_count=len(sources),seed=SEED,arms=ARMS,
                git_sha=os.environ.get("GITHUB_SHA"),elapsed_s=time.perf_counter()-started,
                note="synthetic SAT-only pilot; no generalization, no independent UNSAT proof"),
                indent=2,sort_keys=True)+"\n")
     print("SAT_CLAUSE1_DONE "+json.dumps(dict(sources=len(sources),
-         trials=len(saved),artifact=str(OUT),elapsed_s=round(time.perf_counter()-started,3))),flush=True)
+         tier=tier,trials=len(saved),artifact=str(out),elapsed_s=round(time.perf_counter()-started,3))),flush=True)
 
-if __name__=="__main__":main()
+if __name__=="__main__":
+    for tier in ("small","medium"):
+        run_tier(tier)
