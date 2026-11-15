@@ -29,7 +29,11 @@ def execute(exe,n,clauses,tmp,key):
          capture_output=True,text=True,timeout=15)
     assert r.returncode in (0,20),(key,r.stdout,r.stderr)
     if r.returncode==20:
-        rup_check(clauses,proof.read_text())
+        try:
+            rup_check(clauses,proof.read_text())
+        except AssertionError:
+            print(f"RUP_DIAGNOSTIC key={key} n={n} clauses={clauses} proof={proof.read_text()!r} trueSAT={sat(n,clauses)}",flush=True)
+            raise
     else:
         assert not proof.exists(),key
     return r.returncode==20
