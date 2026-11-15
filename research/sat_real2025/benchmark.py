@@ -18,7 +18,7 @@ REF_HASH={
  "build/cadical":"4e453f276393e9689fe1484fa78c2b32a02e7bbd04c02c4b001f960bdebb3f2e",
  "build/cms":"00db7e59c634842acbfc6676bf0f5d30a3fdabbd0ec2fa17b20bb0bf683c7207",
  "build/drat-trim":"92f0aa9575ed519d66a99b8b1b3dde6ece4618ae4c202a3a4b200265dda0aa7a",
- "build/frat-rs":"ba6527c4c64ff35d8905ffc3ccc9dead2160eb117e94c27ee06ed94c7db892c"
+ "build/frat-rs":"ba6527c4c64ff35d8905ffc3ccc9dead2160eb117e94f027ee06ed94c7db892c"
 }
 def sha(path):
     h=hashlib.sha256()
