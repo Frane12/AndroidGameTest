@@ -105,3 +105,25 @@ Run: https://github.com/Frane12/AndroidGameTest/actions/runs/43719128700
 The m14 case is labelled `UNKNOWN` in `sources20.json` (its name includes
 UNSAT). The external VeriPB acceptance is evidence of UNSAT for the exact
 SHA-identified CNF; catalogue metadata must not be used as an oracle.
+
+### Complete retrospective original20 verification (15 Nov 2026)
+
+Green reproducible run: https://github.com/Frane12/AndroidGameTest/actions/runs/43719601339
+
+- Source CNFs checked by SHA-256: **20/20**.
+- Native and independently source-checked structural UNSAT: **11/20**.
+- Exact original CNFs independently accepted by VeriPB 3.0.2: **11/11** structural UNSAT cases.
+- SAT-labelled controls safely left UNKNOWN (no UNSAT certificate): **9/9**.
+- Rejected standard proofs: **0**; benchmark errors: **0**.
+- Proof sizes across the eleven cases: **181,816 to 2,586,374 bytes**.
+- Measured proof production times: **0.05013 to 0.49727 s** on this runner.
+- Measured independent checker times: **0.01192 to 0.13845 s** on this runner.
+
+The verified PCMAX44 proof is **181,816 bytes** vs the earlier
+**14,595,317-byte** RUP + cover-lattice proof accepted in
+https://github.com/Frane12/AndroidGameTest/actions/runs/43710302901
+(approximately 80.3x smaller). The output speed is not a paired SAT solver
+benchmark; this size improvement is a proof-generation and checking result.
+
+This is full retrospective coverage of the already known PCMAX20 dataset.
+Do not claim broad performance improvements or fresh blind generalization from it.
