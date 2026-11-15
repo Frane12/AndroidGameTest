@@ -94,3 +94,60 @@ The built-in category assumes one-hot source groups in contiguous
 three-layer variable order. Arbitrarily renamed originals may require
 V2's separate source-role canonicalization. This version is not a
 complete argumentation reasoner or an exact general SAT algorithm.
+
+
+## Retrospective original SAT2025 category benchmark
+
+Completed run:
+https://github.com/Frane12/AndroidGameTest/actions/runs/43718859435
+
+This evaluation reuses 11 previously seen original GBD argumentation CNFs,
+which were frozen before V2 but inspected for V3 and V4 development.
+Consequently it is a retrospective engineering comparison, not blind
+verification of generalized ARG3 success.
+
+Arms: same native X59 OFF; X59 with root-partial V3 150ms;
+X59 with three-valued clause-guided V4 400ms; combined V4 then V3;
+and pinned CaDiCaL. Exactly one logical CPU per solver, 8s E2E
+timeout including independent original SAT-model and UNSAT DRAT checks.
+11 source CNFs x 2 repeats x 5 arms = 110 attempts. Unverified and
+timed-out results cost 16s PAR2.
+
+| Arm | Verified SAT /22 | Verified UNSAT /22 | PAR2 total |
+| --- | ---: | ---: | ---: |
+| X59 OFF | 0 | 0 | 352.0 s |
+| X59 V3 | 0 | 0 | 352.0 s |
+| X59 V4 | 0 | 0 | 352.0 s |
+| X59 V4+V3 | 0 | 0 | 352.0 s |
+| CaDiCaL | 0 | 0 | 352.0 s |
+
+There were no accepted wrong answers. V3 alone returned UNKNOWN in one
+attempt and timeout in 21; other arms timed out on all 22 attempts.
+Benchmark totals are insufficient to infer equal running times among
+the timed-out solvers, or determine their true SAT/UNSAT status.
+When a solver is killed at the cap its final per-module stats may be
+missing; the separate source smoke proves V4 did recognize 4 previously
+inspected originals.
+
+## Clause-level diagnosis: two remaining global constraints
+
+Independent inspection of the exact frozen original CNF bytes and the
+all-UNDEC-where-free assignment after source-sound unit propagation
+found that three development sources have exactly TWO unsatisfied
+wide positive clauses. Their widths:
+
+- 00d5a43a...: 743 positive literals each;
+- aa558557...: 550 positive literals each;
+- c0074020...: 575 positive literals each.
+
+The two clauses require at least one additional IN and one additional
+OUT label among previously free arguments. Switching one state by
+itself can violate multiple binary implication clauses, making plain
+min-unsatisfied greedy repair insufficient. This diagnosis does not
+prove that a satisfying assignment exists, nor that the instances
+are UNSAT. A directed propagation-aware *coordinated* state change
+rather than one-at-a-time state flips is the next plausible
+hypothesis, which must be tested on new original sources after
+further development.
+
+No promotion or general-world performance claim is justified.
