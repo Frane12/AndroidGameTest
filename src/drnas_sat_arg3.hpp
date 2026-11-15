@@ -48,7 +48,7 @@ struct Mask {
     }
 };
 struct Stats {
-    bool recognized=false,found=false;
+    bool recognized=false,found=false,normalized=false;
     int groups=0,edges=0,blockers=0,iterations=0;
     int stable_candidates=0,blocked_candidates=0,best_undominated=-1;
     double wall_ms=0.0;
@@ -238,4 +238,99 @@ inline Result construct(int vars,const CNF& clauses,double ms_budget=50.0){
     }
     return done();
 }
+
+// Renaming-invariant wrapper: recognize exactly-one source triples and infer
+// IN/OUT/UNDEC roles from mixed-binary signed-literal incidences.
+// This does not depend on source variable IDs, file names or source SHA.
+// Full assignment is independently verified on the UNCHANGED original CNF.
+inline Result construct_robust(int vars,const CNF& clauses,double ms_budget=50.0){
+    const auto started=Clock::now();
+    auto spent=[&](){return std::chrono::duration<double,std::milli>(
+        Clock::now()-started).count();};
+    Result direct=construct(vars,clauses,ms_budget);
+    if(direct.sat()||direct.stats.recognized||spent()>=ms_budget)
+        return direct;
+    if(vars<24||vars>3*MAX_GROUPS||vars%3!=0||
+       clauses.size()>110000)return direct;
+    const int n=vars/3;
+    std::vector<std::array<int,3>> groups;groups.reserve(n);
+    std::vector<int> owner(vars,-1);
+    for(size_t ci=0;ci<clauses.size();++ci){
+        if((ci&2047U)==0 && spent()>=ms_budget)return direct;
+        const auto& c=clauses[ci];
+        if(c.size()!=3||!std::all_of(c.begin(),c.end(),
+                                    [](int l){return l>0;}))continue;
+        if(static_cast<int>(groups.size())>=n)return direct;
+        std::array<int,3> triple{};
+        for(int j=0;j<3;++j){
+            const int v=c[j]-1;
+            if(v<0||v>=vars||owner[v]>=0)return direct;
+            owner[v]=static_cast<int>(groups.size());triple[j]=v;
+        }
+        groups.push_back(triple);
+    }
+    if(static_cast<int>(groups.size())!=n)return direct;
+    for(int v:owner)if(v<0)return direct;
+    std::vector<int> mixed_negative(static_cast<size_t>(vars),0);
+    std::vector<int> mixed_positive(static_cast<size_t>(vars),0);
+    for(const auto& c:clauses){
+        if(c.size()!=2||c[0]*static_cast<int64_t>(c[1])>=0)continue;
+        const int neg=(c[0]<0?-c[0]:-c[1])-1;
+        const int pos=(c[0]>0?c[0]:c[1])-1;
+        if(neg<0||neg>=vars||pos<0||pos>=vars)return direct;
+        ++mixed_negative[neg];++mixed_positive[pos];
+    }
+    // canon[original_variable] is the zero-based index into the
+    // normalized [IN_0..IN_n-1, OUT_0.., UNDEC_0..] layout.
+    std::vector<int> canon(static_cast<size_t>(vars),-1);
+    for(int group=0;group<n;++group){
+        int in=-1,out=-1,undec=-1;
+        for(int var:groups[group]){
+            const int a=mixed_negative[var],b=mixed_positive[var];
+            if(a>0&&b==0){
+                if(in>=0)return direct;in=var;
+            }else if(b>0&&a==0){
+                if(out>=0)return direct;out=var;
+            }else if(a==0&&b==0){
+                if(undec>=0)return direct;undec=var;
+            }else return direct;
+        }
+        if(in<0||out<0||undec<0)return direct;
+        canon[in]=group;canon[out]=n+group;canon[undec]=2*n+group;
+    }
+    if(spent()>=ms_budget)return direct;
+    CNF transformed;
+    transformed.reserve(clauses.size());
+    for(size_t ci=0;ci<clauses.size();++ci){
+        if((ci&2047U)==0 && spent()>=ms_budget)return direct;
+        std::vector<int> row;row.reserve(clauses[ci].size());
+        for(int l:clauses[ci]){
+            const int v=std::abs(l)-1;
+            if(v<0||v>=vars||canon[v]<0)return direct;
+            row.push_back((l>0?1:-1)*(canon[v]+1));
+        }
+        transformed.push_back(std::move(row));
+    }
+    const double remaining=ms_budget-spent();
+    if(remaining<=0)return direct;
+    Result normalized=construct(vars,transformed,remaining);
+    normalized.stats.normalized=true;
+    if(!normalized.sat()){
+        normalized.stats.wall_ms=spent();
+        return normalized;
+    }
+    std::vector<int8_t> model(static_cast<size_t>(vars),-1);
+    for(int v=0;v<vars;++v)model[v]=normalized.model[canon[v]];
+    if(!verify(vars,clauses,model)){
+        Result invalid;
+        invalid.stats=normalized.stats;
+        invalid.stats.found=false;
+        invalid.stats.wall_ms=spent();
+        return invalid;
+    }
+    normalized.model=std::move(model);
+    normalized.stats.wall_ms=spent();
+    return normalized;
+}
+
 } // namespace drnas_arg3
