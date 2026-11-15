@@ -1,0 +1,72 @@
+name: DRNAS REAL26 original CNF structure autopsy no solver runs
+on:
+  push:
+    branches: [experiment/drnas-real26-structure-autopsy-20261115]
+    paths:
+      - .github/workflows/drnas-real26-structure-autopsy.yml
+      - research/pcmax_capacity/structural_autopsy_real26.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: drnas-real26-structure-autopsy-20261115
+  cancel-in-progress: false
+
+jobs:
+  characterize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43729190294
+          pattern: real26-shard-*
+          path: archived-real26
+          merge-multiple: false
+          github-token: ${{ github.token }}
+      - name: Inspect archived original formula sources and validate exact SHA-256
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_capacity/structural_autopsy_real26.py
+          find archived-real26 -name '*.cnf' | head -25
+          python3 -u research/pcmax_capacity/structural_autopsy_real26.py archived-real26 results/real26-autopsy |
+            tee autopsy.log
+      - name: Print input-structure findings
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path('results/real26-autopsy/results.json')
+          if not p.exists():raise SystemExit("No structural output produced")
+          rows=json.loads(p.read_text())
+          lines=["# Original SAT2026 CNF: input-only structural autopsy",
+                 "", "Analyzed unchanged source bytes, not SAT/UNSAT classification; no CDCL.",
+                 "Exact ALO group and complete pairwise AMO detection; heuristic mutex cliques are descriptive only.",
+                 "", "| File (prefix) | Family | Vars | Clauses | Binary mutex | Positive ALO | Exact-one groups | Largest example clique | Status |",
+                 "|---|---|---:|---:|---:|---:|---:|---:|---|"]
+          for x in rows:
+              lines.append("| {md5} | {family} | {variables} | {clauses} | {pairs} | {alo} | {eo} | {clique} | {status} |".format(
+                  md5=x["md5"][:12]+"…",family=x["family"],variables=x.get("variables","—"),
+                  clauses=x.get("clauses","—"),pairs=x.get("neg_binary_mutex_pairs","—"),
+                  alo=x.get("n_all_positive_alo_candidates","—"),
+                  eo=x.get("fully_pairwise_amo_supported_alo_count","—"),
+                  clique=x.get("mutex_clique_largest","—"),status=x["status"]))
+          s='\n'.join(lines)+'\n'
+          print(s)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(s)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-real26-original-cnf-structural-autopsy
+          retention-days: 45
+          path: |
+            results/real26-autopsy/
+            autopsy.log
+            research/pcmax_capacity/structural_autopsy_real26.py
