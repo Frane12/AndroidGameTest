@@ -81,6 +81,7 @@ def run(path,mode,limit=2):
 def main():
     assert X59.exists() and NATIVE.exists()
     seen,counts=0,{}
+    legacy_solved=0
     for connected in (False,True):
         for seed in range(24):
             n,cs=fixture(10000+seed,connected)
@@ -101,8 +102,10 @@ def main():
                 # Global legacy constructor was not designed for mixed forms.
                 legacy=subprocess.run([str(NATIVE),str(path),"--max-ms","15"],
                                       capture_output=True,text=True,timeout=1)
-                if not connected:
-                    assert legacy.returncode==0,legacy.stdout
+                assert legacy.returncode in (0,10),legacy.stderr
+                if legacy.returncode==10:
+                    assert model(n,cs,legacy.stdout),("invalid legacy model",seed)
+                    legacy_solved+=1
             seen+=1
             counts["CONNECTED" if connected else "CLOSED_COMPONENTS"]=counts.get(
                 "CONNECTED" if connected else "CLOSED_COMPONENTS",0)+1
@@ -117,7 +120,8 @@ def main():
         counts["UNSAT_NEGATIVE"]=counts.get("UNSAT_NEGATIVE",0)+1
     print("LOCAL_HYBRID_SELFTEST "+json.dumps(
         dict(cases=seen+8,solver_trials=seen*3+8*3,
-             counts=counts,violations=0,standalone_legacy_unknown=24)),flush=True)
+             counts=counts,violations=0,standalone_legacy_sat=legacy_solved,
+             standalone_legacy_unknown=48-legacy_solved)),flush=True)
 
 if __name__=="__main__":
     main()
