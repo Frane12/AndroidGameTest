@@ -84,14 +84,29 @@ def main():
         run_one(t,"xor3_sat",xor(3,1),3,10)
         run_one(t,"two_sat_fallback",[[1,2],[-1,3]],3,10)
         run_one(t,"cdcl_contradiction",[[1],[-1]],1,20,math5=0)
-        # Excluding a certified MATH5 guard from DRAT mode is essential:
-        # otherwise a custom JSON proof could be misrepresented as DRAT.
+        # If MATH5 proves UNSAT it writes ONLY a custom JSON certificate.
+        # An optional --proof file must remain empty; never forge DRAT.
         cnf=t/"eo_odd_unsat.cnf"
+        proof=t/"x.drat"; cert=t/"x.json"
         p=subprocess.run([str(BINARY),str(cnf),"--mode","core",
-                          "--math5-ms","100","--math5-certificate",str(t/"x.json"),
-                          "--proof",str(t/"x.drat")],
+                          "--math5-ms","100","--math5-certificate",str(cert),
+                          "--proof",str(proof)],
                          capture_output=True,text=True,timeout=5)
-        assert p.returncode!=0 and "not DRAT/LRAT" in p.stderr
+        assert p.returncode==20,(p.returncode,p.stderr[-500:])
+        assert cert.exists() and cert.stat().st_size>0
+        assert not proof.exists() or proof.stat().st_size==0,"MATH5 forged DRAT"
+        chk=subprocess.run([sys.executable,str(CHECKER),str(cnf),str(cert)],
+                           capture_output=True,text=True,timeout=5)
+        assert chk.returncode==0,chk.stdout
+        # CDCL fallback remains permitted to emit standard proof under the
+        # same command line when MATH5 is ineligible.
+        cnf2=t/"cdcl_contradiction.cnf"; proof2=t/"fallback.drat"; cert2=t/"fallback.json"
+        p2=subprocess.run([str(BINARY),str(cnf2),"--mode","core",
+                           "--math5-ms","100","--math5-certificate",str(cert2),
+                           "--proof",str(proof2)],capture_output=True,text=True,timeout=5)
+        assert p2.returncode==20,(p2.returncode,p2.stderr[-500:])
+        assert proof2.is_file() and proof2.stat().st_size>0
+        assert not cert2.exists(),"fallback wrote custom UNSAT proof"
     print("UNIFIED_MATH5_PREFLIGHT_PASS",flush=True)
 
 if __name__=="__main__":main()
