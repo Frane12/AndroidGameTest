@@ -1,0 +1,66 @@
+name: DRNAS ARG3-V3 root-unit incomplete triple source certified smoke
+on:
+  push:
+    branches: [experiment/drnas-arg3-rootpartial-v3-20261115]
+    paths:
+      - src/drnas_sat_arg3.hpp
+      - src/drnas_sat_arg3_v3.hpp
+      - src/drnas_x59.cpp
+      - research/arg3_v3/**
+      - .github/workflows/drnas-arg3-v3-smoke.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-arg3-rootpartial-v3-smoke-20261115
+  cancel-in-progress: false
+jobs:
+  native_source_checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43714913984
+          repository: Frane12/AndroidGameTest
+          name: arg3-realarg-frozen-originals
+          github-token: ${{ github.token }}
+          path: frozen/argumentation
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/2025
+      - name: Restore exact frozen original CNFs with no substitutions
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/argumentation/arg3-realarg-frozen.tgz
+          tar -xzf frozen/2025/real2025-originals-frozen.tgz
+          sha256sum arg3_realarg_inputs/manifest.json sat_real2025_inputs/manifest.json
+          python3 -m py_compile research/arg3_v3/smoke.py
+      - name: Compile single native X59 binary with V3 OFF by default
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG -Wall -Wextra \
+            src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum src/drnas_sat_arg3_v3.hpp src/drnas_x59.cpp build/drnas-sat-native-x59
+      - name: Source-backed root propagation and partial triple models, all SAT checked
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            python3 -u research/arg3_v3/smoke.py | tee arg3_v3_smoke.log
+          grep -q '^ARG3_V3_SOURCE_SMOKE ' arg3_v3_smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arg3-v3-source-smoke
+          path: arg3_v3_smoke.log
+          if-no-files-found: warn
+          retention-days: 45
