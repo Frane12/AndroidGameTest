@@ -84,7 +84,7 @@ def main():
         counts[label]=counts.get(label,0)+1
     # Source-disjoint matching SAT positives and Hall negatives.
     for i in range(35):
-        n,cs=matching_fixture(27000+i,resources=7+(i%6),jobs=4+(i%5))
+        n,cs=matching_fixture(27000+i,resources=7+(i%6),jobs=min(4+(i%5),6+(i%6)))
         assert one(n,cs,10)==10
         counts["MATCH_SAT"] = counts.get("MATCH_SAT",0)+1
     for i in range(25):
