@@ -27,6 +27,12 @@ def run(src,binary,drat_trim,lrat_check,out,native_ms=1100,standard_s=3.0,
     src=Path(src).resolve()
     out=Path(out)
     out.mkdir(parents=True,exist_ok=False)
+    pinned=False
+    if hasattr(os,"sched_setaffinity"):
+        cpu=min(os.sched_getaffinity(0))
+        os.sched_setaffinity(0,{cpu})
+        pinned=len(os.sched_getaffinity(0))==1
+        assert pinned, "single CPU affinity not enforced"
     native_dir=out/"discovery"
     started=time.perf_counter()
     # drat-trim is used as a checker ONLY, not to find a SAT/UNSAT result.
@@ -41,7 +47,7 @@ def run(src,binary,drat_trim,lrat_check,out,native_ms=1100,standard_s=3.0,
         "drat_verified":False,"lrat_verified":False,
         "drnas_standalone_generated":False,"proof_steps":0,
         "proof_generation_s":0.0,"original_cnf_check":True,
-        "no_sat_backend_invoked":True,"single_logical_cpu":True,
+        "no_sat_backend_invoked":True,"single_logical_cpu":pinned,
     }
     if not discovery["structural_verified"]:
         result["status"]="UNKNOWN"
