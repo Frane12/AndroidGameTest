@@ -1,0 +1,73 @@
+name: DRNAS CDCL299 diagnostic 13 arms original SAT2025 model check
+on:
+  push:
+    branches: [experiment/drnas-cdcl-real2025-299-diag1-20261115]
+    paths:
+      - research/cdcl299/diagnose.py
+      - .github/workflows/drnas-cdcl299-diagnostic.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-cdcl299-diagnostic
+  cancel-in-progress: false
+jobs:
+  diagnosis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43710031198
+          repository: Frane12/AndroidGameTest
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/sources
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43664639093
+          repository: Frane12/AndroidGameTest
+          name: math5-blind30-frozen
+          github-token: ${{ github.token }}
+          path: frozen/math5
+      - name: Restore and verify exact pinned source
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/sources/real2025-originals-frozen.tgz
+          tar -xzf frozen/math5/math5-blind-frozen.tgz
+          sha256sum sat_real2025_inputs/manifest.json build/cadical
+          python3 -m py_compile research/cdcl299/diagnose.py
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          j=json.loads(pathlib.Path("sat_real2025_inputs/manifest.json").read_text())
+          r=next(r for r in j["ready_sources"] if r["gbd"]=="b9ed6fd14f4fc969ec966a4b54c36872")
+          p=pathlib.Path(r["path"])
+          assert r["sha256"]=="c46261a9a52b8080ddc040f6b58e7a48eb651993ff6f67ae78830848b8e14fb2"
+          assert hashlib.sha256(p.read_bytes()).hexdigest()==r["sha256"]
+          print("CDCL299_PINNED_SOURCE_PASS")
+          PY
+      - name: Compile identical experimental X59 binary
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++ -O3 -std=c++20 -DNDEBUG src/drnas_x59.cpp -o build/drnas-sat-native-x59
+          sha256sum build/drnas-sat-native-x59 src/drnas_x59.cpp
+      - name: Compare root heuristics, restarts, clause management and source-checked SAT
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 PYTHONHASHSEED=0 \
+            python3 -u research/cdcl299/diagnose.py | tee cdcl299_diagnostic.log
+          grep -q '^CDCL299_FINAL ' cdcl299_diagnostic.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-cdcl299-diagnostic
+          path: |
+            cdcl299_diag_results/
+            cdcl299_diagnostic.log
+          retention-days: 45
+          if-no-files-found: warn
