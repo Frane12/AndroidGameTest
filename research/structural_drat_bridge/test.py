@@ -68,7 +68,7 @@ def main():
         partial=Path(tmp)/"invalid-proof.drat"
         proof=(OUT/"proofs"/name/"converted.drat").read_text()
         assert proof.endswith("0\n")
-        partial.write_text(proof[:-2])
+        partial.write_text("\n".join(proof.splitlines()[:4])+"\n")
         check=command((CHECKER,cnf,partial),seconds=5)
         assert check.returncode!=0 or "s VERIFIED" not in check.stdout,"truncated DRAT falsely accepted"
     final=dict(cases=8,verified=len(results),total_e2e_s=round(sum(z["e2e_s"] for z in results),6),
