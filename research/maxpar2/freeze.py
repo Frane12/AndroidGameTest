@@ -67,7 +67,7 @@ def main():
         meta = dict(entry, id=idx, url=url, selected_before_results=True)
         try:
             archive = download(url, MAX_ARCHIVE)
-            if archive.startswith(b"\\xfd7zXZ\\x00"):
+            if archive.startswith(b"\xfd7zXZ\x00"):
                 decoder = lzma.LZMADecompressor()
                 raw = decoder.decompress(archive, max_length=MAX_RAW + 1)
                 if len(raw) > MAX_RAW or not decoder.eof:
@@ -76,7 +76,7 @@ def main():
                 raw = archive
             if len(raw) > MAX_RAW or len(raw) < selection["input_min_raw_bytes"]:
                 raise ValueError("raw_size_gate")
-            hdr = re.search(rb"^p\\s+cnf\\s+(\\d+)\\s+(\\d+)\\s*$", raw, re.M)
+            hdr = re.search(rb"^p\s+cnf\s+(\d+)\s+(\d+)\s*$", raw, re.M)
             if not hdr:
                 raise ValueError("missing_DIMACS_header")
             variables, clauses = map(int, hdr.groups())
@@ -106,7 +106,7 @@ def main():
         excluded_or_failed=failures, sources=records, cpu=cpu,
         selection_frozen_before_results=True, no_outcome_reselection=True,
         original_CNFs_unchanged=True)
-    (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\\n")
+    (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
     print("MAXPAR2_FROZEN " + json.dumps(dict(selected=27, frozen=len(records),
         excluded=len(failures), size_tiers={t:sum(r["size_tier"]==t for r in records)
         for t in ("medium_size", "high_size")}), sort_keys=True), flush=True)
