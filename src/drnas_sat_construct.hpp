@@ -210,13 +210,13 @@ inline bool try_matching(int n,const CNF& f,Outcome& out,Clock::time_point deadl
   }
   return false;
 }
-// Detect complete k-variable XOR CNF patterns (k=2..4), including signed
+// Detect complete k-variable XOR CNF patterns (k=2..6), including signed
 // literals, as necessary GF(2) rows. Also derive a sound parity row from a
 // source-backed exact-one ALO + complete pairwise source mutex.
 // Candidate solutions are independently verified against the WHOLE CNF.
 inline bool try_gf2(int n,const CNF& f,Outcome& out,Clock::time_point deadline){
   if(n>2048||f.size()>25000)return false;
-  struct Blocks{uint16_t mask=0;};
+  struct Blocks{uint64_t mask=0;};
   std::map<std::vector<int>,Blocks> patterns;
   std::map<std::pair<int,int>,bool> negatives;
   for(size_t i=0;i<f.size();++i){
@@ -226,7 +226,7 @@ inline bool try_gf2(int n,const CNF& f,Outcome& out,Clock::time_point deadline){
       int a=-c[0],b=-c[1];if(a>b)std::swap(a,b);
       negatives[{a,b}]=true;
     }
-    if(k<2||k>4)continue;
+    if(k<2||k>6)continue;
     std::vector<std::pair<int,int>> sorted;
     for(int lit:c)sorted.push_back({std::abs(lit),lit<0?1:0});
     std::sort(sorted.begin(),sorted.end());
@@ -239,15 +239,15 @@ inline bool try_gf2(int n,const CNF& f,Outcome& out,Clock::time_point deadline){
       vars.push_back(sorted[j].first);
       forbidden|=sorted[j].second<<j;
     }
-    patterns[vars].mask|=uint16_t(1U<<forbidden);
+    patterns[vars].mask|=(uint64_t(1)<<forbidden);
   }
   std::vector<std::pair<std::vector<int>,int>> equations;
   for(auto& [vars,block]:patterns){
     int k=(int)vars.size();
-    if(std::popcount((unsigned)block.mask)!=(1<<(k-1)))continue;
+    if(std::popcount((unsigned long long)block.mask)!=(1<<(k-1)))continue;
     int parity=-1;bool complete=true;
     for(int assignment=0;assignment<(1<<k);++assignment){
-      if(!(block.mask&(1U<<assignment)))continue;
+      if(!(block.mask&(uint64_t(1)<<assignment)))continue;
       int p=std::popcount((unsigned)assignment)&1;
       if(parity<0)parity=p;
       if(p!=parity){complete=false;break;}
