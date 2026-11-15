@@ -124,9 +124,8 @@ replace_once('    if (input.empty() || (mode!="core" && mode!="trace") || !std::
 r'''    if (!std::isfinite(math5_ms)||math5_ms<0||math5_ms>1000)
         throw std::runtime_error("invalid --math5-ms");
     if (math5_ms>0 && (math5_certificate.empty() ||
-        math5_certificate==input || math5_certificate==proof_path ||
-        !proof_path.empty()))
-        throw std::runtime_error("MATH5 custom proof needs --math5-certificate and no --proof; not DRAT/LRAT");
+        math5_certificate==input || math5_certificate==proof_path))
+        throw std::runtime_error("MATH5 needs a distinct custom certificate; JSON is not DRAT/LRAT");
     if (math5_ms==0 && !math5_certificate.empty())
         throw std::runtime_error("--math5-certificate requires --math5-ms");
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)''')
