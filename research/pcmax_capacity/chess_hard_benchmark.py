@@ -99,7 +99,8 @@ def main():
                   sha256={name:digest(path) for name,path in
                           {**binaries,"DRAT_TRIM":a.drat_trim}.items()},
                   not_blind=True,source_only_no_label_to_solver=True,
-                  no_proof_no_verified_unsat=True)
+                  no_proof_no_verified_unsat=True,
+                  primary_timing="no-proof for general CDCL; separate UNSAT proof replay")
     (a.out/"protocol.json").write_text(json.dumps(protocol,indent=2)+"\n")
     rows=[]
     with (a.out/"trials.jsonl").open("w") as trial_fd:
@@ -114,15 +115,15 @@ def main():
                 proof=a.out/(tag+(".pbp" if arm=="DRNAS_PHP" else ".drat"))
                 log=a.out/(tag+".log")
                 if arm=="DRNAS_X5":
-                    command=[a.x5,cnf,"--mode","core","--time",str(a.cap),"--proof",proof]
+                    command=[a.x5,cnf,"--mode","core","--time",str(a.cap)]
                 elif arm=="DRNAS_PHP":
                     command=[a.php,cnf,"--proof",proof,"--time",str(a.cap)]
                 elif arm=="DRNAS_2SAT":
                     command=[a.two_sat,cnf,"--proof",proof,"--time",str(a.cap)]
                 elif arm=="KISSAT":
-                    command=[a.kissat,cnf,proof]
+                    command=[a.kissat,cnf]
                 else:
-                    command=[a.cadical,"-q","--no-binary",cnf,proof]
+                    command=[a.cadical,"-q",cnf]
                 data=execute(command,log,a.cap+2)
                 outcome=("TIMEOUT" if data["timeout"] else
                          "SAT_REPORTED" if data["returncode"]==10 else
@@ -134,14 +135,30 @@ def main():
                          source_sha256=case["sha256"],arm=arm,
                          status=outcome,**data,
                          sat_model_verified=False,unsat_standard_verified=False,
-                         checker_s=None,proof_bytes=None)
+                         checker_s=None,proof_bytes=None,proof_replay_s=None,
+                         execution_detail=log.read_text(errors="replace")[-500:] if outcome=="EXECUTION_ERROR" else None)
                 if data["returncode"]==10:
                     row["sat_model_verified"]=verified_model(cnf,log.read_text(errors="replace"))
                     if row["sat_model_verified"]:row["status"]="SAT_MODEL_VERIFIED"
                     if case["label"]=="THEOREM_UNSAT":
                         row["status"]="CRITICAL_FALSE_SAT_VS_MATH"
                 if data["returncode"]==20:
-                    if proof.is_file() and proof.stat().st_size>0 and arm!="DRNAS_PHP":
+                    # Core timing above is always with identical no-proof options.
+                    # Standard certification below is a SEPARATE proof-mode replay
+                    # with its own time/resource costs, never conflated with speed.
+                    if arm in ("DRNAS_X5","KISSAT","CADICAL"):
+                        if arm=="DRNAS_X5":
+                            cmd2=[a.x5,cnf,"--mode","core","--time",str(a.cap),"--proof",proof]
+                        elif arm=="KISSAT":
+                            cmd2=[a.kissat,cnf,proof]
+                        else:
+                            cmd2=[a.cadical,"-q","--no-binary",cnf,proof]
+                        replay=execute(cmd2,a.out/(tag+".proofreplay.log"),a.cap+2)
+                        row.update(proof_replay_s=replay["elapsed_s"],
+                                   proof_replay_rc=replay["returncode"])
+                    else:
+                        replay=data
+                    if replay["returncode"]==20 and proof.is_file() and proof.stat().st_size>0 and arm!="DRNAS_PHP":
                         checker_log=a.out/(tag+".dratcheck.log")
                         checked=execute([a.drat_trim,cnf,proof],checker_log,65)
                         verified=(checked["returncode"]==0 and not checked["timeout"]
