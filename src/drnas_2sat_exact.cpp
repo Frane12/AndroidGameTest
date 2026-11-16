@@ -320,9 +320,9 @@ int main(int argc,char**argv){
         if(contradiction<0){
             if(!verifies_source(cnf,model))
                 throw Unknown("binary_subformula_satisfiable_but_whole_CNF_unresolved");
-            std::cout<<"c DRNAS_2SAT_EXACT {\\\"status\\\":\\\"SAT_MODEL_VERIFIED\\\","
-                     <<"\\\"pure_2cnf\\\":"<<(cnf.wide_clauses==0?"true":"false")
-                     <<",\\\"vars\\\":"<<cnf.vars<<",\\\"clauses\\\":"<<cnf.clauses<<"}\\n";
+            std::cout<<"c DRNAS_2SAT_EXACT SAT_MODEL_VERIFIED pure_2cnf="
+                     <<(cnf.wide_clauses==0?1:0)<<" vars="<<cnf.vars
+                     <<" clauses="<<cnf.clauses<<"\\n";
             std::cout<<"s SATISFIABLE\\n";
             for(int i=0;i<cnf.vars;++i){
                 if(i%30==0)std::cout<<"v ";
