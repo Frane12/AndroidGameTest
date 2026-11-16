@@ -1,0 +1,77 @@
+name: DRNAS IPG-BDD1 source-bound polynomial count profiles
+on:
+  push:
+    branches: [experiment/drnas-ipg-bdd1-count-dp-20261116]
+    paths:
+      - research/ipg_bdd_extract.cpp
+      - research/ipg_bdd_profiles.py
+      - research/ipg_bdd_checker.py
+      - research/ipg_bdd_fixtures.py
+      - research/ipg_bdd_benchmark.py
+      - CMakeLists.txt
+      - .github/workflows/drnas-ipg-bdd1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg-bdd1-20261116
+  cancel-in-progress: false
+jobs:
+  source_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build frozen native PCMAX structural BDD exporter, not CDCL
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg_bdd_profiles.py \
+            research/ipg_bdd_checker.py research/ipg_bdd_fixtures.py \
+            research/ipg_bdd_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-ipg-bdd-extract -j2
+          sha256sum build/drnas-ipg-bdd-extract research/ipg_bdd_*.py
+      - name: Test polynomial exact BDD source count profiles on 2/3 machine and frozen PCMAX originals
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg_bdd_benchmark.py
+      - name: Publish independently checked status (including UNKNOWN)
+        if: always()
+        run: |
+          if test -s results/ipg_bdd1/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path('results/ipg_bdd1/summary.json').read_text())
+          msg=("# IPG-BDD1 source-CNF count-profile pilot\n\n"
+               +f"Status: {d['status']}\n\n"
+               +f"Generated BDD-CNF cases: {d['generated_total']}; independent UNSAT: {d['generated_verified_unsat']}/{d['generated_expected_unsat']} expected UNSAT\n\n"
+               +f"Original source-frozen PCMAX cases: {d['source_frozen_originals']}\n\n"
+               +f"Originals source BDD-graph extracted: {d['original_graphs_extracted']}\n\n"
+               +f"Originals independently verified by IPG-BDD1: {d['original_verified_unsat']}\n\n"
+               +f"Originals UNKNOWN by IPG-BDD1: {d['original_unknown']}\n\n"
+               +f"Errors: {len(d['errors'])}\n\n"
+               +d['warning']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg-bdd1-original-source-profiles-and-certificates
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg_bdd_extract.cpp
+            research/ipg_bdd_profiles.py
+            research/ipg_bdd_checker.py
+            research/ipg_bdd_fixtures.py
+            research/ipg_bdd_benchmark.py
+            results/ipg_bdd1/
