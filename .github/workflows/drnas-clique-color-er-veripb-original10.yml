@@ -1,0 +1,102 @@
+name: DRNAS CLIQUE-COLOR verified RED+RUP-hints+CP on 10 original SAT2025 CNFs
+on:
+  push:
+    branches: [experiment/drnas-cliquecolor-ext-veripb-proof1-20261116]
+    paths:
+      - research/clique_color_er/**
+      - research/CLIQUE_COLOR_EXTENDED_VERIPB_RESULTS.md
+      - .github/workflows/drnas-clique-color-er-veripb-original10.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-clique-color-er-original10-20261116
+  cancel-in-progress: true
+jobs:
+  proof_original10:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43891106380
+          name: graph-unseen25-all-sources-and-frozen-binaries
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Restore exact preselected SAT2025 CNF bytes and immutable standard proof verifier
+        run: |
+          set -euo pipefail
+          test -s prior/graph-unseen25-freeze.tgz
+          sha256sum prior/graph-unseen25-freeze.tgz
+          tar -xzf prior/graph-unseen25-freeze.tgz
+          chmod +x veripb-tool/bin/veripb
+          test -s research/graph_unseen25/inputs/manifest.json
+          test -s results/graph_unseen25/protocol.json
+          veripb-tool/bin/veripb --version
+          sha256sum veripb-tool/bin/veripb
+      - name: Recheck frozen IDs, source SHA256 and external VeriPB binary digest
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          m=json.loads(pathlib.Path("research/graph_unseen25/inputs/manifest.json").read_text())
+          prior=json.loads(pathlib.Path("results/graph_unseen25/protocol.json").read_text())
+          assert m["status"]=="SOURCE_FROZEN_NO_SOLVER_TESTED"
+          assert len(m["sources"])==10 and set(s["id"] for s in m["sources"])==set(range(10))
+          for s in m["sources"]:
+              p=pathlib.Path(s["path"])
+              assert p.is_file()
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==s["sha256"]
+          verify_path=pathlib.Path("veripb-tool/bin/veripb")
+          assert hashlib.sha256(verify_path.read_bytes()).hexdigest()==prior["binary_sha256"]["veripb-tool/bin/veripb"]
+          print("CLIQUE_COLOR_EXT_FROZEN_SOURCE_AUDIT PASS",flush=True)
+          PY
+      - name: New original-source checker, proof generator and negative SAT controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/clique_color_er/*.py
+          python3 -u research/clique_color_er/selftest.py | tee clique_color_safety.log
+          grep -q '^CLIQUE_COLOR_ER_SAFETY_PASS ' clique_color_safety.log
+      - name: Exact 10 SAT2025 original sources x2; include fresh VeriPB checker in the 8s wall cap
+        run: |
+          set -euo pipefail
+          python3 -u research/clique_color_er/test_original10.py | tee clique_color_original10.log
+          grep -q '^CLIQUE_COLOR_ER_FINAL ' clique_color_original10.log
+      - name: Publish honest standard E2E outcome summary and source hashes
+        if: always()
+        run: |
+          if test -s results/clique_color_er_original10/final.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/clique_color_er_original10/final.json").read_text())
+          msg=("# DRNAS original SAT2025 clique-coloring verified proof audit\n\n"
+               +f"Status: {d['status']}\n\n"
+               +f"Original source CNFs: {d['originals']}\n\n"
+               +f"Standard VeriPB E2E accepted: {d['strict_verified']}/{d['attempts']}\n\n"
+               +f"Strict PAR2 (8s, 16s penalty): {d['strict_PAR2_s']} s\n\n"
+               +f"Critical errors: {d['critical_count']}\n\n"
+               +"Proofs are produced by source-grounded RED+RUP hints+CP.\n\n"
+               +"Retrospective after structural diagnosis; NOT blind holdout evidence. No main promotion.\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clique-color-10-original-source-veripb-external-verified-E2E
+          retention-days: 60
+          path: |
+            clique_color_safety.log
+            clique_color_original10.log
+            results/clique_color_er_original10/
