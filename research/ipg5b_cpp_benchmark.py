@@ -27,6 +27,7 @@ OUT=ROOT/"results/ipg5b_jobbranch"
 NATIVE=ROOT/"build/drnas-ipg5b-jobbranch"
 OLD=ROOT/"research/ipg5_structural_original_rup.py"
 CONV=ROOT/"research/ipg5_rup_to_veripb.py"
+CG=ROOT/"research/ipg5b_oddcycle_pb.py"
 DRAT=ROOT/"drat-trim/drat-trim"
 VERIPB=ROOT/"veripb-tool/bin/veripb"
 SOURCE_SHA="c2fefeffc1f9644ffd6f85728106a21c82dfc01d0d021f32d4d73569cc2bfb70"
@@ -155,11 +156,32 @@ def main():
     new=proof_case("IPG5B_CPP",source)
     checks=controls(source)
     assert_ok(all(checks.values()),"adversarial source/proof controls failed")
+    cg_proof=OUT/"IPG5B_CPP"/"original_source_with_three_CG_cuts.pbp"
+    cg_meta=OUT/"IPG5B_CPP"/"source_CG_cuts.json"
+    cg_rc,cg_gen_s,cgout=invoked(OUT/"IPG5B_CPP"/"cg_generator.log",[
+        sys.executable,CG,
+        "--original",source,
+        "--rup",OUT/"IPG5B_CPP"/"original_source.rup",
+        "--veripb",cg_proof,"--meta",cg_meta],30)
+    assert_ok(cg_rc==0 and cg_proof.exists(),"source-derived odd-cycle PB cut construction failed")
+    cut_info=json.loads(cg_meta.read_text())
+    assert_ok(cut_info["chvatal_gomory_rank1_source_cuts"]==3 and
+              cut_info["rup_source_steps"]==100,
+              "original 3-machine PB cut provenance mismatch")
+    cg_ver,cg_check_s,cglog=invoked(OUT/"IPG5B_CPP"/"cg_veripb.log",[
+        VERIPB,"--cnf",source,cg_proof],40)
+    assert_ok(cg_ver==0 and "s VERIFIED UNSATISFIABLE" in cglog,
+              "independent VeriPB 3.0.2 rejected native RUP + source PB CG cuts")
     summary={
         "status":"PASS",
         "source_sha256":SOURCE_SHA,
         "original_variables":45,
         "original_clauses":300,
+        "standard_pb_cuts_from_original_clauses":3,
+        "standard_pb_cuts_and_rup_veripb_accepted":True,
+        "source_cg_and_rup_proof_bytes":cg_proof.stat().st_size,
+        "source_cg_external_checker_s":cg_check_s,
+        "source_cg_original_job_triangle_cuts":cut_info["source_overweight_triangles"],
         "old_steps":old["rup_steps"],
         "new_steps":new["rup_steps"],
         "proof_step_reduction":round(old["rup_steps"]/new["rup_steps"],3),
@@ -174,7 +196,7 @@ def main():
         "independent_drat_accepted":True,
         "adversarial_tests":checks,
         "historical_retrospective_only":True,
-        "scope":"C++ structural three-way job branch and independent VeriPB original source. This is bounded exponential DPLL, not pure algebraic cutting planes and not a general polynomial PCMAX solver. One original source only; no blind PAR2.",
+        "scope":"C++ 3-way job branching generated the source RUP. Three genuine original-clause CG divide-by-two PB cuts are separately emitted and VeriPB-verified; these cuts alone do NOT prove UNSAT. The full proof still relies on bounded exponential DPLL. One known original, no prospective blind PAR2.",
     }
     (OUT/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
     print("IPG5B_TOTAL "+json.dumps(summary,sort_keys=True),flush=True)
