@@ -322,12 +322,12 @@ int main(int argc,char**argv){
                 throw Unknown("binary_subformula_satisfiable_but_whole_CNF_unresolved");
             std::cout<<"c DRNAS_2SAT_EXACT SAT_MODEL_VERIFIED pure_2cnf="
                      <<(cnf.wide_clauses==0?1:0)<<" vars="<<cnf.vars
-                     <<" clauses="<<cnf.clauses<<"\\n";
-            std::cout<<"s SATISFIABLE\\n";
+                     <<" clauses="<<cnf.clauses<<"\n";
+            std::cout<<"s SATISFIABLE\n";
             for(int i=0;i<cnf.vars;++i){
                 if(i%30==0)std::cout<<"v ";
                 std::cout<<(model[i]>0?i+1:-(i+1))<<' ';
-                if(i%30==29||i+1==cnf.vars)std::cout<<"0\\n";
+                if(i%30==29||i+1==cnf.vars)std::cout<<"0\n";
             }
             return 10;
         }
