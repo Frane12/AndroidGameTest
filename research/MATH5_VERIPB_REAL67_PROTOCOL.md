@@ -111,3 +111,30 @@ source/family-disjoint blind generalization study.
 Promotion to `main` is **not authorized** by this experiment; an
 independently frozen future holdout, checker-included PAR2 gain,
 zero false answers, and explicit user review are still required.
+
+## CI failure audit and correction, 2026-11-16
+
+Initial run [43872305045](https://github.com/Frane12/AndroidGameTest/actions/runs/43872305045):
+`prepare` completed successfully, but **all 10 paired jobs failed
+BEFORE running a single solver trial**. The exact exception was
+`research/unified_evidence/benchmark.py:pinned()` →
+`assert all((ROOT/p).is_file() for p in REQUIRED_BIN)`.
+The newly generated archive omitted the frozen
+`build/drnas-pcmax-base` binary, which is required by the original
+GRAND-UNIFIED source-hash/frozen-binary protocol even though this
+new eight-arm benchmark does not run CXX_BASE.
+
+This is an archive packaging error, NOT a bad mathematical MATH5 proof,
+misverified UNSAT, speed regression or observed PAR2 result. There
+were **zero completed paired trials** in that failed run. The aggregate
+job failed because no shard results were available.
+
+Correction: the workflow now includes the byte-identical
+`build/drnas-pcmax-base` in the frozen archive and sets its executable
+bit. A new PREPARE-only `MATH5_67_ARCHIVE_AUDIT` reads the actual
+generated `.tgz` member list and refuses to schedule paired jobs if
+any `frozen.REQUIRED_BIN` entry is missing. All pinned SHA checks
+and proof validation requirements remain unchanged. Do not count
+the first failed run as benchmark results; use only the first later
+run with all 10 shards and the complete source-by-arm matrix.
+
