@@ -104,7 +104,9 @@ def check(raw,cert):
                 for s2 in itertools.combinations(B,v):
                     selected=set(s1+s2)
                     checks+=1
-                    if not any(f.issubset(selected) for f in raw_for[machine]):
+                    if not any(frozenset(t) in raw_for[machine]
+                               for width in range(1,len(selected)+1)
+                               for t in itertools.combinations(tuple(sorted(selected)),width)):
                         raise ValueError("claimed capacity pattern is NOT entailed by original clauses")
 
     # Independently compute reachability, using a different iteration order:
