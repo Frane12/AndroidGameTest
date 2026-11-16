@@ -1,0 +1,194 @@
+name: DRNAS GRAPH-CLIQUE source-only VeriPB and 67 original strict PAR2
+on:
+  push:
+    branches: [experiment/drnas-graphclique-veripb-real67-20261116]
+    paths:
+      - research/graphclique/**
+      - research/GRAPH_CLIQUE_VERIPB_RESULTS.md
+      - .github/workflows/drnas-graphclique-real67.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-graphclique-real67-20261116
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43853390060
+          name: grand-union-sha-pinned-binaries-sources
+          github-token: ${{ github.token }}
+          path: original_frozen
+      - name: Restore original 67 source CNFs and unchanged reference checkers
+        run: |
+          set -euo pipefail
+          test -s original_frozen/grand_unified_frozen.tgz
+          sha256sum original_frozen/grand_unified_frozen.tgz
+          tar -xzf original_frozen/grand_unified_frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          veripb-tool/bin/veripb --version
+          test -s unified_realblind100_inputs/manifest.json
+          test -s unified_evidence_results/protocol.json
+      - name: Fuzz SAT controls, proof rejection and eight original formal VeriPB proofs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/graphclique/*.py \
+            research/math5_standard_real67/benchmark.py \
+            research/unified_evidence/benchmark.py \
+            research/math5/emit_veripb_eo_multiplicity.py
+          python3 -u research/graphclique/selftest.py | tee graphclique_safety.log
+          grep -q '^GRAPH_CLIQUE_SELFTEST_PASS ' graphclique_safety.log
+          python3 -u research/graphclique/originals.py | tee graphclique_original8.log
+          grep -q '^GRAPH_CLIQUE_ORIGINAL8_FINAL ' graphclique_original8.log
+      - name: Freeze source and binary hashes, all proof/checker executables and E2E policy
+        run: |
+          set -euo pipefail
+          python3 -u research/graphclique/real67.py prepare | tee graphclique_prepare.log
+          grep -q '^GRAPH_67_READY ' graphclique_prepare.log
+          python3 - <<'PY'
+          import pathlib,sys,tarfile
+          from pathlib import Path
+          sys.path.insert(0,str(Path("research/unified_evidence").resolve()))
+          import benchmark as frozen
+          required=set(frozen.REQUIRED_BIN)
+          required.update(["unified_realblind100_inputs",
+             "unified_evidence_results/protocol.json",
+             "results/graphclique_real67/protocol.json"])
+          archive=Path("graphclique-real67-frozen.tgz")
+          with tarfile.open(archive,"w:gz") as fd:
+              for path in sorted(required):
+                  assert pathlib.Path(path).exists(),("MISSING_BEFORE_PACK",path)
+                  fd.add(path,arcname=path,recursive=True)
+          with tarfile.open(archive,"r:gz") as fd:
+              packed=set(fd.getnames())
+          missing=sorted(required-packed)
+          print("GRAPH_67_ARCHIVE_AUDIT",{"required":len(required),"missing":missing},flush=True)
+          assert not missing
+          assert archive.stat().st_size>1000000
+          PY
+          sha256sum graphclique-real67-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graphclique-real67-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: graphclique-real67-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphclique-original8-VeriPB-and-safety
+          retention-days: 60
+          path: |
+            graphclique_safety.log
+            graphclique_original8.log
+            graphclique_prepare.log
+            results/graphclique_original8/
+            results/graphclique_real67/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: graphclique-real67-frozen
+      - name: Restore frozen source-protocol and native solver dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf graphclique-real67-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: One logical CPU, shuffled same-source six-arm strict 8s E2E PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/graphclique/real67.py shard --index ${{ matrix.shard }} \
+            | tee graphclique_shard.log
+          grep -q '^GRAPH_67_SHARD ' graphclique_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphclique-real67-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            results/graphclique_real67/shard-${{ matrix.shard }}/trials.jsonl
+            graphclique_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: graphclique-real67-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: graphclique-real67-shard-*
+          path: collected
+      - name: Reject incomplete matrices, mismatched source SHA and nonstandard proof claims
+        run: |
+          set -euo pipefail
+          tar -xzf graphclique-real67-frozen.tgz
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          for i in range(10):
+              matches=list((Path("collected")/f"graphclique-real67-shard-{i}").glob("**/trials.jsonl"))
+              assert len(matches)==1,(i,matches)
+              target=Path("results/graphclique_real67")/f"shard-{i}"
+              target.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(matches[0],target/"trials.jsonl")
+          PY
+          python3 -u research/graphclique/real67.py report | tee graphclique_final.log
+          grep -q '^GRAPH_67_FINAL ' graphclique_final.log
+          cat graphclique_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphclique-real67-final-standard-veripb-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/graphclique_real67/final.json
+            results/graphclique_real67/shard-*/trials.jsonl
+            graphclique_final.log
