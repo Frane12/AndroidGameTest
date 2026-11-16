@@ -177,13 +177,13 @@ def execute(cmd,timeout,allow_file=True):
                 expired=expired,wall_s=time.perf_counter()-t)
 
 def trial(src,arm,rep):
+    started=time.perf_counter()
     cnf=ROOT/src["path"]
     assert sha(cnf)==src["sha256"], "ORIGINAL_SOURCE_CHANGED"
     with tempfile.TemporaryDirectory(prefix="grand-union-") as td:
         folder=Path(td)
         proof=folder/"proof";cert=folder/"math5.json"
         pre=folder/"preproof.json"
-        started=time.perf_counter()
         status="UNKNOWN"; certified=False;strict=False; kind=None
         critical=False;reason=None;checker_s=0;solver_s=0
         proof_sha=None;proof_bytes=0
