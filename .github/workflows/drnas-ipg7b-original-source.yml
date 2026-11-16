@@ -1,0 +1,87 @@
+name: DRNAS IPG7-B configuration-guided direct original VeriPB source proof
+on:
+  push:
+    branches: [experiment/drnas-ipg7b-original-source-configbridge-20261116]
+    paths:
+      - research/ipg7b_original_config_bridge.py
+      - research/ipg7b_independent_source_checker.py
+      - research/ipg7b_source_veripb_benchmark.py
+      - .github/workflows/drnas-ipg7b-original-source.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg7b-original-veripb-20261116
+  cancel-in-progress: false
+jobs:
+  original_source_veripb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent VeriPB 3.0.2 and source-CNF DRAT-trim
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Source-only proof generator and independent checker syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg7b_original_config_bridge.py \
+            research/ipg7b_independent_source_checker.py \
+            research/ipg7b_source_veripb_benchmark.py
+          sha256sum research/ipg7b_*.py
+      - name: Original CNF 300-clause standard VeriPB and new control source
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg7b_source_veripb_benchmark.py
+      - name: Report source-vs-master proof distinction explicitly
+        if: always()
+        run: |
+          if test -s results/ipg7b_source/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path('results/ipg7b_source/summary.json').read_text())
+          msg=("# DRNAS IPG7B configuration-to-ORIGINAL VeriPB pilot\n\n"
+            +f"Status: {d['status']}\n\n"
+            +f"Source test cases: {d['source_cases']}\n\n"
+            +f"Direct source VeriPB accepted UNSAT cases: {d['direct_original_CNF_VerIPB_verified']}\n\n"
+            +f"ORIGINAL 45v/300c Petersen direct standard proof: {d['original_300_clause_Petersen_VerIPB_verified']}\n\n"
+            +f"Original Petersen exact configs: {d['petersen_k_exact_configs']}\n\n"
+            +f"Source configuration block RUP steps: {d['petersen_config_no_good_source_RUP_steps']}\n\n"
+            +f"Source final closure RUP steps: {d['petersen_final_source_closing_RUP_steps']}\n\n"
+            +f"Single source-POL VeriPB steps: {d['petersen_single_original_VerIPB_POL_steps']}\n\n"
+            +f"Independent source SAT models: {d['original_source_full_SAT_models']}\n\n"
+            +f"DPLL used for bridging: {d['DPLL_used_to_bridge_exact_configurations']}\n\n"
+            +f"Errors: {len(d['errors'])}\n\n"
+            +d['scope']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg7b-original-cnf-configuration-guided-veripb
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg7b_original_config_bridge.py
+            research/ipg7b_independent_source_checker.py
+            research/ipg7b_source_veripb_benchmark.py
+            results/ipg7b_source/
