@@ -1840,6 +1840,43 @@ int run(int argc, char** argv) {
     if (fd.bad()) throw std::runtime_error("CNF read failed");
 #endif
     solver->finishParsing();
+#ifdef DRNAS_FAST_PC_GATE1
+#ifdef DRNAS_PCMAX_MODULE
+    // Source-only fast gate: this does NOT conclude SAT or UNSAT.
+    // The original BDD source extractor requires source-asserted root
+    // and TRUE/FALSE terminals (units) and signed ternary transition
+    // clauses, plus at-least-one job groups. If any such structural
+    // ingredients are absent, skip OPTIONAL expensive structural search.
+    // Fall through to exactly the existing native CDCL + DRAT solver.
+    // The old C++ targets do not compile this branch.
+    if (pcmax_enabled && pcmax_skip_reason.empty()) {
+        size_t alo=0, signed_ternaries=0, positive_units=0, negative_units=0;
+        for (const auto& clause:pcmax_original) {
+            if (clause.size()==1) {
+                positive_units+=clause[0]>0;
+                negative_units+=clause[0]<0;
+            } else if (clause.size()==3) {
+                const int positives=(clause[0]>0)+(clause[1]>0)+(clause[2]>0);
+                if (positives==1 || positives==2) ++signed_ternaries;
+                if (positives==3) ++alo;
+            } else if (clause.size()>3 && clause.size()<=128) {
+                bool all_pos=true;
+                for (int x:clause) if (x<=0) {all_pos=false;break;}
+                if (all_pos) ++alo;
+            }
+        }
+        const bool bdd_signature=(alo>=3 && signed_ternaries>=4 &&
+                                   positive_units>=2 && negative_units>=1);
+        std::cerr<<"DRNAS_FAST_PC_GATE1 {\\\"signature\\\":"
+                 <<(bdd_signature?"true":"false")
+                 <<",\\\"alo\\\":"<<alo
+                 <<",\\\"signed_ternary\\\":"<<signed_ternaries
+                 <<",\\\"positive_units\\\":"<<positive_units
+                 <<",\\\"negative_units\\\":"<<negative_units<<"}\\n";
+        if (!bdd_signature) pcmax_enabled=false;
+    }
+#endif
+#endif
 #ifdef DRNAS_PCMAX_MODULE
     if (pcmax_enabled) {
         pcmax::Result capacity_result;
