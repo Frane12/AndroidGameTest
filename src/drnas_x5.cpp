@@ -1558,7 +1558,17 @@ int run(int argc, char** argv) {
         throw std::runtime_error("invalid --pcmax-budget-ms");
     if (pcmax_only && !proof_path.empty())
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
+#ifdef DRNAS_PC_GUARD_COMBINED
+    // The unified target accepts both proof paths. If the capacity guard
+    // finishes first, it MUST be checked via structural+VeriPB, never DRAT.
+    // Otherwise CDCL/SCC writes its ordinary DRAT proof stream.
+    const bool combined_requested=pcmax_enabled && residual_requested && !proof_path.empty();
+    if (combined_requested && pcmax_certificate.empty())
+        throw std::runtime_error("unified PCMAX+SCC requires a capacity certificate path");
+    const bool pcmax_active=pcmax_enabled && (proof_path.empty() || combined_requested);
+#else
     const bool pcmax_active=pcmax_enabled && proof_path.empty();
+#endif
     bool pcmax_capture=pcmax_active;
     size_t pcmax_literals=0;
     std::vector<std::vector<int>> pcmax_original;
@@ -1758,6 +1768,9 @@ int run(int argc, char** argv) {
         }
         pcmaxTelemetry(capacity_result,budget,process_start,digest,pcmax_certificate);
         if (capacity_result.verified) {
+#ifdef DRNAS_PC_GUARD_COMBINED
+            std::cout<<"c PCMAX_UNIFIED_PROOF_KIND CAPACITY_JSON_NEEDS_VERIPB\n";
+#endif
             std::cout<<"s UNSATISFIABLE\n";
             return 20;
         }
@@ -1770,6 +1783,11 @@ int run(int argc, char** argv) {
     // loads and validates so corrupted files fail closed.
     if(!x46_model_path.empty() && solver->x47PreProbeEligible())
         solver->loadX46CostModel(x46_model_path);
+#ifdef DRNAS_PC_GUARD_COMBINED
+    if (combined_requested) {
+        std::cout<<"c PCMAX_UNIFIED_PROOF_KIND DRAT_PROOF\n";
+    }
+#endif
     const Result r=solver->solve();
     if(r==Result::UNSAT)solver->writeProofClause({});
     if(proof.is_open()) {
