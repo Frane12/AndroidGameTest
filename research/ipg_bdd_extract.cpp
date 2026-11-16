@@ -71,6 +71,19 @@ static std::string export_json(const pcmax::detail::Graph& g,
         if(eligible++)out<<',';
         array(out,g.groups[j]);
     }
+    out<<"],\"eligible_group_order\":[";
+    int emitted=0;
+    // This topological order is a heuristic for partial-demand subsets;
+    // it is NOT an axiom used by the independent checker.
+    std::vector<int> eligible_index(g.groups.size(),-1);
+    int next=0;
+    for(size_t j=0;j<g.groups.size();++j)
+        if(g.eligible[j])eligible_index[j]=next++;
+    for(int j:g.group_order) {
+        if(eligible_index[static_cast<size_t>(j)]<0)continue;
+        if(emitted++)out<<',';
+        out<<eligible_index[static_cast<size_t>(j)];
+    }
     out<<"],\"machine_graphs\":[";
     for(size_t k=0;k<g.machines.size();++k) {
         if(k)out<<',';
