@@ -59,7 +59,6 @@ def signature(cnf):
                 elif len(widths)>=2:
                     break
                 if len(widths)>20:break
-            if fd.tell() if False else False:pass
     return len(widths)>=8 and len(set(widths))==1
 
 def unknown(source,rep,arm,started,status,reason=None,critical=False,guard_s=0):
