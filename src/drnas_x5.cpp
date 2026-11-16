@@ -1867,12 +1867,12 @@ int run(int argc, char** argv) {
         }
         const bool bdd_signature=(alo>=3 && signed_ternaries>=4 &&
                                    positive_units>=2 && negative_units>=1);
-        std::cerr<<"DRNAS_FAST_PC_GATE1 {\\\"signature\\\":"
+        std::cerr<<"DRNAS_FAST_PC_GATE1 signature="
                  <<(bdd_signature?"true":"false")
-                 <<",\\\"alo\\\":"<<alo
-                 <<",\\\"signed_ternary\\\":"<<signed_ternaries
-                 <<",\\\"positive_units\\\":"<<positive_units
-                 <<",\\\"negative_units\\\":"<<negative_units<<"}\\n";
+                 <<" alo="<<alo
+                 <<" signed_ternary="<<signed_ternaries
+                 <<" positive_units="<<positive_units
+                 <<" negative_units="<<negative_units<<std::endl;
         if (!bdd_signature) pcmax_enabled=false;
     }
 #endif
