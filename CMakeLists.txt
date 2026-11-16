@@ -121,3 +121,15 @@ if (TARGET OpenSSL::Crypto)
     target_compile_options(drnas-pcmax-mg7-ipg1-bdd3 PRIVATE -O3 -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+
+# IPG5-B source-bound structural proof research executable.
+# One native C++ process/CPU, no CDCL; emits RUP needing external VeriPB.
+# Frozen sources and all old solver targets remain unchanged.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-ipg5b-jobbranch research/ipg5b_native_jobbranch.cpp)
+  target_link_libraries(drnas-ipg5b-jobbranch PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-ipg5b-jobbranch PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
