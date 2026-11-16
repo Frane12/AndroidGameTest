@@ -15,6 +15,7 @@ REPS=2
 TARGETS=(("SAT2025",13),("SAT2026",25),("SAT2026",31))
 ARMS=("X59_MATH5_VERIPB","X59_OFF","CXX_UNION","Kissat","CaDiCaL","CryptoMiniSat")
 OUT=ROOT/"results/par2_targeted_probe"
+plus.CAP=CAP
 plus.base.CAP=CAP
 plus.m5.CAP=CAP
 
@@ -33,9 +34,10 @@ def features(source):
     path=ROOT/source["path"]
     lengths=collections.Counter()
     polar=collections.Counter()
-    count=0
     declared=None
+    count=0
     max_len=0
+    lits=[]
     with path.open(errors="strict") as inp:
         for line in inp:
             tokens=line.split()
@@ -44,12 +46,18 @@ def features(source):
                 assert len(tokens)==4 and tokens[1]=="cnf"
                 declared=tuple(map(int,tokens[2:]))
                 continue
-            clause=[int(token) for token in tokens if token!="0"]
-            lengths[min(len(clause),10)]+=1
-            polar["positive_only" if all(l>0 for l in clause) else
-                  "negative_only" if all(l<0 for l in clause) else "mixed"]+=1
-            max_len=max(max_len,len(clause))
-            count+=1
+            for word in tokens:
+                lit=int(word)
+                if lit:
+                    lits.append(lit)
+                else:
+                    lengths[min(len(lits),10)]+=1
+                    polar["positive_only" if all(l>0 for l in lits) else
+                          "negative_only" if all(l<0 for l in lits) else "mixed"]+=1
+                    max_len=max(max_len,len(lits))
+                    count+=1
+                    lits=[]
+    assert not lits and declared is not None and count==declared[1]
     return dict(sha256=source["sha256"],bytes=path.stat().st_size,
                 declared_vars=declared[0],declared_clauses=declared[1],
                 parsed_clauses=count,clause_lengths_capped10=dict(lengths),
