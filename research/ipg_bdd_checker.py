@@ -226,8 +226,8 @@ def check(raw,graph,cert):
     A,B=classes
     if (not isinstance(A,list) or not isinstance(B,list) or
             any(not is_integer(x) or x<0 or x>=n for x in A+B) or
-            len(set(A+B))!=n or set(A+B)!=set(range(n))):
-        raise ValueError("class_partition_invalid")
+            len(set(A+B))!=len(A+B) or not A+B):
+        raise ValueError("selected_class_partition_invalid")
     amax=len(A);bmax=len(B)
     weight={}
     for j in A:
