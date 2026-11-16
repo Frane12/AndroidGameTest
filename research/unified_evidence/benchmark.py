@@ -15,7 +15,7 @@ DATA=ROOT/"unified_realblind100_inputs"
 OUT=ROOT/"unified_evidence_results"
 CAP=P["cap_s"]
 REPS=P["repetitions"]
-ARMS=("X59_OFF","X59_MATH5","CXX_BASE","CXX_BDD3","CXX_UNION","Kissat","CaDiCaL","CryptoMiniSat")
+ARMS=("X59_OFF","X59_MATH5","CXX_BASE","CXX_BDD3","CXX_UNION","CORE1_FROZEN","Kissat","CaDiCaL","CryptoMiniSat")
 SHARDS=P["shards"]
 BIN={
   "X59_OFF":"build/drnas-sat-native-x59",
@@ -23,6 +23,7 @@ BIN={
   "CXX_BASE":"build/drnas-pcmax-base",
   "CXX_BDD3":"build/drnas-pcmax-mg7-ipg1-bdd3",
   "CXX_UNION":"build/drnas-pcmax-mg7-ipg1-bdd3",
+  "CORE1_FROZEN":"build/drnas-unified-core1",
   "Kissat":"build/kissat","CaDiCaL":"build/cadical",
   "CryptoMiniSat":"build/cms"}
 REQUIRED_BIN=tuple(sorted(set(BIN.values())|{
@@ -150,6 +151,9 @@ def command(arm,cnf,proof,cert,work,remaining):
                    "--ipg-bdd3-certificate",str(work/"bdd3.json"),
                    "--residual-scc"]
         return argv
+    if arm=="CORE1_FROZEN":
+        return [str(ROOT/BIN[arm]),inp,"--time",str(max(.001,remaining)),
+                "--proof",str(proof),"--certificate",str(cert)]
     if arm=="Kissat":return [str(ROOT/BIN[arm]),inp,str(proof)]
     if arm=="CaDiCaL":return [str(ROOT/BIN[arm]),"-q","--no-binary",inp,str(proof)]
     if arm=="CryptoMiniSat":
@@ -280,6 +284,13 @@ def trial(src,arm,rep):
                             kind="DRAT"
                         else:
                             status="INVALID_UNKNOWN_PROOF_KIND";critical=True
+                elif arm=="CORE1_FROZEN" and cert.exists():
+                    kind="STRUCTURAL_CORE1"
+                    checker=[sys.executable,str(ROOT/"research/unified_core1/check.py"),
+                             str(cnf),str(cert)]
+                    verdict="VERIFIED"
+                    if proof.exists() and proof.stat().st_size:
+                        status="INVALID_MIXED_CORE1_DRAT";critical=True
                 elif arm=="X59_MATH5" and cert.exists():
                     kind="STRUCTURAL_MATH5"
                     checker=[sys.executable,str(CHECKER),str(cnf),str(cert)]
@@ -326,7 +337,7 @@ def trial(src,arm,rep):
                                 "CHECK_TIMEOUT" if ck["expired"] else "INVALID_PROOF")
                             critical=not certified and not ck["expired"]
                             if certified:
-                                cp=cert if kind=="STRUCTURAL_MATH5" else (
+                                cp=cert if kind in ("STRUCTURAL_MATH5","STRUCTURAL_CORE1") else (
                                   folder/"ipg1.json" if kind=="STRUCTURAL_IPG1" else
                                   folder/"bdd3.json" if kind=="STRUCTURAL_BDD3" else
                                   folder/"bdd2.json" if kind=="STRUCTURAL_BDD2" else proof)
@@ -405,7 +416,7 @@ def report():
         if r["id"]==i and r["arm"]==a) for a in ARMS} for i in range(n)}
     best_reference=min(("Kissat","CaDiCaL","CryptoMiniSat"),key=lambda a:totals[a]["PAR2_s"])
     deltas={a:[per_source[i][best_reference]-per_source[i][a] for i in range(n)]
-            for a in ("CXX_BDD3","CXX_UNION","X59_MATH5")}
+            for a in ("CXX_BDD3","CXX_UNION","CORE1_FROZEN","X59_MATH5")}
     rng=random.Random(20261115)
     boots={}
     for a,changes in deltas.items():
