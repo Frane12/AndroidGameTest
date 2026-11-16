@@ -150,6 +150,8 @@ def run_case(name,label,cnf,arm):
     if arm in ("BDD_ONLY","UNIFIED"):
         argv += ["--pcmax-capacity","--pcmax-budget-ms","1000",
                  "--pcmax-certificate",cert]
+    if arm=="BDD_ONLY":
+        argv.append("--pcmax-only")
     if arm in ("MG7_ONLY","UNIFIED"):
         argv += ["--residual-scc","--proof",drat]
     rc,seconds,out,err=command(argv,9,True)
@@ -209,7 +211,7 @@ def main():
             if row["status"] not in valid:failures.append(name+" "+arm+": "+row["status"])
             if label=="SAT" and row["status"] in ("DRAT_UNSAT_VERIFIED","CAPACITY_VERIPB_VERIFIED"):
                 failures.append(name+" "+arm+" false UNSAT")
-            if not name.startswith("pcmax_") and label=="UNSAT" and row["status"]!="DRAT_UNSAT_VERIFIED":
+            if arm!="BDD_ONLY" and not name.startswith("pcmax_") and label=="UNSAT" and row["status"]!="DRAT_UNSAT_VERIFIED":
                 failures.append(name+" "+arm+" expected synthetic DRAT proof")
         (OUT/"rows.json").write_text(json.dumps(rows,indent=2,sort_keys=True)+"\n")
     summary={
