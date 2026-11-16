@@ -243,17 +243,18 @@ def solve_bound(coords,B,arm,work,limit,certificate_dir=None):
         assert chosen.is_file()
         proof_sha=sha(chosen)
         if certificate_dir is not None:
-            certificate_dir=Path(certificate_dir)
+            # Keep the original CNF and standard proof for EVERY accepted
+            # UNSAT bound. Retaining only the last one loses the proof chain.
+            certificate_dir=Path(certificate_dir)/f"bound-{B}"
             certificate_dir.mkdir(parents=True,exist_ok=True)
-            # Retain ONLY the last successful UNSAT certificate, bound and CNF.
-            target=certificate_dir/("final.pbp" if kind=="VERIPB_MATH5"
-                                   else "final.frat" if kind=="FRAT" else "final.drat")
-            for file in certificate_dir.iterdir():
-                if file.is_file():file.unlink()
-            shutil.copyfile(cnf,certificate_dir/"final.cnf")
+            target=certificate_dir/("refutation.pbp" if kind=="VERIPB_MATH5"
+                                   else "refutation.frat" if kind=="FRAT" else "refutation.drat")
+            if (certificate_dir/"metadata.json").exists():
+                raise RuntimeError("DUPLICATE_UNSAT_BOUND_PROOF")
+            shutil.copyfile(cnf,certificate_dir/"decision.cnf")
             shutil.copyfile(chosen,target)
             if kind=="VERIPB_MATH5":
-                shutil.copyfile(cert,certificate_dir/"final.source_cert.json")
+                shutil.copyfile(cert,certificate_dir/"source_cert.json")
             save(certificate_dir/"metadata.json",dict(
                 bound=B,kind=kind,source_sha256=cnf_hash,
                 proof_sha256=proof_sha,proof_file=target.name))
@@ -317,10 +318,10 @@ def optimize(coords,arm,root):
     # If the cheap bound matched the route before any UNSAT query, still
     # require an independently checkable original-CNF proof at U-1.
     target=U-1
-    metadata=proofs/"metadata.json"
+    metadata=proofs/f"bound-{target}"/"metadata.json"
     prior=(json.loads(metadata.read_text()) if metadata.exists() else None)
     if (not critical and len(log)<MAX_DECISIONS and U>=1 and
-        (prior is None or prior["bound"]!=target)):
+        prior is None):
         row=query(target)
         if row and row["accepted"] and row["status"]=="UNSAT_VERIFIED":
             L=max(L,target+1)
@@ -330,11 +331,13 @@ def optimize(coords,arm,root):
                 U=row["route_cost"];route=tuple(row["model_route"])
             reason="IMPROVEMENT_AT_FINAL_BOUND_REQUIRES_MORE_SEARCH"
 
+    metadata=proofs/f"bound-{U-1}"/"metadata.json"
     prior=(json.loads(metadata.read_text()) if metadata.exists() else None)
+    proofdir=metadata.parent
     certificate=bool(prior and prior["bound"]==U-1 and
-         (proofs/prior["proof_file"]).is_file() and
-         sha(proofs/prior["proof_file"])==prior["proof_sha256"] and
-         sha(proofs/"final.cnf")==prior["source_sha256"])
+         (proofdir/prior["proof_file"]).is_file() and
+         sha(proofdir/prior["proof_file"])==prior["proof_sha256"] and
+         sha(proofdir/"decision.cnf")==prior["source_sha256"])
     proof_found=any(row["status"]=="UNSAT_VERIFIED" and row["accepted"] and
                     row["B"]==U-1 for row in log)
     # A directly checked U-cost Hamiltonian cycle AND verified UNSAT at U-1
