@@ -60,3 +60,40 @@ and single-core C++ guard with strict time budget and fallbacks.
 * Tests include missing mutex, missing XOR blocking clause, SAT control,
   falsified proof fields, source modification, and variable relabeling.
 * No APK, no auto-promotion, no main change, no replacement of reference.
+
+
+## Second-stage test, 2026-11-16
+
+`research/structure1_next_audit.py` adds **200 distinct-seed generated CNFs**
+(60 bipartite resource-assignment tests, 60 parity tests, 40 planted
+SAT random-3-SAT, 40 UNSAT random-3-SAT with contradictory source
+units) and **nine frozen historical/external original CNFs**.
+
+The local repeat of the 200 generated cases found:
+- 200/200 no misclassifications or invalid certificates;
+- 47 independently source-verified UNSAT (27 MATCH-1 and 20 parity);
+- 113 SAT controls and 40 additional UNSAT returned UNKNOWN;
+- 0 false UNSAT.
+
+The final nine original-source cases are assessed by GitHub Actions
+separately and must not be counted as locally completed or blind.
+Five are copied byte-for-byte from
+`tric/trick2015` at commit
+`afe06cf819b5f0133d2fc546656c680af6963a55`:
+uf20-01.cnf, quinn.cnf, sample.cnf, unsat.cnf, abnormal.cnf.
+The last two intentionally include malformed DIMACS examples and must
+produce UNKNOWN. Four others reproduce historical genuine source
+PCMAX constructions from `research/ipg1_fixtures.py` (including
+the 45-variable 300-clause Petersen formula).
+
+Neither the five small external files nor the historical PCMAX
+replays constitute an independently preregistered prospective blind
+SAT Competition holdout. This is a source-compatibility,
+soundness and coverage audit only.
+
+Reproduce both in one-CPU GitHub Actions:
+`python3 research/structure1_bench.py && python3 research/structure1_next_audit.py`.
+
+Next: real sourced, code-checked certificate bridge to DRAT/VeriPB,
+clause-order/variable-encoding invariance and paired same-CPU
+verification-inclusive PAR2 against Kissat, CaDiCaL, CMS and native DRNAS.
