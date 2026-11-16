@@ -38,6 +38,9 @@
 #ifdef DRNAS_IPG1_MODULE
 #include "ipg1_exact_cover.hpp"
 #endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+#include "ipg_bdd_count.hpp"
+#endif
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -1508,6 +1511,11 @@ int run(int argc, char** argv) {
     double ipg1_budget_ms=400.0;
     std::string ipg1_certificate;
 #endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+    bool ipg_bdd2_requested=false;
+    double ipg_bdd2_budget_ms=600.0;
+    std::string ipg_bdd2_graph_path,ipg_bdd2_certificate_path;
+#endif
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -1533,6 +1541,12 @@ int run(int argc, char** argv) {
         else if (opt=="--ipg1-certificate" && i+1<argc) ipg1_certificate=argv[++i];
         else if (opt=="--ipg1-budget-ms" && i+1<argc) ipg1_budget_ms=std::stod(argv[++i]);
 #endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+        else if (opt=="--ipg-bdd2") ipg_bdd2_requested=true;
+        else if (opt=="--ipg-bdd2-budget-ms" && i+1<argc) ipg_bdd2_budget_ms=std::stod(argv[++i]);
+        else if (opt=="--ipg-bdd2-graph" && i+1<argc) ipg_bdd2_graph_path=argv[++i];
+        else if (opt=="--ipg-bdd2-certificate" && i+1<argc) ipg_bdd2_certificate_path=argv[++i];
+#endif
         else if (opt=="--x5-no-minimize") x5_minimize=false;
         else if (opt=="--x5-no-retain") x5_retain=false;
         else if (opt=="--x5-retain") x5_retain=true;
@@ -1554,6 +1568,9 @@ int run(int argc, char** argv) {
 #endif
 #ifdef DRNAS_RESIDUAL_SCC
             std::cout<<"Residual SCC (proof-required, default off): --residual-scc --proof NEW_FILE\n";
+#endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+            std::cout<<"IPG-BDD2: --ipg-bdd2 --ipg-bdd2-budget-ms N --ipg-bdd2-graph NEW_FILE --ipg-bdd2-certificate NEW_FILE\n";
 #endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
@@ -1580,6 +1597,33 @@ int run(int argc, char** argv) {
     if (ipg1_requested && !pcmax_certificate.empty() &&
         ipg1_certificate==pcmax_certificate)
         throw std::runtime_error("IPG1 and PCMAX certificates need distinct paths");
+#endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+    if (!std::isfinite(ipg_bdd2_budget_ms) || ipg_bdd2_budget_ms<0.0 ||
+        ipg_bdd2_budget_ms>86400000.0)
+        throw std::runtime_error("invalid --ipg-bdd2-budget-ms");
+    if (ipg_bdd2_requested) {
+        pcmax_enabled=true; // source capture, even when capacity budget is zero
+        if (pcmax_only)
+            throw std::runtime_error("--ipg-bdd2 is incompatible with --pcmax-only");
+        if (ipg_bdd2_graph_path.empty() || ipg_bdd2_certificate_path.empty())
+            throw std::runtime_error("IPG-BDD2 needs both graph and certificate output paths");
+        std::set<std::string> used{input,proof_path,pcmax_certificate,
+                                  ipg_bdd2_graph_path,ipg_bdd2_certificate_path};
+        // Allow blank optional proof/capacity paths but never equal actual outputs.
+        if (ipg_bdd2_graph_path==ipg_bdd2_certificate_path ||
+            ipg_bdd2_graph_path==input || ipg_bdd2_certificate_path==input ||
+            (!proof_path.empty() && (ipg_bdd2_graph_path==proof_path ||
+                                     ipg_bdd2_certificate_path==proof_path)) ||
+            (!pcmax_certificate.empty() && (ipg_bdd2_graph_path==pcmax_certificate ||
+                                            ipg_bdd2_certificate_path==pcmax_certificate)))
+            throw std::runtime_error("IPG-BDD2 input, proof and certificate paths must differ");
+#ifdef DRNAS_IPG1_MODULE
+        if (ipg1_requested && (ipg_bdd2_graph_path==ipg1_certificate ||
+                              ipg_bdd2_certificate_path==ipg1_certificate))
+            throw std::runtime_error("IPG-BDD2 and IPG1 certificate paths must differ");
+#endif
+    }
 #endif
     if (pcmax_only && !proof_path.empty())
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
@@ -1803,6 +1847,49 @@ int run(int argc, char** argv) {
                      <<",\"module_s\":"<<ipg1_result.seconds<<"}\n";
             if (ipg1_result.verified) {
                 std::cout<<"c PCMAX_UNIFIED_PROOF_KIND IPG1_JSON_NEEDS_EXHAUSTIVE_CHECKER\n";
+                std::cout<<"s UNSATISFIABLE\n";
+                return 20;
+            }
+        }
+#endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+        // Only source clauses + a SHA bound to the exact DIMACS bytes are
+        // fed to the native count guard. The old BDD capacity target and
+        // frozen CDCL remain unchanged. The new result is NOT a DRAT proof.
+        if (ipg_bdd2_requested && !capacity_result.verified) {
+            drnas_ipgbdd2::Result count_result;
+            if (!pcmax_skip_reason.empty())
+                count_result.reason="source_capture_unavailable";
+            else {
+                if (digest.empty() && pcmax_digest) digest=pcmax_digest->finish();
+                double remaining=ipg_bdd2_budget_ms/1000.0;
+                if (seconds>0)
+                    remaining=std::min(remaining,std::max(0.0,seconds-
+                        std::chrono::duration<double>(Clock::now()-process_start).count()));
+                count_result=drnas_ipgbdd2::analyze(
+                    pcmax_original,declared_vars,digest,remaining);
+            }
+            if (count_result.verified) {
+                if (seconds>0 && std::chrono::duration<double>(
+                        Clock::now()-process_start).count()>=seconds) {
+                    count_result.verified=false;
+                    count_result.reason="overall_time_exhausted_before_certificate";
+                } else {
+                    pcmaxWriteCertificate(ipg_bdd2_graph_path,count_result.graph_json);
+                    pcmaxWriteCertificate(ipg_bdd2_certificate_path,count_result.certificate_json);
+                }
+            }
+            std::cout<<"c IPG_BDD2 {\"reason\":"<<pcmaxJsonString(count_result.reason)
+                     <<",\"internal_candidate\":"<<(count_result.verified?"true":"false")
+                     <<",\"selected_jobs\":"<<count_result.groups
+                     <<",\"machines\":"<<count_result.machines
+                     <<",\"transitions\":"<<count_result.source_transitions
+                     <<",\"class_a\":"<<count_result.chosen_a
+                     <<",\"class_b\":"<<count_result.chosen_b
+                     <<",\"trials\":"<<count_result.attempted
+                     <<",\"module_s\":"<<count_result.seconds<<"}\n";
+            if (count_result.verified) {
+                std::cout<<"c PCMAX_UNIFIED_PROOF_KIND IPG_BDD2_JSON_NEEDS_INDEPENDENT_CHECKER\n";
                 std::cout<<"s UNSATISFIABLE\n";
                 return 20;
             }
