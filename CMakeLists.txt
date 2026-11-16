@@ -66,3 +66,17 @@ if (TARGET OpenSSL::Crypto)
     target_compile_options(drnas-pcmax-mg7-unified PRIVATE -O3 -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+
+# IPG1 exact integer-cover proof-first experiment, opt-in only.
+# No portfolio or subprocess: BDD -> integer-cover -> CDCL+residual SCC.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-pcmax-mg7-ipg1 src/drnas_x5.cpp)
+  target_compile_definitions(drnas-pcmax-mg7-ipg1 PRIVATE
+    DRNAS_PCMAX_MODULE DRNAS_RESIDUAL_SCC DRNAS_PC_GUARD_COMBINED
+    DRNAS_IPG1_MODULE)
+  target_link_libraries(drnas-pcmax-mg7-ipg1 PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-pcmax-mg7-ipg1 PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
