@@ -24,8 +24,8 @@ def encode(choices, caps, name, amo=False, renumber=False):
     m = len(caps)
     assert all(2 <= len(set(rs)) <= 16 for rs in choices)
     assert all(0 <= r < m for rs in choices for r in rs)
-    variable = {(j, r): k + 1 for k, (j, rs) in enumerate(choices)
-                for r in sorted(set(rs))}
+    variable = {(j, r): k + 1 for k, (j, r) in enumerate(
+                (j, r) for j, rs in enumerate(choices) for r in sorted(set(rs)))}
     clauses = [tuple(variable[j, r] for r in sorted(set(rs))) for j, rs in enumerate(choices)]
     if amo:
         for j, rs in enumerate(choices):
@@ -79,7 +79,7 @@ def exact_dpll(raw):
             a = dict(a)
             a[abs(unit)] = unit > 0
         v = abs(remaining[0][0])
-        return dfs(dict(a, **{str(v): True})) if False else branch(a, v)
+        return branch(a, v)
     def branch(a, v):
         left = a.copy()
         left[v] = True
