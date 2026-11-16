@@ -39,7 +39,10 @@ def source_graph():
     E=[tuple(sorted((i,(i+1)%5))) for i in range(5)]
     E += [(i,i+5) for i in range(5)]
     E += [tuple(sorted((i+5,5+((i+2)%5)))) for i in range(5)]
-    edges=sorted(set(E))
+    # Preserve the EXACT original weighted CNF job order: outer five,
+    # spokes five, inner five. Sorting changes item-selector identities.
+    edges=E
+    if len(set(edges))!=15:raise ValueError("duplicate original graph edges")
     if len(edges)!=15:raise ValueError("invalid graph edges")
     vertices=[[] for _ in range(10)]
     for i,(u,v) in enumerate(edges):
