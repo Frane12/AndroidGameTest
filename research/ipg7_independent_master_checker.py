@@ -121,7 +121,7 @@ def verify_sat(source,certificate):
     if any(m not in configs for m in masks) or (
         masks[0]&masks[1] or masks[0]&masks[2] or masks[1]&masks[2]):
         raise ValueError("assigned machine jobs not disjoint exact-T profiles")
-    if (masks[0]|masks[1]|masks[2])!=(1<<n):
+    if (masks[0]|masks[1]|masks[2])!=((1<<n)-1):
         raise ValueError("not all jobs assigned")
     expected=[3*j+m+1 for j in range(n) for m in range(3) if (masks[m]>>j)&1]
     if literals!=expected:raise ValueError("claimed original SAT variables differ")
