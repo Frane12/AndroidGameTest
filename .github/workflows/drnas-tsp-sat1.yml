@@ -1,0 +1,185 @@
+name: DRNAS TSP-SAT1 exact tour CNF SAT+UNSAT independently verified
+on:
+  push:
+    branches: [experiment/drnas-tsp-sat-proof1-20261116]
+    paths:
+      - research/tsp_sat1/**
+      - .github/workflows/drnas-tsp-sat1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-tsp-sat1-exact-proof-pilot
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43913073775
+          name: drnas-sgate1-frozen-source-binaries-protocol
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore SHA-pinned native DRNAS, Structure-Gate, Kissat, CaDiCaL, CMS and proof checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -s frozen/structure-gate1-frozen.tgz
+          sha256sum frozen/structure-gate1-frozen.tgz
+          tar -xzf frozen/structure-gate1-frozen.tgz
+          chmod +x build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Exhaustive source-to-CNF tour controls and Held-Karp frozen optimum
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tsp_sat1/encoding.py research/tsp_sat1/benchmark.py
+          python3 -u research/tsp_sat1/encoding.py | tee tsp1_encoder.log
+          grep -q '^TSP_SAT1_ENCODING_SELFTEST_PASS ' tsp1_encoder.log
+          python3 -u research/tsp_sat1/benchmark.py prepare | tee tsp1_prepare.log
+          grep -q '^TSP_SAT1_READY ' tsp1_prepare.log
+      - name: Live independent original-CNF proof and verified tour preflight
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee tsp1_proof_preflight.log
+          import json
+          from pathlib import Path
+          from research.tsp_sat1 import benchmark as b
+          m=json.loads((Path('results/tsp_sat1/manifest.json')).read_text())
+          case=m['cases'][0]
+          out={}
+          for label,status in [('BELOW_OPT','UNSAT_VERIFIED'),('AT_OPT','SAT_VERIFIED')]:
+              record=b.trial(case,label,0,'Kissat')
+              if record['status'] != status or not record['strict_accepted']:
+                  raise RuntimeError('independent SAT/UNSAT proof preflight failed: '+repr(record))
+              out[label]={'status':record['status'],'e2e_s':record['elapsed_s'],
+                          'proof':record['proof_kind'],'cost':record['route_cost']}
+          print('TSP_SAT1_PROOF_PREFLIGHT_PASS',json.dumps(out,sort_keys=True),flush=True)
+          PY
+          grep -q '^TSP_SAT1_PROOF_PREFLIGHT_PASS ' tsp1_proof_preflight.log
+      - name: Freeze all generated CNFs, sources, solver hashes and proof policy before paired trials
+        run: |
+          set -euo pipefail
+          tar -czf tsp-sat1-frozen.tgz results/tsp_sat1 \
+            build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb
+          sha256sum tsp-sat1-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsp-sat1-frozen-sources-CNF-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: tsp-sat1-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat1-source-encoding-proof-preflight
+          retention-days: 60
+          path: |
+            tsp1_*.log
+            results/tsp_sat1/manifest.json
+            results/tsp_sat1/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsp-sat1-frozen-sources-CNF-binaries
+      - name: Restore identical proof-aware native binaries and exact CNFs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf tsp-sat1-frozen.tgz
+          chmod +x build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: One logical CPU per solver, paired randomized order, 12s strict solver+proof verification
+        run: |
+          set -euo pipefail
+          python3 -u research/tsp_sat1/benchmark.py shard --index ${{ matrix.shard }} | tee tsp1_shard.log
+          grep -q '^TSP_SAT1_SHARD ' tsp1_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/tsp_sat1/shard-${{ matrix.shard }}/trials.jsonl
+            tsp1_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsp-sat1-frozen-sources-CNF-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tsp-sat1-shard-*
+          path: collected
+      - name: Enforce complete 100-trial frozen paired proof matrix, check correctness and strict PAR2
+        run: |
+          set -euo pipefail
+          tar -xzf tsp-sat1-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(5):
+              files=list((Path("collected")/f"tsp-sat1-shard-{i}").rglob("trials.jsonl"))
+              assert len(files)==1,(i,files)
+              dst=Path("results/tsp_sat1")/f"shard-{i}"
+              dst.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(files[0],dst/"trials.jsonl")
+          PY
+          python3 -u research/tsp_sat1/benchmark.py report | tee tsp1_final.log
+          grep -q '^TSP_SAT1_FINAL ' tsp1_final.log
+          cat tsp1_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat1-final-verified-tour-and-UNSAT-proof-audit
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            tsp1_final.log
+            results/tsp_sat1/final.json
+            results/tsp_sat1/manifest.json
+            results/tsp_sat1/protocol.json
+            results/tsp_sat1/shard-*/trials.jsonl
