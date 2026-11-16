@@ -64,7 +64,9 @@ def main():
         "--rup-out",rup,"--metadata",meta,"--fractional",frac],60)
     require(rc==0 and rup.exists() and graph.exists(),"source guided proof generation failed")
     gen=json.loads(meta.read_text())
-    require(gen["missing_graph_mutex_derived"]==90 and gen["odd_cycle_parity_RUP_steps"]==59,
+    require(gen["total_graph_mutex_clauses"]==90 and
+            gen["missing_graph_mutex_derived"]+gen["graph_mutex_already_original"]==90 and
+            gen["odd_cycle_parity_RUP_steps"]==59,
             "original->graph parity structural bridge incomplete")
     require(gen["source_sha256"]==source_sha,"generator source hash mismatch")
 
@@ -128,7 +130,8 @@ def main():
         "status":"PASS",
         "original_source_sha256":source_sha,
         "original_variables":45,"original_clauses":300,
-        "new_source_graph_mutex_lemmas":90,
+        "new_source_graph_mutex_lemmas":gen["missing_graph_mutex_derived"],
+        "original_graph_mutex_already_present":gen["graph_mutex_already_original"],
         "structural_DPLL_branch_nodes":gen["lemma_tree_nodes"],
         "structural_source_RUP_steps":gen["graph_mutex_RUP_steps"],
         "parity_RUP_steps":gen["odd_cycle_parity_RUP_steps"],
