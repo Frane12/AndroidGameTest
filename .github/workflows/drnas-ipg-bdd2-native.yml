@@ -1,0 +1,80 @@
+name: DRNAS IPG-BDD2 native C++ source-proof single-process pilot
+on:
+  push:
+    branches: [experiment/drnas-ipg-bdd2-native-cpp-20261116]
+    paths:
+      - src/drnas_x5.cpp
+      - src/ipg_bdd_count.hpp
+      - CMakeLists.txt
+      - research/ipg_bdd2_native_benchmark.py
+      - .github/workflows/drnas-ipg-bdd2-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg-bdd2-native-20261116
+  cancel-in-progress: false
+jobs:
+  single_cpu_native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Compile exact native two-class profile guard + frozen previous union
+        run: |
+          set -euo pipefail
+          make -C drat-trim drat-trim
+          python3 -m py_compile research/ipg_bdd2_native_benchmark.py \
+            research/ipg_bdd_profiles.py research/ipg_bdd_checker.py \
+            research/ipg_bdd_fixtures.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target \
+            drnas-pcmax-mg7-ipg1-bdd2 \
+            drnas-pcmax-mg7-ipg1 -j2
+          sha256sum build/drnas-pcmax-mg7-ipg1-bdd2 \
+            build/drnas-pcmax-mg7-ipg1
+      - name: Source-CNF proof audit, native C++ versus independent backward checker
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg_bdd2_native_benchmark.py
+      - name: Honest verified-only summary
+        if: always()
+        run: |
+          if test -s results/ipg_bdd2_native/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          s=json.loads(pathlib.Path("results/ipg_bdd2_native/summary.json").read_text())
+          msg=("# Native IPG-BDD2 C++ source proof pilot\n\n"
+               +f"Status: {s['status']}\n\n"
+               +f"Generated BDD-CNF cases: {s['generated_count']}; independent SOURCE-verified: {s['generated_source_verified']}/{s['generated_expected_unsat']} oracle-UNSAT\n\n"
+               +f"Original SHA-frozen PCMAX: {s['original_count']}; independently SOURCE-verified: {s['original_source_verified']}\n\n"
+               +f"Original PCMAX #44 verified by native C++: {s['native_m11_source_verified']}\n\n"
+               +f"Errors: {len(s['errors'])}\n\n"
+               +s['note']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg-bdd2-native-cpp-source-proof-audit
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg_bdd2_native_benchmark.py
+            src/ipg_bdd_count.hpp
+            results/ipg_bdd2_native/
