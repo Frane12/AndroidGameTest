@@ -32,6 +32,9 @@
 #include <unistd.h>
 #include "pcmax_capacity.hpp"
 #endif
+#ifdef DRNAS_RESIDUAL_SCC
+#include "residual_scc.hpp"
+#endif
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -178,6 +181,10 @@ struct Clause {
 struct Watch { int clause; int blocker; };
 struct Prop { PropResult result = PropResult::OK; int conflict = -1; int inspected = 0; };
 struct Stats {
+#ifdef DRNAS_RESIDUAL_SCC
+    int64_t residual_checks=0, residual_new_binary=0;
+    int64_t residual_hits=0, residual_nogoods=0, residual_source_binary=0;
+#endif
     int64_t conflicts = 0, decisions = 0, propagations = 0;
     int64_t restarts = 0, learnt = 0, horizon_probes = 0;
     int64_t horizon_conflicts = 0, horizon_inspections = 0;
@@ -229,6 +236,9 @@ class Solver {
         if (n < 0 || n > 20000000) throw std::runtime_error("unsupported DIMACS variable count");
     }
 
+#ifdef DRNAS_RESIDUAL_SCC
+    void configureResidual(bool active) { residual_enabled_ = active; }
+#endif
     void configureX5(bool minimize, bool retain, bool gc, bool restarts, std::ostream* proof) {
         x5_minimize_=minimize; x5_retain_=retain; x5_gc_=gc;
         x5_restarts_=restarts; proof_=proof;
@@ -284,6 +294,80 @@ class Solver {
     // If all residual widths are <=2, implication SCC determines SAT exactly.
     // For an UNSAT leaf, D_1 & ... & D_k is impossible, so the nogood
     // (~D_1 | ... | ~D_k) is entailed by the ORIGINAL CNF.
+#ifdef DRNAS_RESIDUAL_SCC
+    // Exact conflict-only reasoning. Unlike the dormant tryTwoSat() backdoor,
+    // this checks only the <=2-literal RESIDUAL subset: long clauses are
+    // permitted, but no SAT conclusion follows from a consistent subformula.
+    // We require a DRAT output stream. Both guarded polarities are RUP:
+    // assuming the current decisions plus either witness polarity makes the
+    // original residual binary implication graph propagate a contradiction.
+    // Hence their resolution (the decision nogood) is also RUP.
+    Backdoor tryResidualScc() {
+        if (!residual_enabled_ || !proof_ || timedOut() ||
+            n_>3000 || original_count_>50000 ||
+            decisionLevel()>20 || stats_.residual_checks>=64 ||
+            stats_.decisions==residual_last_decision_) return Backdoor::SKIP;
+        if (n_>256 && decisionLevel()>0 && (stats_.decisions%4)!=0)
+            return Backdoor::SKIP;
+        residual_last_decision_=stats_.decisions;
+        ++stats_.residual_checks;
+        std::vector<std::pair<int,int>> binary;
+        binary.reserve(static_cast<size_t>(std::min(50000,original_count_)));
+        int newly_binary=0;
+        for (const Clause& c:clauses_) {
+            if (c.learnt || c.deleted) continue;
+            bool satisfied=false;
+            int a=0,b=0,remaining=0;
+            for (int lit:c.lits) {
+                const int v=value(lit);
+                if (v==1) { satisfied=true; break; }
+                if (v==0) {
+                    if (remaining==0) a=lit;
+                    else if (remaining==1) b=lit;
+                    ++remaining;
+                }
+            }
+            if (satisfied) continue;
+            if (remaining==0) return Backdoor::SKIP; // handled by BCP
+            if (remaining<=2) {
+                binary.emplace_back(a,b);
+                if (c.lits.size()>2 && remaining==2) ++newly_binary;
+            }
+        }
+        stats_.residual_new_binary += newly_binary;
+        stats_.residual_source_binary += static_cast<int64_t>(binary.size());
+        if (binary.size()<3 || (decisionLevel()>0 && newly_binary==0))
+            return Backdoor::SKIP;
+        const int witness=drnas_residual::contradiction_witness(n_,binary);
+        if (witness==0) return Backdoor::SKIP;
+        ++stats_.residual_hits;
+
+        std::vector<int> nogood;
+        nogood.reserve(static_cast<size_t>(decisionLevel()));
+        for (int k=decisionLevel()-1;k>=0;--k) {
+            const int at=trail_lim_[static_cast<size_t>(k)];
+            nogood.push_back(-trail_[static_cast<size_t>(at)]);
+        }
+        // DRAT RUP helper clauses, then the asserting nogood.
+        // The helpers are for the checker, not the solver's watch lists.
+        std::vector<int> helper=nogood;
+        helper.push_back(-witness);
+        writeProofClause(helper);
+        helper.back()=witness;
+        writeProofClause(helper);
+        if (decisionLevel()==0) return Backdoor::UNSAT;
+
+        const int depth=decisionLevel();
+        cancelUntil(depth-1);
+        const int cid=storeClause(std::move(nogood),true);
+        ++stats_.learnt;
+        ++stats_.residual_nogoods;
+        if (!enqueue(clauses_[cid].lits[0],cid))
+            throw std::runtime_error("residual SCC nogood did not assert");
+        return Backdoor::LEARNED;
+    }
+#endif
+
     Backdoor tryTwoSat() {
         if (!use_backdoor_ || n_>12000 || original_count_>90000 ||
             decisionLevel()>12 || timedOut()) return Backdoor::SKIP;
@@ -452,6 +536,11 @@ class Solver {
             }
             endTransition(false);
             settleFeedback(false);
+#ifdef DRNAS_RESIDUAL_SCC
+            const Backdoor residual=tryResidualScc();
+            if (residual==Backdoor::UNSAT) return Result::UNSAT;
+            if (residual==Backdoor::LEARNED) continue;
+#endif
             const Backdoor backdoor=tryTwoSat();
             if (backdoor==Backdoor::SAT) return Result::SAT;
             if (backdoor==Backdoor::UNSAT) return Result::UNSAT;
@@ -707,6 +796,10 @@ class Solver {
     const int n_;
     const std::string mode_;
     const bool use_backdoor_;
+#ifdef DRNAS_RESIDUAL_SCC
+    bool residual_enabled_=false;
+    int64_t residual_last_decision_=-1;
+#endif
     const bool use_depth_;
     const bool trace_enabled_;
     const bool trace_trail_;
@@ -1399,6 +1492,9 @@ int run(int argc, char** argv) {
     double x46_probe_ms=1.5;
     std::string x46_model_path,x47_guard_path,proof_path;
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
+#ifdef DRNAS_RESIDUAL_SCC
+    bool residual_requested=false;
+#endif
 #ifdef DRNAS_PCMAX_MODULE
     bool pcmax_enabled=false, pcmax_only=false;
     double pcmax_budget_ms=250.0;
@@ -1410,6 +1506,9 @@ int run(int argc, char** argv) {
         else if (opt=="--time" && i+1<argc) seconds=std::stod(argv[++i]);
         else if (opt=="--transitions" && i+1<argc) trace_file=argv[++i];
         else if (opt=="--proof" && i+1<argc) proof_path=argv[++i];
+#ifdef DRNAS_RESIDUAL_SCC
+        else if (opt=="--residual-scc") residual_requested=true;
+#endif
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
         else if (opt=="--pcmax-only") { pcmax_enabled=true; pcmax_only=true; }
@@ -1440,6 +1539,9 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
             std::cout<<"PCMAX options (off by default): --pcmax-capacity [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
 #endif
+#ifdef DRNAS_RESIDUAL_SCC
+            std::cout<<"Residual SCC (proof-required, default off): --residual-scc --proof NEW_FILE\n";
+#endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
         else if (input.empty()) input=opt;
@@ -1447,6 +1549,10 @@ int run(int argc, char** argv) {
     }
     if (input.empty() || (mode!="core" && mode!="trace") || !std::isfinite(seconds) || seconds<0)
         throw std::runtime_error("invalid input/mode/time");
+#ifdef DRNAS_RESIDUAL_SCC
+    if (residual_requested && proof_path.empty())
+        throw std::runtime_error("--residual-scc requires --proof to emit RUP/DRAT evidence");
+#endif
 #ifdef DRNAS_PCMAX_MODULE
     if (!std::isfinite(pcmax_budget_ms) || pcmax_budget_ms<0 || pcmax_budget_ms>86400000.0)
         throw std::runtime_error("invalid --pcmax-budget-ms");
@@ -1555,6 +1661,9 @@ int run(int argc, char** argv) {
             solver.emplace(declared_vars,mode,seconds,process_start,trace_trail,compare_at,compare_flip);
             solver->configureX5(x5_minimize,x5_retain,x5_gc,x5_restarts,
                                 proof_path.empty()?nullptr:&proof);
+#ifdef DRNAS_RESIDUAL_SCC
+            solver->configureResidual(residual_requested);
+#endif
             if(x46_conflicts>0)solver->configureX46(x46_conflicts,x46_shadow,x46_probe_ms);
             if(!x47_guard_path.empty())solver->loadX47Guard(x47_guard_path);
             continue;
@@ -1717,6 +1826,16 @@ int run(int argc, char** argv) {
                  <<",\"prefix_elapsed_s\":"<<std::fixed<<std::setprecision(7)<<solver->comparePrefixElapsed()
                  <<"}\n";
     }
+#ifdef DRNAS_RESIDUAL_SCC
+    if (residual_requested) {
+        const Stats& rs=solver->stats();
+        std::cerr<<"MG7_RESIDUAL {\"checks\":"<<rs.residual_checks
+                 <<",\"binary_extracted\":"<<rs.residual_source_binary
+                 <<",\"new_binary\":"<<rs.residual_new_binary
+                 <<",\"scc_conflicts\":"<<rs.residual_hits
+                 <<",\"nogoods\":"<<rs.residual_nogoods<<"}\n";
+    }
+#endif
     if (show_stats) {
         const Stats& s=solver->stats();
         std::cerr<<"X5_STATS {\"minimized_literals\":"<<s.minimized_literals
