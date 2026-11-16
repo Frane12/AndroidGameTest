@@ -65,7 +65,7 @@ def check(cnf,proof,meta):
         body=words[1:-3]
         if len(body)%2!=1 or any(x!="+" for x in body[2::2]):
             raise ValueError("not a simple original-source addition proof")
-        antecedents=[int(x) for x in body[::2]]
+        antecedents=[int(body[0])]+[int(x) for x in body[1::2]]
         if len(antecedents)!=(3 if divisor==2 else 8):
             raise ValueError("wrong number source PB antecedents")
         if any(cid not in nodes for cid in antecedents):
