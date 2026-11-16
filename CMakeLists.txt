@@ -121,3 +121,20 @@ if (TARGET OpenSSL::Crypto)
     target_compile_options(drnas-pcmax-mg7-ipg1-bdd3 PRIVATE -O3 -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+
+# Experimental source-only PCMAX signature gate. The original BDD3 target
+# remains identical; this distinct target skips unsupported optional guards
+# and always falls through to the same DRAT-producing native CDCL solver.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-pcmax-mg7-ipg1-bdd3-fastgate1 src/drnas_x5.cpp)
+  target_compile_definitions(drnas-pcmax-mg7-ipg1-bdd3-fastgate1 PRIVATE
+    DRNAS_PCMAX_MODULE DRNAS_RESIDUAL_SCC DRNAS_PC_GUARD_COMBINED
+    DRNAS_IPG1_MODULE DRNAS_IPG_BDD2_MODULE DRNAS_IPG_BDD3_MODULE
+    DRNAS_FAST_PC_GATE1)
+  target_link_libraries(drnas-pcmax-mg7-ipg1-bdd3-fastgate1 PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-pcmax-mg7-ipg1-bdd3-fastgate1 PRIVATE
+      -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
