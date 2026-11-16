@@ -70,7 +70,7 @@ CNF read_cnf(const fs::path&path,Deadline&budget){
             long long n,m;
             expect(!has_header&&bool(h>>p>>kind>>n>>m)&&!(h>>extra)&&
                    p=="p"&&kind=="cnf","bad_header");
-            expect(n>0&&n<=200000&&m>=0&&m<=1000000,"header_size_gate");
+            expect(n>0&&n<=500000&&m>=0&&m<=1000000,"header_size_gate");
             src.vars=int(n);src.clauses=int(m);
             src.forward.resize(src.vars*2);
             src.reverse.resize(src.vars*2);
