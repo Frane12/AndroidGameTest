@@ -1,0 +1,199 @@
+name: DRNAS TSP-SAT2 autonomous SAT optimization and exact proof audit
+on:
+  push:
+    branches: [experiment/drnas-tsp-sat2-autonomous-optimum-20261116]
+    paths:
+      - research/tsp_sat2/**
+      - .github/workflows/drnas-tsp-sat2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-tsp-sat2-autonomous-pilot
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43913073775
+          name: drnas-sgate1-frozen-source-binaries-protocol
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore frozen solver/checker binaries without modifying any solver
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -s frozen/structure-gate1-frozen.tgz
+          sha256sum frozen/structure-gate1-frozen.tgz
+          tar -xzf frozen/structure-gate1-frozen.tgz
+          chmod +x build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Selftest signed-cost encoding, freeze new original TSP sources and binary SHA256
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/tsp_sat1/encoding.py research/tsp_sat2/optimizer.py research/tsp_sat2/audit.py
+          python3 -u research/tsp_sat1/encoding.py | tee tsp2_encoding_selftest.log
+          grep -q '^TSP_SAT1_ENCODING_SELFTEST_PASS ' tsp2_encoding_selftest.log
+          python3 -u research/tsp_sat2/optimizer.py prepare | tee tsp2_prepare.log
+          grep -q '^TSP_SAT2_READY ' tsp2_prepare.log
+      - name: Live one-core proof preflight against NEW 5-city TSP seed
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee tsp2_proof_preflight.log
+          import json
+          from pathlib import Path
+          from research.tsp_sat2.optimizer import optimize,coords_for
+          import tempfile
+          with tempfile.TemporaryDirectory(prefix="tsp2-proof-preflight-") as td:
+              outcome=optimize(coords_for(5,1021),'Kissat',Path(td))
+              assert outcome['status']=='OPTIMAL_CERTIFIED',outcome
+              assert outcome['certificate']['bound']==outcome['best_cost']-1
+              print('TSP_SAT2_PROOF_PREFLIGHT_PASS',json.dumps({
+                  'cost':outcome['best_cost'],
+                  'bound':outcome['certificate']['bound'],
+                  'queries':outcome['queries'],
+                  'proof':outcome['certificate']['kind']},sort_keys=True))
+          PY
+          grep -q '^TSP_SAT2_PROOF_PREFLIGHT_PASS ' tsp2_proof_preflight.log
+      - name: Freeze selected sources, algorithm, reference versions and checker policy
+        run: |
+          set -euo pipefail
+          tar -czf tsp-sat2-frozen.tgz \
+            results/tsp_sat2/manifest.json results/tsp_sat2/protocol.json \
+            results/tsp_sat2/sources \
+            build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb
+          sha256sum tsp-sat2-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsp-sat2-frozen-source-and-protocol
+          retention-days: 60
+          if-no-files-found: error
+          path: tsp-sat2-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat2-preflight-and-audit
+          retention-days: 60
+          path: |
+            tsp2_*.log
+            results/tsp_sat2/manifest.json
+            results/tsp_sat2/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsp-sat2-frozen-source-and-protocol
+      - name: Restore bit-identical reference binaries and frozen source instances
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf tsp-sat2-frozen.tgz
+          chmod +x build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Optimize TSP autonomously: one CPU, 5 arms, 2 reps, verified SAT and all bound UNSAT certificates
+        run: |
+          set -euo pipefail
+          python3 -u research/tsp_sat2/optimizer.py shard --index ${{ matrix.shard }} | tee tsp2_shard.log
+          grep -q '^TSP_SAT2_SHARD ' tsp2_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat2-case-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          compression-level: 6
+          path: |
+            results/tsp_sat2/case-${{ matrix.shard }}/
+            tsp2_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsp-sat2-frozen-source-and-protocol
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tsp-sat2-case-*
+          path: collected
+      - name: Restore 50 case/arm/rep records and retained original-CNF certificates
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf tsp-sat2-frozen.tgz
+          chmod +x build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(5):
+              matches=list((Path('collected')/f'tsp-sat2-case-{i}').rglob('trials.jsonl'))
+              assert len(matches)==1,(i,matches)
+              src=matches[0].parent
+              dst=Path('results/tsp_sat2')/f'case-{i}'
+              assert src.name==dst.name
+              shutil.copytree(src,dst)
+          PY
+      - name: Independent after-the-fact Held-Karp and recheck every retained original-CNF proof
+        run: |
+          set -euo pipefail
+          python3 -u research/tsp_sat2/audit.py report | tee tsp2_final.log
+          grep -q '^TSP_SAT2_FINAL ' tsp2_final.log
+          cat tsp2_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat2-final-autonomous-optimality-and-full-proof-chain
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            tsp2_final.log
+            results/tsp_sat2/final.json
+            results/tsp_sat2/manifest.json
+            results/tsp_sat2/protocol.json
+            results/tsp_sat2/case-*/trials.jsonl
