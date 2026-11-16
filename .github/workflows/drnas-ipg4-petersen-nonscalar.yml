@@ -1,0 +1,91 @@
+name: DRNAS IPG4 Petersen NONSCALAR parity and weighted VeriPB original audit
+on:
+  push:
+    branches: [experiment/drnas-ipg4-petersen-parity-veripb-20261116]
+    paths:
+      - research/ipg4_petersen_parity_proof.py
+      - research/ipg4_rup_drat_to_veripb.py
+      - research/ipg4_fractional_gap_checker.py
+      - research/ipg4_nonscalar_veripb_benchmark.py
+      - .github/workflows/drnas-ipg4-petersen-nonscalar.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg4-nonscalar-20261116
+  cancel-in-progress: false
+jobs:
+  two_formal_certificates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent VeriPB3.0.2 and DRAT checkers
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Freeze generator syntax, compile native DRAT emitter
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg4_petersen_parity_proof.py \
+            research/ipg4_rup_drat_to_veripb.py \
+            research/ipg4_fractional_gap_checker.py \
+            research/ipg4_nonscalar_veripb_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-mg7-scc -j2
+          sha256sum build/drnas-mg7-scc research/ipg4_*.py
+      - name: Construct and independently verify graph odd-cycle and original weighted VeriPB
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg4_nonscalar_veripb_benchmark.py
+      - name: Publish exact and distinct provenance for each proof
+        if: always()
+        run: |
+          if test -s results/ipg4_nonscalar_petersen/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path('results/ipg4_nonscalar_petersen/summary.json').read_text())
+          text=[
+            "# IPG4 Petersen non-scalar PCMAX VeriPB audit",
+            "",
+            f"Status: {d['status']}",
+            f"Original weighted source: {d['weighted_original_vars']}v/{d['weighted_original_clauses']}c, SHA256 {d['weighted_original_sha256']}",
+            f"Nonnegative scalar separator possible: {d['nonnegative_scalar_separation_possible']}",
+            f"Perfect matchings: {d['perfect_matchings']}, fractional multiplicity per job: {d['fractional_coverage_per_job']}",
+            f"Parity-guided graph source proof: {d['graph_parity_RUP_steps']} RUP steps, external VeriPB accepted: {d['graph_veripb']['veripb_verified']}",
+            f"Original weighted CDCL-origin proof: {d['original_verified_RUP_steps']} source-RUP steps, external VeriPB accepted: {d['original_VerIPB']['veripb_verified']}",
+            f"Original source tamper rejected: {d['tamper_source_rejected']}",
+            f"Fractional proof tamper rejected: {d['tamper_fractional_cert_rejected']}",
+            "",
+            d['scope']
+          ]
+          msg="\n\n".join(text)+"\n"
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg4-petersen-nonscalar-dual-veripb-original-proofs
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg4_*.py
+            results/ipg4_nonscalar_petersen/
