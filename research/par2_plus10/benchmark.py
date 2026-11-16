@@ -9,8 +9,10 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/"research/unified_evidence"))
 import benchmark as base
-sys.path.insert(0,str(ROOT/"research/math5_standard_real67"))
-import benchmark as m5
+import importlib.util
+spec=importlib.util.spec_from_file_location("math5_strict_runner",ROOT/"research/math5_standard_real67/benchmark.py")
+m5=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m5)
 
 OUT=ROOT/"results/par2_plus10"
 MANIFEST25=ROOT/"sat_real2025_inputs/manifest.json"
