@@ -99,6 +99,10 @@ def partitions(graph):
         for parent,x,left,right in machine["transitions"]:
             if x in selector_to_group:occurrence[selector_to_group[x]]+=1
     idx=tuple(range(n))
+    given=graph.get("eligible_group_order",[])
+    if sorted(given)==list(range(n)):
+        topological=tuple(given)
+    else:topological=idx
     half=n//2
     priority=tuple(sorted(idx,key=lambda j:(-occurrence[j],j)))
     proposals=[
@@ -107,10 +111,24 @@ def partitions(graph):
         (idx[::2],idx[1::2]),
         (priority[:half],priority[half:]),
     ]
+    # Selecting only some exactly-one clauses is always sound:
+    # others get weight zero, allowing the checker to prove a stronger
+    # global impossibility without assuming anything about omitted jobs.
+    # The native weighted capacity extractor already benefits from this
+    # idea; here we combine it with *two-dimensional* integer count DP.
+    for order in (topological,priority):
+        for k in range(3,n+1):
+            subset=tuple(order[:k])
+            proposals.append((subset,()))
+            if k>=6:
+                proposals.append((subset[:k//2],subset[k//2:]))
+        for k in range(3,n):
+            proposals.append((tuple(order[n-k:]),()))
     seen=set();ans=[]
     for aa,bb in proposals:
         if not aa:continue
         a=tuple(sorted(aa));b=tuple(sorted(bb))
+        if not a and not b:continue
         if (a,b) not in seen:
             seen.add((a,b));ans.append((a,b))
     return ans
