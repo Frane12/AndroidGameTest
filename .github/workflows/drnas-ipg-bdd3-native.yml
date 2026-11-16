@@ -1,0 +1,86 @@
+name: DRNAS IPG-BDD3 native 3-count source-proof audit
+on:
+  push:
+    branches: [experiment/drnas-ipg-bdd3-native-3count-20261116]
+    paths:
+      - src/drnas_x5.cpp
+      - src/ipg_bdd3_count.hpp
+      - research/ipg_bdd3_checker.py
+      - research/ipg_bdd3_native_benchmark.py
+      - CMakeLists.txt
+      - .github/workflows/drnas-ipg-bdd3-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg-bdd3-native-20261116
+  cancel-in-progress: false
+jobs:
+  certified_paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Build both native C++ BDD variants and independent DRAT-trim
+        run: |
+          set -euo pipefail
+          make -C drat-trim drat-trim
+          python3 -m py_compile research/ipg_bdd3_checker.py research/ipg_bdd3_native_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax-mg7-ipg1-bdd2 drnas-pcmax-mg7-ipg1-bdd3 -j2
+          sha256sum build/drnas-pcmax-mg7-ipg1-bdd2 build/drnas-pcmax-mg7-ipg1-bdd3
+      - name: Serial one-core same-source paired BDD2/BDD3 source-proof audit
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg_bdd3_native_benchmark.py
+      - name: Independently accepted proof counts only
+        if: always()
+        run: |
+          if test -s results/ipg_bdd3_native/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg_bdd3_native/summary.json").read_text())
+          msg=("# IPG-BDD3 native three-class count proof pilot\n\n"
+            +f"Status: {d['status']}\n\n"
+            +f"Paired original-source formulas: {d['pair_count']}\n\n"
+            +f"Prior two-class structural UNSAT: {d['bdd2_source_verified']}\n\n"
+            +f"New three-class structural UNSAT: {d['bdd3_source_verified']}\n\n"
+            +f"Original official PCMAX verified by three-class guard: {d['bdd3_original_source_verified']}\n\n"
+            +f"New source proofs over two-class arm: {len(d['bdd3_new_source_proofs_vs_bdd2'])}\n\n"
+            +f"New original proofs: {len(d['bdd3_new_original_proofs_vs_bdd2'])}\n\n"
+            +f"Errors: {len(d['errors'])}\n\n"
+            +d['note']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg-bdd3-native-three-class-source-proofs
+          retention-days: 30
+          compression-level: 6
+          path: |
+            src/ipg_bdd3_count.hpp
+            research/ipg_bdd3_checker.py
+            research/ipg_bdd3_native_benchmark.py
+            results/ipg_bdd3_native/summary.json
+            results/ipg_bdd3_native/rows.json
+            results/ipg_bdd3_native/sealed_manifest.json
+            results/ipg_bdd3_native/trials/*/*/*.json
+            results/ipg_bdd3_native/trials/*/*/*.log
+            results/ipg_bdd3_native/generated_fixture/*.cnf
+            results/ipg_bdd3_native/sealed_generated/*.cnf
