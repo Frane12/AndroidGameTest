@@ -101,7 +101,7 @@ def parse_rup_trace(path,nv):
 def clause_to_pbp(c):
     if not c:
         # Inconsistent 0 >= 1, check its parsing and RUP nature externally.
-        return "rup 0 >= 1 ;\n"
+        return "rup >= 1 ;\n"
     return "rup "+" ".join(
         f"1 {'~' if lit<0 else ''}x{abs(lit)}" for lit in c
     )+" >= 1 ;\n"
