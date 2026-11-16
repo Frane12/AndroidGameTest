@@ -120,3 +120,35 @@ Reproduce:
 All results are exploratory known-source retrospective experiments,
 not source-disjoint blind PAR2. The branch is
 `experiment/drnas-ipg5e-original-pure-pol-20261116`.
+
+
+## Independent exact rational source-LP obstruction (further test)
+
+Successful additional GitHub workflow:
+https://github.com/Frane12/AndroidGameTest/actions/runs/43874413055
+
+- On the unchanged 45v/300c original weighted Petersen CNF, all 81 graph
+  adjacency clauses absent from the source have feasible exact **rational
+  countermodels** in the continuous original source-PB relaxation under
+  both corresponding selectors set to 1 (81/81 independently checked).
+  No plain linear conic source combination can derive these mutexes.
+- After adding the three source-derived rank-one Chvátal–Gomory triangle
+  cuts from IPG5-B, at least 72/81 of the same supposedly forbidden
+  pairs still admit independently exact-checked fractional models.
+- The other nine pairs have no saved witness after these cuts, but this
+  does NOT constitute a source-PB formal proof of their infeasibility.
+- Initial rational maximum denominator was 6, and after the three cuts
+  the 72 positive countermodels have denominators at most 14.
+- A separate independent verifier using integer arithmetic, not SciPy,
+  rechecks all 300 original clauses, source hash, forcing of each pair,
+  and all source-supported CG triangle cuts. Forged witnesses are rejected.
+
+Source:
+`research/ipg5e_exact_lp_obstruction.py` discovers witnesses numerically;
+`research/ipg5e_rational_lp_checker.py` verifies them EXACTLY.
+
+This demonstrates a real mathematical obstruction to a simple source
+linear proof and to these three particular rank-one cuts. It does not
+establish failure of all higher-rank or alternative CG derivations, nor
+a new SAT algorithm.
+
