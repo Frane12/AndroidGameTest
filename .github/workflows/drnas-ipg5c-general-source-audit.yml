@@ -1,0 +1,103 @@
+name: DRNAS IPG5-C source-recognized proof generalization and source PB cuts
+on:
+  push:
+    branches: [experiment/drnas-ipg5c-source-onehot-general-20261116]
+    paths:
+      - CMakeLists.txt
+      - research/ipg5c_native_onehot.cpp
+      - research/ipg5c_source_rup_to_veripb.py
+      - research/ipg5c_oddcycle_cuts.py
+      - research/ipg5c_general_benchmark.py
+      - .github/workflows/drnas-ipg5c-general-source-audit.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ipg5c-source-onehot-test-20261116
+  cancel-in-progress: false
+jobs:
+  one_cpu_source_proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Install pinned independent VeriPB 3.0.2 and original-CNF DRAT-trim
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Build source-recognized standalone native C++ proof generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/ipg5c_source_rup_to_veripb.py \
+            research/ipg5c_oddcycle_cuts.py \
+            research/ipg5c_general_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-ipg5c-onehot -j2
+          sha256sum build/drnas-ipg5c-onehot \
+            research/ipg5c_native_onehot.cpp \
+            research/ipg5c_source_rup_to_veripb.py \
+            research/ipg5c_oddcycle_cuts.py \
+            research/ipg5c_general_benchmark.py
+      - name: Paired semantics controls + independent source-RUP, DRAT and VeriPB
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg5c_general_benchmark.py
+      - name: Publish coverage honestly, differentiating semantic permutations
+        if: always()
+        run: |
+          if test -s results/ipg5c_general/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg5c_general/summary.json").read_text())
+          msg=(
+            "# IPG5C source-recognized one-hot original-CNF proofs\n\n"
+            +f"Status: {d['status']}\n\n"
+            +f"Inputs checked: {d['inputs']}\n\n"
+            +f"Petersen semantic permutations (NOT new independent problem): {d['petersen_permutations_source_verified']}/{d['petersen_semantic_permutations']}\n\n"
+            +f"Different UNSAT cardinality packing formulas: {d['distinct_packing_unsat_verified']}/{d['distinct_packing_unsat_cases']}\n\n"
+            +f"SAT controls with false UNSAT: {d['sat_controls_proofs']}/{d['sat_controls']}\n\n"
+            +f"Original source-derived odd-cycle PB cuts: {d['source_pb_rank1_cuts_on_original']}\n\n"
+            +f"Original source RUP steps: {d['verified_original_rup_steps']}\n\n"
+            +f"Errors: {len(d['errors'])}\n\n"
+            +d['scope']+"\n"
+          )
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg5c-source-recognized-verified-pb-tests
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg5c_native_onehot.cpp
+            research/ipg5c_source_rup_to_veripb.py
+            research/ipg5c_oddcycle_cuts.py
+            research/ipg5c_general_benchmark.py
+            results/ipg5c_general/summary.json
+            results/ipg5c_general/rows.json
+            results/ipg5c_general/precommitted_source_manifest.json
+            results/ipg5c_general/sources/*.cnf
+            results/ipg5c_general/trials/*/*.rup
+            results/ipg5c_general/trials/*/*.pbp
+            results/ipg5c_general/trials/*/*.json
+            results/ipg5c_general/trials/*/*.log
