@@ -125,7 +125,7 @@ def one(cnf,arm,expect):
         row["status"]="RUN_FAILURE"
     for line in out.splitlines():
         if line.startswith("c IPG1_COVER "):
-            row["ipg_telemetry"]=json.loads(line.partition(" ")[2])
+            row["ipg_telemetry"]=json.loads(line[len("c IPG1_COVER "):])
     for line in err.splitlines():
         if line.startswith("MG7_RESIDUAL "):
             row["scc_telemetry"]=json.loads(line.partition(" ")[2])
