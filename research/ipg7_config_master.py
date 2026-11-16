@@ -156,16 +156,19 @@ def make(source,weights,capacity,prefix):
     raw=source.read_bytes()
     loads,source_count=source_profile(raw,weights,capacity)
     digest=hashlib.sha256(raw).hexdigest()
+    def unknown(reason):
+        record={"status":"UNKNOWN","reason":reason,"source_sha256":digest}
+        prefix.parent.mkdir(parents=True,exist_ok=True)
+        prefix.with_suffix(".certificate.json").write_text(
+            json.dumps(record,sort_keys=True,indent=2)+"\n")
+        return record,None
     if sum(weights)!=3*capacity:
-        return {"status":"UNKNOWN","reason":"source_total_load_not_exactly_three_capacity",
-                "source_sha256":digest},None
+        return unknown("source_total_load_not_exactly_three_capacity")
     configs=[m for m,total in enumerate(loads) if total==capacity]
     if not configs:
-        return {"status":"UNKNOWN","reason":"zero_exact_capacity_configs_master_not_supported",
-                "source_sha256":digest},None
+        return unknown("zero_exact_capacity_configs_master_not_supported")
     if len(configs)>MAX_CONFIGS:
-        return {"status":"UNKNOWN","reason":"explicit_exact_profile_size_gate",
-                "source_sha256":digest},None
+        return unknown("explicit_exact_profile_size_gate")
     witness=next(((a,b) for a in configs for b in configs if not(a&b)),None)
     result={
         "format":"DRNAS-IPG7-SOURCE-CONFIG-MASTER-V1",
