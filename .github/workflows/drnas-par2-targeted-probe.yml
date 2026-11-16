@@ -1,0 +1,160 @@
+name: DRNAS +10 targeted failure analysis (30s strict E2E)
+on:
+  push:
+    branches: [experiment/drnas-plus10-targeted-probe-20261116]
+    paths:
+      - research/par2_targeted_probe/**
+      - .github/workflows/drnas-par2-targeted-probe.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-plus10-targeted-probe-20261116
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43887883554
+          name: plus10-twoera-frozen
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore original CNF and SHA-pinned solver/checker binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -s frozen/plus10-twoera-frozen.tgz
+          sha256sum frozen/plus10-twoera-frozen.tgz
+          tar -xzf frozen/plus10-twoera-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Freeze three source hashes and external VeriPB verification control
+        env:
+          PYTHONHASHSEED: "0"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/par2_targeted_probe/diagnostic.py
+          python3 -u research/par2_targeted_probe/diagnostic.py prepare | tee targeted_prepare.log
+          grep -q '^TARGETED_READY ' targeted_prepare.log
+          tar -czf targeted-probe-frozen.tgz \
+            build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb unified_realblind100_inputs sat_real2025_inputs \
+            unified_evidence_results/protocol.json results/par2_targeted_probe/protocol.json
+          sha256sum targeted-probe-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: targeted-probe-frozen
+          path: targeted-probe-frozen.tgz
+          retention-days: 60
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: targeted-probe-preflight
+          path: |
+            targeted_prepare.log
+            results/par2_targeted_probe/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: targeted-probe-frozen
+      - name: Restore frozen original sources and binary dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf targeted-probe-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Strict 30s E2E 6-arm repeated paired trial on one logical CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/par2_targeted_probe/diagnostic.py shard --index ${{ matrix.shard }} | tee targeted_shard.log
+          grep -q '^TARGETED_SHARD ' targeted_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: targeted-probe-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/par2_targeted_probe/shard-${{ matrix.shard }}/trials.jsonl
+            targeted_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: targeted-probe-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: targeted-probe-shard-*
+          path: collected
+      - name: Verify full 36-trial matrix and report focused resource/time findings
+        run: |
+          set -euo pipefail
+          tar -xzf targeted-probe-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(3):
+              hits=list((Path('collected')/f'targeted-probe-shard-{i}').rglob('trials.jsonl'))
+              assert len(hits)==1,(i,hits)
+              dst=Path('results/par2_targeted_probe')/f'shard-{i}'
+              dst.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(hits[0],dst/'trials.jsonl')
+          PY
+          python3 -u research/par2_targeted_probe/diagnostic.py report | tee targeted_final.log
+          grep -q '^TARGETED_FINAL ' targeted_final.log
+          cat targeted_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: targeted-probe-final
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            targeted_final.log
+            results/par2_targeted_probe/final.json
+            results/par2_targeted_probe/protocol.json
+            results/par2_targeted_probe/shard-*/trials.jsonl
