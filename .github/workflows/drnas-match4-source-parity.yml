@@ -1,0 +1,72 @@
+name: DRNAS MATCH4 original-source weighted cubic parity independent pilot
+on:
+  push:
+    branches: [experiment/drnas-match4-source-parity-bridge1-20261116]
+    paths:
+      - research/match4_source_parity.py
+      - research/match4_source_parity_checker.py
+      - research/match4_source_parity_bench.py
+      - research/MATCH4_SOURCE_WEIGHTED_PARITY.md
+      - .github/workflows/drnas-match4-source-parity.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-match4-source-parity-20261116
+  cancel-in-progress: false
+jobs:
+  original_source_parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin branch source and compile two independent implementations
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/match4_source_parity.py research/match4_source_parity_checker.py research/match4_source_parity_bench.py
+          sha256sum research/match4_source_parity*.py
+      - name: Audit original source, renumbered graphs, SAT models, altered source and forgeries
+        run: |
+          set -euo pipefail
+          python3 -u research/match4_source_parity_bench.py
+      - name: Compact verified summary, no benchmark speedup claims
+        if: always()
+        run: |
+          if test -s results/match4_source_parity/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/match4_source_parity/summary.json").read_text())
+          s=("# MATCH4 source-bound weighted graph parity\n\n"
+            +f"Status: {d['status']}\n\n"
+            +f"Generated original-CNF cases: {d['cases']}\n\n"
+            +f"Independently source-verified UNSAT: {d['source_verified_unsat']}\n\n"
+            +f"Reordered / renumbered Petersen versions verified: {d['permuted_originals_verified']}\n\n"
+            +f"SAT controls: {d['sat_controls']}; model-checked: {d['sat_models_checked']}\n\n"
+            +f"False UNSAT: {d['false_unsat']}\n\n"
+            +f"Forged/source-mutated certificates rejected: {d['forged_mutated_rejected']}\n\n"
+            +f"Original 45v/300c perfect matchings: {d['petersen_matchings']}\n\n"
+            +f"Original 3 machine support sizes: {d['petersen_local_support_counts']}\n\n"
+            +"Local pilot, O(2^n) source-bound checking, untrusted weight hints, project-specific proof, no VeriPB, no mixed blind PAR2.\n")
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:out.write(s)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-match4-original-source-weighted-graph-proof
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/match4_source_parity.py
+            research/match4_source_parity_checker.py
+            research/match4_source_parity_bench.py
+            research/MATCH4_SOURCE_WEIGHTED_PARITY.md
+            results/match4_source_parity/
