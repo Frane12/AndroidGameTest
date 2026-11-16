@@ -113,12 +113,44 @@ def check_disjoint(prespec):
             "family_disjoint":True,"source_GBD_disjoint":True,
             "source_isohash_disjoint":True}
 
+def size_metadata(choices):
+    """Network-only resource eligibility audit, NO downloaded source inspection."""
+    records=[]
+    for item in choices:
+        url=GBD_BASE+item["gbd_hash"]+"?context=cnf"
+        try:
+            req=urllib.request.Request(url,headers={"User-Agent":"DRNAS-source-freeze-size-audit"},
+                                        method="HEAD")
+            with urllib.request.urlopen(req,timeout=22) as remote:
+                raw=remote.headers.get("Content-Length")
+                content_len=int(raw) if raw and raw.isdigit() else None
+                content_type=remote.headers.get("Content-Type")
+            record={"id":item["id"],"family":item["family"],
+                    "gbd":item["gbd_hash"],
+                    "compressed_size_bytes":content_len,
+                    "content_type":content_type}
+        except Exception as exc:
+            record={"id":item["id"],"family":item["family"],
+                    "gbd":item["gbd_hash"],"compressed_size_bytes":None,
+                    "head_error":str(exc)[:170]}
+        print("GRAPH_DISJOINT25_SIZE_METADATA "+json.dumps(record,sort_keys=True),
+              flush=True)
+        records.append(record)
+    too_big=[x for x in records
+             if x["compressed_size_bytes"] is not None
+             and x["compressed_size_bytes"]>MAX_ARCHIVE]
+    if too_big:
+        raise ValueError("PREDECLARED_ORIGINALS_EXCEED_DOWNLOAD_BUDGET: "+
+                         json.dumps(too_big,sort_keys=True))
+    return records
+
 def main():
     prespec=json.loads(PRE.read_text())
     assert prespec["protocol"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-PRESPEC-V1"
     assert prespec["candidate_locked_before_any_evaluation"]
     assert prespec["no_replacement_after_freeze_or_outcomes"]
     provenance=check_disjoint(prespec)
+    size_metadata(prespec["records"])
     OUT.mkdir(parents=True,exist_ok=True)
     if (OUT/"manifest.json").exists():
         raise RuntimeError("existing source-frozen manifest: REFUSE overwrite")
