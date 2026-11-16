@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""12 genuinely NEW source-/isohash-/catalog-family-disjoint graph-adjacent CNFs.
+"""10 genuinely NEW source-/isohash-/catalog-family-disjoint graph-adjacent CNFs.
 
 Source-only GBD SHA freeze runs IN THE PREPARE JOB before ANY of these
 solver/guard arms is executed. This script requires an already completed,
-immutable 12-source manifest. Seven arms; 12*2*7=168 paired attempts.
+immutable 10-source manifest. Seven arms; 10*2*7=140 paired attempts.
 All comparisons have 8s E2E cap inclusive of source SHA, proof emitter,
 independent VeriPB/DRAT/FRAT checker, native solver startup and fallback.
 One logical CPU per trial, no parallel solver portfolio.
@@ -94,7 +94,7 @@ def prepare():
         "selection_fixed_before_solver_outcomes":True,
         "strict_proof_whitelist":sorted(STRICT),
         "no_auto_main_promotion":True,
-        "limitations":"12 original CNFs across eight catalog families. Disjoint only from 67+10 tracked development references, not all historic experiments."}
+        "limitations":"10 original CNFs across seven catalog families. Disjoint only from 67+10 tracked development references, not all historic experiments."}
     save(OUT/"protocol.json",protocol)
     print("GRAPH_DISJOINT25_PREPARED "+json.dumps({
         "sources":10,"families":len({x["family"] for x in m["sources"]}),
@@ -351,7 +351,7 @@ def report():
                        "isohash":s["isohash"],"family":s["family"],
                        "source_sha256":s["sha256"]} for s in sources],
         "no_main_promotion":True,
-        "scope":"Family + GBD hash/isohash disjoint from two tracked development datasets. 12 sources, eight families; cannot prove untested across all historic branches."}
+        "scope":"Family + GBD hash/isohash disjoint from two tracked development datasets. 10 sources, seven families; cannot prove untested across all historic branches."}
     save(OUT/"final.json",summary)
     print("GRAPH_DISJOINT25_FINAL "+json.dumps(summary,sort_keys=True),flush=True)
     if errors:raise SystemExit(1)
