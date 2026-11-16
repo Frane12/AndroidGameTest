@@ -52,3 +52,17 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-mg7-base PRIVATE -O3 -Wall -Wextra -Wpedantic)
   target_compile_options(drnas-mg7-scc PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+
+# Single-process combined mathematical pre-gate and original CDCL + residual SCC.
+# The two certificate formats are intentionally distinct: capacity JSON must be
+# checked with the structural checker and original-source VeriPB; CDCL uses DRAT.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-pcmax-mg7-unified src/drnas_x5.cpp)
+  target_compile_definitions(drnas-pcmax-mg7-unified PRIVATE
+    DRNAS_PCMAX_MODULE DRNAS_RESIDUAL_SCC DRNAS_PC_GUARD_COMBINED)
+  target_link_libraries(drnas-pcmax-mg7-unified PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-pcmax-mg7-unified PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
