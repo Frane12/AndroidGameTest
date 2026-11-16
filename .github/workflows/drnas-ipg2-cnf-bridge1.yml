@@ -1,0 +1,69 @@
+name: DRNAS IPG2 CNF bridge original-source polynomial count audit
+on:
+  push:
+    branches: [experiment/drnas-ipg2-cnf-bridge1-20261116]
+    paths:
+      - research/ipg2_cnf_bridge.py
+      - research/ipg2_cnf_checker.py
+      - research/ipg2_cnf_bridge_benchmark.py
+      - .github/workflows/drnas-ipg2-cnf-bridge1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg2-cnf-bridge1-20261116
+  cancel-in-progress: false
+jobs:
+  source_bound_bridge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Freeze code identity and syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg2_cnf_bridge.py \
+            research/ipg2_cnf_checker.py research/ipg2_cnf_bridge_benchmark.py \
+            research/ipg2_poly_benchmark.py research/ipg1_fixtures.py
+          sha256sum research/ipg2_cnf_*.py
+      - name: Single logical CPU, original source clauses and independent arithmetic checker
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg2_cnf_bridge_benchmark.py
+      - name: Publish honest result even if benchmark assertion fails
+        if: always()
+        run: |
+          if test -s results/ipg2_cnf_bridge/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg2_cnf_bridge/summary.json").read_text())
+          msg=("# IPG2 CNF source bridge pilot\n\n"
+               +f"Exact-generated direct PCMAX cases: {d['generated_cases']}\n\n"
+               +f"New independently verified source-count UNSAT cases: {d['generated_verified_unsat']}\n\n"
+               +f"Frozen original PCMAX BDD sources: {d['original_cases']}\n\n"
+               +f"Originals independently verified by THIS bridge: {d['original_verified_unsat']}\n\n"
+               +f"Originals returning UNKNOWN: {d['original_unknown']}\n\n"
+               +f"Errors: {len(d['errors'])}\n\n"
+               +d['warning']+"\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg2-cnf-bridge-proof-check-and-originals
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg2_cnf_bridge.py
+            research/ipg2_cnf_checker.py
+            research/ipg2_cnf_bridge_benchmark.py
+            results/ipg2_cnf_bridge/
