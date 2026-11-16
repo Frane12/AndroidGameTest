@@ -140,8 +140,12 @@ def run_case(name,n,clauses,tmp):
     status=miniout.read_text().split()[0]
     assert status==ms
     if ms=="SAT":
-        v=[int(x) for x in miniout.read_text().splitlines()[1].split() if int(x)]
-        assert len(v)==n and all(any(v[abs(x)-1]==x for x in c) for c in clauses)
+        values=[int(x) for x in miniout.read_text().splitlines()[1].split() if int(x)]
+        v={abs(lit):lit>0 for lit in values}
+        assert all(1<=abs(lit)<=n for lit in values)
+        assert len(v)==len(values)
+        assert all(any(v.get(abs(x))==(x>0) for x in c) for c in clauses), (
+            "invalid_minisat_model",name,len(v),n)
     assert ds==ms,("MISMATCH_MINISAT",name,ds,ms)
     tc=None
     if CADICAL:
