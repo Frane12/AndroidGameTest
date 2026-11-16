@@ -1,0 +1,211 @@
+name: DRNAS new unseen 2025 graph originals source-frozen strict E2E PAR2
+on:
+  push:
+    branches: [experiment/drnas-graph-unseen-2025-holdout1-20261116]
+    paths:
+      - research/graph_unseen25/**
+      - research/GRAPH_UNSEEN_2025_HOLDOUT_PROTOCOL.md
+      - .github/workflows/drnas-graph-unseen25.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-graph-unseen25-holdout1-20261116
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43853390060
+          name: grand-union-sha-pinned-binaries-sources
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Restore unchanged source history and independently pinned solvers
+        run: |
+          set -euo pipefail
+          test -s prior/grand_unified_frozen.tgz
+          sha256sum prior/grand_unified_frozen.tgz
+          tar -xzf prior/grand_unified_frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          test -s unified_realblind100_inputs/manifest.json
+          veripb-tool/bin/veripb --version
+      - name: Confirm exact 2025 metadata prespec and NO candidate solver evaluation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/graph_unseen25/freeze.py \
+            research/graph_unseen25/benchmark.py \
+            research/graphclique/real67.py \
+            research/graphclique/emit_veripb.py \
+            research/math5_standard_real67/benchmark.py \
+            research/math5/emit_veripb_eo_multiplicity.py
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("research/graph_unseen25/prespec.json")
+          meta=json.loads(p.read_text())
+          assert len(meta["instances"])==10 and meta["no_solver_before_source_sha_freeze"]
+          assert len({x["gbd_hash"] for x in meta["instances"]})==10
+          assert len({x["isohash"] for x in meta["instances"]})==10
+          assert all(x["gbd_hash"]!="ea37a677b357328c1641ef320e14099d" for x in meta["instances"])
+          print("GRAPH_UNSEEN25_PRESPEC_SHA256",hashlib.sha256(p.read_bytes()).hexdigest())
+          PY
+      - name: Download and SHA-freeze all ten fixed original 2025 CNF sources BEFORE any solver trial
+        run: |
+          set -euo pipefail
+          python3 -u research/graph_unseen25/freeze.py | tee graph_unseen_freeze.log
+          grep -q '^GRAPH_UNSEEN25_FREEZE_READY ' graph_unseen_freeze.log
+      - name: Freeze reference binary hashes, standard checkers and strict source/pair protocol
+        run: |
+          set -euo pipefail
+          python3 -u research/graph_unseen25/benchmark.py prepare | tee graph_unseen_prepare.log
+          grep -q '^GRAPH_UNSEEN25_READY ' graph_unseen_prepare.log
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys,tarfile,hashlib
+          sys.path.insert(0,str(Path("research/unified_evidence").resolve()))
+          import benchmark as frozen
+          required=set(frozen.REQUIRED_BIN)
+          required.update([
+            "unified_realblind100_inputs/manifest.json",
+            "research/graph_unseen25/inputs",
+            "results/graph_unseen25/protocol.json"])
+          archive=Path("graph-unseen25-freeze.tgz")
+          with tarfile.open(archive,"w:gz") as f:
+              for p in sorted(required):
+                  assert Path(p).exists(),("MISSING_BEFORE_ARCHIVE",p)
+                  f.add(p,arcname=p,recursive=True)
+          with tarfile.open(archive,"r:gz") as f:
+              packed=set(f.getnames())
+          missing=sorted(required-packed)
+          manifest=Path("research/graph_unseen25/inputs/manifest.json")
+          assert len(list(manifest.parent.glob("[0-9][0-9]-*.cnf")))==10
+          assert not missing,("MISSING_FROZEN_REFERENCE",missing)
+          assert archive.stat().st_size>1_000_000
+          print("GRAPH_UNSEEN25_ARCHIVE_AUDIT",{
+              "required":len(required),"missing":missing,
+              "raw_new_sources":10,
+              "archive_sha256":hashlib.sha256(archive.read_bytes()).hexdigest()},flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graph-unseen25-all-sources-and-frozen-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: graph-unseen25-freeze.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graph-unseen25-metadata-only-source-audit
+          retention-days: 60
+          path: |
+            graph_unseen_freeze.log
+            graph_unseen_prepare.log
+            research/graph_unseen25/inputs/manifest.json
+            results/graph_unseen25/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: graph-unseen25-all-sources-and-frozen-binaries
+      - name: Restore byte-exact new sources and frozen reference solver dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf graph-unseen25-freeze.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: Matched 2-source serial strict 8s E2E 6-arm graph/MATH5/reference proof audit
+        run: |
+          set -euo pipefail
+          python3 -u research/graph_unseen25/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee graph_unseen_shard.log
+          grep -q '^GRAPH_UNSEEN25_SHARD ' graph_unseen_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graph-unseen25-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            results/graph_unseen25/shard-${{ matrix.shard }}/trials.jsonl
+            graph_unseen_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: graph-unseen25-all-sources-and-frozen-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: graph-unseen25-shard-*
+          path: collected
+      - name: Reject any missing or duplicate trials, incorrect original source SHA, or invalid standard proof
+        run: |
+          set -euo pipefail
+          tar -xzf graph-unseen25-freeze.tgz
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          for i in range(5):
+              items=list((Path("collected")/f"graph-unseen25-shard-{i}").glob("**/trials.jsonl"))
+              assert len(items)==1,(i,items)
+              target=Path("results/graph_unseen25")/f"shard-{i}"
+              target.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(items[0],target/"trials.jsonl")
+          PY
+          python3 -u research/graph_unseen25/benchmark.py report | tee graph_unseen_final.log
+          grep -q '^GRAPH_UNSEEN25_FINAL ' graph_unseen_final.log
+          cat graph_unseen_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graph-unseen25-final-strict-PAR2-audit
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/graph_unseen25/final.json
+            results/graph_unseen25/shard-*/trials.jsonl
+            graph_unseen_final.log
