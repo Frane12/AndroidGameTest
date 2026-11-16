@@ -187,16 +187,19 @@ inline std::vector<Pair> machine_profile(const pcmax::detail::Graph& g,
         const int parent=*it;
         auto found=state.find(parent);
         if(found==state.end())continue;
+        // Preserve the source profile across unordered_map insertions:
+        // insertion may rehash and invalidate all iterators.
+        const Profile parent_profile=found->second;
         const auto& node=g.nodes[static_cast<size_t>(parent)];
         const int at=g.level[static_cast<size_t>(parent)];
         for(int branch=0;branch<2;++branch) {
             int child=branch?node.right:node.left;
             if(child==m.no)continue;
-            Profile current=found->second;
+            Profile current=parent_profile;
             if(branch)gate.mandatory_in_place(current,type[static_cast<size_t>(node.x)]);
             for(int i=at+1;i<g.level[static_cast<size_t>(child)];++i)
                 gate.optional_in_place(current,type[static_cast<size_t>(m.order[static_cast<size_t>(i)])]);
-            gate.operations+=static_cast<uint64_t>(gate.count(found->second)) *
+            gate.operations+=static_cast<uint64_t>(gate.count(parent_profile)) *
                              static_cast<uint64_t>(1+g.level[static_cast<size_t>(child)]-at);
             gate.check();
             auto [slot,newone]=state.try_emplace(child,gate.blank());
@@ -206,7 +209,7 @@ inline std::vector<Pair> machine_profile(const pcmax::detail::Graph& g,
             if(gate.count(target)>kStateMax)
                 throw std::runtime_error("state_limit");
         }
-        state.erase(found);
+        state.erase(parent);
     }
     auto end=state.find(m.yes);
     if(end==state.end())return {};
