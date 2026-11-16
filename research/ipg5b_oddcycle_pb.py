@@ -34,7 +34,7 @@ def generate(original,rup,output,meta):
     raw=original.read_bytes()
     if hashlib.sha256(raw).hexdigest()!=EXPECTED:
         raise ValueError("not frozen original source")
-    _,clauses=dimacs(original)
+    _,_,clauses=dimacs(original)
     if len(clauses)!=300:raise ValueError("source clause mismatch")
     triangles=[]
     for machine in range(3):
