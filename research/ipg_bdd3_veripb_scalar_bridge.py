@@ -26,8 +26,11 @@ import sys
 import time
 
 from ipg_bdd3_checker import independently_check
-from pcmax_capacity.check_capacity import check as structural_check
-from pcmax_capacity.emit_veripb_capacity_weighted2 import generate as emit_veripb
+# The frozen VeriPB emitter resolves its support modules by their historical
+# top-level import names. Put that LOCAL repo directory on the module path.
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent/"pcmax_capacity"))
+from check_capacity import check as structural_check
+from emit_veripb_capacity_weighted2 import generate as emit_veripb
 
 MAX_ALPHA=12
 MAX_SEARCH_SECONDS=20.0
