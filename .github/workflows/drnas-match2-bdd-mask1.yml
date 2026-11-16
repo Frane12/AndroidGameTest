@@ -1,0 +1,73 @@
+name: DRNAS MATCH2-IPG-BDD MASK1 source-frozen proof pilot
+on:
+  push:
+    branches: [experiment/drnas-match2-ipg-bdd-mask1-20261116]
+    paths:
+      - research/match2_bdd_mask1.py
+      - research/match2_bdd_mask1_checker.py
+      - research/match2_bdd_mask1_bench.py
+      - research/MATCH2_BDD_MASK1_RESULTS.md
+      - .github/workflows/drnas-match2-bdd-mask1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-match2-bdd-mask1-pilot-20261116
+  cancel-in-progress: false
+jobs:
+  source_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_MAIN_FREE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile bounded producer, independent checker and source pilot
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/match2.py research/match2_bdd_mask1.py research/match2_bdd_mask1_checker.py research/match2_bdd_mask1_bench.py
+          sha256sum research/match2_bdd_mask1*.py research/ipg1_fixtures.py
+      - name: Verify original 45-variable 300-clause Petersen from source and SAT controls
+        run: |
+          set -euo pipefail
+          python3 -u research/match2_bdd_mask1_bench.py
+      - name: Summarize independently checked source evidence without blind claims
+        if: always()
+        run: |
+          if test -s results/match2_bdd_mask1/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/match2_bdd_mask1/summary.json").read_text())
+          s=("# MATCH2-BDD-MASK1 original source pilot\n\n"
+             +f"Status: {d['status']}\n\n"
+             +f"Original and control CNF cases: {d['cases']}\n\n"
+             +f"Source independently verified UNSAT: {d['source_verified_unsat']}\n\n"
+             +f"SAT models independently checked: {d['sat_controls']}\n\n"
+             +f"False UNSAT: {d['false_unsat']}\n\n"
+             +f"Forged certificates rejected: {d['tamper_rejected']}\n\n"
+             +f"Previously known Petersen 45/300 source-recovered: {d['original_petersen_recovered']}\n\n"
+             +f"Petersen feasible local masks: {d['original_petersen_profile_counts']}\n\n"
+             +f"Global layer sizes: {d['original_petersen_reachable_layers']}\n\n"
+             +"Exponential source-mask pilot, not native BDD1, standard DRAT/VeriPB or official blind PAR2.\n")
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(s)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-match2-bdd-mask1-original-source-evidence
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/match2_bdd_mask1.py
+            research/match2_bdd_mask1_checker.py
+            research/match2_bdd_mask1_bench.py
+            research/MATCH2_BDD_MASK1_RESULTS.md
+            results/match2_bdd_mask1/
