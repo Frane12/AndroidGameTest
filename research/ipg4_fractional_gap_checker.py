@@ -58,7 +58,10 @@ def check(weighted_raw,graph_raw,certificate):
     a=[(i,(i+1)%5) for i in range(5)]
     b=[(i,i+5) for i in range(5)]
     c=[(i+5,5+(i+2)%5) for i in range(5)]
-    edges=sorted(set(tuple(sorted(e)) for e in a+b+c))
+    # Job indices are part of the ORIGINAL CNF semantics. Keep the
+    # original generator order instead of sorting the graph's edge set.
+    edges=[tuple(sorted(e)) for e in a+b+c]
+    if len(set(edges))!=15:raise ValueError("duplicate original edge")
     if len(edges)!=15:raise ValueError("not 15 edges")
     incidence=[set() for _ in range(10)]
     for j,(x,y) in enumerate(edges):
