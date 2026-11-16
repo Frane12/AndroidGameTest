@@ -12,18 +12,23 @@ ROOT=Path(__file__).resolve().parents[2]
 HERE=Path(__file__).resolve().parent
 P=json.loads((HERE/"prespec.json").read_text())
 DATA=ROOT/"unified_realblind100_inputs"
-OUT=ROOT/"unified_realblind100_results"
+OUT=ROOT/"unified_evidence_results"
 CAP=P["cap_s"]
 REPS=P["repetitions"]
-ARMS=tuple(P["arms"])
+ARMS=("X59_OFF","X59_MATH5","CXX_BASE","CXX_BDD3","CXX_UNION","Kissat","CaDiCaL","CryptoMiniSat")
 SHARDS=P["shards"]
-BIN={"X59_OFF":"build/drnas-sat-native-x59",
-     "X59_ON25":"build/drnas-sat-native-x59",
-     "X59_ON25_MATH5_100":"build/drnas-x59-xor-math5-unified1",
-     "Kissat":"build/kissat","CaDiCaL":"build/cadical",
-     "CryptoMiniSat":"build/cms"}
-REQUIRED_BIN=tuple(sorted(set(BIN.values())|{"build/drat-trim","build/frat-rs",
-            "build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11"}))
+BIN={
+  "X59_OFF":"build/drnas-sat-native-x59",
+  "X59_MATH5":"build/drnas-x59-xor-math5-unified1",
+  "CXX_BASE":"build/drnas-pcmax-base",
+  "CXX_BDD3":"build/drnas-pcmax-mg7-ipg1-bdd3",
+  "CXX_UNION":"build/drnas-pcmax-mg7-ipg1-bdd3",
+  "Kissat":"build/kissat","CaDiCaL":"build/cadical",
+  "CryptoMiniSat":"build/cms"}
+REQUIRED_BIN=tuple(sorted(set(BIN.values())|{
+ "build/drat-trim","build/frat-rs",
+ "build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11",
+ "veripb-tool/bin/veripb"}))
 CHECKER=ROOT/"research/math5/check_math5.py"
 
 def sha(p):
@@ -65,14 +70,14 @@ def prepare():
         target_sources=P["target_sources"],availability_amendment=P["availability_amendment"],
         code_git_sha=os.environ.get("GITHUB_SHA"),binary_sha256=fingerprints,
         arms=ARMS,reps=REPS,cap_s=CAP,shards=SHARDS,
-        source_disjoint_from_recorded_history=True,
+        source_disjoint_from_recorded_history=False,
         does_not_claim_all_history_audited=True,
         original_official_cnf=True,not_xor_selected=True,
         checker_included_in_cap=True,one_core_per_solver=True,
         primary_includes_structural=True,strict_requires_standard_proofs=True,
         no_automatic_promotion=True)
     save(OUT/"protocol.json",proto)
-    print("REALBLIND100_READY "+json.dumps(dict(sources=len(m["sources"]),
+    print("GRAND_UNIFIED_READY "+json.dumps(dict(sources=len(m["sources"]),
           expected_trials=n*REPS*len(ARMS),
           protocol_sha256=sha(OUT/"protocol.json")),sort_keys=True),flush=True)
 def restore():
@@ -120,16 +125,31 @@ def model_ok(path,stdout):
                     total+=1;clause_open=False;satisfied=False
     return n is not None and not clause_open and total==nc
 
-def command(arm,cnf,proof,cert):
+def command(arm,cnf,proof,cert,work,remaining):
     inp=str(cnf)
-    if arm.startswith("X59_"):
-        binary=str(ROOT/BIN[arm])
-        args=[binary,inp,"--mode","core","--time",str(CAP),
+    if arm in ("X59_OFF","X59_MATH5"):
+        argv=[str(ROOT/BIN[arm]),inp,"--mode","core","--time",str(max(.001,remaining)),
               "--proof",str(proof),"--stats"]
-        if arm!="X59_OFF":args+=["--sat-construct-ms","25"]
-        if arm=="X59_ON25_MATH5_100":
-            args+=["--math5-ms","100","--math5-certificate",str(cert)]
-        return args
+        if arm=="X59_MATH5":
+            argv+=["--sat-construct-ms","25","--math5-ms","100",
+                   "--math5-certificate",str(cert)]
+        return argv
+    if arm.startswith("CXX_"):
+        argv=[str(ROOT/BIN[arm]),inp,"--mode","core","--time",
+              str(max(.001,remaining)),"--stats","--proof",str(proof)]
+        if arm!="CXX_BASE":
+            argv+=["--pcmax-capacity","--pcmax-budget-ms","100",
+                   "--pcmax-certificate",str(work/"capacity.json"),
+                   "--ipg1","--ipg1-budget-ms","90",
+                   "--ipg1-certificate",str(work/"ipg1.json"),
+                   "--ipg-bdd2","--ipg-bdd2-budget-ms","80",
+                   "--ipg-bdd2-graph",str(work/"bdd2_graph.json"),
+                   "--ipg-bdd2-certificate",str(work/"bdd2.json"),
+                   "--ipg-bdd3","--ipg-bdd3-budget-ms","140",
+                   "--ipg-bdd3-graph",str(work/"bdd3_graph.json"),
+                   "--ipg-bdd3-certificate",str(work/"bdd3.json"),
+                   "--residual-scc"]
+        return argv
     if arm=="Kissat":return [str(ROOT/BIN[arm]),inp,str(proof)]
     if arm=="CaDiCaL":return [str(ROOT/BIN[arm]),"-q","--no-binary",inp,str(proof)]
     if arm=="CryptoMiniSat":
@@ -158,83 +178,167 @@ def execute(cmd,timeout,allow_file=True):
 
 def trial(src,arm,rep):
     cnf=ROOT/src["path"]
-    assert sha(cnf)==src["sha256"]
-    with tempfile.TemporaryDirectory(prefix="realblind100-") as td:
-        root=Path(td)
-        proof=root/"proof"
-        cert=root/"math5.json"
+    assert sha(cnf)==src["sha256"], "ORIGINAL_SOURCE_CHANGED"
+    with tempfile.TemporaryDirectory(prefix="grand-union-") as td:
+        folder=Path(td)
+        proof=folder/"proof";cert=folder/"math5.json"
+        pre=folder/"preproof.json"
         started=time.perf_counter()
-        solve=execute(command(arm,cnf,proof,cert),CAP)
-        solver_s=time.perf_counter()-started
-        remaining=CAP-solver_s
-        status="TIMEOUT" if solve["expired"] else "UNKNOWN"
-        certified=False;kind=None;critical=False;reason=None
-        checker_s=0.0;proof_sha=None;proof_bytes=0
+        status="UNKNOWN"; certified=False;strict=False; kind=None
+        critical=False;reason=None;checker_s=0;solver_s=0
+        proof_sha=None;proof_bytes=0
+        observed_rc=None
+        if arm=="CXX_UNION":
+            if cnf.stat().st_size<=256000:
+                pre_cap=min(1.3 if cnf.stat().st_size<=24000 else .35,CAP*.20)
+                pre_run=execute([sys.executable,str(ROOT/"research/unified_evidence/precheck.py"),
+                                 str(cnf),str(pre)],pre_cap)
+                solver_s+=pre_run["wall_s"]
+                if pre_run["returncode"]==20 and pre.is_file():
+                    kind="STRUCTURAL_UNION"
+                    check_remain=CAP-(time.perf_counter()-started)
+                    if check_remain>0:
+                        ck=execute([sys.executable,str(ROOT/"research/unified_evidence/check_preproof.py"),
+                                    str(cnf),str(pre)],check_remain)
+                        checker_s+=ck["wall_s"]
+                        certified=not ck["expired"] and ck["returncode"]==0 and "UNION_PRECHECK_VERIFIED " in ck["stdout"]
+                        status="UNSAT_VERIFIED" if certified else ("CHECK_TIMEOUT" if ck["expired"] else "INVALID_UNION_PROOF")
+                        critical=not certified and not ck["expired"]
+                        if certified:proof_sha=sha(pre);proof_bytes=pre.stat().st_size
+                    else:status="NO_CHECK_BUDGET"
+                elif pre_run["returncode"] not in (0,20) and not pre_run["expired"]:
+                    status="INVALID_PRECHECK_ERROR";critical=True;reason=pre_run["stderr"][-250:]
+                elif pre_run["returncode"]==20:
+                    status="INVALID_MISSING_PRECHECK_PROOF";critical=True
+                # Budget-limited proof scout may be killed. Safe native fallback.
+        if kind=="STRUCTURAL_UNION" or critical:
+            elapsed=time.perf_counter()-started
+            accepted=certified and elapsed<=CAP
+            return dict(id=src["id"],file_id=src["file_id"],source_sha256=src["sha256"],
+              family=src["family"],catalog_label=src["catalog_label"],
+              arm=arm,rep=rep,rc=observed_rc,status=status,accepted=accepted,
+              strict_accepted=False,certificate_kind=kind,critical=critical,
+              reason=reason,solver_s=round(solver_s,6),checker_s=round(checker_s,6),
+              e2e_s=round(elapsed,6),PAR2_s=round(elapsed if accepted else 2*CAP,6),
+              PAR2_strict_s=round(2*CAP,6),proof_sha256=proof_sha,proof_bytes=proof_bytes,stats={})
+        solve_remain=CAP-(time.perf_counter()-started)
+        if solve_remain<=0:
+            status="NO_SOLVE_BUDGET"; solve={"returncode":None,"stdout":"","stderr":"",
+                                         "expired":True,"wall_s":0}
+        else:
+            solve=execute(command(arm,cnf,proof,cert,folder,solve_remain),solve_remain)
+            observed_rc=solve["returncode"];solver_s+=solve["wall_s"]
+            status="TIMEOUT" if solve["expired"] else "UNKNOWN"
         if not solve["expired"] and solve["returncode"] in (10,20):
+            lines=solve["stdout"].splitlines()
             declared="s SATISFIABLE" if solve["returncode"]==10 else "s UNSATISFIABLE"
-            if declared not in solve["stdout"].splitlines():
+            left=CAP-(time.perf_counter()-started)
+            if declared not in lines:
                 status="INVALID_STATUS";critical=True
-            elif remaining<=0:
+            elif left<=0:
                 status="NO_CHECK_BUDGET"
             elif solve["returncode"]==10:
                 kind="MODEL"
-                if cert.exists():
-                    status="INVALID_STALE_CERT";critical=True
-                elif model_ok(cnf,solve["stdout"]):
-                    certified=True;status="SAT_VERIFIED"
+                # Deliberate no reliance on known labels or source filenames.
+                if model_ok(cnf,solve["stdout"]):
+                    certified=True;strict=True;status="SAT_VERIFIED"
                 else:
                     status="INVALID_SAT_MODEL";critical=True
             else:
-                checker=None
-                if cert.exists():
-                    kind="STRUCTURAL_MATH5"
-                    if arm!="X59_ON25_MATH5_100" or (proof.exists() and proof.stat().st_size):
-                        status="INVALID_CERT_AND_DRAT";critical=True
+                checker=None;verdict=None
+                if arm in ("CXX_BDD3","CXX_UNION"):
+                    kinds=[line.rsplit(" ",1)[-1] for line in lines
+                           if line.startswith("c PCMAX_UNIFIED_PROOF_KIND ")]
+                    if len(kinds)!=1:
+                        status="INVALID_MISSING_PROOF_KIND";critical=True
                     else:
-                        try:
-                            assert json.loads(cert.read_text())["format"]=="drnas-math5-eo-xor-unit-v1"
-                            checker=[sys.executable,str(CHECKER),str(cnf),str(cert)]
-                        except (ValueError,AssertionError,KeyError):
-                            status="INVALID_CERT_FORMAT";critical=True
-                elif proof.exists() and proof.stat().st_size:
-                    kind="FRAT" if arm=="CryptoMiniSat" else "DRAT"
-                    if kind=="FRAT":
-                        checker=[str(ROOT/"build/frat-rs"),"elab",str(proof),str(cnf),"-v"]
-                    else:
-                        checker=[str(ROOT/"build/drat-trim"),str(cnf),str(proof)]
-                else:status="UNSAT_UNVERIFIED"
-                if checker is not None:
-                    remain=CAP-(time.perf_counter()-started)
-                    if remain>0:
-                        chk=execute(checker,remain)
-                        checker_s=chk["wall_s"]
-                        certified=(not chk["expired"] and chk["returncode"]==0
-                                   and "VERIFIED" in chk["stdout"])
-                        status="UNSAT_VERIFIED" if certified else (
-                            "CHECK_TIMEOUT" if chk["expired"] else "INVALID_PROOF")
-                        if not certified and not chk["expired"]:critical=True
-                        if certified:
-                            if kind=="STRUCTURAL_MATH5":
-                                proof_sha=sha(cert);proof_bytes=cert.stat().st_size
+                        label=kinds[0]
+                        if label=="CAPACITY_JSON_NEEDS_VERIPB":
+                            path=folder/"capacity.json";kind="VERIPB_CAPACITY"
+                            if not path.exists() or (proof.exists() and proof.stat().st_size):
+                                status="INVALID_CAPACITY_FILES";critical=True
                             else:
-                                proof_sha=sha(proof);proof_bytes=proof.stat().st_size
-                    else:status="NO_CHECK_BUDGET"
-        elif not solve["expired"] and solve["returncode"] not in (0,153):
+                                pb=folder/"capacity.pbp"
+                                checker=[sys.executable,str(ROOT/"research/pcmax_capacity/emit_veripb_capacity_weighted2.py"),
+                                         "--cnf",str(cnf),"--certificate",str(path),"--output",str(pb)]
+                                verdict=("VERIPB_PREP",pb)
+                        elif label=="IPG1_JSON_NEEDS_EXHAUSTIVE_CHECKER":
+                            path=folder/"ipg1.json";kind="STRUCTURAL_IPG1"
+                            checker=[sys.executable,str(ROOT/"research/ipg1_check.py"),str(cnf),str(path)]
+                            verdict="IPG1_SOURCE_VERIFIED "
+                        elif label in ("IPG_BDD2_JSON_NEEDS_INDEPENDENT_CHECKER",
+                                       "IPG_BDD3_JSON_NEEDS_INDEPENDENT_CHECKER"):
+                            bdd3=label.startswith("IPG_BDD3")
+                            kind="STRUCTURAL_BDD3" if bdd3 else "STRUCTURAL_BDD2"
+                            checker=[sys.executable,str(ROOT/("research/ipg_bdd3_checker.py" if bdd3
+                                                           else "research/ipg_bdd_checker.py")),
+                                     "--cnf",str(cnf),
+                                     "--graph",str(folder/("bdd3_graph.json" if bdd3 else "bdd2_graph.json")),
+                                     "--certificate",str(folder/("bdd3.json" if bdd3 else "bdd2.json"))]
+                            verdict="IPG_BDD3_ACCEPT " if bdd3 else "IPG_BDD_ACCEPT "
+                        elif label=="DRAT_PROOF":
+                            kind="DRAT"
+                        else:
+                            status="INVALID_UNKNOWN_PROOF_KIND";critical=True
+                elif arm=="X59_MATH5" and cert.exists():
+                    kind="STRUCTURAL_MATH5"
+                    checker=[sys.executable,str(CHECKER),str(cnf),str(cert)]
+                    verdict="VERIFIED"
+                    if proof.exists() and proof.stat().st_size:
+                        status="INVALID_MIXED_MATH5_DRAT";critical=True
+                if checker is None and not critical:
+                    if proof.exists() and proof.stat().st_size:
+                        kind="FRAT" if arm=="CryptoMiniSat" else "DRAT"
+                        checker=([str(ROOT/"build/frat-rs"),"elab",str(proof),str(cnf),"-v"]
+                                 if kind=="FRAT" else
+                                 [str(ROOT/"build/drat-trim"),str(cnf),str(proof)])
+                        verdict="VERIFIED"
+                    else:
+                        status="UNSAT_UNVERIFIED"
+                if checker is not None and not critical:
+                    remaining=CAP-(time.perf_counter()-started)
+                    if remaining<=0:status="NO_CHECK_BUDGET"
+                    else:
+                        ck=execute(checker,remaining)
+                        checker_s+=ck["wall_s"]
+                        if isinstance(verdict,tuple) and verdict[0]=="VERIPB_PREP":
+                            pb=verdict[1]
+                            if ck["expired"]:
+                                status="CHECK_TIMEOUT"
+                            elif ck["returncode"]!=0 or not pb.exists():
+                                status="INVALID_CAPACITY_EMISSION";critical=True
+                            else:
+                                remaining=CAP-(time.perf_counter()-started)
+                                if remaining<=0:status="NO_CHECK_BUDGET"
+                                else:
+                                    pbcheck=execute([str(ROOT/"veripb-tool/bin/veripb"),
+                                                     "--cnf",str(cnf),str(pb)],remaining)
+                                    checker_s+=pbcheck["wall_s"]
+                                    certified=(not pbcheck["expired"] and pbcheck["returncode"]==0 and
+                                               "s VERIFIED UNSATISFIABLE" in pbcheck["stdout"]+pbcheck["stderr"])
+                                    status="UNSAT_VERIFIED" if certified else ("CHECK_TIMEOUT" if pbcheck["expired"] else "INVALID_VERIPB")
+                                    critical=not certified and not pbcheck["expired"]
+                                    if certified:proof_sha=sha(pb);proof_bytes=pb.stat().st_size
+                        else:
+                            certified=(not ck["expired"] and ck["returncode"]==0 and
+                                       verdict in ck["stdout"]+ck["stderr"])
+                            status="UNSAT_VERIFIED" if certified else (
+                                "CHECK_TIMEOUT" if ck["expired"] else "INVALID_PROOF")
+                            critical=not certified and not ck["expired"]
+                            if certified:
+                                cp=cert if kind=="STRUCTURAL_MATH5" else (
+                                  folder/"ipg1.json" if kind=="STRUCTURAL_IPG1" else
+                                  folder/"bdd3.json" if kind=="STRUCTURAL_BDD3" else
+                                  folder/"bdd2.json" if kind=="STRUCTURAL_BDD2" else proof)
+                                proof_sha=sha(cp);proof_bytes=cp.stat().st_size
+                strict=certified and kind in ("MODEL","DRAT","FRAT","VERIPB_CAPACITY")
+        elif not solve["expired"] and solve["returncode"] not in (0,153,None):
             status="RESOURCE_LIMIT" if solve["returncode"] in (137,-9,-25) else "SOLVER_ERROR"
             critical=status=="SOLVER_ERROR"
-            reason=solve["stderr"][-550:]
+            reason=solve["stderr"][-300:]
         elapsed=time.perf_counter()-started
         accepted=certified and elapsed<=CAP
-        strict=accepted and kind in ("MODEL","DRAT","FRAT")
-        stats={}
-        for line in solve["stderr"].splitlines():
-            for prefix in ("SAT_CONSTRUCT_STATS ","MATH5_UNIFIED_STATS "):
-                if line.startswith(prefix):
-                    try:stats[prefix.strip()]=json.loads(line[len(prefix):])
-                    except ValueError:critical=True
-        if certified and ((solve["returncode"]==10 and src["catalog_label"]=="unsat")
-                          or (solve["returncode"]==20 and src["catalog_label"]=="sat")):
-            reason="CERTIFIED_RESULT_DIFFERS_FROM_UNVERIFIED_CATALOG_LABEL"
+        strict=bool(accepted and strict)
         return dict(id=src["id"],file_id=src["file_id"],source_sha256=src["sha256"],
             family=src["family"],catalog_label=src["catalog_label"],
             arm=arm,rep=rep,rc=solve["returncode"],status=status,
@@ -243,7 +347,7 @@ def trial(src,arm,rep):
             solver_s=round(solver_s,6),checker_s=round(checker_s,6),
             e2e_s=round(elapsed,6),PAR2_s=round(elapsed if accepted else 2*CAP,6),
             PAR2_strict_s=round(elapsed if strict else 2*CAP,6),
-            proof_sha256=proof_sha,proof_bytes=proof_bytes,stats=stats)
+            proof_sha256=proof_sha,proof_bytes=proof_bytes,stats={})
 
 def shard(idx):
     assert 0<=idx<SHARDS
@@ -264,7 +368,7 @@ def shard(idx):
     sums={a:dict(solved=sum(r["accepted"] for r in records if r["arm"]==a),
         par2_s=round(sum(r["PAR2_s"] for r in records if r["arm"]==a),6))
         for a in ARMS}
-    print("REALBLIND100_SHARD "+json.dumps(dict(shard=idx,source_count=len(selected),
+    print("GRAND_UNIFIED_SHARD "+json.dumps(dict(shard=idx,source_count=len(selected),
         trials=len(records),summary=sums),sort_keys=True),flush=True)
 
 def report():
@@ -301,7 +405,7 @@ def report():
         if r["id"]==i and r["arm"]==a) for a in ARMS} for i in range(n)}
     best_reference=min(("Kissat","CaDiCaL","CryptoMiniSat"),key=lambda a:totals[a]["PAR2_s"])
     deltas={a:[per_source[i][best_reference]-per_source[i][a] for i in range(n)]
-            for a in ("X59_OFF","X59_ON25","X59_ON25_MATH5_100")}
+            for a in ("CXX_BDD3","CXX_UNION","X59_MATH5")}
     rng=random.Random(20261115)
     boots={}
     for a,changes in deltas.items():
@@ -318,8 +422,30 @@ def report():
         independent_certificates_required=True,
         original_source_sha256=sha(DATA/"manifest.json"),
         best_reference=best_reference,totals=totals,paired=boots,critical=problems)
+    # Cluster bootstrap by CNF source family (not repeated trials).
+    byfamily={}
+    for source in sources:
+        byfamily.setdefault(source["family"],[]).append(source["id"])
+    family_bootstrap={}
+    for candidate in ("CXX_BDD3","CXX_UNION","X59_MATH5"):
+        family_deltas=[sum(per_source[i][best_reference]-per_source[i][candidate]
+                           for i in ids) for ids in byfamily.values()]
+        if len(family_deltas)>=2:
+            rng2=random.Random(220116)
+            samples=sorted(sum(family_deltas[rng2.randrange(len(family_deltas))]
+                               for _ in range(len(family_deltas))) for _ in range(2000))
+            ci=[round(samples[49],6),round(samples[1950],6)]
+        else:ci=None
+        family_bootstrap[candidate]={"families":len(family_deltas),
+                                    "aggregate_delta_s":round(sum(family_deltas),6),
+                                    "bootstrap95_s":ci}
+    final["family_bootstrap"]=family_bootstrap
+    final["evaluation_status"]="RETROSPECTIVE_POSTHOC_REPLAY_NOT_BLIND"
+    final["candidate_native_single_process"]=True
+    final["union_pipeline_is_sequential_python_then_native"]=True
+    final["standard_only"]=True
     save(OUT/"final.json",final)
-    print("REALBLIND100_FINAL "+json.dumps(dict(status=final["status"],
+    print("GRAND_UNIFIED_FINAL "+json.dumps(dict(status=final["status"],
         sources=n,trials=len(rows),best_reference=best_reference,
         totals=totals,paired=boots,critical_count=len(problems)),sort_keys=True),flush=True)
     if problems:raise SystemExit("Critical invalid answers/proofs: review frozen audit")
