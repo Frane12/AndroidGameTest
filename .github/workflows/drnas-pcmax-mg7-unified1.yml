@@ -1,0 +1,90 @@
+name: DRNAS unified PCMAX capacity + MG7 SCC proof-first
+on:
+  push:
+    branches: [experiment/drnas-pcmax-mg7-unified1-20261116]
+    paths:
+      - src/drnas_x5.cpp
+      - src/residual_scc.hpp
+      - CMakeLists.txt
+      - research/pcmax_mg7_unified1.py
+      - .github/workflows/drnas-pcmax-mg7-unified1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-pcmax-mg7-unified1-20261116
+  cancel-in-progress: false
+jobs:
+  unified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent VeriPB 3.0.2 and DRAT-TRIM
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Build one-process unified target and isolated references
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_mg7_unified1.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-mg7-scc drnas-pcmax-mg7-unified -j2
+          sha256sum build/drnas-pcmax build/drnas-mg7-scc build/drnas-pcmax-mg7-unified
+          ./build/drnas-pcmax-mg7-unified --help || test $? -eq 1
+      - name: Source-frozen paired union audit, serialized single logical CPU
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_mg7_unified1.py
+      - name: Audit exact verifier-only statuses
+        if: always()
+        run: |
+          if test -s results/unified1/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          s=json.loads(pathlib.Path("results/unified1/summary.json").read_text())
+          lines=[
+            "# Unified single-process BDD + MG7 pilot",
+            "",
+            f"Originals: {s['original_cases']}, synthetics: {s['synthetic_cases']}",
+            f"Combined VeriPB source proofs: {s['verified_capacity']}",
+            f"Combined DRAT source proofs: {s['verified_drat']}",
+            f"Combined verified SAT models: {s['verified_models']}",
+            f"Combined UNKNOWN/TIMEOUT: {s['unknown']}",
+            f"MG7 SCC conflict hits: {s['scc_hits']}",
+            f"Errors: {len(s['errors'])}",
+            "",
+            "Source-frozen retrospective target family and synthetic controls. No prospective blind PAR2 claim.",
+          ]
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-pcmax-mg7-unified-source-verification
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/pcmax_mg7_unified1.py
+            results/unified1/summary.json
+            results/unified1/rows.json
+            results/unified1/*/*/*.log
+            results/unified1/synth/*.cnf
