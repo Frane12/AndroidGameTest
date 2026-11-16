@@ -41,3 +41,14 @@ endif()
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-pcmax-base PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+
+# Independent MG7 proof-first experiment. Both arms use the same unchanged
+# CDCL source; only the opt-in experiment target compiles residual SCC logic.
+add_executable(drnas-mg7-base src/drnas_x5.cpp)
+add_executable(drnas-mg7-scc src/drnas_x5.cpp)
+target_compile_definitions(drnas-mg7-scc PRIVATE DRNAS_RESIDUAL_SCC)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(drnas-mg7-base PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  target_compile_options(drnas-mg7-scc PRIVATE -O3 -Wall -Wextra -Wpedantic)
+endif()
