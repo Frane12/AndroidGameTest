@@ -1855,6 +1855,8 @@ int run(int argc, char** argv) {
             if (clause.size()==1) {
                 positive_units+=clause[0]>0;
                 negative_units+=clause[0]<0;
+            } else if (clause.size()==2) {
+                if (clause[0]>0 && clause[1]>0) ++alo;
             } else if (clause.size()==3) {
                 const int positives=(clause[0]>0)+(clause[1]>0)+(clause[2]>0);
                 if (positives==1 || positives==2) ++signed_ternaries;
@@ -1865,7 +1867,7 @@ int run(int argc, char** argv) {
                 if (all_pos) ++alo;
             }
         }
-        const bool bdd_signature=(alo>=3 && signed_ternaries>=4 &&
+        const bool bdd_signature=(alo>=2 && signed_ternaries>=2 &&
                                    positive_units>=2 && negative_units>=1);
         std::cerr<<"DRNAS_FAST_PC_GATE1 signature="
                  <<(bdd_signature?"true":"false")
