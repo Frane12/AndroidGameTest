@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Freeze 12 ORIGINAL SAT Competition 2025 Main graph-related CNFs.
+"""Freeze 10 ORIGINAL SAT Competition 2025 Main graph-related CNFs.
 
 Source selection is already committed in prespec.json (commit 1c206ef3).
 NO solver, family recognizer, proof emitter, source performance classifier,
 SAT/UNSAT label or candidate-generated output may run in this script.
 
 Recheck exact original GBD hashes and ISO hashes against both previous
-development manifests; download, bound, parse, hash, and freeze ALL 12
+development manifests; download, bound, parse, hash, and freeze ALL 10
 sources. Fail closed if even one selected original is unavailable.
 """
 import hashlib,io,json,lzma,os,pathlib,time,urllib.error,urllib.request
