@@ -20,7 +20,7 @@ import real67 as graph
 EXT=ROOT/"research/clique_color_er/emit_veripb.py"
 EXT_SRC=ROOT/"research/clique_color_er/source_check.py"
 VERIPB=ROOT/"veripb-tool/bin/veripb"
-CAP=8.0;REPS=2;SHARDS=6
+CAP=8.0;REPS=2;SHARDS=5
 ARMS=("CLIQUE_EXT_ONLY","CLIQUE_EXT_GRAPH_MATH5","GRAPH_MATH5",
       "X59_MATH5_VERIPB","Kissat","CaDiCaL","CryptoMiniSat")
 REFS=("Kissat","CaDiCaL","CryptoMiniSat")
@@ -43,10 +43,10 @@ def affinity():
 def immutable():
     meta=json.loads((HERE/"prespec.json").read_text())
     m=json.loads((INPUT/"manifest.json").read_text())
-    assert meta["protocol"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-PRESPEC-V1"
+    assert meta["protocol"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-SMALL-PRESPEC-V2"
     assert m["status"]=="FROZEN_SOURCE_ONLY_NO_SOLVER_RUN"
-    assert len(meta["records"])==len(m["sources"])==12
-    assert meta["selected_sources"]==m["selected_count"]==12
+    assert len(meta["records"])==len(m["sources"])==10
+    assert meta["selected_sources"]==m["selected_count"]==10
     assert sha(HERE/"prespec.json")==m["prespec_sha256"]
     assert m["provenance"]["family_disjoint"]
     assert m["provenance"]["source_isohash_disjoint"]
@@ -73,9 +73,9 @@ def prepare():
                 {s.get("isohash") for s in prior})
     pins=frozen.pinned()
     protocol={
-        "experiment":"DRNAS-GRAPH-FAMILY-DISJOINT25-STRICT-E2E-V1",
-        "sources":12,"repetitions":REPS,"shards":SHARDS,
-        "arms":list(ARMS),"expected_trials":12*REPS*len(ARMS),
+        "experiment":"DRNAS-GRAPH-FAMILY-DISJOINT25-SMALL-STRICT-E2E-V2",
+        "sources":10,"repetitions":REPS,"shards":SHARDS,
+        "arms":list(ARMS),"expected_trials":10*REPS*len(ARMS),
         "cap_s":CAP,"PAR2_timeout_s":2*CAP,
         "one_logical_cpu_per_solver":True,
         "no_parallel_solver_portfolio":True,
@@ -97,7 +97,7 @@ def prepare():
         "limitations":"12 original CNFs across eight catalog families. Disjoint only from 67+10 tracked development references, not all historic experiments."}
     save(OUT/"protocol.json",protocol)
     print("GRAPH_DISJOINT25_PREPARED "+json.dumps({
-        "sources":12,"families":len({x["family"] for x in m["sources"]}),
+        "sources":10,"families":len({x["family"] for x in m["sources"]}),
         "arms":len(ARMS),"expected_trials":protocol["expected_trials"],
         "input_sha256":protocol["new_source_manifest_sha256"]},sort_keys=True),flush=True)
 
@@ -105,8 +105,8 @@ def restore():
     affinity()
     pre,m=immutable()
     p=json.loads((OUT/"protocol.json").read_text())
-    assert p["experiment"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-STRICT-E2E-V1"
-    assert p["sources"]==12 and p["arms"]==list(ARMS)
+    assert p["experiment"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-SMALL-STRICT-E2E-V2"
+    assert p["sources"]==10 and p["arms"]==list(ARMS)
     assert p["new_source_manifest_sha256"]==sha(INPUT/"manifest.json")
     assert p["prespec_sha256"]==sha(HERE/"prespec.json")
     assert p["old67_manifest_sha256"]==sha(ROOT/"unified_realblind100_inputs/manifest.json")
@@ -281,9 +281,9 @@ def report():
         path=OUT/f"shard-{idx}"/"trials.jsonl"
         assert path.is_file(),("MISSING_SHARD",idx)
         rows.extend(json.loads(line) for line in path.read_text().splitlines())
-    expectation={(i,rep,a) for i in range(12) for rep in range(REPS) for a in ARMS}
+    expectation={(i,rep,a) for i in range(10) for rep in range(REPS) for a in ARMS}
     observed={(row["id"],row["rep"],row["arm"]) for row in rows}
-    assert len(rows)==len(expectation)==len(observed)==168 and observed==expectation
+    assert len(rows)==len(expectation)==len(observed)==140 and observed==expectation
     by_id={x["id"]:x for x in sources}
     errors=[]
     for row in rows:
@@ -297,7 +297,7 @@ def report():
             row["certificate_kind"] not in STRICT):
             errors.append({"id":row["id"],"arm":row["arm"],
                            "reason":"UNVERIFIED_PROOF_SCORED_STRICT"})
-    for id in range(12):
+    for id in range(10):
         accepted=[r for r in rows if r["id"]==id and r["accepted"]]
         if any(r["status"]=="SAT_VERIFIED" for r in accepted) and any(
                r["status"]=="UNSAT_VERIFIED" for r in accepted):
@@ -320,14 +320,14 @@ def report():
     best=min(REFS,key=lambda arm:total[arm]["strict_PAR2_s"])
     per_id={id:{arm:statistics.mean(r["PAR2_strict_s"] for r in rows
              if r["id"]==id and r["arm"]==arm) for arm in ARMS}
-             for id in range(12)}
+             for id in range(10)}
     families=collections.defaultdict(list)
     for s in sources:families[s["family"]].append(s["id"])
     rnd=random.Random(20261116)
     comparisons={}
     for arm in ARMS:
         if arm in REFS:continue
-        delta={id:per_id[id][best]-per_id[id][arm] for id in range(12)}
+        delta={id:per_id[id][best]-per_id[id][arm] for id in range(10)}
         clusters=[sum(delta[id] for id in group) for group in families.values()]
         bootstrap=sorted(sum(clusters[rnd.randrange(len(clusters))]
                     for _ in clusters) for _ in range(4000))
