@@ -133,3 +133,16 @@ if (TARGET OpenSSL::Crypto)
     target_compile_options(drnas-ipg5b-jobbranch PRIVATE -O3 -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+
+# IPG5-C experimental general source-onehot bounded C++ RUP generator.
+# Emits proof only after complete native source-RUP replay; arbitrary source
+# SHA must be checked by an external independently committed manifest.
+# No CDCL, no main, no new concurrent worker.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-ipg5c-onehot research/ipg5c_native_onehot.cpp)
+  target_link_libraries(drnas-ipg5c-onehot PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-ipg5c-onehot PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
