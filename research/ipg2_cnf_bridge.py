@@ -11,7 +11,7 @@ job, the complete original CNF is UNSAT.
 The job classes are heuristic and may be wrong about underlying durations:
 soundness relies ONLY on the source-checked universal forbidden patterns.
 No SAT result is ever returned. Unsupported structure -> UNKNOWN.
-Integer arithmetic and O(n^3) pattern probes plus O(m*n^4) count DP
+Integer arithmetic and O(n^3) universal patterns plus O(m*n^4) count DP
 are polynomial (for the fixed two classes and 3-literal pattern cutoff).
 No exponential 2^n subset enumeration, SAT oracle, or BDD assumption.
 Certificate MUST be independently checked against identical input bytes.
@@ -134,7 +134,8 @@ def universal_forbidden(forbids,classes):
                 if not all_bad:break
                 for s2 in itertools.combinations(b,v):
                     sel=frozenset(s1+s2)
-                    if not any(f.issubset(sel) for f in forbids):
+                    if not any(frozenset(t) in forbids for k in range(1,len(sel)+1)
+                               for t in itertools.combinations(tuple(sorted(sel)),k)):
                         all_bad=False
                         break
             if all_bad:blocked.append((u,v))
