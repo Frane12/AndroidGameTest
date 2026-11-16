@@ -1,0 +1,91 @@
+name: DRNAS IPG5 direct ORIGINAL Petersen VeriPB without CDCL
+on:
+  push:
+    branches: [experiment/drnas-ipg5-native-source-parity-20261116]
+    paths:
+      - research/ipg5_structural_original_rup.py
+      - research/ipg5_rup_to_veripb.py
+      - research/ipg5_original_veripb_benchmark.py
+      - .github/workflows/drnas-ipg5-original-source-veripb.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg5-direct-source-noncdcl-20261116
+  cancel-in-progress: false
+jobs:
+  no_cdcl_original_veripb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent VeriPB 3.0.2 and DRAT-trim
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Verify producer syntax and absence of external SAT-solver calls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/ipg5_structural_original_rup.py \
+            research/ipg5_rup_to_veripb.py \
+            research/ipg5_original_veripb_benchmark.py
+          sha256sum research/ipg5_*.py
+          # This CI never compiles or invokes DRNAS CDCL, a SAT solver or a
+          # portfolio. Source-guided DPLL lives inside the proof generator.
+      - name: Non-CDCL original weighted CNF -> source graph bridge -> parity -> VeriPB
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg5_original_veripb_benchmark.py
+      - name: Display source and verifier evidence, never a guess
+        if: always()
+        run: |
+          if test -s results/ipg5_original/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path('results/ipg5_original/summary.json').read_text())
+          message=(
+            "# IPG5 original weighted Petersen source — NO CDCL\n\n"
+            +f"Status: {d['status']}\n\n"
+            +f"Original: {d['original_variables']} vars / {d['original_clauses']} clauses\n\n"
+            +f"Source-derived graph mutex clauses: {d['new_source_graph_mutex_lemmas']}\n\n"
+            +f"Source structural branch nodes: {d['structural_DPLL_branch_nodes']}\n\n"
+            +f"Structural RUP steps: {d['structural_source_RUP_steps']}\n\n"
+            +f"Odd-cycle parity RUP steps: {d['parity_RUP_steps']}\n\n"
+            +f"Whole ORIGINAL source RUP steps: {d['total_original_source_RUP_steps']}\n\n"
+            +f"External DRAT-trim accepted: {d['independent_drat_verified']}\n\n"
+            +f"External VeriPB 3.0.2 accepted: {d['external_veripb_verified']}\n\n"
+            +f"Tamper and SAT control rejected: {d['source_tamper_rejected'] and d['truncated_proof_rejected'] and d['sat_control_rejected']}\n\n"
+            +d['scope']+"\n"
+          )
+          print(message)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(message)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg5-original-300-source-direct-nonCDCL-veripb
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg5_structural_original_rup.py
+            research/ipg5_rup_to_veripb.py
+            research/ipg5_original_veripb_benchmark.py
+            results/ipg5_original/
