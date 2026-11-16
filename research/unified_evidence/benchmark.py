@@ -438,7 +438,7 @@ def report():
     for source in sources:
         byfamily.setdefault(source["family"],[]).append(source["id"])
     family_bootstrap={}
-    for candidate in ("CXX_BDD3","CXX_UNION","X59_MATH5"):
+    for candidate in ("CXX_BDD3","CXX_UNION","CORE1_FROZEN","X59_MATH5"):
         family_deltas=[sum(per_source[i][best_reference]-per_source[i][candidate]
                            for i in ids) for ids in byfamily.values()]
         if len(family_deltas)>=2:
@@ -458,7 +458,7 @@ def report():
     save(OUT/"final.json",final)
     print("GRAND_UNIFIED_FINAL "+json.dumps(dict(status=final["status"],
         sources=n,trials=len(rows),best_reference=best_reference,
-        totals=totals,paired=boots,critical_count=len(problems)),sort_keys=True),flush=True)
+        totals=totals,paired=boots,family_bootstrap=family_bootstrap,critical_count=len(problems)),sort_keys=True),flush=True)
     if problems:raise SystemExit("Critical invalid answers/proofs: review frozen audit")
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
