@@ -69,11 +69,11 @@ never assume all 100 were obtained. It is **not a newly blind
 prospective holdout**, and previous 2026 sources must not be counted as
 fresh independent scientific evidence.
 
-Arms (eight, each run on identical frozen original CNF bytes):
+Arms (nine, each run on identical frozen original CNF bytes):
 `X59_OFF`, `X59_MATH5`, `CXX_BASE`, `CXX_BDD3`,
-`CXX_UNION`, `Kissat`, `CaDiCaL`, `CryptoMiniSat`.
+`CXX_UNION`, `CORE1_FROZEN`, `Kissat`, `CaDiCaL`, `CryptoMiniSat`.
 
-* Two serial, shuffled repetitions per source and eight arms.
+* Two serial, shuffled repetitions per source and nine arms.
 * 8-second **E2E** wall cap including stage preprocessing, solver
   startup, source SHA checks, proof generation and proof verification.
 * One logical CPU per solver/attempt (pinned affinity); no concurrent
@@ -101,8 +101,8 @@ Arms (eight, each run on identical frozen original CNF bytes):
 * No claims of world ranking, official competition result,
   statistically proven universal speedup or P=NP.
 
-Expected trials = `actual_N * 2 * 8` (1072 if N=67).
-No posthoc pruning of slow/failed source families.
+Expected trials = `actual_N * 2 * 9` (1206 if N=67).
+The previously validated native **CORE1** SAT constructors, ARG3, MATH5 and Hall/BDD proof guards are restored from pinned run `43717935841` and compared as their own immutable `CORE1_FROZEN` arm, with its independent Hall/MATH5/capacity certificate checker. This is not represented as native integration into the X5 CDCL code.\nNo posthoc pruning of slow/failed source families.
 The best reference is selected among the three fixed standard solvers
 on the SAME trial matrix (not from a different benchmark).
 
@@ -115,7 +115,7 @@ Workflow:
 baseline + BDD3 C++; cargo-install VeriPB 3.0.2; check Python syntax
 and source-tamper smoke tests; SHA-pin complete execution inputs.
 
-`paired`: 10 shards / max 5 workers, serial per-shard paired 8-arm
+`paired`: 10 shards / max 5 workers, serial per-shard paired 9-arm
 trials, one CPU each.
 
 `aggregate`: require complete exact source-ID/rep/arm matrix, check
