@@ -1,0 +1,82 @@
+name: DRNAS IPG5E original source pure-POL VeriPB test
+on:
+  push:
+    branches: [experiment/drnas-ipg5e-original-pure-pol-20261116]
+    paths:
+      - research/ipg5e_pure_pol_from_source_rup.py
+      - research/ipg5e_pol_benchmark.py
+      - .github/workflows/drnas-ipg5e-pure-pol.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg5e-pure-pol-20261116
+  cancel-in-progress: false
+jobs:
+  source_pol_conversion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent VeriPB 3.0.2 and DRAT-trim
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Build original native C++ NON-CDCL job branch generators
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg5e_pure_pol_from_source_rup.py research/ipg5e_pol_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-ipg5b-jobbranch drnas-ipg5c-onehot -j2
+          sha256sum research/ipg5e_*.py build/drnas-ipg5b-jobbranch build/drnas-ipg5c-onehot
+      - name: Exact-original POL-only VeriPB check; independent RUP source audit
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg5e_pol_benchmark.py
+      - name: Publish SCIENTIFIC caveat about RUP-free FORMAT versus search-free discovery
+        if: always()
+        run: |
+          if test -s results/ipg5e_pol/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg5e_pol/summary.json").read_text())
+          msg=("# IPG5E pure-POL original source proof pilot\n\n"
+            +f"Status: {d['status']}\n\n"
+            +f"Cases: {d['source_cases']}\n\n"
+            +f"Source-POL externally VeriPB verified: {d['verified_source_POL_only']}\n\n"
+            +f"Original 300-clause Petersen proof accepted: {d['original_source_POL_accepted']}\n\n"
+            +f"Original POL lines: {d['original_pol_lines']}\n\n"
+            +f"Original PB additions/saturations: {d['original_pol_additions']} / {d['original_pol_saturations']}\n\n"
+            +f"Original proof bytes: {d['original_proof_bytes']}\n\n"
+            +f"Errors: {len(d['errors'])}\n\n"
+            +d['scope']+"\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg5e-original-pure-pol-veripb-source-proofs
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg5e_pure_pol_from_source_rup.py
+            research/ipg5e_pol_benchmark.py
+            results/ipg5e_pol/
