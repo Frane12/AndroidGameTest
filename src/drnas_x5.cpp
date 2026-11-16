@@ -41,6 +41,9 @@
 #ifdef DRNAS_IPG_BDD2_MODULE
 #include "ipg_bdd_count.hpp"
 #endif
+#ifdef DRNAS_IPG_BDD3_MODULE
+#include "ipg_bdd3_count.hpp"
+#endif
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -1516,6 +1519,11 @@ int run(int argc, char** argv) {
     double ipg_bdd2_budget_ms=600.0;
     std::string ipg_bdd2_graph_path,ipg_bdd2_certificate_path;
 #endif
+#ifdef DRNAS_IPG_BDD3_MODULE
+    bool ipg_bdd3_requested=false;
+    double ipg_bdd3_budget_ms=300.0;
+    std::string ipg_bdd3_graph_path,ipg_bdd3_certificate_path;
+#endif
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -1547,6 +1555,12 @@ int run(int argc, char** argv) {
         else if (opt=="--ipg-bdd2-graph" && i+1<argc) ipg_bdd2_graph_path=argv[++i];
         else if (opt=="--ipg-bdd2-certificate" && i+1<argc) ipg_bdd2_certificate_path=argv[++i];
 #endif
+#ifdef DRNAS_IPG_BDD3_MODULE
+        else if (opt=="--ipg-bdd3") ipg_bdd3_requested=true;
+        else if (opt=="--ipg-bdd3-budget-ms" && i+1<argc) ipg_bdd3_budget_ms=std::stod(argv[++i]);
+        else if (opt=="--ipg-bdd3-graph" && i+1<argc) ipg_bdd3_graph_path=argv[++i];
+        else if (opt=="--ipg-bdd3-certificate" && i+1<argc) ipg_bdd3_certificate_path=argv[++i];
+#endif
         else if (opt=="--x5-no-minimize") x5_minimize=false;
         else if (opt=="--x5-no-retain") x5_retain=false;
         else if (opt=="--x5-retain") x5_retain=true;
@@ -1571,6 +1585,9 @@ int run(int argc, char** argv) {
 #endif
 #ifdef DRNAS_IPG_BDD2_MODULE
             std::cout<<"IPG-BDD2: --ipg-bdd2 --ipg-bdd2-budget-ms N --ipg-bdd2-graph NEW_FILE --ipg-bdd2-certificate NEW_FILE\n";
+#endif
+#ifdef DRNAS_IPG_BDD3_MODULE
+            std::cout<<"IPG-BDD3: --ipg-bdd3 --ipg-bdd3-budget-ms N --ipg-bdd3-graph NEW_FILE --ipg-bdd3-certificate NEW_FILE\n";
 #endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
@@ -1621,6 +1638,31 @@ int run(int argc, char** argv) {
                               ipg_bdd2_certificate_path==ipg1_certificate))
             throw std::runtime_error("IPG-BDD2 and IPG1 certificate paths must differ");
 #endif
+    }
+#endif
+#ifdef DRNAS_IPG_BDD3_MODULE
+    if (!std::isfinite(ipg_bdd3_budget_ms) || ipg_bdd3_budget_ms<0 ||
+        ipg_bdd3_budget_ms>86400000)
+        throw std::runtime_error("invalid --ipg-bdd3-budget-ms");
+    if (ipg_bdd3_requested) {
+        pcmax_enabled=true;
+        if (pcmax_only)
+            throw std::runtime_error("--ipg-bdd3 cannot combine with --pcmax-only");
+        if (ipg_bdd3_graph_path.empty() || ipg_bdd3_certificate_path.empty())
+            throw std::runtime_error("IPG-BDD3 requires two output paths");
+        std::vector<std::string> paths{input,proof_path,pcmax_certificate,
+                                      ipg_bdd3_graph_path,ipg_bdd3_certificate_path};
+#ifdef DRNAS_IPG1_MODULE
+        paths.push_back(ipg1_certificate);
+#endif
+#ifdef DRNAS_IPG_BDD2_MODULE
+        paths.push_back(ipg_bdd2_graph_path);
+        paths.push_back(ipg_bdd2_certificate_path);
+#endif
+        for(size_t a=0;a<paths.size();++a)if(!paths[a].empty())
+            for(size_t b=a+1;b<paths.size();++b)
+                if(paths[a]==paths[b] && !paths[b].empty())
+                    throw std::runtime_error("IPG-BDD3 input and certificate paths must differ");
     }
 #endif
     if (pcmax_only && !proof_path.empty())
@@ -1888,6 +1930,43 @@ int run(int argc, char** argv) {
                      <<",\"module_s\":"<<count_result.seconds<<"}\n";
             if (count_result.verified) {
                 std::cout<<"c PCMAX_UNIFIED_PROOF_KIND IPG_BDD2_JSON_NEEDS_INDEPENDENT_CHECKER\n";
+                std::cout<<"s UNSATISFIABLE\n";
+                return 20;
+            }
+        }
+#endif
+#ifdef DRNAS_IPG_BDD3_MODULE
+        if (ipg_bdd3_requested && !capacity_result.verified) {
+            drnas_ipgbdd3::Result triple;
+            if (!pcmax_skip_reason.empty())triple.reason="capture_unavailable";
+            else {
+                if (digest.empty() && pcmax_digest)digest=pcmax_digest->finish();
+                double budget3=ipg_bdd3_budget_ms/1000.0;
+                if (seconds>0)budget3=std::min(budget3,std::max(0.0,
+                    seconds-std::chrono::duration<double>(
+                        Clock::now()-process_start).count()));
+                triple=drnas_ipgbdd3::analyze(pcmax_original,declared_vars,digest,budget3);
+            }
+            if (triple.candidate) {
+                if (seconds>0 && std::chrono::duration<double>(
+                        Clock::now()-process_start).count()>=seconds) {
+                    triple.candidate=false;
+                    triple.reason="time_exhausted_before_writing_proof";
+                } else {
+                    pcmaxWriteCertificate(ipg_bdd3_graph_path,triple.graph_json);
+                    pcmaxWriteCertificate(ipg_bdd3_certificate_path,triple.certificate_json);
+                }
+            }
+            std::cout<<"c IPG_BDD3 {\"reason\":"<<pcmaxJsonString(triple.reason)
+                     <<",\"candidate\":"<<(triple.candidate?"true":"false")
+                     <<",\"groups\":"<<triple.groups
+                     <<",\"machines\":"<<triple.machines
+                     <<",\"trials\":"<<triple.attempted
+                     <<",\"class_sizes\":["<<triple.class_sizes[0]<<','<<triple.class_sizes[1]
+                     <<','<<triple.class_sizes[2]<<"]"
+                     <<",\"module_s\":"<<triple.seconds<<"}\n";
+            if (triple.candidate) {
+                std::cout<<"c PCMAX_UNIFIED_PROOF_KIND IPG_BDD3_JSON_NEEDS_INDEPENDENT_CHECKER\n";
                 std::cout<<"s UNSATISFIABLE\n";
                 return 20;
             }
