@@ -104,7 +104,7 @@ def main():
         "--metadata",OUT/"bad_meta.json","--fractional",OUT/"bad_frac.json"],20)
     require(rc!=0 and not badrup.exists(),"tampered source got a proof")
     steps=rup.read_text().splitlines()
-    require(steps and steps[-1]=="0","no terminal empty clause")
+    require(steps and steps[-1].strip()=="0","no terminal empty clause")
     truncated=OUT/"truncated_trace.rup"
     truncated.write_text("\n".join(steps[:-1])+"\n")
     badpb=OUT/"invalid_truncated.pbp"
