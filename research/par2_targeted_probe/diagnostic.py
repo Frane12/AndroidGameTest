@@ -7,8 +7,19 @@ import argparse, collections, hashlib, json, os, random, sys, statistics
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
-sys.path.insert(0,str(ROOT/"research/par2_plus10"))
-import benchmark as plus
+import importlib.util
+# Both historical runners import a module named "benchmark". Load the frozen
+# base under that exact name before loading the plus10 module under a unique name.
+spec_base=importlib.util.spec_from_file_location(
+    "benchmark", ROOT/"research/unified_evidence/benchmark.py")
+base=importlib.util.module_from_spec(spec_base)
+sys.modules["benchmark"]=base
+spec_base.loader.exec_module(base)
+spec_plus=importlib.util.spec_from_file_location(
+    "plus10_diagnostic_runner", ROOT/"research/par2_plus10/benchmark.py")
+plus=importlib.util.module_from_spec(spec_plus)
+sys.modules["plus10_diagnostic_runner"]=plus
+spec_plus.loader.exec_module(plus)
 
 CAP=30.0
 REPS=2
@@ -16,11 +27,11 @@ TARGETS=(("SAT2025",13),("SAT2026",25),("SAT2026",31))
 ARMS=("X59_MATH5_VERIPB","X59_OFF","CXX_UNION","Kissat","CaDiCaL","CryptoMiniSat")
 OUT=ROOT/"results/par2_targeted_probe"
 plus.CAP=CAP
-plus.base.CAP=CAP
+plus.frozen.CAP=CAP
 plus.m5.CAP=CAP
 
 def digest(p):
-    return plus.base.sha(p)
+    return plus.frozen.sha(p)
 
 def save(path,obj):
     path.parent.mkdir(parents=True,exist_ok=True)
@@ -64,15 +75,15 @@ def features(source):
                 polarity=dict(polar),max_clause_length=max_len)
 
 def prepare():
-    plus.base.affinity()
+    plus.frozen.affinity()
     srcs=select()
-    pinned=plus.base.pinned()
+    pinned=plus.frozen.pinned()
     proof_controls=plus.m5.proof_preflight()
     metadata={f"{s['era']}:{s['id']}":features(s) for s in srcs}
     p=dict(protocol="DRNAS-TARGETED-FAILURE-ANALYSIS-V1",
         code_git_sha=os.environ.get("GITHUB_SHA"),script_sha=digest(Path(__file__)),
         source_manifest_sha2025=digest(plus.MANIFEST25),
-        source_manifest_sha2026=digest(plus.base.DATA/"manifest.json"),
+        source_manifest_sha2026=digest(plus.frozen.DATA/"manifest.json"),
         binary_sha256=pinned,target_ids=TARGETS,arms=ARMS,reps=REPS,cap_s=CAP,
         expected_trials=len(TARGETS)*REPS*len(ARMS),
         original_cnf_features=metadata,proof_controls=proof_controls,
@@ -83,14 +94,14 @@ def prepare():
         trials=p["expected_trials"],sources_meta=metadata),sort_keys=True),flush=True)
 
 def verify():
-    plus.base.affinity()
+    plus.frozen.affinity()
     proto=json.loads((OUT/"protocol.json").read_text())
     assert proto["protocol"]=="DRNAS-TARGETED-FAILURE-ANALYSIS-V1"
     assert proto["script_sha"]==digest(Path(__file__))
     assert proto["code_git_sha"]==os.environ.get("GITHUB_SHA")
-    assert proto["binary_sha256"]==plus.base.pinned()
+    assert proto["binary_sha256"]==plus.frozen.pinned()
     assert proto["source_manifest_sha2025"]==digest(plus.MANIFEST25)
-    assert proto["source_manifest_sha2026"]==digest(plus.base.DATA/"manifest.json")
+    assert proto["source_manifest_sha2026"]==digest(plus.frozen.DATA/"manifest.json")
     assert proto["cap_s"]==CAP and proto["reps"]==REPS
     return proto
 
