@@ -1,0 +1,205 @@
+name: DRNAS TSP-SAT3 certified 1-tree LB and reversal symmetry exact proof
+on:
+  push:
+    branches: [experiment/drnas-tsp-sat3-one-tree-20261116]
+    paths:
+      - research/tsp_sat3/**
+      - research/tsp_sat1/encoding.py
+      - research/tsp_sat2/optimizer.py
+      - .github/workflows/drnas-tsp-sat3.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-tsp-sat3-20261116
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43941540528
+          name: tsp-sat2-frozen-source-and-protocol
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore SHA frozen TSP-SAT2 reference solvers and proof checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -s frozen/tsp-sat2-frozen.tgz
+          sha256sum frozen/tsp-sat2-frozen.tgz
+          tar -xzf frozen/tsp-sat2-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-structure-gate1 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Independent Kruskal 1-tree certificate selftest, exhaustive symmetry and compiler check
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/tsp_sat3/one_tree.py research/tsp_sat3/benchmark.py \
+            research/tsp_sat3/audit.py research/tsp_sat2/optimizer.py \
+            research/tsp_sat1/encoding.py
+          python3 -u research/tsp_sat3/one_tree.py | tee tsp3_onetree_selftest.log
+          grep -q '^TSP_SAT3_ONE_TREE_SELFTEST_PASS ' tsp3_onetree_selftest.log
+          python3 -u research/tsp_sat1/encoding.py | tee tsp3_symmetry_selftest.log
+          grep -q '^TSP_SAT1_ENCODING_SELFTEST_PASS ' tsp3_symmetry_selftest.log
+          python3 -u research/tsp_sat3/benchmark.py prepare | tee tsp3_prepare.log
+          grep -q '^TSP_SAT3_READY ' tsp3_prepare.log
+      - name: Live DRNAS proof preflight on 1-tree and symmetry case
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee tsp3_proof_preflight.log
+          import json,tempfile
+          from pathlib import Path
+          from research.tsp_sat3.benchmark import base
+          coords=base.coords_for(5,1021)
+          with tempfile.TemporaryDirectory(prefix="tsp3-smoke-") as d:
+              root=Path(d)
+              for mode,sym in [("degree",False),("one_tree",False),("one_tree",True)]:
+                  v=base.optimize(coords,"DRNAS_X59",root/f"{mode}-{int(sym)}",
+                                  bound_mode=mode,break_reversal=sym)
+                  assert v["status"]=="OPTIMAL_CERTIFIED",v
+                  assert v["certificate"] is not None
+                  assert v["proof_at_bound"]==v["best_cost"]-1
+                  print("TSP_SAT3_PROOF_CASE",json.dumps(
+                      dict(mode=mode,sym=sym,best=v["best_cost"],queries=v["queries"],
+                           proof_at=v["proof_at_bound"]),sort_keys=True),flush=True)
+          print("TSP_SAT3_PROOF_PREFLIGHT_PASS",flush=True)
+          PY
+          grep -q '^TSP_SAT3_PROOF_PREFLIGHT_PASS' tsp3_proof_preflight.log
+      - name: Freeze five retrospectively paired sources and all exact executable hashes
+        run: |
+          set -euo pipefail
+          tar -czf tsp-sat3-frozen.tgz \
+            results/tsp_sat3/manifest.json results/tsp_sat3/protocol.json \
+            results/tsp_sat3/sources \
+            build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb
+          sha256sum tsp-sat3-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsp-sat3-sha-pinned-source-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: tsp-sat3-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat3-preflight-and-bound-proof-audit
+          retention-days: 60
+          path: |
+            tsp3_*.log
+            results/tsp_sat3/manifest.json
+            results/tsp_sat3/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsp-sat3-sha-pinned-source-binaries
+      - name: Restore frozen solvers and independent verifiers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf tsp-sat3-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-structure-gate1 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Compare 1-tree and symmetry ON OFF on one CPU with strict proof checks
+        run: |
+          set -euo pipefail
+          python3 -u research/tsp_sat3/benchmark.py shard --index ${{ matrix.shard }} | tee tsp3_shard.log
+          grep -q '^TSP_SAT3_SHARD ' tsp3_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat3-case-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/tsp_sat3/case-${{ matrix.shard }}/
+            tsp3_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsp-sat3-sha-pinned-source-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tsp-sat3-case-*
+          path: collected
+      - name: Restore frozen comparator and collect 50 decisions with full proof evidence
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf tsp-sat3-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-structure-gate1 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(5):
+              found=list((Path("collected")/f"tsp-sat3-case-{i}").rglob("trials.jsonl"))
+              assert len(found)==1,(i,found)
+              src=found[0].parent
+              dst=Path("results/tsp_sat3")/f"case-{i}"
+              assert src.name==dst.name
+              shutil.copytree(src,dst)
+          PY
+      - name: Verify all one-tree dual bounds and replay every standard original-CNF UNSAT proof
+        run: |
+          set -euo pipefail
+          python3 -u research/tsp_sat3/audit.py | tee tsp3_final.log
+          grep -q '^TSP_SAT3_FINAL ' tsp3_final.log
+          cat tsp3_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsp-sat3-final-one-tree-symmetry-standard-proof-audit
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            tsp3_final.log
+            results/tsp_sat3/
