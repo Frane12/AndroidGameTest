@@ -1,0 +1,174 @@
+name: DRNAS PAR2 +10 strict E2E two-era diagnostic
+on:
+  push:
+    branches: [experiment/drnas-par2-plus10-bench-20261116]
+    paths:
+      - research/par2_plus10/**
+      - .github/workflows/drnas-par2-plus10-twoera.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-plus10-twoera-20261116
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43874420143
+          name: drnas-math5-standard-real67-frozen
+          github-token: ${{ github.token }}
+          path: frozen/real67
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43710031198
+          name: real2025-originals-frozen
+          github-token: ${{ github.token }}
+          path: frozen/real2025
+      - name: Restore SHA-pinned sources, native solvers and external verifiers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -s frozen/real67/drnas-math5-standard-real67-frozen.tgz
+          test -s frozen/real2025/real2025-originals-frozen.tgz
+          sha256sum frozen/real67/*.tgz frozen/real2025/*.tgz
+          tar -xzf frozen/real67/drnas-math5-standard-real67-frozen.tgz
+          tar -xzf frozen/real2025/real2025-originals-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+          test -s unified_realblind100_inputs/manifest.json
+          test -s sat_real2025_inputs/manifest.json
+          test -s unified_evidence_results/protocol.json
+      - name: Freeze and audit original CNF hashes, binaries and external proof controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/par2_plus10/benchmark.py
+          python3 -u research/par2_plus10/benchmark.py prepare | tee plus10_prepare.log
+          grep -q '^PLUS10_READY ' plus10_prepare.log
+          tar -czf plus10-twoera-frozen.tgz \
+            build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb unified_realblind100_inputs sat_real2025_inputs \
+            unified_evidence_results/protocol.json results/par2_plus10/protocol.json
+          sha256sum plus10-twoera-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plus10-twoera-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: plus10-twoera-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plus10-prepare-audit
+          retention-days: 60
+          path: |
+            plus10_prepare.log
+            results/par2_plus10/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: plus10-twoera-frozen
+      - name: Restore frozen inputs and equal reference dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf plus10-twoera-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Serial six-arm trials with exactly one logical CPU, 12s strict E2E
+        run: |
+          set -euo pipefail
+          python3 -u research/par2_plus10/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee plus10_shard.log
+          grep -q '^PLUS10_SHARD ' plus10_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plus10-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/par2_plus10/shard-${{ matrix.shard }}/trials.jsonl
+            plus10_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: plus10-twoera-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: plus10-shard-*
+          path: collected
+      - name: Enforce 1032 paired trials, standard certificate checks and final PAR2
+        run: |
+          set -euo pipefail
+          tar -xzf plus10-twoera-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(10):
+              found=list((Path("collected")/f"plus10-shard-{i}").rglob("trials.jsonl"))
+              assert len(found)==1,(i,found)
+              out=Path("results/par2_plus10")/f"shard-{i}"
+              out.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(found[0],out/"trials.jsonl")
+          PY
+          python3 -u research/par2_plus10/benchmark.py report | tee plus10_final.log
+          grep -q '^PLUS10_FINAL ' plus10_final.log
+          cat plus10_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plus10-twoera-final-strict-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/par2_plus10/final.json
+            results/par2_plus10/protocol.json
+            results/par2_plus10/shard-*/trials.jsonl
+            plus10_final.log
