@@ -96,7 +96,7 @@ def check_disjoint(prespec):
     iso={s.get("isohash") for s in previous}
     old_families={s["family"] for s in previous}
     chosen=prespec["records"]
-    assert len(chosen)==12 and {x["id"] for x in chosen}==set(range(12))
+    assert len(chosen)==10 and {x["id"] for x in chosen}==set(range(10))
     assert len({s["gbd_hash"] for s in chosen})==len(chosen)
     assert len({s["isohash"] for s in chosen})==len(chosen)
     assert all(len(s["gbd_hash"])==len(s["isohash"])==32 for s in chosen)
@@ -146,7 +146,7 @@ def size_metadata(choices):
 
 def main():
     prespec=json.loads(PRE.read_text())
-    assert prespec["protocol"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-PRESPEC-V1"
+    assert prespec["protocol"]=="DRNAS-GRAPH-FAMILY-DISJOINT25-SMALL-PRESPEC-V2"
     assert prespec["candidate_locked_before_any_evaluation"]
     assert prespec["no_replacement_after_freeze_or_outcomes"]
     provenance=check_disjoint(prespec)
