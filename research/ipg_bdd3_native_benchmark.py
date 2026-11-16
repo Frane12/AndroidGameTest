@@ -188,7 +188,7 @@ def tamper_test(all_rows,files):
     for case,edit in (
         ("source_hash",lambda x:x.update(source_sha256="0"*64)),
         ("wrong_class",lambda x:x["classes"][0].append(999)),
-        ("wrong_profile",lambda x:x["machine_profile_sizes"][0:1].clear()),
+        ("wrong_profile",lambda x:x["machine_profile_sizes"].__setitem__(0,-99)),
         ("wrong_rows",lambda x:x.update(global_reachable_sizes=[1,1,1])),
     ):
         fake=json.loads(json.dumps(cert))
