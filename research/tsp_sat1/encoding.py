@@ -131,7 +131,7 @@ def held_karp(D):
     return best
 
 
-def encode(coords,bound):
+def encode(coords,bound, *, break_reversal=False):
     n=len(coords)
     D=euc_distance(coords)
     width=max(1,(n*max(max(row) for row in D)).bit_length())
@@ -141,7 +141,13 @@ def encode(coords,bound):
     for row in pos:c.exactly_one(row)
     for city in range(n):
         c.exactly_one([pos[p][city] for p in range(n)])
-    c.add(pos[0][0]) # remove rotational symmetry; keep both orientations
+    c.add(pos[0][0]) # remove rotational symmetry
+    if break_reversal:
+        # Reversing a tour preserves symmetric cost; retain exactly one
+        # orientation by requiring the next city to precede the last city.
+        for a in range(1,n):
+            for b in range(1,a):
+                c.add(-pos[1][a],-pos[n-1][b])
     edges={(i,j):c.var() for i in range(n) for j in range(n) if i!=j}
     for i in range(n):
         for j in range(n):
@@ -177,7 +183,7 @@ def encode(coords,bound):
         else:
             equal=c.AND(equal,-bits[k])
     c.add(less,equal)
-    return c,dict(pos=pos,edges=edges,D=D,bound=bound,width=width,n=n)
+    return c,dict(pos=pos,edges=edges,D=D,bound=bound,width=width,n=n,break_reversal=break_reversal)
 
 
 def eval_lit(lit,assignment):
@@ -213,7 +219,8 @@ def evaluate_tour(cnf,info,tour):
     assert len(assignment)==cnf.nvars,(len(assignment),cnf.nvars)
     satisfies=all(any(eval_lit(l,assignment) for l in clause)
                   for clause in cnf.clauses)
-    predicted=cost(order,info["D"])<=info["bound"]
+    predicted=(cost(order,info["D"])<=info["bound"] and
+               (not info["break_reversal"] or order[1]<order[-1]))
     assert satisfies==predicted,(
         "CIRCUIT_MISMATCH",order,cost(order,info["D"]),
         info["bound"],satisfies,predicted)
@@ -270,6 +277,8 @@ def verify_sat(stdout,cnf_path,info):
     if route[0]!=0 or len(set(route))!=len(route):
         raise ValueError("tour lacks one unique visit to each city")
     route_cost=cost(route,info["D"])
+    if info["break_reversal"] and route[1]>=route[-1]:
+        raise ValueError("SAT tour violates canonical reversal orientation")
     if route_cost>info["bound"]:
         raise ValueError("decoded tour exceeds declared budget")
     return dict(route=route,route_cost=route_cost)
@@ -285,10 +294,16 @@ def selftest():
         D=euc_distance(coords)
         optimum,_=held_karp(D)
         for budget in (optimum-1,optimum,optimum+1):
-            cnf,info=encode(coords,budget)
-            for route in itertools.permutations(range(1,len(coords))):
-                evaluate_tour(cnf,info,(0,)+route)
-                trials+=1
+            for sym in (False,True):
+                cnf,info=encode(coords,budget,break_reversal=sym)
+                for route in itertools.permutations(range(1,len(coords))):
+                    evaluate_tour(cnf,info,(0,)+route)
+                    trials+=1
+                exists=any(cost((0,)+r,D)<=budget
+                           for r in itertools.permutations(range(1,len(coords))))
+                exists_canonical=any(cost((0,)+r,D)<=budget and r[0]<r[-1]
+                           for r in itertools.permutations(range(1,len(coords))))
+                assert exists==exists_canonical, "reversal symmetry lost feasible tour"
     print("TSP_SAT1_ENCODING_SELFTEST_PASS "+json.dumps({
         "enumerated_tour_bound_pairs":trials,
         "independent_held_karp":True,
