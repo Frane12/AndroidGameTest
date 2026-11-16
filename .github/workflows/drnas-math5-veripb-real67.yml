@@ -1,0 +1,175 @@
+name: DRNAS MATH5 standard VeriPB 67 original strict E2E paired PAR2
+on:
+  push:
+    branches: [experiment/drnas-math5-veripb-real67-20261116]
+    paths:
+      - research/math5_standard_real67/**
+      - research/MATH5_VERIPB_REAL67_PROTOCOL.md
+      - research/math5/emit_veripb_eo_multiplicity.py
+      - .github/workflows/drnas-math5-veripb-real67.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math5-veripb-real67-20261116
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43853390060
+          name: grand-union-sha-pinned-binaries-sources
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore exact 67 unchanged original CNFs and all frozen solver/checker binaries
+        run: |
+          set -euo pipefail
+          test -s frozen/grand_unified_frozen.tgz
+          sha256sum frozen/grand_unified_frozen.tgz
+          tar -xzf frozen/grand_unified_frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          test -s unified_realblind100_inputs/manifest.json
+          test -s unified_evidence_results/protocol.json
+          veripb-tool/bin/veripb --version
+      - name: Preflight source model/proof paths, tampered SAT control and standard VeriPB refutation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/math5_standard_real67/benchmark.py \
+            research/unified_evidence/benchmark.py \
+            research/math5/emit_veripb_eo_multiplicity.py \
+            research/math5/check_math5.py \
+            research/math5/math5_standard_pilot.py
+          python3 -u research/math5_standard_real67/benchmark.py prepare | tee math5_67_prepare.log
+          grep -q '^MATH5_67_READY ' math5_67_prepare.log
+      - name: Freeze the exact source-binary-protocol matrix
+        run: |
+          set -euo pipefail
+          tar -czf drnas-math5-standard-real67-frozen.tgz \
+            build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb unified_realblind100_inputs \
+            unified_evidence_results/protocol.json \
+            results/math5_veripb_real67/protocol.json
+          sha256sum drnas-math5-standard-real67-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-math5-standard-real67-frozen
+          retention-days: 60
+          if-no-files-found: error
+          path: drnas-math5-standard-real67-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math5-standard-real67-prepare-audit
+          retention-days: 60
+          path: |
+            math5_67_prepare.log
+            results/math5_veripb_real67/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-math5-standard-real67-frozen
+      - name: Restore frozen proof-aware original-source matrix and reference dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf drnas-math5-standard-real67-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: One logical CPU, shuffled serial paired 8-arm trials and strict 8s E2E standard certificates
+        run: |
+          set -euo pipefail
+          python3 -u research/math5_standard_real67/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee math5_67_shard.log
+          grep -q '^MATH5_67_SHARD ' math5_67_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math5-standard-real67-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: error
+          path: |
+            results/math5_veripb_real67/shard-${{ matrix.shard }}/trials.jsonl
+            math5_67_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-math5-standard-real67-frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-math5-standard-real67-shard-*
+          path: collected
+      - name: Require exactly 1072 source/rep/arm trials, verify hashes and reject all critical mistakes
+        run: |
+          set -euo pipefail
+          tar -xzf drnas-math5-standard-real67-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(10):
+              items=list((Path("collected")/f"drnas-math5-standard-real67-shard-{i}").glob("**/trials.jsonl"))
+              assert len(items)==1,(i,items)
+              out=Path("results/math5_veripb_real67")/f"shard-{i}"
+              out.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(items[0],out/"trials.jsonl")
+          PY
+          python3 -u research/math5_standard_real67/benchmark.py report | tee math5_67_final.log
+          grep -q '^MATH5_67_FINAL ' math5_67_final.log
+          cat math5_67_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math5-standard-real67-final-strict-and-source-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/math5_veripb_real67/final.json
+            results/math5_veripb_real67/shard-*/trials.jsonl
+            math5_67_final.log
