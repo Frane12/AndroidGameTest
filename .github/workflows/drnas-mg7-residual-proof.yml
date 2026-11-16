@@ -1,0 +1,80 @@
+name: DRNAS MG7 residual SCC proof-first original-CNF pilot
+on:
+  push:
+    branches: [experiment/drnas-residual-scc-proof1-20261116]
+    paths:
+      - src/drnas_x5.cpp
+      - src/residual_scc.hpp
+      - CMakeLists.txt
+      - research/mg7_residual_pilot.py
+      - .github/workflows/drnas-mg7-residual-proof.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-mg7-residual-proof-20261116
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: One logical CPU each; native CDCL vs SCC with external DRAT verifier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent DRAT checker, compile two C++ variants
+        run: |
+          set -euo pipefail
+          make -C drat-trim drat-trim
+          ./drat-trim/drat-trim -h > /tmp/drat-help.txt 2>&1 || true
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-mg7-base drnas-mg7-scc -j2
+          python3 -m py_compile research/mg7_residual_pilot.py
+          sha256sum build/drnas-mg7-base build/drnas-mg7-scc drat-trim/drat-trim
+      - name: Exact original-CNF and synthetic proof-gated serial benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/mg7_residual_pilot.py
+      - name: Verified-only summary
+        if: always()
+        run: |
+          if test -s results/mg7_residual/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/mg7_residual/summary.json").read_text())
+          msg=("# MG7 residual SCC first proof-gated C++ pilot\n\n"
+               +f"Cases: {d['cases']}; trials: {d['trials']}\n\n"
+               +f"BASE externally DRAT-verified UNSAT: {d['baseline_verified_unsat']}\n\n"
+               +f"MG7 externally DRAT-verified UNSAT: {d['residual_verified_unsat']}\n\n"
+               +f"Residual SCC conflicts: {d['residual_scc_hits']}; nogoods: {d['residual_nogoods']}\n\n"
+               +f"Verified SAT models: {d['verified_models']}; failures: {len(d['failures'])}\n\n"
+               +"Developmental pilot, not a prospective blind verified PAR2 claim.\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fd:fd.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-mg7-residual-scc-source-verified-drat-pilot
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/mg7_residual_pilot.py
+            src/residual_scc.hpp
+            results/mg7_residual/*.json
+            results/mg7_residual/*.log
+            results/mg7_residual/*.checker.log
+            results/mg7_residual/*.cnf
