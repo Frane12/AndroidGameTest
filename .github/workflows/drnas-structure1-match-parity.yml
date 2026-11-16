@@ -1,0 +1,69 @@
+name: DRNAS STRUCTURE1 MATCH1 PARITY1 source proof audit
+on:
+  push:
+    branches: [experiment/drnas-structure1-match-parity-20261116]
+    paths:
+      - research/structure1_prover.py
+      - research/structure1_checker.py
+      - research/structure1_bench.py
+      - research/STRUCTURE1_MATCH_PARITY.md
+      - .github/workflows/drnas-structure1-match-parity.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-structure1-match-parity-20261116
+  cancel-in-progress: false
+jobs:
+  source_proof_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile producer and independent source checker
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/structure1_prover.py research/structure1_checker.py research/structure1_bench.py
+          sha256sum research/structure1_*.py
+      - name: Exact DPLL oracle, Hall and parity, forged-source audits
+        run: |
+          set -euo pipefail
+          python3 -u research/structure1_bench.py
+      - name: Write bounded scientific result summary
+        if: always()
+        run: |
+          if test -s results/structure1/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          a=json.loads(pathlib.Path('results/structure1/summary.json').read_text())
+          report=("# STRUCTURE-1 source-CNF proof audit\n\n"
+                  +f"Status: {a['status']}\n\n"
+                  +f"Generated CNF checks: {a['cases']}\n\n"
+                  +f"Independent source UNSAT proofs: {a['unsat_certified']}\n\n"
+                  +f"SAT controls: {a['sat_controls']}\n\n"
+                  +f"Independent tiny DPLL oracle cases: {a['independent_oracle_checked']}\n\n"
+                  +f"Tampered certificates rejected: {a['forged_certificates_rejected']}\n\n"
+                  +"NOT a verified official benchmark, DRAT proof, C++ integration or PAR2 gain.\n")
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(report)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-structure1-source-grounded-fixtures-certificates
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/structure1_prover.py
+            research/structure1_checker.py
+            research/structure1_bench.py
+            research/STRUCTURE1_MATCH_PARITY.md
+            results/structure1/
