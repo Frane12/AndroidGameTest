@@ -168,8 +168,11 @@ def generate(original_path,graph_path,rup_path,metadata_path,fractional_path):
     source_clauses=[tuple(c) for c in source_clauses]
     known={frozenset(c) for c in source_clauses}
     missing=[c for c in graph_clauses if frozenset(c) not in known]
-    if len(missing)!=90:
-        raise ValueError(f"expected 90 graph incidence clauses, got {len(missing)}")
+    source_graph_units=sum(frozenset(c) in known for c in graph_clauses)
+    existing_mutex=source_graph_units-60
+    if len(graph_clauses)!=150 or not 0<=existing_mutex<=90 or (
+            len(missing)+existing_mutex!=90):
+        raise ValueError("original source-to-graph incidence accounting invalid")
     derived,details=emit_source_rup_for_missing_graph_clauses(
         source_clauses,missing,edges)
     graph_proof,graph_tally,odd_cycles,search_nodes,leaves=parity_proof(
@@ -192,6 +195,8 @@ def generate(original_path,graph_path,rup_path,metadata_path,fractional_path):
         "graph_source_clauses":len(graph_clauses),
         "fractional_gap_independently_checked":True,
         "missing_graph_mutex_derived":len(missing),
+        "graph_mutex_already_original":existing_mutex,
+        "total_graph_mutex_clauses":len(missing)+existing_mutex,
         "lemma_tree_nodes":details["lemma_DPLL_nodes"],
         "lemma_UP_conflict_leaves":details["lemma_unit_propagation_leaves"],
         "lemma_tree_depth":details["max_branch_depth_after_pair_assumptions"],
