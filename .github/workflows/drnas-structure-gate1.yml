@@ -1,0 +1,179 @@
+name: DRNAS STRUCTURE-GATE1 native single-CPU proof-verified ON OFF real86
+on:
+  push:
+    branches: [experiment/drnas-structure-gate1-20261116]
+    paths:
+      - src/drnas_structure_gate.hpp
+      - research/structure_gate/**
+      - research/math5/emit_veripb_eo_multiplicity.py
+      - .github/workflows/drnas-structure-gate1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-structure-gate1-real86-20261116
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43887883554
+          name: plus10-twoera-frozen
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore original source CNFs, pinned reference binaries and external VeriPB
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ libssl-dev libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -s frozen/plus10-twoera-frozen.tgz
+          sha256sum frozen/plus10-twoera-frozen.tgz
+          tar -xzf frozen/plus10-twoera-frozen.tgz
+          chmod +x build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            build/drnas-sat-native-x59 veripb-tool/bin/veripb
+          test -s unified_realblind100_inputs/manifest.json
+          test -s sat_real2025_inputs/manifest.json
+      - name: Rebuild baseline from source and compile native C++ STRUCTURE-GATE1
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/structure_gate/build.py research/structure_gate/benchmark.py \
+            research/structure_gate/smoke.py research/math5/emit_veripb_eo_multiplicity.py
+          python3 -u research/structure_gate/build.py | tee sgate_build.log
+          grep -q '^STRUCTURE_GATE_BUILD_OK ' sgate_build.log
+          test -x build/drnas-x59-structure-gate1
+      - name: Fail-closed C++ EO/XOR unit controls and real source VeriPB smoke
+        run: |
+          set -euo pipefail
+          python3 -u research/structure_gate/smoke.py | tee sgate_smoke.log
+          grep -q '^STRUCTURE_GATE_SMOKE_PASS ' sgate_smoke.log
+      - name: SHA freeze all binaries and 86 unchanged originals before solver trials
+        run: |
+          set -euo pipefail
+          python3 -u research/structure_gate/benchmark.py prepare | tee sgate_prepare.log
+          grep -q '^SGATE_READY ' sgate_prepare.log
+          tar -czf structure-gate1-frozen.tgz \
+            build/drnas-x59-structure-gate1 \
+            build/drnas-sat-native-x59 build/kissat build/cadical build/cms \
+            build/drat-trim build/frat-rs \
+            build/cms-libs/usr/lib/x86_64-linux-gnu/libcryptominisat5.so.5.11 \
+            veripb-tool/bin/veripb \
+            sat_real2025_inputs unified_realblind100_inputs results/structure_gate1/protocol.json
+          sha256sum structure-gate1-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drnas-sgate1-frozen-source-binaries-protocol
+          retention-days: 60
+          if-no-files-found: error
+          path: structure-gate1-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-sgate1-preflight-build-smoke
+          retention-days: 60
+          path: |
+            sgate_*.log
+            results/structure_gate1/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-sgate1-frozen-source-binaries-protocol
+      - name: Restore exact gate and frozen comparator binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf structure-gate1-frozen.tgz
+          chmod +x build/drnas-x59-structure-gate1 build/drnas-sat-native-x59 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs veripb-tool/bin/veripb
+      - name: Serial paired six-arm original CNF strict 12s E2E with independent proof checks
+        run: |
+          set -euo pipefail
+          python3 -u research/structure_gate/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee sgate_shard.log
+          grep -q '^SGATE_SHARD ' sgate_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-sgate1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/structure_gate1/shard-${{ matrix.shard }}/trials.jsonl
+            sgate_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: drnas-sgate1-frozen-source-binaries-protocol
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drnas-sgate1-shard-*
+          path: collected
+      - name: Strict complete 1032-trial PAR2, family and incorrect-result audit
+        run: |
+          set -euo pipefail
+          tar -xzf structure-gate1-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(10):
+              hits=list((Path("collected")/f"drnas-sgate1-shard-{i}").rglob("trials.jsonl"))
+              assert len(hits)==1,(i,hits)
+              dst=Path("results/structure_gate1")/f"shard-{i}"
+              dst.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(hits[0],dst/"trials.jsonl")
+          PY
+          python3 -u research/structure_gate/benchmark.py report | tee sgate_final.log
+          grep -q '^SGATE_FINAL ' sgate_final.log
+          cat sgate_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-sgate1-final-verified-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            sgate_final.log
+            results/structure_gate1/final.json
+            results/structure_gate1/protocol.json
+            results/structure_gate1/shard-*/trials.jsonl
