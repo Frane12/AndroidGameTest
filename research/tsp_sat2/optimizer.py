@@ -178,10 +178,10 @@ def check_math5(cnf,cert,pbp,remaining):
             return False,elapsed,"INVALID_MATH5_PROOF"
     return True,elapsed,"VERIPB_MATH5"
 
-def solve_bound(coords,B,arm,work,limit,certificate_dir=None):
+def solve_bound(coords,B,arm,work,limit,certificate_dir=None, *,break_reversal=False):
     """Returns independently verified SAT/UNSAT/UNKNOWN; never trusts exit code."""
     t=time.perf_counter()
-    problem,info=enc.encode(coords,B)
+    problem,info=enc.encode(coords,B,break_reversal=break_reversal)
     cnf=Path(work)/"decision.cnf"
     problem.output(cnf)
     cnf_hash=sha(cnf)
@@ -266,8 +266,9 @@ def solve_bound(coords,B,arm,work,limit,certificate_dir=None):
         solver_s=round(result["wall_s"],6),
         checker_s=round(checker_s,6),e2e_s=round(elapsed,6))
 
-def optimize(coords,arm,root):
+def optimize(coords,arm,root, *,bound_mode="degree",break_reversal=False):
     assert arm in ARMS
+    assert bound_mode in ("degree","one_tree")
     started=time.perf_counter()
     D=enc.euc_distance(coords)
     first=nearest_neighbor(D)
@@ -275,6 +276,12 @@ def optimize(coords,arm,root):
     route=two_opt(first,D)
     U=enc.cost(route,D)
     L=lower_bound(D)
+    tree_cert=None
+    if bound_mode=="one_tree":
+        sys.path.insert(0,str(ROOT/"research/tsp_sat3"))
+        from one_tree import improve_bound
+        tree_lb,tree_cert=improve_bound(D,U)
+        L=max(L,tree_lb)
     assert L<=U,(L,U,"bad lower-bound derivation")
     initial_L=L
     log=[]
@@ -290,7 +297,8 @@ def optimize(coords,arm,root):
         if available<=0:
             reason="TOTAL_BUDGET_EXHAUSTED";return None
         with tempfile.TemporaryDirectory(prefix="drnas-tsp-sat2-") as td:
-            row=solve_bound(coords,B,arm,td,available,proofs)
+            row=solve_bound(coords,B,arm,td,available,proofs,
+                            break_reversal=break_reversal)
         log.append(row)
         tried.add(B)
         if row["critical"]:
@@ -348,7 +356,9 @@ def optimize(coords,arm,root):
     elapsed=time.perf_counter()-started
     return dict(status=("ERROR" if critical else "OPTIMAL_CERTIFIED" if optimal
                    else "FEASIBLE_NOT_CERTIFIED"),
-       arm=arm,initial_route=list(first),initial_cost=initial_cost,
+       arm=arm,bound_mode=bound_mode,break_reversal=break_reversal,
+       one_tree_certificate=tree_cert,
+       initial_route=list(first),initial_cost=initial_cost,
        after_two_opt_cost=enc.cost(two_opt(first,D),D),
        initial_lower_bound=initial_L,final_lower_bound=L,
        best_route=list(route),best_cost=U,proof_at_bound=U-1 if optimal else None,
