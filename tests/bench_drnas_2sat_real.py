@@ -161,6 +161,24 @@ def run_case(name,n,clauses,tmp):
             "drnas_s":round(td,6),"minisat_s":round(tm,6),
             "cadical_s":round(tc,6) if tc is not None else None,"verified":True}
 
+def read_official(filename,expected_hash):
+    data=pathlib.Path(filename).read_bytes()
+    actual=hashlib.sha256(data).hexdigest()
+    assert actual==expected_hash,("OFFICIAL_SOURCE_SHA_MISMATCH",str(filename),actual,expected_hash)
+    rows=[line.strip() for line in data.decode().splitlines()
+          if line.strip() and not line.lstrip().startswith("c")]
+    header=rows.pop(0).split()
+    assert len(header)==4 and header[:2]==["p","cnf"]
+    n=int(header[2]);m=int(header[3])
+    clauses=[]
+    for row in rows:
+        ints=[int(x) for x in row.split()]
+        assert len(ints)==3 and ints[-1]==0
+        clauses.append(tuple(ints[:-1]))
+    assert len(clauses)==m
+    assert source_cnf(n,clauses)==data, "official byte content must stay identical"
+    return n,clauses
+
 def main():
     result=[]
     with tempfile.TemporaryDirectory() as folder:
@@ -170,6 +188,18 @@ def main():
             ("TIOJ3718_UNSAT",2,[(1,2),(1,-2),(-1,2),(-1,-2)]),
         ]
         for name,n,c in pub:result.append(run_case(name,n,c,tmp))
+        official=os.environ.get("OFFICIAL_2SAT_DIR")
+        if official:
+            hashes=json.loads(pathlib.Path("upstream/other/two_sat/hash.json").read_text())
+            names=["example_00","example_01"] + [
+                f"{kind}_{i:02d}" for kind,count in (
+                    ("random",5),("max_random",5),("cycle_unsat",2),("long_chain",4))
+                for i in range(count)]
+            for tag in names:
+                filename=pathlib.Path(official)/(tag+".in")
+                assert filename.exists(),("missing_official_input",str(filename))
+                n,c=read_official(filename,hashes[tag+".in"])
+                result.append(run_case("yosupo_"+tag,n,c,tmp))
         for n in (250,2000,10000,50000,100000):
             for alpha in (0.75,0.95,1.05,1.25):
                 for seed in (17,29):
@@ -181,8 +211,9 @@ def main():
                     n,make_chain(n,unsat),tmp))
     by={}
     for r in result:
-        key="external_public" if r["name"].startswith("TIOJ") else (
-            "structured" if r["name"].startswith("implication") else "random")
+        key=("yosupo_official" if r["name"].startswith("yosupo") else
+             "external_public" if r["name"].startswith("TIOJ") else
+             "structured" if r["name"].startswith("implication") else "random")
         by.setdefault(key,[]).append(r)
     for category,rows in by.items():
         for n in sorted({r["n"] for r in rows}):
@@ -198,6 +229,7 @@ def main():
     print("EXACT_2SAT_PAIRED_PASS",json.dumps({"cases":len(result),
         "SAT":kinds["SAT"],"UNSAT":kinds["UNSAT"],
         "external":len(by.get("external_public",[])),
+        "official_yosupo":len(by.get("yosupo_official",[])),
         "standard_random":len(by.get("random",[])),
         "structured":len(by.get("structured",[])),
         "false_results":0,"sat_models_verified":kinds["SAT"],
