@@ -65,3 +65,9 @@ add_executable(drnas-2sat-upclosure src/drnas_2sat_upclosure.cpp)
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(drnas-2sat-upclosure PRIVATE -O3 -Wall -Wextra -Wpedantic)
 endif()
+
+# Complete native exact 2-SAT (SAT witness + RUP UNSAT), optional mixed-CNF guard.
+add_executable(drnas-2sat-exact src/drnas_2sat_exact.cpp)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(drnas-2sat-exact PRIVATE -O3 -Wall -Wextra -Wpedantic)
+endif()
