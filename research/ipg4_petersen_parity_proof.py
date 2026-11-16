@@ -135,7 +135,7 @@ def rup_pbp_line(clause):
     if not clause:
         # Constant zero on the LHS is a contradiction, followed by external
         # VeriPB check on the entire proof (parser compatibility CI-tested).
-        return "rup 0 >= 1 ;\n"
+        return "rup >= 1 ;\n"
     return "rup "+" ".join(
         f"1 {'~' if lit<0 else ''}x{abs(lit)}" for lit in clause
     )+" >= 1 ;\n"
