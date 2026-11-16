@@ -80,3 +80,15 @@ if (TARGET OpenSSL::Crypto)
     target_compile_options(drnas-pcmax-mg7-ipg1 PRIVATE -O3 -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+
+# IPG-BDD1 polynomial count-profile research: source-grounded native exporter.
+# The executable ONLY exports graph premises, never returns SAT/UNSAT.
+# Subsequent Python producer/checker remain strictly experimental.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-ipg-bdd-extract research/ipg_bdd_extract.cpp)
+  target_link_libraries(drnas-ipg-bdd-extract PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-ipg-bdd-extract PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
