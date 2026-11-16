@@ -35,6 +35,9 @@
 #ifdef DRNAS_RESIDUAL_SCC
 #include "residual_scc.hpp"
 #endif
+#ifdef DRNAS_IPG1_MODULE
+#include "ipg1_exact_cover.hpp"
+#endif
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -1500,6 +1503,11 @@ int run(int argc, char** argv) {
     double pcmax_budget_ms=250.0;
     std::string pcmax_certificate;
 #endif
+#ifdef DRNAS_IPG1_MODULE
+    bool ipg1_requested=false;
+    double ipg1_budget_ms=400.0;
+    std::string ipg1_certificate;
+#endif
     for (int i=1;i<argc;++i) {
         std::string opt=argv[i];
         if (opt=="--mode" && i+1<argc) mode=argv[++i];
@@ -1519,6 +1527,11 @@ int run(int argc, char** argv) {
             if (consumed!=value.size()) throw std::runtime_error("invalid --pcmax-budget-ms");
         }
         else if (opt=="--pcmax-certificate" && i+1<argc) pcmax_certificate=argv[++i];
+#endif
+#ifdef DRNAS_IPG1_MODULE
+        else if (opt=="--ipg1") ipg1_requested=true;
+        else if (opt=="--ipg1-certificate" && i+1<argc) ipg1_certificate=argv[++i];
+        else if (opt=="--ipg1-budget-ms" && i+1<argc) ipg1_budget_ms=std::stod(argv[++i]);
 #endif
         else if (opt=="--x5-no-minimize") x5_minimize=false;
         else if (opt=="--x5-no-retain") x5_retain=false;
@@ -1556,6 +1569,18 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
     if (!std::isfinite(pcmax_budget_ms) || pcmax_budget_ms<0 || pcmax_budget_ms>86400000.0)
         throw std::runtime_error("invalid --pcmax-budget-ms");
+#ifdef DRNAS_IPG1_MODULE
+    if (!std::isfinite(ipg1_budget_ms) || ipg1_budget_ms<0 ||
+        ipg1_budget_ms>86400000.0) throw std::runtime_error("invalid --ipg1-budget-ms");
+    if (ipg1_requested && pcmax_only)
+        throw std::runtime_error("--ipg1 and --pcmax-only are incompatible");
+    if (ipg1_requested) pcmax_enabled=true; // capture exact source once
+    if (ipg1_requested && ipg1_certificate.empty())
+        throw std::runtime_error("--ipg1 requires an independent-check certificate path");
+    if (ipg1_requested && !pcmax_certificate.empty() &&
+        ipg1_certificate==pcmax_certificate)
+        throw std::runtime_error("IPG1 and PCMAX certificates need distinct paths");
+#endif
     if (pcmax_only && !proof_path.empty())
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
 #ifdef DRNAS_PC_GUARD_COMBINED
@@ -1746,6 +1771,43 @@ int run(int argc, char** argv) {
             options.seconds=budget;
             capacity_result=pcmax::analyze(pcmax_original,declared_vars,digest,options);
         }
+#ifdef DRNAS_IPG1_MODULE
+        if (ipg1_requested && !capacity_result.verified) {
+            drnas_ipg1::Result ipg1_result;
+            if (!pcmax_skip_reason.empty())
+                ipg1_result.reason="source_capture_unavailable";
+            else if (digest.empty())
+                ipg1_result.reason="source_hash_unavailable";
+            else {
+                double ipg_budget=ipg1_budget_ms/1000.0;
+                if (seconds>0) ipg_budget=std::min(ipg_budget,std::max(0.0,
+                    seconds-std::chrono::duration<double>(
+                        Clock::now()-process_start).count()));
+                ipg1_result=drnas_ipg1::analyze(pcmax_original,declared_vars,digest,ipg_budget);
+            }
+            if (ipg1_result.verified) {
+                if (seconds>0 && std::chrono::duration<double>(
+                        Clock::now()-process_start).count()>=seconds) {
+                    ipg1_result.verified=false;
+                    ipg1_result.reason="overall_time_exhausted_before_certificate";
+                } else {
+                    pcmaxWriteCertificate(ipg1_certificate,ipg1_result.certificate_json);
+                }
+            }
+            std::cout<<"c IPG1_COVER {\\"reason\\":"<<pcmaxJsonString(ipg1_result.reason)
+                     <<",\\"supported\\":"<<(ipg1_result.supported?"true":"false")
+                     <<",\\"internal_exact_unsat\\":"<<(ipg1_result.verified?"true":"false")
+                     <<",\\"groups\\":"<<ipg1_result.groups
+                     <<",\\"capacity_clauses\\":"<<ipg1_result.selected_negative_clauses
+                     <<",\\"partitions_checked\\":"<<ipg1_result.checked_partitions
+                     <<",\\"module_s\\":"<<ipg1_result.seconds<<"}\n";
+            if (ipg1_result.verified) {
+                std::cout<<"c PCMAX_UNIFIED_PROOF_KIND IPG1_JSON_NEEDS_EXHAUSTIVE_CHECKER\n";
+                std::cout<<"s UNSATISFIABLE\n";
+                return 20;
+            }
+        }
+#endif
         std::vector<std::vector<int>>().swap(pcmax_original);
         pcmax_digest.reset();
         if (capacity_result.verified) {
