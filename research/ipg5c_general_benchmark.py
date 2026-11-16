@@ -88,6 +88,69 @@ def dimacs_bytes(raw):
     if nv is None or len(clauses)!=nc or partial:raise ValueError("invalid input DIMACS")
     return raw,nv,clauses
 
+
+def graph_3color_source(nvertices,edges):
+    x=lambda v,c: 3*v+c+1
+    clauses=[]
+    for v in range(nvertices):
+        clauses.append((x(v,0),x(v,1),x(v,2)))
+        clauses.extend((-x(v,a),-x(v,b)) for a,b in
+                       ((0,1),(0,2),(1,2)))
+    for a,b in edges:
+        if a==b:raise ValueError("self-loop not supported")
+        for c in range(3):
+            clauses.append((-x(a,c),-x(b,c)))
+    raw=(f"c exact graph three-coloring; nvertices={nvertices}, nedges={len(edges)}\n"
+        +f"p cnf {3*nvertices} {len(clauses)}\n"
+        +"".join(" ".join(map(str,c))+" 0\n" for c in clauses))
+    return raw.encode("ascii")
+
+def three_color_oracle(nvertices,edges):
+    # Independent exact oracle used ONLY to assign test labels;
+    # the proof generator never sees the source graph or this label.
+    adjacency=[set() for _ in range(nvertices)]
+    for a,b in edges:
+        adjacency[a].add(b);adjacency[b].add(a)
+    chosen=[-1]*nvertices
+    order=sorted(range(nvertices),key=lambda u:(-len(adjacency[u]),u))
+    def dfs(i):
+        if i==len(order):return True
+        v=order[i]
+        for color in range(3):
+            if all(chosen[u]!=color for u in adjacency[v]):
+                chosen[v]=color
+                if dfs(i+1):return True
+                chosen[v]=-1
+        return False
+    return dfs(0)
+
+def additional_graph_cases(rng,add):
+    # Structurally DIFFERENT graph-coloring problems:
+    # odd wheels W_5 and W_7 require 4 colors; even wheel W_6
+    # is 3-colorable. Also K4 needs 4 colors, K3,3 needs 2.
+    for rim in (5,6,7):
+        hub=rim
+        edges=[(i,(i+1)%rim) for i in range(rim)]
+        edges += [(hub,i) for i in range(rim)]
+        nvertices=rim+1
+        raw=graph_3color_source(nvertices,edges)
+        label="SAT" if three_color_oracle(nvertices,edges) else "UNSAT"
+        for trial in range(2):
+            add(f"graph_wheel_{rim}_{trial}",
+                permute(raw,rng.randrange(10000000),f"wheel_{rim}_{trial}"),
+                label,"GRAPH_COLORING_WHEEL",True)
+    graphs=[
+        ("k4",4,[(a,b) for a in range(4) for b in range(a+1,4)]),
+        ("k33",6,[(a,b) for a in range(3) for b in range(3,6)]),
+    ]
+    for name,n,edges in graphs:
+        raw=graph_3color_source(n,edges)
+        label="SAT" if three_color_oracle(n,edges) else "UNSAT"
+        for trial in range(2):
+            add(f"graph_{name}_{trial}",
+                permute(raw,rng.randrange(10000000),f"{name}_{trial}"),
+                label,"GRAPH_COLORING_CONTROL",True)
+
 def create_inputs():
     rng=random.Random(SEED)
     sources=OUT/"sources";sources.mkdir(parents=True,exist_ok=True)
@@ -124,6 +187,7 @@ def create_inputs():
             add(f"packing_sat_{n}_{trial}",
                 permute(raw,rng.randrange(10000000),f"sat_pack_{n}_{trial}"),
                 "SAT","CARDINALITY_PACKING_SAT",True)
+    additional_graph_cases(rng,add)
     for i in range(2):
         add(f"unsupported_no_onehot_{i}",
             f"p cnf 9 2\n1 2 3 0\n-{i+1} 4 0\n".encode(),
@@ -271,9 +335,12 @@ def main():
     sat=[r for r in results if r["expected"]=="SAT"]
     verified=[r for r in unsat if r["result"]=="SOURCE_VERIFIED_UNSAT"]
     src_new=[r for r in verified if r["family"]=="CARDINALITY_PACKING_UNSAT"]
+    graph_unsat=[r for r in verified if r["family"].startswith("GRAPH_")]
+    graph_expected=[r for r in unsat if r["family"].startswith("GRAPH_")]
     perm=[r for r in verified if r["family"]=="PETERSEN_PERMUTATION"]
     summary={
-        "status":"PASS" if not errors and len(verified)>=1 and len(src_new)>=1 else "FAIL",
+        "status":"PASS" if not errors and len(verified)>=1 and len(src_new)>=1
+                              and len(graph_unsat)>=1 else "FAIL",
         "inputs":len(entries),
         "petersen_semantic_permutations":12,
         "petersen_permutations_source_verified":len(perm),
@@ -281,13 +348,19 @@ def main():
         "distinct_packing_unsat_verified":len(src_new),
         "sat_controls":len(sat),
         "sat_controls_proofs":sum(r["result"]=="SOURCE_VERIFIED_UNSAT" for r in sat),
+        "new_graph_unsat_source_verified":len(graph_unsat),
+        "new_graph_unsat_expected":len(graph_expected),
+        "wheel5_oddcut_5_count":next((r.get("source_pb_cycle_lengths",{}).get("5",0)
+                for r in graph_unsat if r["name"].startswith("graph_wheel_5_")),0),
+        "wheel7_oddcut_7_count":next((r.get("source_pb_cycle_lengths",{}).get("7",0)
+                for r in graph_unsat if r["name"].startswith("graph_wheel_7_")),0),
         "source_verified_total":len(verified),
         "source_pb_rank1_cuts_on_original":next((r.get("source_pb_cuts",0)
                             for r in verified if r["name"]=="petersen_original"),0),
         "verified_original_rup_steps":next((r.get("rup_steps")
                             for r in verified if r["name"]=="petersen_original"),None),
         "errors":errors,
-        "scope":"Petersen permutations are mathematically SAME instance (not source-disjoint). Distinct small cardinality packings only show bounded source-family coverage. Solver RUP is bounded exponential branch search, not cut-only or polynomial; no comparison with strongest DRNAS/competition PAR2.",
+        "scope":"Petersen permutations are mathematically SAME instance (not source-disjoint). Distinct cardinality packing and graph 3-coloring cases show bounded source-family coverage. RUP relies on exponential job-branch search; genuine source-level CG odd-cycle cuts (3/5/7) do NOT alone establish final UNSAT. No competition baseline, source-blind holdout, or polynomial general SAT result.",
     }
     (OUT/"summary.json").write_text(json.dumps(summary,sort_keys=True,indent=2)+"\n")
     print("IPG5C_GENERAL_TOTAL "+json.dumps(summary,sort_keys=True),flush=True)
