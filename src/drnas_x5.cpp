@@ -1794,13 +1794,13 @@ int run(int argc, char** argv) {
                     pcmaxWriteCertificate(ipg1_certificate,ipg1_result.certificate_json);
                 }
             }
-            std::cout<<"c IPG1_COVER {\\"reason\\":"<<pcmaxJsonString(ipg1_result.reason)
-                     <<",\\"supported\\":"<<(ipg1_result.supported?"true":"false")
-                     <<",\\"internal_exact_unsat\\":"<<(ipg1_result.verified?"true":"false")
-                     <<",\\"groups\\":"<<ipg1_result.groups
-                     <<",\\"capacity_clauses\\":"<<ipg1_result.selected_negative_clauses
-                     <<",\\"partitions_checked\\":"<<ipg1_result.checked_partitions
-                     <<",\\"module_s\\":"<<ipg1_result.seconds<<"}\n";
+            std::cout<<"c IPG1_COVER {\"reason\":"<<pcmaxJsonString(ipg1_result.reason)
+                     <<",\"supported\":"<<(ipg1_result.supported?"true":"false")
+                     <<",\"internal_exact_unsat\":"<<(ipg1_result.verified?"true":"false")
+                     <<",\"groups\":"<<ipg1_result.groups
+                     <<",\"capacity_clauses\":"<<ipg1_result.selected_negative_clauses
+                     <<",\"partitions_checked\":"<<ipg1_result.checked_partitions
+                     <<",\"module_s\":"<<ipg1_result.seconds<<"}\n";
             if (ipg1_result.verified) {
                 std::cout<<"c PCMAX_UNIFIED_PROOF_KIND IPG1_JSON_NEEDS_EXHAUSTIVE_CHECKER\n";
                 std::cout<<"s UNSATISFIABLE\n";
