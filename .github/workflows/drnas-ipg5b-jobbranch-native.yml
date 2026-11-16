@@ -1,0 +1,92 @@
+name: DRNAS IPG5-B C++ job-branch + ORIGINAL CG VeriPB audit
+on:
+  push:
+    branches: [experiment/drnas-ipg5b-jobbranch-native-20261116]
+    paths:
+      - CMakeLists.txt
+      - research/ipg5b_native_jobbranch.cpp
+      - research/ipg5b_oddcycle_pb.py
+      - research/ipg5b_cpp_benchmark.py
+      - .github/workflows/drnas-ipg5b-jobbranch-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg5b-native-jobbranch-20261116
+  cancel-in-progress: false
+jobs:
+  one_cpu_proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent original-source DRAT and VeriPB checkers
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Build native C++ job-branch RUP producer (not CDCL)
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/ipg5b_oddcycle_pb.py \
+            research/ipg5b_cpp_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-ipg5b-jobbranch -j2
+          sha256sum build/drnas-ipg5b-jobbranch \
+            research/ipg5b_native_jobbranch.cpp \
+            research/ipg5b_oddcycle_pb.py \
+            research/ipg5b_cpp_benchmark.py
+      - name: One CPU source-frozen C++ 100-RUP plus rank-one PB source cut pilot
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg5b_cpp_benchmark.py
+      - name: Report verified-only C++ and Chvatal-Gomory evidence
+        if: always()
+        run: |
+          if test -s results/ipg5b_jobbranch/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          x=json.loads(pathlib.Path("results/ipg5b_jobbranch/summary.json").read_text())
+          msg=("# DRNAS IPG5-B native 3-way job branching + PB source cuts\n\n"
+             +f"Status: {x['status']}\n\n"
+             +f"Frozen original PCMAX: {x['original_variables']} variables / {x['original_clauses']} clauses\n\n"
+             +f"Prior mathematical no-CDCL RUP: {x['old_steps']} steps\n\n"
+             +f"New C++ no-CDCL RUP: {x['new_steps']} steps\n\n"
+             +f"Proof step ratio: {x['proof_step_reduction']}x\n\n"
+             +f"Independent DRAT and VeriPB 3.0.2: {x['independent_drat_accepted'] and x['new_veripb_accepted']}\n\n"
+             +f"Original-clause Chvatal-Gomory rank-one cuts: {x['standard_pb_cuts_from_original_clauses']}\n\n"
+             +f"VeriPB accepted cuts+RUP: {x['standard_pb_cuts_and_rup_veripb_accepted']}\n\n"
+             +f"Old verified E2E s: {x['old_e2e_s']}\n\n"
+             +f"New verified E2E s: {x['new_e2e_s']}\n\n"
+             +x['scope']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg5b-native-100step-source-cg-veripb
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg5b_native_jobbranch.cpp
+            research/ipg5b_oddcycle_pb.py
+            research/ipg5b_cpp_benchmark.py
+            results/ipg5b_jobbranch/
