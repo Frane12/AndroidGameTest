@@ -88,7 +88,13 @@ def main():
     previously=json.loads(FROZEN.read_text())
     known={s["file_id"] for s in previously["sources"]}
     overlap=sorted({x["gbd_hash"] for x in choices}&known)
-    if overlap:raise RuntimeError("known 67-sources GBD collision: "+str(overlap))
+    prior_iso={x.get("isohash") for x in previously["sources"]}
+    iso_overlap=sorted({x["isohash"] for x in choices}&prior_iso)
+    if overlap or iso_overlap:
+        raise RuntimeError("known 67-sources identity/isohash overlap: "+
+                           str({"exact":overlap,"iso":iso_overlap}))
+    assert all(len(x["isohash"])==32 for x in choices)
+
     OUT.mkdir(parents=True,exist_ok=True)
     assert not (OUT/"manifest.json").exists(),"refusing overwrite of prior holdout source freeze"
     records=[]
@@ -103,7 +109,8 @@ def main():
         if path.exists():raise RuntimeError("candidate already in workspace: "+str(path))
         path.write_bytes(raw)
         record={"id":spec["id"],"file_id":gbd,
-            "gbd_hash":gbd,"gbd_catalog_family":spec["family"],
+            "gbd_hash":gbd,"isohash":spec["isohash"],
+            "gbd_catalog_family":spec["family"],
             "author":spec["author"],"track":"main_2025",
             "family":spec["family"],"filename":spec["filename"],
             "catalog_label":"unknown", # neutral; source labels never given to solvers
@@ -124,6 +131,7 @@ def main():
         "frozen_2026_manifest_sha256":digest(FROZEN.read_bytes()),
         "source_count":len(records),
         "all_gbd_hashes_disjoint_from_old67":True,
+        "all_gbd_isohashes_disjoint_from_old67":True,
         "sources":records,
         "no_outcome_based_replacements":True,
         "track":"main_2025",
@@ -133,7 +141,7 @@ def main():
     os.replace(tmp,OUT/"manifest.json")
     print("GRAPH_UNSEEN25_FREEZE_READY "+json.dumps(
         {"N":len(records),"manifest_sha256":digest((OUT/"manifest.json").read_bytes()),
-        "previous_collision_count":len(overlap),
+        "previous_collision_count":len(overlap)+len(iso_overlap),
         "preselected_before_any_solver":True},sort_keys=True),flush=True)
 
 if __name__=="__main__":main()
