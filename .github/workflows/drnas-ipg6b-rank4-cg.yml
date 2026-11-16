@@ -1,0 +1,93 @@
+name: DRNAS IPG6B original source rank4 iterative pure-PB graph mutexes
+on:
+  push:
+    branches: [experiment/drnas-ipg6b-iterative-rank4-20261116]
+    paths:
+      - research/ipg6b_iterative_source_cg.py
+      - research/ipg6b_independent_source_pb_checker.py
+      - research/ipg6b_iterative_benchmark.py
+      - .github/workflows/drnas-ipg6b-rank4-cg.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg6b-original-20261116
+  cancel-in-progress: false
+jobs:
+  original_integer_pb_closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Install pinned external VeriPB3.0.2 and DRAT-trim
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          make -C drat-trim drat-trim
+          ./veripb-tool/bin/veripb --version
+      - name: Build frozen original RUP producer and Python syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/ipg6_rank2_source_cg.py \
+            research/ipg6_independent_rank2_checker.py \
+            research/ipg6_rank2_benchmark.py \
+            research/ipg6b_iterative_source_cg.py \
+            research/ipg6b_independent_source_pb_checker.py \
+            research/ipg6b_iterative_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-ipg5b-jobbranch -j2
+      - name: Reproduce separately verified source rank2 baseline
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg6_rank2_benchmark.py
+      - name: Source rank4 iterative triangle-closure and full independent VeriPB
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg6b_iterative_benchmark.py
+      - name: Honest theorem and source proof count
+        if: always()
+        run: |
+          if test -s results/ipg6b_rank4/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          x=json.loads(pathlib.Path("results/ipg6b_rank4/summary.json").read_text())
+          msg=("# IPG6B original source rank4 CG triangle closure\n\n"
+            +f"Status: {x['status']}\n\n"
+            +f"Source SHA: {x['source_sha256']}\n\n"
+            +f"New original source graph mutexes derived without DPLL: {x['non_source_graph_mutexes_now_derived']}\n\n"
+            +f"Pure source CP derivation lines: {x['source_only_POL_lines']}\n\n"
+            +f"Global POL lines including older DPLL-discovered suffix: {x['full_original_source_POL_lines']}\n\n"
+            +f"Independent original-source exact integer-PB audit: {x['independent_source_integer_PB_check']}\n\n"
+            +f"External VeriPB3.0.2 accepted global proof: {x['external_veripb_UNSAT_verified']}\n\n"
+            +f"Global UNSAT found without DPLL: {x['original_full_UNSAT_without_DPLL']}\n\n"
+            +x['scope']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg6b-original-rank4-source-15mutex-veripb
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg6b_iterative_source_cg.py
+            research/ipg6b_independent_source_pb_checker.py
+            research/ipg6b_iterative_benchmark.py
+            results/ipg6b_rank4/
