@@ -1,0 +1,85 @@
+name: DRNAS IPG2 polynomial-scope arithmetic and parity proof audit
+on:
+  push:
+    branches: [experiment/drnas-ipg2-poly-classes-20261116]
+    paths:
+      - research/ipg2_fixed_types.py
+      - research/ipg2_dp_checker.py
+      - research/ipg2_bounded_matchings.py
+      - research/ipg2_parity_checker.py
+      - research/ipg2_poly_benchmark.py
+      - .github/workflows/drnas-ipg2-poly.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg2-poly-classes-20261116
+  cancel-in-progress: false
+jobs:
+  polynomial_scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin polynomial blossom matching library in isolated venv
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv-ipg2
+          .venv-ipg2/bin/python -m pip install --quiet networkx==3.4.2
+          .venv-ipg2/bin/python -c 'import networkx; print("NetworkX",networkx.__version__)'
+      - name: Compile syntax and preserve frozen original evidence
+        run: |
+          set -euo pipefail
+          .venv-ipg2/bin/python -m py_compile \
+            research/ipg2_fixed_types.py \
+            research/ipg2_dp_checker.py \
+            research/ipg2_bounded_matchings.py \
+            research/ipg2_parity_checker.py \
+            research/ipg2_poly_benchmark.py
+          sha256sum research/ipg2_*.py
+      - name: Original scheduling and source graph polynomial certificate audit
+        run: |
+          set -euo pipefail
+          .venv-ipg2/bin/python -u research/ipg2_poly_benchmark.py
+      - name: Display exact scoped findings
+        if: always()
+        run: |
+          if test -s results/ipg2_poly/summary.json; then
+            .venv-ipg2/bin/python - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path('results/ipg2_poly/summary.json').read_text())
+          a=d['dp'];g=d['graphs']
+          report=("# IPG2 polynomial-scope audit\n\n"
+              +f"Status: {d['status']}\n\n"
+              +f"Two-length scheduling DP cases: {a['cases']}; independently verified: {a['verified']}\n\n"
+              +f"Small 2/3-machine exact oracle checks: {a['small_oracle_checked']}\n\n"
+              +f"Petersen source graph perfect matchings: {g['petersen_matching_count']}\n\n"
+              +f"Blossom oracle calls: {g['petersen_oracle_calls']}\n\n"
+              +f"Original weighted packing 300-clause CNF recognized: {g['graph_original_300_supported']} (expected False)\n\n"
+              +f"Errors: {len(a['errors'])+len(g['errors'])}\n\n"
+              +"Polynomial only for specified subclasses. No general PCMAX or P=NP claim.\n")
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(report)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg2-polynomial-scope-certified-experiments
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg2_fixed_types.py
+            research/ipg2_dp_checker.py
+            research/ipg2_bounded_matchings.py
+            research/ipg2_parity_checker.py
+            research/ipg2_poly_benchmark.py
+            research/IPG2_POLYNOMIAL_SCOPE.md
+            results/ipg2_poly/
