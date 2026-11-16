@@ -92,3 +92,18 @@ if (TARGET OpenSSL::Crypto)
     target_compile_options(drnas-ipg-bdd-extract PRIVATE -O3 -Wall -Wextra -Wpedantic)
   endif()
 endif()
+
+
+# IPG-BDD2: all prior native guards + exact two-class BDD count profiles.
+# Same process / one logical CPU, with explicit source-bound structural proof.
+# Non-IPG-BDD2 targets keep their frozen behavior.
+if (TARGET OpenSSL::Crypto)
+  add_executable(drnas-pcmax-mg7-ipg1-bdd2 src/drnas_x5.cpp)
+  target_compile_definitions(drnas-pcmax-mg7-ipg1-bdd2 PRIVATE
+    DRNAS_PCMAX_MODULE DRNAS_RESIDUAL_SCC DRNAS_PC_GUARD_COMBINED
+    DRNAS_IPG1_MODULE DRNAS_IPG_BDD2_MODULE)
+  target_link_libraries(drnas-pcmax-mg7-ipg1-bdd2 PRIVATE OpenSSL::Crypto)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(drnas-pcmax-mg7-ipg1-bdd2 PRIVATE -O3 -Wall -Wextra -Wpedantic)
+  endif()
+endif()
