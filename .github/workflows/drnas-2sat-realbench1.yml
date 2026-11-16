@@ -8,7 +8,7 @@ permissions:
 jobs:
   exact-2cnf:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install independent SAT reference solvers
@@ -21,10 +21,33 @@ jobs:
       - name: Compile 2SAT C++20
         run: |
           g++ -std=c++20 -O3 -Wall -Wextra -Wpedantic src/drnas_2sat_exact.cpp -o drnas-2sat-exact
-      - name: Paired blind-free pilot, full verified models and RUP
+      - name: Fetch pinned official Yosupo 2-SAT sources and generate SHA-checked tests
+        run: |
+          set -euo pipefail
+          git init -q upstream
+          git -C upstream remote add origin https://github.com/yosupo06/library-checker-problems.git
+          git -C upstream fetch --depth 1 origin 73876f1cbcf082d2b22722924b924d3d65a2f00e
+          git -C upstream checkout --detach FETCH_HEAD
+          mkdir -p official_bin official_cnf
+          for name in random max_random cycle_unsat long_chain; do
+            g++ -std=c++17 -O2 -Iupstream/common "upstream/other/two_sat/gen/$name.cpp" -o "official_bin/$name"
+          done
+          for name in random max_random cycle_unsat long_chain; do
+            case "$name" in
+              random|max_random) count=5 ;;
+              cycle_unsat) count=2 ;;
+              long_chain) count=4 ;;
+            esac
+            for ((i=0; i<count; i++)); do
+              printf -v suffix "%02d" "$i"
+              "official_bin/$name" "$i" > "official_cnf/${name}_${suffix}.in"
+            done
+          done
+          cp upstream/other/two_sat/gen/example_00.in upstream/other/two_sat/gen/example_01.in official_cnf/
+      - name: Paired official 500k test plus standard large 2SAT models and RUP
         run: |
           CADICAL="$(command -v cadical || true)"
-          python3 tests/bench_drnas_2sat_real.py ./drnas-2sat-exact "$(command -v minisat)" "$CADICAL"
+          OFFICIAL_2SAT_DIR="$PWD/official_cnf" python3 tests/bench_drnas_2sat_real.py ./drnas-2sat-exact "$(command -v minisat)" "$CADICAL"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
