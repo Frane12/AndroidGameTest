@@ -1608,8 +1608,6 @@ int run(int argc, char** argv) {
             throw std::runtime_error("--ipg-bdd2 is incompatible with --pcmax-only");
         if (ipg_bdd2_graph_path.empty() || ipg_bdd2_certificate_path.empty())
             throw std::runtime_error("IPG-BDD2 needs both graph and certificate output paths");
-        std::set<std::string> used{input,proof_path,pcmax_certificate,
-                                  ipg_bdd2_graph_path,ipg_bdd2_certificate_path};
         // Allow blank optional proof/capacity paths but never equal actual outputs.
         if (ipg_bdd2_graph_path==ipg_bdd2_certificate_path ||
             ipg_bdd2_graph_path==input || ipg_bdd2_certificate_path==input ||
