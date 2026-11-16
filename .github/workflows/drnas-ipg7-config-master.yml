@@ -1,0 +1,80 @@
+name: DRNAS IPG7 global exact-capacity configuration master source-proof audit
+on:
+  push:
+    branches: [experiment/drnas-ipg7-config-master-original-20261116]
+    paths:
+      - research/ipg7_config_master.py
+      - research/ipg7_independent_master_checker.py
+      - research/ipg7_benchmark.py
+      - .github/workflows/drnas-ipg7-config-master.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg7-global-configuration-20261116
+  cancel-in-progress: false
+jobs:
+  one_core_global_source_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent VeriPB3.0.2 (NO SAT/CDCL solver)
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Syntax and original source module SHA audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/ipg7_config_master.py \
+            research/ipg7_independent_master_checker.py \
+            research/ipg7_benchmark.py
+          sha256sum research/ipg7_*.py
+      - name: Original-source exact subset profiles, independent bridge, pure master VeriPB
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg7_benchmark.py
+      - name: Report two separate proof targets honestly
+        if: always()
+        run: |
+          if test -s results/ipg7_config/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          s=json.loads(pathlib.Path("results/ipg7_config/summary.json").read_text())
+          msg=("# IPG7 global original-source config master\n\n"
+              +f"Status: {s['status']}\n\n"
+              +f"Exact original CNF families checked: {s['source_cases']}\n\n"
+              +f"Source-bridged UNSAT (independent original checker + pure master VeriPB): {s['verified_structural_unsat_with_derived_master_VerIPB']}\n\n"
+              +f"Original source SAT models accepted: {s['verified_original_source_sat_models']}\n\n"
+              +f"Original Petersen exact machine configurations: {s['original_weighted_petersen_config_count']}\n\n"
+              +f"Master-only CP steps on Petersen: {s['original_weighted_petersen_master_POL']}\n\n"
+              +f"New independent 5-job UNSAT configuration count: {s['new_five_job_nonpetersen_unsat_config_count']}\n\n"
+              +f"Direct VeriPB against original PCMAX? {s['original_source_direct_VerIPB_proof']}\n\n"
+              +f"DPLL/CDCL calls: {s['DPLL_CDCL_calls']}\n\n"
+              +f"Errors: {len(s['errors'])}\n\n"
+              +s['scope']+"\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg7-source-exact-config-master-veripb-proofs
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg7_config_master.py
+            research/ipg7_independent_master_checker.py
+            research/ipg7_benchmark.py
+            results/ipg7_config/
