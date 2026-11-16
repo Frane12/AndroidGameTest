@@ -1,0 +1,155 @@
+name: DRNAS MATH5 standard VeriPB + C++ bounded fastgate paired audit
+on:
+  push:
+    branches: [experiment/drnas-math5-standardproof-gate1-20261116]
+    paths:
+      - research/math5/emit_veripb_eo_multiplicity.py
+      - research/math5/math5_standard_pilot.py
+      - research/math5/math5_standard_two_count.py
+      - research/math5/fastgate1_paired.py
+      - research/MATH5_STANDARD_FASTGATE1.md
+      - src/drnas_x5.cpp
+      - CMakeLists.txt
+      - research/unified_evidence/benchmark.py
+      - .github/workflows/drnas-math5-standard-fastgate1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math5-standard-fastgate1-20261116
+  cancel-in-progress: true
+jobs:
+  standard_math5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 17
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43853390060
+          repository: Frane12/AndroidGameTest
+          name: grand-union-sha-pinned-binaries-sources
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore exact original SAT2026 CNFs, frozen MATH5 and standard verifiers
+        run: |
+          set -euo pipefail
+          test -s frozen/grand_unified_frozen.tgz
+          tar -xzf frozen/grand_unified_frozen.tgz
+          chmod +x build/drnas-x59-xor-math5-unified1 build/kissat build/drat-trim veripb-tool/bin/veripb
+          test -s unified_realblind100_inputs/manifest.json
+          veripb-tool/bin/veripb --version
+          sha256sum build/drnas-x59-xor-math5-unified1 build/kissat veripb-tool/bin/veripb
+      - name: Check exact-source MATH5 compiler syntax and run positive/negative proofs
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/math5/check_math5.py research/math5/emit_veripb_eo_multiplicity.py research/math5/math5_standard_pilot.py research/math5/math5_standard_two_count.py
+          python3 -u research/math5/math5_standard_two_count.py | tee math5_standard.log
+          grep -q '^MATH5_TWO_COUNT_FINAL ' math5_standard.log
+      - name: Report standard-proof E2E results with explicit scope
+        if: always()
+        run: |
+          if test -s results/math5_standard_two_count/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/math5_standard_two_count/summary.json").read_text())
+          msg=("# MATH5 standard VeriPB 3.0 source-frozen audit\n\n"
+              +f"Status: {d['status']}\n\n"
+              +f"Original count CNFs: {d['source_count']}\n\n"
+              +f"8s E2E verified VeriPB proofs: {d['verified_standard_proofs']}/{d['trials']}\n\n"
+              +f"MATH5+VeriPB aggregate E2E time (4 attempts): {d['total_e2e_s']} s\n\n"
+              +f"Kissat DRAT verified: {d['kissat_verified']} / 4\n\n"
+              +f"Kissat aggregate PAR2: {d['kissat_PAR2_s']} s\n\n"
+              +"Retrospective, previously discovered count originals, not blind PAR2.\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-math5-original-standard-veripb-two-count
+          retention-days: 60
+          path: |
+            math5_standard.log
+            research/math5/emit_veripb_eo_multiplicity.py
+            results/math5_standard_two_count/
+  cpp_fastgate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43853390060
+          repository: Frane12/AndroidGameTest
+          name: grand-union-sha-pinned-binaries-sources
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Restore frozen C++ BDD3 reference and DRAT/VeriPB checkers
+        run: |
+          set -euo pipefail
+          tar -xzf frozen/grand_unified_frozen.tgz
+          chmod +x build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3 build/drat-trim veripb-tool/bin/veripb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev
+          sha256sum build/drnas-pcmax-base build/drnas-pcmax-mg7-ipg1-bdd3
+      - name: Build ONLY the new separate opt-in C++ source signature gate target
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax-mg7-ipg1-bdd3-fastgate1 -j2
+          sha256sum build/drnas-pcmax-mg7-ipg1-bdd3-fastgate1
+      - name: Serial matched 8-second E2E 14-source BDD3 vs FASTGATE vs base proof audit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/math5/fastgate1_paired.py research/unified_evidence/benchmark.py
+          python3 -u research/math5/fastgate1_paired.py | tee fastgate1_paired.log
+          grep -q '^FASTGATE1_FINAL ' fastgate1_paired.log
+      - name: Report guard savings and any solved-to-unsolved regressions
+        if: always()
+        run: |
+          if test -s results/fastgate1_paired/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/fastgate1_paired/summary.json").read_text())
+          lines=["# DRNAS C++ fastgate exact-source paired A/B", "",
+             f"Status: {d['status']}", "",
+             f"Original 2026 CNFs: {d['retrospective_originals']}", "",
+             f"Generated source-BDD controls: {d['generated_bdd_fixtures']}", "",
+             f"Trials: {d['trials']}", ""]
+          for k,v in d["per_arm"].items():
+              lines.append(f"- {k}: independently verified {v['verified']}, "
+                           f"structural PAR2 {v['structural_PAR2_s']} s, "
+                           f"strict PAR2 {v['strict_PAR2_s']} s")
+          lines.extend(["",f"Baseline solved-to-unsolved regressions: {d['solved_to_unsolved_regressions']}","","This is retrospective targeted pilot, NOT blind competition gain."])
+          msg="\n".join(lines)+"\n"
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-cpp-fastgate1-original-and-bdd-paired-proof-audit
+          retention-days: 60
+          path: |
+            fastgate1_paired.log
+            results/fastgate1_paired/summary.json
+            results/fastgate1_paired/trials.json
+            results/fastgate1_paired/bdd_source_controls/
