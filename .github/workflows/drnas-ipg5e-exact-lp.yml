@@ -1,0 +1,87 @@
+name: DRNAS IPG5E exact rational source LP obstruction (no SAT)
+on:
+  push:
+    branches: [experiment/drnas-ipg5e-original-pure-pol-20261116]
+    paths:
+      - research/ipg5e_exact_lp_obstruction.py
+      - research/ipg5e_rational_lp_checker.py
+      - .github/workflows/drnas-ipg5e-exact-lp.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ipg5e-exact-rational-lp-20261116
+  cancel-in-progress: false
+jobs:
+  rational_source_gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install bounded numerical LP witness discovery only (not proof checking)
+        run: |
+          set -euo pipefail
+          python3 -m venv .lp-venv
+          .lp-venv/bin/python -m pip install --quiet --only-binary=:all: scipy==1.16.2
+          .lp-venv/bin/python -m py_compile research/ipg5e_exact_lp_obstruction.py
+          python3 -m py_compile research/ipg5e_rational_lp_checker.py
+      - name: Find feasible rational source models for every missing graph mutex
+        run: |
+          set -euo pipefail
+          .lp-venv/bin/python -u research/ipg5e_exact_lp_obstruction.py \
+            --output results/ipg5e_lp/exact_rational_source_witnesses.json
+      - name: Independently recheck all 300 source clauses using exact rational arithmetic, no SciPy
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg5e_rational_lp_checker.py \
+            --witness results/ipg5e_lp/exact_rational_source_witnesses.json
+      - name: Reject rational witness forgery
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path('results/ipg5e_lp/exact_rational_source_witnesses.json')
+          d=json.loads(p.read_text())
+          d['initial_witnesses'][0]['numerators'][0]=100001
+          pathlib.Path('results/ipg5e_lp/forged_witness.json').write_text(json.dumps(d))
+          PY
+          if python3 research/ipg5e_rational_lp_checker.py \
+            --witness results/ipg5e_lp/forged_witness.json; then
+            echo "FAIL: forged exact witness accepted"
+            exit 1
+          fi
+      - name: Record independently checked source linear relaxation limitation
+        if: always()
+        run: |
+          if test -s results/ipg5e_lp/exact_rational_source_witnesses.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path('results/ipg5e_lp/exact_rational_source_witnesses.json').read_text())
+          msg=("# Exact rational LP obstruction on original weighted Petersen source\n\n"
+               +f"Original source clauses: {d['original_clauses']}\n\n"
+               +f"Graph mutex clauses absent from original: {d['source_missing_graph_mutexes']}\n\n"
+               +f"Exact rational feasible forced-pair witnesses: {d['fractional_witnesses_for_all_missing_pair_mutexes']}\n\n"
+               +f"Exact witnesses still feasible after 3 source CG triangles: {d['exact_fractional_witnesses_surviving_three_triangle_CG_cuts']}\n\n"
+               +"Every positive witness is independently checked by integer arithmetic on original source, not by the LP solver's status. No general PCMAX polynomial proof.\n")
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg5e-exact-rational-lp-source-obstruction
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg5e_exact_lp_obstruction.py
+            research/ipg5e_rational_lp_checker.py
+            results/ipg5e_lp/exact_rational_source_witnesses.json
+            results/ipg5e_lp/original_45v300c.cnf
