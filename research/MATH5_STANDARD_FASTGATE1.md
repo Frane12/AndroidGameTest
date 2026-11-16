@@ -75,12 +75,12 @@ three-literal BDD transitions, and asserted positive/negative terminals.
 If absent, the expensive optional PCMAX/IPG1/BDD2/BDD3 mathematical
 guards are skipped and unchanged same-process CDCL + MG7/DRAT fallback
 runs. This FASTGATE **NEVER proves SAT/UNSAT itself**.
-Signature present => exactly the prior bounded native proof gates run.
+If the BDD signature is absent, the gate also checks a conservative\nIPG1 three-choice source signature (positive three-literal job ALOs\nand negative binary job mutexes). IPG1 may prove non-BDD CNFs, so\nthese formulas must NOT skip the native proof pipeline. Otherwise, if\nboth signatures are absent, optional structural gates are skipped.\nSignature present => exactly the prior bounded native proof gates run.
 
 Old `drnas-pcmax-mg7-ipg1-bdd3` binary remains the frozen reference;
 its compile macros do NOT enable the fast gate.
 
-Regression pilot compares 14 sources, three same-source serial arms:
+Regression pilot compares 15 sources, three same-source serial arms:
 CXX_BASE / unchanged CXX_BDD3 / new CXX_FAST, under 8s including
 independent SAT model, DRAT, original-source capacity or BDD checks.
 There are 6 previously observed 2026 original CNFs (including both
@@ -111,3 +111,16 @@ PROMOTION GATES: no incorrect answers or rejected certificates,
 source-frozen verification, no lost BDD3 solves, enough independent new
 original formula families, standard verifiers, verification-inclusive
 PAR2 gains with family-level confidence and user approval.
+
+## Independent pre-CI audit (not FASTGATE runtime evidence)
+
+The frozen 67-source CNF set from successful GRAND UNIFIED run
+43853390060 contains 16/67 with the cheap BDD signature and 51/67
+without it. The original non-BDD Petersen 45v/300c source is a
+separate IPG1 signature positive control: SHA256
+`c2fefeffc1f9644ffd6f85728106a21c82dfc01d0d021f32d4d73569cc2bfb70`.
+An unchanged frozen BDD3 binary produced an IPG1 structural UNSAT
+certificate for that exact original in approximately 0.022s wall
+with a 90ms IPG1 budget (single local trial). FASTGATE C++ behavior
+must be independently checked in the new GitHub CI; the signature
+counts alone do NOT prove a PAR2 win or absence of regressions.
