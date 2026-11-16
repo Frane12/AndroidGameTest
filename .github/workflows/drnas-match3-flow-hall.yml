@@ -1,0 +1,71 @@
+name: DRNAS MATCH3 polynomial source Hall maxflow proof pilot
+on:
+  push:
+    branches: [experiment/drnas-match3-flow-hall-poly1-20261116]
+    paths:
+      - research/match3_flow_hall.py
+      - research/match3_flow_hall_checker.py
+      - research/match3_flow_hall_bench.py
+      - research/MATCH3_FLOW_HALL_POLY1.md
+      - .github/workflows/drnas-match3-flow-hall.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-match3-flow-hall-poly1-20261116
+  cancel-in-progress: false
+jobs:
+  certify_original_source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin producer, independent checker, benchmark and fixture hashes
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/match3_flow_hall.py research/match3_flow_hall_checker.py research/match3_flow_hall_bench.py
+          sha256sum research/match3_flow_hall*.py research/match2.py research/ipg1_fixtures.py
+      - name: One-core source certificate and forgery controls
+        run: |
+          set -euo pipefail
+          python3 -u research/match3_flow_hall_bench.py
+      - name: Compact verification and coverage summary
+        if: always()
+        run: |
+          if test -s results/match3_flow_hall/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/match3_flow_hall/summary.json").read_text())
+          s=("# MATCH3 polynomial maxflow source-Hall pilot\n\n"
+             +f"Status: {d['status']}\n\n"
+             +f"Original-CNF cases: {d['cases']}\n\n"
+             +f"Independent source-verified UNSAT: {d['match3_verified_unsat']}\n\n"
+             +f"New proof coverage vs bounded MATCH2: {d['new_cases_over_old']}\n\n"
+             +f"SAT controls: {d['sat_controls']}; verified model controls: {d['sat_models_checked']}\n\n"
+             +f"False UNSAT: {d['false_unsat']}\n\n"
+             +f"Tampered certificates rejected: {d['forged_proofs_rejected']}\n\n"
+             +f"Weighted original Petersen 45/300: {d['petersen_status']}\n\n"
+             +"Generated retrospective data only. No standard LRAT/DRAT/VeriPB proof, blind mixed PAR2, or standalone C++ integration.\n")
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(s)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-match3-original-cnf-proof-and-controls
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/match3_flow_hall.py
+            research/match3_flow_hall_checker.py
+            research/match3_flow_hall_bench.py
+            research/MATCH3_FLOW_HALL_POLY1.md
+            results/match3_flow_hall/
