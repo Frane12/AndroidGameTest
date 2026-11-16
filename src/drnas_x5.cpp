@@ -1850,17 +1850,19 @@ int run(int argc, char** argv) {
     // Fall through to exactly the existing native CDCL + DRAT solver.
     // The old C++ targets do not compile this branch.
     if (pcmax_enabled && pcmax_skip_reason.empty()) {
-        size_t alo=0, signed_ternaries=0, positive_units=0, negative_units=0;
+        size_t alo=0, alo3=0, negative_binary=0;
+        size_t signed_ternaries=0, positive_units=0, negative_units=0;
         for (const auto& clause:pcmax_original) {
             if (clause.size()==1) {
                 positive_units+=clause[0]>0;
                 negative_units+=clause[0]<0;
             } else if (clause.size()==2) {
                 if (clause[0]>0 && clause[1]>0) ++alo;
+                if (clause[0]<0 && clause[1]<0) ++negative_binary;
             } else if (clause.size()==3) {
                 const int positives=(clause[0]>0)+(clause[1]>0)+(clause[2]>0);
                 if (positives==1 || positives==2) ++signed_ternaries;
-                if (positives==3) ++alo;
+                if (positives==3) { ++alo; ++alo3; }
             } else if (clause.size()>3 && clause.size()<=128) {
                 bool all_pos=true;
                 for (int x:clause) if (x<=0) {all_pos=false;break;}
@@ -1869,13 +1871,21 @@ int run(int argc, char** argv) {
         }
         const bool bdd_signature=(alo>=2 && signed_ternaries>=2 &&
                                    positive_units>=2 && negative_units>=1);
-        std::cerr<<"DRNAS_FAST_PC_GATE1 signature="
+        // IPG1 is an independent, source-only 3-machine exact-cover
+        // guard with no BDD roots or transitions. Never gate it out
+        // solely because the source has no BDD signature.
+        const bool ipg1_signature=(declared_vars>=9 && declared_vars<=45 &&
+                                   declared_vars%3==0 &&
+                                   alo3>=static_cast<size_t>(declared_vars/3) &&
+                                   negative_binary>=static_cast<size_t>(declared_vars));
+        std::cerr<<"DRNAS_FAST_PC_GATE1 bdd_signature="
                  <<(bdd_signature?"true":"false")
-                 <<" alo="<<alo
+                 <<" ipg1_signature="<<(ipg1_signature?"true":"false")
+                 <<" alo="<<alo<<" alo3="<<alo3
                  <<" signed_ternary="<<signed_ternaries
                  <<" positive_units="<<positive_units
                  <<" negative_units="<<negative_units<<std::endl;
-        if (!bdd_signature) pcmax_enabled=false;
+        if (!bdd_signature && !ipg1_signature) pcmax_enabled=false;
     }
 #endif
 #endif
