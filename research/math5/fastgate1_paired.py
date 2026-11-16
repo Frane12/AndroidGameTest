@@ -11,6 +11,7 @@ sys.path.insert(0,str(ROOT/"research"/"unified_evidence"))
 import benchmark as original
 sys.path.insert(0,str(ROOT/"research"))
 from ipg_bdd_fixtures import cases
+from ipg1_fixtures import petersen
 
 OUT=ROOT/"results/fastgate1_paired"
 original.BIN["CXX_FAST"]="build/drnas-pcmax-mg7-ipg1-bdd3-fastgate1"
@@ -53,13 +54,24 @@ def main():
         binary=ROOT/original.BIN[arm]
         if not binary.is_file():raise FileNotFoundError(binary)
     sources=original_entries()+synthetic_entries()
+    # IPG1 needs no BDD source encoding. Retain its Petersen proof route.
+    petersen_raw=petersen().encode("ascii")
+    petersen_sha=hashlib.sha256(petersen_raw).hexdigest()
+    assert petersen_sha=="c2fefeffc1f9644ffd6f85728106a21c82dfc01d0d021f32d4d73569cc2bfb70"
+    petersen_file=OUT/"petersen-original45v300c.cnf"
+    petersen_file.write_bytes(petersen_raw)
+    sources.append({"id":109,"path":str(petersen_file.relative_to(ROOT)),
+        "sha256":petersen_sha,"file_id":petersen_file.name,
+        "family":"RETROSPECTIVE_ORIGINAL_PETERSEN_IPG1",
+        "catalog_label":"unsat"})
     trials=[]
     for src in sources:
         order=list(ARMS)
         random.Random(int(src["sha256"][:12],16)).shuffle(order)
         for arm in order:
             row=original.trial(src,arm,0)
-            row["source_kind"]="GENERATED_BDD_ORACLE" if src["id"]>=100 else "RETROSPECTIVE_ORIGINAL_2026"
+            row["source_kind"]=("ORIGINAL_PETERSEN_IPG1" if src["id"]==109 else
+               ("GENERATED_BDD_ORACLE" if src["id"]>=100 else "RETROSPECTIVE_ORIGINAL_2026"))
             if row["critical"] or row["status"].startswith(("INVALID","SOLVER_ERROR")):
                 raise ValueError("invalid proof/model "+str(row))
             if src.get("expected_oracle")=="SAT" and row["accepted"] and row["status"]=="UNSAT_VERIFIED":
@@ -69,7 +81,8 @@ def main():
               "id","arm","status","certificate_kind","accepted","strict_accepted",
               "e2e_s","PAR2_s","PAR2_strict_s")},sort_keys=True),flush=True)
     summary={"status":"PASS","retrospective_originals":len(SELECTED_ORIGINAL_IDS),
-             "generated_bdd_fixtures":len(sources)-len(SELECTED_ORIGINAL_IDS),
+             "generated_bdd_fixtures":len(sources)-len(SELECTED_ORIGINAL_IDS)-1,
+             "original_petersen_ipg1_fixture":1,
              "trials":len(trials),"per_arm":{},"cap_s":original.CAP,
              "one_cpu":True,"no_unchecked_results":True,
              "not_blind":True}
