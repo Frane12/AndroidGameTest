@@ -1,0 +1,83 @@
+name: DRNAS IPG-BDD3 conditional scalar-to-VeriPB source-proof pilot
+on:
+  push:
+    branches: [experiment/drnas-ipg-bdd3-veripb-scalar-20261116]
+    paths:
+      - research/ipg_bdd3_veripb_scalar_bridge.py
+      - research/ipg_bdd3_veripb_benchmark.py
+      - .github/workflows/drnas-ipg-bdd3-veripb-scalar.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg-bdd3-veripb-scalar-20261116
+  cancel-in-progress: false
+jobs:
+  paired_scalar_veripb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent source-level VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Native C++ DRNAS and converter syntax (one logical CPU per solver)
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg_bdd3_veripb_scalar_bridge.py \
+            research/ipg_bdd3_veripb_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target \
+            drnas-pcmax-mg7-ipg1-bdd3 drnas-pcmax -j2
+          sha256sum build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/drnas-pcmax research/ipg_bdd3_veripb_scalar_bridge.py
+      - name: Proof-gated benchmark on source-frozen PCMAX and sealed-generated controls
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg_bdd3_veripb_benchmark.py
+      - name: Display only independently accepted results
+        if: always()
+        run: |
+          if test -s results/ipg_bdd3_veripb/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg_bdd3_veripb/summary.json").read_text())
+          rows=[
+             "# BDD3 to VeriPB conditional scalar bridge",
+             "",
+             f"Status: {d['status']}",
+             f"Source cases: {d['source_cases']}",
+             f"BDD3 independently source verified: {d['bdd3_structural_verified']}",
+             f"Scalar separators found: {d['scalar_separators_found']}",
+             f"Externally VeriPB verified new scalar proofs: {d['scalar_external_veripb_verified']}",
+             f"No separator within bounded search: {d['nonseparable_under_bound']}",
+             f"Historical m20 weighted capacity PB baseline: {d['historical_original_m20_veripb_status']}",
+             f"Errors: {len(d['failures'])}",
+             "",
+             d['scope'],
+          ]
+          msg="\n".join(rows)+"\n"
+          print(msg)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-bdd3-conditioned-scalar-veripb-proof-audit
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg_bdd3_veripb_scalar_bridge.py
+            research/ipg_bdd3_veripb_benchmark.py
+            results/ipg_bdd3_veripb/
