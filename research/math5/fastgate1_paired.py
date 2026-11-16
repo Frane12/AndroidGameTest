@@ -82,8 +82,19 @@ def main():
             "strict_PAR2_s":round(sum(r["PAR2_strict_s"] for r in rows),6),
             "solved_e2e_s":[{"id":r["id"],"seconds":r["e2e_s"]}
                             for r in rows if r["accepted"]]}
+    per_id={(r["id"],r["arm"]):r for r in trials}
+    proof_regressions=[]
+    for src in sources:
+        earlier=per_id[(src["id"],"CXX_BDD3")]
+        new=per_id[(src["id"],"CXX_FAST")]
+        if earlier["accepted"] and not new["accepted"]:
+            proof_regressions.append(src["id"])
+    summary["solved_to_unsolved_regressions"]=proof_regressions
+    if proof_regressions:
+        summary["status"]="REGRESSION"
     (OUT/"trials.json").write_text(json.dumps(trials,indent=2,sort_keys=True)+"\n")
     (OUT/"summary.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
     print("FASTGATE1_FINAL "+json.dumps(summary,sort_keys=True),flush=True)
+    if proof_regressions:raise SystemExit(1)
 
 if __name__=="__main__":main()
