@@ -250,7 +250,7 @@ def trial(src,arm,rep):
                     status="INVALID_SAT_MODEL";critical=True
             else:
                 checker=None;verdict=None
-                if arm in ("CXX_BDD3","CXX_UNION"):
+                if arm in ("CXX_BDD3","CXX_UNION","CXX_FAST"):
                     kinds=[line.rsplit(" ",1)[-1] for line in lines
                            if line.startswith("c PCMAX_UNIFIED_PROOF_KIND ")]
                     if len(kinds)!=1:
