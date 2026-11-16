@@ -1,0 +1,73 @@
+name: DRNAS IPG5D pure cutting-planes original-source odd wheel proofs
+on:
+  push:
+    branches: [experiment/drnas-ipg5c-source-onehot-general-20261116]
+    paths:
+      - research/ipg5d_pure_oddwheel_pb.py
+      - research/ipg5d_pure_pb_benchmark.py
+      - .github/workflows/drnas-ipg5d-pure-pb.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg5d-source-pure-pb-20261116
+  cancel-in-progress: false
+jobs:
+  original_source_pure_cp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent VeriPB version 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+      - name: Syntax verify source wheel detector and pure PB generator
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg5d_pure_oddwheel_pb.py \
+            research/ipg5d_pure_pb_benchmark.py
+          sha256sum research/ipg5d_*.py
+      - name: Verify all pure CP proofs on original source, no CDCL and no RUP
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg5d_pure_pb_benchmark.py
+      - name: Show proof facts and limitations
+        if: always()
+        run: |
+          if test -s results/ipg5d_pure/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          s=json.loads(pathlib.Path("results/ipg5d_pure/summary.json").read_text())
+          msg=("# DRNAS IPG5D pure PB odd wheel proof pilot\n\n"
+               +f"Status: {s['status']}\n\n"
+               +f"Independent original-source pure PB proofs: {s['oddwheel_independent_source_CP_verified']}\n\n"
+               +f"Rim sizes: {s['rim_sizes_verified']}\n\n"
+               +f"Pure polynomial cutting-plane steps: {s['pure_pol_steps']}\n\n"
+               +f"RUP/CDCL steps: {s['rup_steps']}\n\n"
+               +f"Unsupported/SAT controls UNKNOWN: {s['controls_correct_unknown']}/{s['controls']}\n\n"
+               +f"Errors: {len(s['errors'])}\n\n"
+               +s['scope']+"\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg5d-pure-source-cutting-plane-wheel-proofs
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg5d_pure_oddwheel_pb.py
+            research/ipg5d_pure_pb_benchmark.py
+            results/ipg5d_pure/
