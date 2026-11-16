@@ -1,0 +1,88 @@
+name: DRNAS IPG1 integer-cover + BDD + MG7 proof-first audit
+on:
+  push:
+    branches: [experiment/drnas-ipg1-integer-cover-20261116]
+    paths:
+      - src/drnas_x5.cpp
+      - src/ipg1_exact_cover.hpp
+      - CMakeLists.txt
+      - research/ipg1_check.py
+      - research/ipg1_fixtures.py
+      - research/ipg1_benchmark.py
+      - .github/workflows/drnas-ipg1-integer-cover.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg1-integer-cover-20261116
+  cancel-in-progress: false
+jobs:
+  one_cpu_source_proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Independent VeriPB and pinned DRAT proof verifier
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Build one-process IPG1 union and unchanged preceding union
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg1_check.py research/ipg1_fixtures.py research/ipg1_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax-mg7-ipg1 drnas-pcmax-mg7-unified -j2
+          sha256sum build/drnas-pcmax-mg7-ipg1 build/drnas-pcmax-mg7-unified
+      - name: Three-proof-kind one-logical-CPU independent source audit
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg1_benchmark.py
+      - name: Publish exact result statuses, including failed gate
+        if: always()
+        run: |
+          if test -s results/ipg1/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg1/summary.json").read_text())
+          msg=("# IPG1 source-backed integer-cover guard pilot\n\n"
+               +f"Cases: {d['cases']}; paired runs: {d['runs']}\n\n"
+               +f"Independent IPG1 exhaustive source proofs: {d['ipg1_independently_verified']}\n\n"
+               +f"Independent VeriPB proofs: {d['veripb_independently_verified']}\n\n"
+               +f"Independent DRAT proofs: {d['drat_independently_verified']}\n\n"
+               +f"Verified SAT models: {d['sat_models_verified']}\n\n"
+               +f"Errors: {len(d['errors'])}\n\n"
+               +d["warning"]+"\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg1-three-gate-exact-proof-audit
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg1_check.py
+            research/ipg1_fixtures.py
+            research/ipg1_benchmark.py
+            src/ipg1_exact_cover.hpp
+            results/ipg1/**/*.log
+            results/ipg1/*.json
+            results/ipg1/*.cnf
+            results/ipg1/originals/*.cnf
