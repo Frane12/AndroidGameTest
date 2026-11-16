@@ -28,7 +28,22 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"research"))
 from ipg2_cnf_bridge import analyze
 from ipg1_fixtures import petersen
-from ipg2_poly_benchmark import exact_oracle
+def exact_oracle(jobs,m,T):
+    # Independent complete oracle for deliberately SMALL test instances only.
+    loads=[0]*m
+    items=sorted(jobs,reverse=True)
+    def search(i):
+        if i==len(items):return True
+        if items[i]>T:return False
+        seen=set()
+        for k in range(m):
+            if loads[k] in seen or loads[k]+items[i]>T:continue
+            seen.add(loads[k])
+            loads[k]+=items[i]
+            if search(i+1):return True
+            loads[k]-=items[i]
+        return False
+    return search(0)
 
 OUT=ROOT/"results/ipg2_cnf_bridge"
 CHECK=ROOT/"research/ipg2_cnf_checker.py"
