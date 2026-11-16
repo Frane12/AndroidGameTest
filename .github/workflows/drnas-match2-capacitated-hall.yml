@@ -1,0 +1,71 @@
+name: DRNAS MATCH2 source-clause capacitated Hall independent audit
+on:
+  push:
+    branches: [experiment/drnas-match2-capacitated-hall-20261116]
+    paths:
+      - research/match2.py
+      - research/match2_checker.py
+      - research/match2_bench.py
+      - research/MATCH2_CAPACITATED_HALL.md
+      - .github/workflows/drnas-match2-capacitated-hall.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-match2-capacitated-hall-20261116
+  cancel-in-progress: false
+jobs:
+  source_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax-check source producer, separate checker, and benchmark
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/match2.py research/match2_checker.py research/match2_bench.py
+          sha256sum research/match2.py research/match2_checker.py research/match2_bench.py
+      - name: Run one-logical-core independent original-source and forged-proof audit
+        run: |
+          set -euo pipefail
+          python3 -u research/match2_bench.py
+      - name: Print compact, honest final summary
+        if: always()
+        run: |
+          if test -s results/match2/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/match2/summary.json").read_text())
+          s=("# MATCH2 bounded source-CNF capacitated Hall pilot\n\n"
+             +f"Status: {d['status']}\n\n"
+             +f"Cases: {d['cases']}\n\n"
+             +f"MATCH2 independently verified UNSAT: {d['match2_verified_unsat']}\n\n"
+             +f"Original MATCH1 detected: {d['match1_detected']}\n\n"
+             +f"New source proofs over MATCH1: {d['new_over_match1']}\n\n"
+             +f"Known SAT controls: {d['known_sat']}; false UNSAT: {d['false_unsat']}\n\n"
+             +f"Forged certificate rejections: {d['tamper_rejections']}\n\n"
+             +f"Original Petersen 45/300: {d['petersen']}\n\n"
+             +"No general BDD/PB bridge or blind PAR2 evidence.\n")
+          print(s)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(s)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-match2-source-evidence-no-standard-proof
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/match2.py
+            research/match2_checker.py
+            research/match2_bench.py
+            research/MATCH2_CAPACITATED_HALL.md
+            results/match2/
