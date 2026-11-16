@@ -27,11 +27,11 @@ TARGETS=(("SAT2025",13),("SAT2026",25),("SAT2026",31))
 ARMS=("X59_MATH5_VERIPB","X59_OFF","CXX_UNION","Kissat","CaDiCaL","CryptoMiniSat")
 OUT=ROOT/"results/par2_targeted_probe"
 plus.CAP=CAP
-plus.frozen.CAP=CAP
+plus.base.CAP=CAP
 plus.m5.CAP=CAP
 
 def digest(p):
-    return plus.frozen.sha(p)
+    return plus.base.sha(p)
 
 def save(path,obj):
     path.parent.mkdir(parents=True,exist_ok=True)
@@ -75,15 +75,15 @@ def features(source):
                 polarity=dict(polar),max_clause_length=max_len)
 
 def prepare():
-    plus.frozen.affinity()
+    plus.base.affinity()
     srcs=select()
-    pinned=plus.frozen.pinned()
+    pinned=plus.base.pinned()
     proof_controls=plus.m5.proof_preflight()
     metadata={f"{s['era']}:{s['id']}":features(s) for s in srcs}
     p=dict(protocol="DRNAS-TARGETED-FAILURE-ANALYSIS-V1",
         code_git_sha=os.environ.get("GITHUB_SHA"),script_sha=digest(Path(__file__)),
         source_manifest_sha2025=digest(plus.MANIFEST25),
-        source_manifest_sha2026=digest(plus.frozen.DATA/"manifest.json"),
+        source_manifest_sha2026=digest(plus.base.DATA/"manifest.json"),
         binary_sha256=pinned,target_ids=TARGETS,arms=ARMS,reps=REPS,cap_s=CAP,
         expected_trials=len(TARGETS)*REPS*len(ARMS),
         original_cnf_features=metadata,proof_controls=proof_controls,
@@ -94,14 +94,14 @@ def prepare():
         trials=p["expected_trials"],sources_meta=metadata),sort_keys=True),flush=True)
 
 def verify():
-    plus.frozen.affinity()
+    plus.base.affinity()
     proto=json.loads((OUT/"protocol.json").read_text())
     assert proto["protocol"]=="DRNAS-TARGETED-FAILURE-ANALYSIS-V1"
     assert proto["script_sha"]==digest(Path(__file__))
     assert proto["code_git_sha"]==os.environ.get("GITHUB_SHA")
-    assert proto["binary_sha256"]==plus.frozen.pinned()
+    assert proto["binary_sha256"]==plus.base.pinned()
     assert proto["source_manifest_sha2025"]==digest(plus.MANIFEST25)
-    assert proto["source_manifest_sha2026"]==digest(plus.frozen.DATA/"manifest.json")
+    assert proto["source_manifest_sha2026"]==digest(plus.base.DATA/"manifest.json")
     assert proto["cap_s"]==CAP and proto["reps"]==REPS
     return proto
 
