@@ -1,0 +1,86 @@
+name: DRNAS IPG6 original source rank-2 PB direct graph mutex proof
+on:
+  push:
+    branches: [experiment/drnas-ipg6-rank2-original-petersen-20261116]
+    paths:
+      - research/ipg6_rank2_source_cg.py
+      - research/ipg6_independent_rank2_checker.py
+      - research/ipg6_rank2_benchmark.py
+      - .github/workflows/drnas-ipg6-rank2-cg.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drnas-ipg6-original-rank2-cg-20261116
+  cancel-in-progress: false
+jobs:
+  original_source_cut_proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: marijnheule/drat-trim
+          ref: 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          path: drat-trim
+          persist-credentials: false
+      - name: Pin independent VeriPB3.0.2 and DRAT-trim
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked \
+            --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          make -C drat-trim drat-trim
+      - name: Compile frozen non-CDCL source-RUP baseline and syntax-check new CP
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/ipg6_rank2_source_cg.py \
+            research/ipg6_independent_rank2_checker.py research/ipg6_rank2_benchmark.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-ipg5b-jobbranch -j2
+          sha256sum research/ipg6_*.py build/drnas-ipg5b-jobbranch
+      - name: Check original-SOURCE 12 pure PB cuts independently and full proof externally
+        run: |
+          set -euo pipefail
+          python3 -u research/ipg6_rank2_benchmark.py
+      - name: Report only externally verified source mathematical claims
+        if: always()
+        run: |
+          if test -s results/ipg6_rank2/summary.json; then
+            python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads(pathlib.Path("results/ipg6_rank2/summary.json").read_text())
+          msg=("# IPG6 original source rank-2 Chvatal-Gomory derivation\n\n"
+             +f"Status: {d['status']}\n\n"
+             +f"Original 45v/300c source SHA: {d['source_sha256']}\n\n"
+             +f"Original-source rank1 cuts: {d['original_rank1_PB_cuts']}\n\n"
+             +f"Original-source NEW rank2 graph mutexes: {d['new_rank2_original_PB_graph_mutexes']}\n\n"
+             +f"Source-only PB lines: {d['new_PB_source_only_lines']}\n\n"
+             +f"Independent integer algebra: {d['source_original_independent_integer_arithmetic']}\n\n"
+             +f"Full VeriPB POL lines: {d['complete_POL_lines']}; RUP lines: {d['complete_RUP_lines']}\n\n"
+             +f"External VeriPB accepted: {d['source_cuts_verified_by_external_VerIPB']}\n\n"
+             +f"Pure source CUTS alone prove UNSAT: {d['new_PB_cuts_alone_prove_UNSAT']}\n\n"
+             +d['scope']+"\n")
+          print(msg)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:f.write(msg)
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drnas-ipg6-original-rank2-cg9-source-veripb-audit
+          retention-days: 30
+          compression-level: 6
+          path: |
+            research/ipg6_rank2_source_cg.py
+            research/ipg6_independent_rank2_checker.py
+            research/ipg6_rank2_benchmark.py
+            results/ipg6_rank2/
