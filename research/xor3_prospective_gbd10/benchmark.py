@@ -163,10 +163,12 @@ def wrap_xor(s,rep,arm,inner,started=None):
     return row
 
 def new_only(s,rep):
+    xor3.OUT=OUT/"verified_proofs"/f"source_{s['id']:02d}"
     inner=xor3.strict_xor3(s,rep)
     return wrap_xor(s,rep,"XOR3_NATIVE_VERIPB",inner)
 
 def new_then_fallback(s,rep):
+    xor3.OUT=OUT/"verified_proofs"/f"source_{s['id']:02d}"
     started=time.perf_counter()
     old_cap=xor3.CAP
     xor3.CAP=min(1.0,CAP)
