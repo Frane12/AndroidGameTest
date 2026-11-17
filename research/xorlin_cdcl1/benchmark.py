@@ -82,7 +82,14 @@ def restore():
     assert p["new_native_cpp_sha256"]==sha(HERE/"solver.cpp")
     assert p["old_cdcl_cpp_sha256"]==sha(ROOT/"src/drnas_x59.cpp")
     assert p["new_binary_sha256"]==sha(BIN)
-    assert p["workflow_commit_sha256"]==os.environ.get("GITHUB_SHA")
+    if os.environ.get("DRNAS_ORIGINAL_ARTIFACT_REPLAY")=="1":
+        # Audit-only replay of previously published, immutable shard artifacts.
+        # The tested binary and source SHA must belong to the ORIGINAL run.
+        assert os.environ.get("DRNAS_SOURCE_RUN_ID")=="44065020804"
+        assert p["workflow_commit_sha256"]=="3ec2df9ee56e434aba9ee72b957fdbf3c69f2571"
+        assert os.environ.get("GITHUB_SHA")!=p["workflow_commit_sha256"]
+    else:
+        assert p["workflow_commit_sha256"]==os.environ.get("GITHUB_SHA")
     return m["sources"],p
 def make_row(src,rep,arm,started,rc,status,route=None,proof=None,
              critical=False,reason=None,checker_s=0):
@@ -250,7 +257,7 @@ def aggregate():
             "strict_sources":len({r["id"] for r in rr if r["strict_accepted"]}),
             "strict_PAR2_s":round(sum(r["PAR2_strict_s"] for r in rr),6),
             "proof_kinds":dict(collections.Counter(r.get("certificate_kind") for r in rr if r["strict_accepted"])),
-            "routes":dict(collections.Counter(r.get("proof_route") for r in rr if r["arm"].startswith("HYBRID_"))),
+            "routes":dict(collections.Counter((r.get("proof_route") or "NO_ROUTE") for r in rr if r["arm"].startswith("HYBRID_"))),
             "statuses":dict(collections.Counter(r["status"] for r in rr))}
     regressions=[]
     per={(r["id"],r["rep"],r["arm"]):r for r in entries}
@@ -270,7 +277,13 @@ def aggregate():
        "internal_CDCL_fallback":True,
        "strict_postcheck_in_E2E":True,
        "one_logical_CPU_per_solver":True,"cap_s":CAP,
-       "retrospective_not_blind":True,"no_main_promotion":True}
+       "retrospective_not_blind":True,"no_main_promotion":True,
+       "audit_replay_only":os.environ.get("DRNAS_ORIGINAL_ARTIFACT_REPLAY")=="1",
+       "original_experiment_commit":p["workflow_commit_sha256"],
+       "original_trial_run_id":44065020804 if os.environ.get("DRNAS_ORIGINAL_ARTIFACT_REPLAY")=="1" else None,
+       "audit_repair_commit":os.environ.get("GITHUB_SHA") if os.environ.get("DRNAS_ORIGINAL_ARTIFACT_REPLAY")=="1" else None,
+       "original_shard_trial_log_sha256":{
+           str(i):sha(OUT/f"shard-{i}/trials.jsonl") for i in range(SHARDS)}}
     save(OUT/"final.json",final)
     print("XORLIN_CDCL1_FINAL "+json.dumps(final,sort_keys=True),flush=True)
     if critical:raise SystemExit(1)
