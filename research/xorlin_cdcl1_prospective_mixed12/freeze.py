@@ -157,9 +157,11 @@ def size_metadata(choices):
 
 def main():
     prespec=json.loads(PRE.read_text())
-    assert prespec["protocol"]=="DRNAS-XORLIN-CDCL1-PROSPECTIVE-MIXED12-20261117-V1"
+    assert prespec["protocol"]=="DRNAS-XORLIN-CDCL1-PROSPECTIVE-MIXED12-20261117-V2"
     assert prespec["prespec_lock"].startswith("metadata only")
     assert prespec["guarantees"]["no_source_or_algorithm_changes_after_outcomes"]
+    assert prespec["preregistration_history"]["no_previous_solver_evaluations"] is True
+    assert prespec["preregistration_history"]["v1_failed_preflight_runs"]==[44070338062,44070631698]
     provenance=check_disjoint(prespec)
     size_metadata(prespec["sources"])
     OUT.mkdir(parents=True,exist_ok=True)
