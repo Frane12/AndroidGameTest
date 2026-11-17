@@ -77,7 +77,7 @@ def prepare():
        "locked_math_source_sha256":LOCKED_CODE,
        "frozen_reference_binaries_sha256":frozen.pinned(),
        "old_cdcl_cpp_sha256":sha(ROOT/"src/drnas_x59.cpp"),
-       "new_native_cpp_sha256":sha(HERE/"solver.cpp"),
+       "new_native_cpp_sha256":sha(ROOT/"research/xorlin_cdcl1/solver.cpp"),
        "new_binary_sha256":sha(BIN),
        "workflow_commit_sha256":os.environ.get("GITHUB_SHA"),
        "one_logical_CPU_per_solver":True,
@@ -100,7 +100,7 @@ def restore():
     assert p["source_manifest_sha256"]==sha(DATA/"manifest.json")
     assert p["prespec_sha256"]==sha(HERE/"prespec.json")
     assert p["frozen_reference_binaries_sha256"]==frozen.pinned()
-    assert p["new_native_cpp_sha256"]==sha(HERE/"solver.cpp")
+    assert p["new_native_cpp_sha256"]==sha(ROOT/"research/xorlin_cdcl1/solver.cpp")
     assert p["old_cdcl_cpp_sha256"]==sha(ROOT/"src/drnas_x59.cpp")
     assert p["new_binary_sha256"]==sha(BIN)
     assert p["workflow_commit_sha256"]==os.environ.get("GITHUB_SHA")
@@ -295,8 +295,7 @@ def aggregate():
        "not_family_disjoint":True,"no_main_promotion":True,
        "algorithm_frozen_sha256":p["locked_math_source_sha256"],
        "candidate_binary_sha256":p["new_binary_sha256"],
-       "original_source_manifest_sha256":p["source_manifest_sha256"],
-       "no_main_promotion":True}
+       "original_source_manifest_sha256":p["source_manifest_sha256"]}
     save(OUT/"final.json",final)
     print("XORLIN_CDCL1_PROSPECTIVE_FINAL "+json.dumps(final,sort_keys=True),flush=True)
     if critical:raise SystemExit(1)
