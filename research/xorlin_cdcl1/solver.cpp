@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,12 @@ struct Options {
     std::string cnf,proof,mode="core",gate="on",root;
     double seconds=8.0,gate_ms=700.0;
     bool stats=false;
+};
+struct InterpreterGuard {
+    InterpreterGuard(){Py_Initialize();if(!Py_IsInitialized())throw std::runtime_error("Python initialization failed");}
+    ~InterpreterGuard(){if(Py_IsInitialized())Py_Finalize();}
+    InterpreterGuard(const InterpreterGuard&)=delete;
+    InterpreterGuard& operator=(const InterpreterGuard&)=delete;
 };
 struct PyGuard {
     PyObject* p=nullptr;
@@ -123,8 +130,7 @@ GateResult attempt_gate(const Options& o,const Clock::time_point& started){
                     std::istreambuf_iterator<char>());
     if(raw.size()!=bytes)throw std::runtime_error("CNF read truncated");
     result.status="NO_INCONSISTENT_GF2_SUBSET";
-    Py_Initialize();
-    if(!Py_IsInitialized())throw std::runtime_error("embedded Python init failed");
+    InterpreterGuard interpreter;
     try {
         add_python_path(fs::path(o.root)/"research"/"xorlin1");
         add_python_path(fs::path(o.root)/"research"/"math5");
@@ -139,15 +145,15 @@ GateResult attempt_gate(const Options& o,const Clock::time_point& started){
             throw std::runtime_error("certified source extractor unavailable");
         PyGuard selection(PyObject_CallFunctionObjArgs(derive.get(),original.get(),nullptr));
         if(!selection.get()){
-            if(safe_unknown_from_python()){result.status="SOURCE_UNSUPPORTED";Py_Finalize();return result;}
+            if(safe_unknown_from_python()){result.status="SOURCE_UNSUPPORTED";return result;}
             throw std::runtime_error("source-GF2 extraction failure");
         }
         if(!PyTuple_Check(selection.get())||PyTuple_Size(selection.get())!=2)
             throw std::runtime_error("unexpected certified GF2 return");
         PyObject* cert=PyTuple_GetItem(selection.get(),0); // borrowed
-        if(cert==Py_None){Py_Finalize();return result;}
+        if(cert==Py_None){return result;}
         if(elapsed(gate_started)>=soft_sec){
-            result.status="SCOUT_SOFT_BUDGET";Py_Finalize();return result;
+            result.status="SCOUT_SOFT_BUDGET";return result;
         }
         PyGuard proof_module(PyImport_ImportModule("emit_veripb"));
         if(!proof_module.get()){
@@ -160,7 +166,7 @@ GateResult attempt_gate(const Options& o,const Clock::time_point& started){
         if(!compiled.get()){
             if(safe_unknown_from_python()){
                 result.status="CERTIFICATE_UNSUPPORTED";
-                Py_Finalize();return result;
+                return result;
             }
             throw std::runtime_error("standard proof emission failure");
         }
@@ -172,7 +178,7 @@ GateResult attempt_gate(const Options& o,const Clock::time_point& started){
         if(!encoded||n<=0||n>8000000)
             throw std::runtime_error("standard proof bytes invalid");
         if(elapsed(gate_started)>=soft_sec){
-            result.status="SCOUT_SOFT_BUDGET";Py_Finalize();return result;
+            result.status="SCOUT_SOFT_BUDGET";return result;
         }
         // No proof is visible to the benchmark before all in-process
         // source checks and the full RED/RUP/CP compiler succeed.
@@ -186,7 +192,6 @@ GateResult attempt_gate(const Options& o,const Clock::time_point& started){
         result.accepted=true;
         result.status="PBP_EMITTED_EXTERNAL_CHECK_REQUIRED";
         result.proof_bytes=static_cast<size_t>(n);
-        Py_Finalize();
         return result;
     }catch(...){
         // PyGuard objects may hold PyObjects; failing is fatal rather
