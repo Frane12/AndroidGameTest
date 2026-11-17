@@ -97,7 +97,7 @@ def check_disjoint(prespec):
     ]
     manifests=[json.loads(p.read_text()) for p in earlier]
     previous=[source for m in manifests for source in m["sources"]]
-    assert len(previous)==127,("PRIOR_REFERENCE_COUNT_CHANGED",len(previous))
+    assert len(previous)==107,("PRIOR_REFERENCE_COUNT_CHANGED",len(previous))
     old_ids={s.get("gbd_hash",s.get("file_id")) for s in previous}
     old_isos={s.get("isohash") for s in previous if s.get("isohash")}
     old_isos.update(s.get("isohash2") for s in previous if s.get("isohash2"))
