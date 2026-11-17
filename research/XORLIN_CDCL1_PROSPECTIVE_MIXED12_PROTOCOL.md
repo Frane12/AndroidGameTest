@@ -1,10 +1,28 @@
-# DRNAS XORLIN-CDCL1 — new original GBD mixed12 prospective paired evaluation
+# DRNAS XORLIN-CDCL1 V2 — resource-revised original GBD mixed12 prospective evaluation
 
 **2026-11-17.** This is a separate experimental branch, not main.
-Selection was locked at GitHub commit
-\`bc2fac2beccfb333f147c1b6d605234c2dcdbdc8\` in
-\`research/xorlin_cdcl1_prospective_mixed12/prespec.json\` before any
-source downloads or candidate/reference solver outcomes.
+V1 selection was locked at commit `bc2fac2beccfb333f147c1b6d605234c2dcdbdc8`
+before any original source downloads or solver outcomes.
+
+## Transparent V2 pre-solver resource amendment
+
+Original V1 runs
+[44070338062](https://github.com/Frane12/AndroidGameTest/actions/runs/44070338062)
+and [44070631698](https://github.com/Frane12/AndroidGameTest/actions/runs/44070631698)
+failed **before any solver trial**: first from an audit-only Python import
+collision, then a pre-solver source size check when ID3 decompressed
+above the fixed 50 MB limit. ID4 also had compressed source size
+metadata suggesting a large decompressed input. V1 remains a recorded
+unsuccessful preflight, not a completed holdout.
+
+A **new, separately committed V2 source list**
+`de3cf2b8e46c5d4620d4240932ff6c69273fd0dd` retains ten
+original identifiers and changes only IDs 3 and 4 before any
+solver performance measurements. They are different source originals
+from public GBD metadata. The V2 run is performance-blind to these
+selected originals, not fully blind to source resource metadata.
+Original algorithm, reference binaries, 8s cap, one-CPU condition
+and 20/50 MB file limits remain unchanged.
 
 ## Purpose
 
@@ -43,7 +61,7 @@ scout, 8s total E2E (including verifier), no parallel solver.
 
 ## Frozen original GBD source sample — source-identity disjoint
 
-**12 new original GBD CNFs from 9 catalog families**, six catalog SAT
+**12 source originals from 10 catalog families**, six catalog SAT
 and six catalog UNSAT. The exact 32-character GBD IDs, isohash,
 isohash2 and selected filenames were committed before the
 test, with two shuffled repeats per source:
@@ -53,8 +71,8 @@ test, with two shuffled repeats per source:
 | 0 | hamiltonian | SAT | x9-04045.sat.sanitized.cnf.xz |
 | 1 | uniform-random | UNSAT | unif-c1275-v300-s428434218.cnf.xz |
 | 2 | agile | SAT | bench_3169.smt2.cnf.xz |
-| 3 | agile | UNSAT | bench_10000.smt2.cnf.xz |
-| 4 | planning | UNSAT | barman-pfile10-038.sas.cr.25.cnf.xz |
+| 3 | subsumptiontest | UNSAT | DivU_545_9.cnf.sanitized.cnf.xz |
+| 4 | subgraph-isomorphism | UNSAT | SGI_30_80_29_60_7-dir.shuffled-as.sat03-217.cnf.xz |
 | 5 | bitvector | SAT | g2-newton.8.3.i.smt2-cvc4.cnf.xz |
 | 6 | bitvector | UNSAT | bvslt_13916.cnf.xz |
 | 7 | station-repacking | SAT | 43-116107.cnf.xz |
