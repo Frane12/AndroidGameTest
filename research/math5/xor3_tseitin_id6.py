@@ -158,6 +158,11 @@ def strict_xor3(src,rep):
             return unknown(src,rep,started,"E2E_OVER_CAP",
                 solver_s=solver_s,project_checker_s=project_s,
                 emitter_s=emitter_s,veripb_s=veripb_s)
+        verified_dir=OUT/"verified_original_proofs"
+        verified_dir.mkdir(parents=True,exist_ok=True)
+        (verified_dir/f"ID6_rep{rep}_veripb_accepted.pbp").write_bytes(standard_proof.read_bytes())
+        (verified_dir/f"ID6_rep{rep}_math5_certificate.json").write_bytes(math5_cert.read_bytes())
+        (verified_dir/f"ID6_rep{rep}_source_metadata.json").write_bytes(standard_meta.read_bytes())
         return {"id":src["id"],"arm":"XOR3_CARRY_VERIPB","rep":rep,
           "source_sha256":src["sha256"],"family":src["family"],
           "status":"UNSAT_VERIFIED","accepted":True,"strict_accepted":True,
