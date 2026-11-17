@@ -1,0 +1,220 @@
+name: DRNAS MATH5 XOR234 grid original standard VeriPB proof E2E
+on:
+  push:
+    branches: [experiment/drnas-xor234-grid-veripb-20261117]
+    paths:
+      - research/math5/emit_veripb_xor234_split.py
+      - research/math5/xor234_split_selftest.py
+      - research/math5_xor234_grid2/**
+      - research/MATH5_XOR234_GRID_VERIPB_RESULTS.md
+      - .github/workflows/drnas-math5-xor234-grid2.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-math5-xor234-grid2-20261117
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 44043273439
+          name: xor3-prospective-gbd10-originals-and-binaries
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Restore unchanged source-sha originals and independently certified VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          test -s prior/xor3-prospective-gbd10-frozen-originals.tgz
+          sha256sum prior/xor3-prospective-gbd10-frozen-originals.tgz
+          tar -xzf prior/xor3-prospective-gbd10-frozen-originals.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          python3 - <<'PY'
+          import sys,hashlib,json
+          from pathlib import Path
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          pins=frozen.pinned()
+          m=json.loads(Path("research/xor3_prospective_gbd10/inputs/manifest.json").read_text())
+          assert m["status"]=="FROZEN_SOURCE_ONLY_NO_SOLVER_RUN"
+          assert m["selected_count"]==10
+          expected={
+            5:"79618e35c83016fd1a188eb63ed499c3d1d4c364f710c9c9a93eb7925054a9af",
+            6:"0b37c65f0c7cb2c9ed375d09a7ab3d77da34266a908f368e67186754fe9dbd37"}
+          for src in m["sources"]:
+              if src["id"] not in expected:continue
+              assert src["family"]=="tseitin-formulas"
+              assert src["sha256"]==expected[src["id"]]
+              assert frozen.sha(Path(src["path"]))==expected[src["id"]]
+          assert pins["veripb-tool/bin/veripb"]==frozen.sha("veripb-tool/bin/veripb")
+          print("MATH5_XOR234_ORIGINAL_SHA_AND_VERIPB_BINARY_PASS",flush=True)
+          PY
+          veripb-tool/bin/veripb --version
+      - name: New XOR2/3/4 source proof generator syntax and 96 adversarial safety controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/math5/emit_veripb_xor234_split.py \
+            research/math5/xor234_split_selftest.py \
+            research/math5_xor234_grid2/benchmark.py \
+            research/math5/xor3_tseitin_id6.py
+          python3 -u research/math5/xor234_split_selftest.py | tee xor234_safety.log
+          grep -q '^MATH5_XOR234_SAFETY_PASS ' xor234_safety.log
+      - name: Freeze new/old proof emitter source hashes and strict 24-trial protocol
+        run: |
+          set -euo pipefail
+          python3 -u research/math5_xor234_grid2/benchmark.py prepare \
+            | tee xor234_prepare.log
+          grep -q '^MATH5_XOR234_PREPARED ' xor234_prepare.log
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys,tarfile,hashlib
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          required=set(frozen.REQUIRED_BIN)
+          required.update({
+            "unified_evidence_results/protocol.json",
+            "unified_realblind100_inputs/manifest.json",
+            "research/graph_unseen25/inputs/manifest.json",
+            "research/graph_family_disjoint25/inputs/manifest.json",
+            "research/xor3_prospective_gbd10/inputs",
+            "results/math5_xor234_grid2/protocol.json"})
+          output=Path("math5-xor234-grid2-frozen.tgz")
+          with tarfile.open(output,"w:gz") as archive:
+              for name in sorted(required):
+                  assert Path(name).exists(),("FROZEN_PATH_MISSING",name)
+                  archive.add(name,arcname=name,recursive=True)
+          with tarfile.open(output,"r:gz") as archive:
+              members=set(archive.getnames())
+          assert not (required-members),("MISSING_FROZEN_PATHS",sorted(required-members))
+          print("MATH5_XOR234_PREPARE_ARCHIVE_AUDIT",{
+              "sources":2,"reference_paths":len(frozen.REQUIRED_BIN),
+              "archive_sha256":hashlib.sha256(output.read_bytes()).hexdigest()},
+              flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: math5-xor234-grid2-frozen-source-shas-and-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: math5-xor234-grid2-frozen.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-xor234-grid2-prepare-safety-audit
+          retention-days: 60
+          path: |
+            xor234_safety.log
+            xor234_prepare.log
+            results/math5_xor234_grid2/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math5-xor234-grid2-frozen-source-shas-and-binaries
+      - name: Restore identical source-frozen originals, native solvers and proof verifier
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf math5-xor234-grid2-frozen.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: Source SHA pinned one-CPU serial 6-arm strict proof-verified 8s E2E benchmark
+        run: |
+          set -euo pipefail
+          python3 -u research/math5_xor234_grid2/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee xor234_shard.log
+          grep -q '^MATH5_XOR234_SHARD ' xor234_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-xor234-grid2-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/math5_xor234_grid2/shard-${{ matrix.shard }}/trials.jsonl
+            results/math5_xor234_grid2/accepted_external_veripb/
+            xor234_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: math5-xor234-grid2-frozen-source-shas-and-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: math5-xor234-grid2-shard-*
+          path: collected
+      - name: Restore same frozen sources and source-verifier digest
+        run: |
+          set -euo pipefail
+          tar -xzf math5-xor234-grid2-frozen.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(2):
+              folder=Path("collected")/f"math5-xor234-grid2-shard-{i}"
+              matches=list(folder.glob("**/trials.jsonl"))
+              assert len(matches)==1,("MISSING_OR_DUPLICATE_SHARD",i,matches)
+              target=Path("results/math5_xor234_grid2")/f"shard-{i}"
+              target.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(matches[0],target/"trials.jsonl")
+          PY
+      - name: Reject source mismatches, missing 24 attempts, nonstandard UNSAT and critical errors
+        run: |
+          set -euo pipefail
+          python3 -u research/math5_xor234_grid2/benchmark.py report | tee xor234_final.log
+          grep -q '^MATH5_XOR234_GRID_FINAL ' xor234_final.log
+          cat xor234_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: math5-xor234-grid2-final-strict-PAR2-and-certified-PBP
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/math5_xor234_grid2/final.json
+            results/math5_xor234_grid2/shard-*/trials.jsonl
+            xor234_final.log
