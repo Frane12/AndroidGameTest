@@ -1,0 +1,244 @@
+name: DRNAS XORLIN-CDCL1 one-process C++ hybrid GF2/CDCL original12 proof E2E
+on:
+  push:
+    branches: [experiment/drnas-xorlin-cdcl1-oneprocess-20261117]
+    paths:
+      - research/xorlin_cdcl1/**
+      - research/XORLIN_CDCL1_ONEPROCESS_PROTOCOL.md
+      - .github/workflows/drnas-xorlin-cdcl1-oneprocess.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xorlin-cdcl1-oneprocess-20261117
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 44059940286
+          name: xorlin1-mixed12-originals-and-binaries
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Restore exact prior 12 source-frozen CNFs, reference binaries and independent standard proof checkers
+        run: |
+          set -euo pipefail
+          test -s prior/xorlin1-mixed12-frozen-originals.tgz
+          sha256sum prior/xorlin1-mixed12-frozen-originals.tgz
+          tar -xzf prior/xorlin1-mixed12-frozen-originals.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          python3 - <<'PY'
+          import json,sys
+          from pathlib import Path
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          m=json.loads(Path("research/xorlin1_prospective_mixed12/inputs/manifest.json").read_text())
+          assert m["status"]=="FROZEN_SOURCE_ONLY_NO_SOLVER_RUN"
+          assert len(m["sources"])==m["selected_count"]==12
+          assert len({s["sha256"] for s in m["sources"]})==12
+          for src in m["sources"]:
+              assert frozen.sha(Path(src["path"]))==src["sha256"]
+          assert len(frozen.pinned())>=10
+          print("XORLIN_CDCL1_ORIGINALS_AND_FROZEN_BINARIES_PASS",flush=True)
+          PY
+      - name: Install C++ Python embed headers and reference solver runtime dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-dev libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          test -n "$(python3-config --includes)"
+          test -n "$(python3-config --embed --ldflags)"
+      - name: Frozen source-only GF2 and verifier negative controls
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/xorlin_cdcl1/build.py \
+            research/xorlin_cdcl1/smoke.py research/xorlin_cdcl1/benchmark.py
+          python3 -u research/xorlin1/selftest.py | tee xorlin_cdcl1_math_safety.log
+          grep -q '^XORLIN1_SAFETY_PASS ' xorlin_cdcl1_math_safety.log
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected={
+            "research/xorlin1/extract.py":"7deba9716ec2165ff61434c7c326c63d564cecc5c272e9bade679484a7c151a3",
+            "research/xorlin1/emit_veripb.py":"f3636b39c9f02a7b0fdfa166b982667c64b6ffb19de64dc2229cdee8a9a4ec07",
+            "research/xorlin1/selftest.py":"19147961e174777c970695847d893518d50931377896c6936b606f0d626fd40a",
+            "research/math5/check_math5.py":"ebfec304d1823574bbf2530d3e277e468446965362f6a6a6ad7d8371473a381a"
+          }
+          for path,digest in expected.items():
+              assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,\
+                  ("CERTIFIED_GF2_ALGORITHM_WAS_MODIFIED",path)
+          print("XORLIN_CDCL1_CERTIFIED_GF2_SOURCE_PIN_PASS",flush=True)
+          PY
+      - name: Compile one native executable with in-process Python proof gate and intrinsic unchanged C++ CDCL
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1/build.py | tee xorlin_cdcl1_build.log
+          grep -q '^XORLIN_CDCL1_BUILT ' xorlin_cdcl1_build.log
+      - name: Independent external VeriPB/DRAT and SAT model smoke for native one-process gate ON/OFF
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1/smoke.py | tee xorlin_cdcl1_smoke.log
+          grep -q '^XORLIN_CDCL1_SMOKE_PASS 6' xorlin_cdcl1_smoke.log
+      - name: Freeze exact binary+code+sources+proof checkers before 120 regression trials
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1/benchmark.py prepare | tee xorlin_cdcl1_prepare.log
+          grep -q '^XORLIN_CDCL1_PREPARED ' xorlin_cdcl1_prepare.log
+          python3 - <<'PY'
+          import hashlib,sys,tarfile
+          from pathlib import Path
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          required=set(frozen.REQUIRED_BIN)
+          required.update({
+            "build/drnas-xorlin-cdcl1",
+            "unified_evidence_results/protocol.json",
+            "unified_realblind100_inputs/manifest.json",
+            "research/graph_unseen25/inputs/manifest.json",
+            "research/graph_family_disjoint25/inputs/manifest.json",
+            "research/xor3_prospective_gbd10/inputs/manifest.json",
+            "research/xor234_prospective_tseitin10/inputs/manifest.json",
+            "research/xorlin1_prospective_mixed12/inputs",
+            "results/xorlin_cdcl1_paired12/protocol.json"})
+          name=Path("xorlin-cdcl1-frozen12-binaries.tgz")
+          with tarfile.open(name,"w:gz") as archive:
+              for path in sorted(required):
+                  assert Path(path).exists(),("FROZEN_PATH_MISSING",path)
+                  archive.add(path,arcname=path,recursive=True)
+          with tarfile.open(name,"r:gz") as archive:
+              names=set(archive.getnames())
+          assert not required-names,("INCOMPLETE_ARCHIVE",sorted(required-names))
+          print("XORLIN_CDCL1_FROZEN_ARCHIVE_AUDIT",{
+             "total_items":len(required),
+             "archive_sha256":hashlib.sha256(name.read_bytes()).hexdigest()},
+             flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xorlin-cdcl1-oneprocess-original12-and-native-executable
+          retention-days: 60
+          if-no-files-found: error
+          path: xorlin-cdcl1-frozen12-binaries.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin-cdcl1-native-build-smoke-security-audit
+          retention-days: 60
+          path: |
+            xorlin_cdcl1_build.log
+            xorlin_cdcl1_smoke.log
+            xorlin_cdcl1_math_safety.log
+            xorlin_cdcl1_prepare.log
+            results/xorlin_cdcl1_paired12/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xorlin-cdcl1-oneprocess-original12-and-native-executable
+      - name: Restore identical original CNFs, compiled native one-process binary, references and checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0 python3-dev
+          tar -xzf xorlin-cdcl1-frozen12-binaries.tgz
+          chmod +x build/drnas-xorlin-cdcl1 \
+            build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: Matched 12 original CNFs x 2 reps x 5 serial arms 8s inclusive standard-proof-checked E2E
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee xorlin_cdcl1_shard.log
+          grep -q '^XORLIN_CDCL1_SHARD ' xorlin_cdcl1_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin-cdcl1-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/xorlin_cdcl1_paired12/shard-${{ matrix.shard }}/trials.jsonl
+            results/xorlin_cdcl1_paired12/accepted_external_proofs/
+            xorlin_cdcl1_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xorlin-cdcl1-oneprocess-original12-and-native-executable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xorlin-cdcl1-shard-*
+          path: collected
+      - name: Restore exact original SHA and all 4 independent serial paired shards
+        run: |
+          set -euo pipefail
+          tar -xzf xorlin-cdcl1-frozen12-binaries.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(4):
+              folder=Path("collected")/f"xorlin-cdcl1-shard-{i}"
+              logs=list(folder.glob("**/trials.jsonl"))
+              assert len(logs)==1,("MISSING_OR_DUPLICATE_SHARD",i,logs)
+              dst=Path("results/xorlin_cdcl1_paired12")/f"shard-{i}"
+              dst.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(logs[0],dst/"trials.jsonl")
+          PY
+      - name: Independent final audit of exact 120 native ON/OFF + reference strict E2E attempts
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1/benchmark.py aggregate | tee xorlin_cdcl1_final.log
+          grep -q '^XORLIN_CDCL1_FINAL ' xorlin_cdcl1_final.log
+          cat xorlin_cdcl1_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin-cdcl1-oneprocess-final-strict-E2E-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/xorlin_cdcl1_paired12/final.json
+            results/xorlin_cdcl1_paired12/shard-*/trials.jsonl
+            xorlin_cdcl1_final.log
