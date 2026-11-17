@@ -45,7 +45,9 @@ def locked():
 def sources():
     prespec=json.loads((HERE/"prespec.json").read_text())
     m=json.loads((DATA/"manifest.json").read_text())
-    assert prespec["protocol"]=="DRNAS-XORLIN-CDCL1-PROSPECTIVE-MIXED12-20261117-V1"
+    assert prespec["protocol"]=="DRNAS-XORLIN-CDCL1-PROSPECTIVE-MIXED12-20261117-V2"
+    assert prespec["preregistration_history"]["no_previous_solver_evaluations"] is True
+    assert prespec["preregistration_history"]["v1_failed_preflight_runs"]==[44070338062,44070631698]
     assert m["status"]=="FROZEN_SOURCE_ONLY_NO_SOLVER_RUN"
     assert m["protocol"]==prespec["protocol"]
     assert m["selected_count"]==len(m["sources"])==prespec["exact_selected_count"]==12
@@ -67,7 +69,7 @@ def sources():
 def prepare():
     cpu1();locked()
     m=sources()
-    policy={"experiment":"DRNAS-XORLIN-CDCL1-PROSPECTIVE-ORIGINAL12-V1",
+    policy={"experiment":"DRNAS-XORLIN-CDCL1-PROSPECTIVE-ORIGINAL12-V2",
        "sources":12,"reps":REPS,"shards":SHARDS,"arms":list(ARMS),
        "expected_trials":12*REPS*len(ARMS),"cap_s":CAP,
        "strict_timeout_penalty_s":2*CAP,
@@ -96,7 +98,7 @@ def restore():
     cpu1();locked()
     m=sources()
     p=json.loads((OUT/"protocol.json").read_text())
-    assert p["experiment"]=="DRNAS-XORLIN-CDCL1-PROSPECTIVE-ORIGINAL12-V1"
+    assert p["experiment"]=="DRNAS-XORLIN-CDCL1-PROSPECTIVE-ORIGINAL12-V2"
     assert p["source_manifest_sha256"]==sha(DATA/"manifest.json")
     assert p["prespec_sha256"]==sha(HERE/"prespec.json")
     assert p["frozen_reference_binaries_sha256"]==frozen.pinned()
