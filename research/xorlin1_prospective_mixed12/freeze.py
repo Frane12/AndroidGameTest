@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Freeze twelve preregistered original GBD SAT-competition XOR, Tseitin, SAT and non-XOR CNFs.
 
-Source selection is permanently committed in prespec.json (commit c104584).
+Source selection v2 is permanently committed in prespec.json (commit 77453e6) after v1 source-only resource abort; no solver outcomes observed.
 NO solver, family recognizer, proof emitter, source performance classifier,
 SAT/UNSAT classification algorithm or candidate-generated output may run in this script.
 
@@ -156,7 +156,7 @@ def size_metadata(choices):
 
 def main():
     prespec=json.loads(PRE.read_text())
-    assert prespec["protocol"]=="DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-20261117-V1"
+    assert prespec["protocol"]=="DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-20261117-V2"
     assert prespec["selection_type"].startswith("metadata-only")
     assert prespec["no_source_substitution_after_outcomes"]
     provenance=check_disjoint(prespec)
