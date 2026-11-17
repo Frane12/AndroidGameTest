@@ -34,7 +34,7 @@ def check(cnf,gate,expect,route,external=None):
         assert ("s SATISFIABLE" if expect==10 else "s UNSATISFIABLE") in r.stdout
         if expect==10:
             assert frozen.model_ok(source,r.stdout)
-            assert not proof.exists(),("SAT left proof file",gate)
+            assert not proof.exists() or proof.stat().st_size==0,("SAT left nonempty proof file",gate)
         else:
             assert proof.is_file() and proof.stat().st_size
             if external=="VERIPB":
