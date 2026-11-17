@@ -1,0 +1,218 @@
+name: DRNAS XOR-LIN1 original source GF2 Gaussian VeriPB strict E2E 10 CNFs
+on:
+  push:
+    branches: [experiment/drnas-xorlin1-gf2-source-veripb-20261117]
+    paths:
+      - research/xorlin1/**
+      - research/XORLIN1_GF2_SOURCE_VERIPB_RESULTS.md
+      - .github/workflows/drnas-xorlin1-original10.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xorlin1-source-gf2-veripb-20261117
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 44049316105
+          name: xor234-prospective-tseitin10-originals-and-binaries
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Restore exact original 10 CNFs, old source manifests and reference/checker binaries
+        run: |
+          set -euo pipefail
+          test -s prior/xor234-prospective-tseitin10-frozen-originals.tgz
+          sha256sum prior/xor234-prospective-tseitin10-frozen-originals.tgz
+          tar -xzf prior/xor234-prospective-tseitin10-frozen-originals.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          veripb-tool/bin/veripb --version
+          test -s unified_evidence_results/protocol.json
+          test -s research/xor234_prospective_tseitin10/inputs/manifest.json
+          python3 - <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          binaries=frozen.pinned()
+          m=json.loads(Path("research/xor234_prospective_tseitin10/inputs/manifest.json").read_text())
+          assert m["selected_count"]==len(m["sources"])==10
+          assert m["status"]=="FROZEN_SOURCE_ONLY_NO_SOLVER_RUN"
+          for source in m["sources"]:
+              assert frozen.sha(Path(source["path"]))==source["sha256"]
+          expected={
+            5:"c6e93b07d65c7e344164cee4b55785f415e904aff804d62aec359495145fa41c",
+            7:"082f20570abb6d5a4d87f9b83df1c83c2fa9cf04f3547a5260221e4577445474",
+            9:"38bd3cb7690adb56c1e22c5378a326f86c139c92a99e19a91afe4906c8542643"}
+          for i,h in expected.items():
+              assert next(s["sha256"] for s in m["sources"] if s["id"]==i)==h
+          print("XORLIN1_ORIGINAL_SHA_AND_VERIFIER_AUDIT PASS",flush=True)
+          PY
+      - name: Python syntax, independent XOR source checker, GF2 and adversarial SAT safety test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/xorlin1/extract.py \
+            research/xorlin1/emit_veripb.py \
+            research/xorlin1/selftest.py \
+            research/xorlin1/benchmark.py
+          python3 -u research/xorlin1/selftest.py | tee xorlin1_safety.log
+          grep -q '^XORLIN1_SAFETY_PASS ' xorlin1_safety.log
+      - name: SHA-freeze full 120-trial protocol and all standard/checker executable fingerprints
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin1/benchmark.py prepare | tee xorlin1_prepare.log
+          grep -q '^XORLIN1_PREPARED ' xorlin1_prepare.log
+          python3 - <<'PY'
+          import sys,hashlib,tarfile
+          from pathlib import Path
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          required=set(frozen.REQUIRED_BIN)
+          required.update({
+             "unified_evidence_results/protocol.json",
+             "unified_realblind100_inputs/manifest.json",
+             "research/graph_unseen25/inputs/manifest.json",
+             "research/graph_family_disjoint25/inputs/manifest.json",
+             "research/xor3_prospective_gbd10/inputs/manifest.json",
+             "research/xor234_prospective_tseitin10/inputs",
+             "results/xorlin1_original10/protocol.json"})
+          tar=Path("xorlin1-original10-pinned-reference.tgz")
+          with tarfile.open(tar,"w:gz") as archive:
+              for name in sorted(required):
+                  assert Path(name).exists(),("MISSING_SOURCE_OR_BINARY",name)
+                  archive.add(name,arcname=name,recursive=True)
+          with tarfile.open(tar,"r:gz") as archive:
+              names=set(archive.getnames())
+          assert not (required-names),("ARCHIVE_INCOMPLETE",sorted(required-names))
+          print("XORLIN1_PREPARED_ARCHIVE "+
+              str({"sources":10,"reference_files":len(required),
+                   "sha256":hashlib.sha256(tar.read_bytes()).hexdigest()}),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xorlin1-original10-frozen-sources-binaries-and-protocol
+          retention-days: 60
+          if-no-files-found: error
+          path: xorlin1-original10-pinned-reference.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin1-original10-source-safety-preflight-audit
+          retention-days: 60
+          path: |
+            xorlin1_safety.log
+            xorlin1_prepare.log
+            results/xorlin1_original10/protocol.json
+  paired:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xorlin1-original10-frozen-sources-binaries-and-protocol
+      - name: Restore exact original sources, unchanged baseline solver binaries and standard proof checkers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf xorlin1-original10-pinned-reference.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: Six serial source-paired 8-second full E2E original CNF 1-logical-CPU proof-verified trials
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin1/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee xorlin1_shard.log
+          grep -q '^XORLIN1_SHARD ' xorlin1_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin1-original10-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/xorlin1_original10/shard-${{ matrix.shard }}/trials.jsonl
+            results/xorlin1_original10/accepted_proofs/
+            xorlin1_shard.log
+  aggregate:
+    needs: [prepare,paired]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xorlin1-original10-frozen-sources-binaries-and-protocol
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xorlin1-original10-shard-*
+          path: collected
+      - name: Restore unchanged sources and aggregate all five SHA-frozen paired trial matrices
+        run: |
+          set -euo pipefail
+          tar -xzf xorlin1-original10-pinned-reference.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(5):
+              folder=Path("collected")/f"xorlin1-original10-shard-{i}"
+              found=list(folder.glob("**/trials.jsonl"))
+              assert len(found)==1,("SHARD_MISSING_OR_DUPLICATED",i,found)
+              dest=Path("results/xorlin1_original10")/f"shard-{i}"
+              dest.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(found[0],dest/"trials.jsonl")
+          PY
+      - name: Independently audit exact 120-trial standard VeriPB/DRAT/FRAT acceptance and strict PAR2
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin1/benchmark.py report | tee xorlin1_final.log
+          grep -q '^XORLIN1_FINAL ' xorlin1_final.log
+          cat xorlin1_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin1-original10-final-strict-E2E-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/xorlin1_original10/final.json
+            results/xorlin1_original10/shard-*/trials.jsonl
+            xorlin1_final.log
