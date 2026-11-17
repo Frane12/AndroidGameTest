@@ -43,7 +43,9 @@ def onecpu():
 def originals():
     pre=json.loads((HERE/"prespec.json").read_text())
     m=json.loads((DATA/"manifest.json").read_text())
-    assert pre["protocol"]=="DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-20261117-V1"
+    assert pre["protocol"]=="DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-20261117-V2"
+    assert pre.get("no_solver_outcomes_available_before_revision") is True
+    assert pre.get("prior_resource_only_failed_run")==44059383179
     assert m["protocol"]==pre["protocol"]
     assert m["status"]=="FROZEN_SOURCE_ONLY_NO_SOLVER_RUN"
     assert m["selected_count"]==len(m["sources"])==12
@@ -88,7 +90,7 @@ def prepare():
        ROOT/"research/math5/check_math5.py",
        ROOT/"research/math5/xor3_tseitin_id6.py",
        BASELINE_EMITTER)
-    p={"protocol":"DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-E2E-V1",
+    p={"protocol":"DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-E2E-V2",
        "source_count":12,"arms":list(ARMS),"repetitions":REPS,
        "shards":SHARDS,"expected_trials":12*REPS*len(ARMS),
        "cap_s":CAP,"unverified_PAR2_penalty_s":2*CAP,
@@ -116,7 +118,7 @@ def restore():
     onecpu()
     src=originals()
     p=json.loads((OUT/"protocol.json").read_text())
-    assert p["protocol"]=="DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-E2E-V1"
+    assert p["protocol"]=="DRNAS-XORLIN1-PROSPECTIVE-MIXED12-STRICT-E2E-V2"
     assert p["source_manifest_sha256"]==sha(DATA/"manifest.json")
     assert p["prespec_sha256"]==sha(HERE/"prespec.json")
     assert p["certified_reference_code_sha256"]==FROZEN_CERTIFIED_CODE
