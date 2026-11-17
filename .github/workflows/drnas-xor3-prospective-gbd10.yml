@@ -1,0 +1,233 @@
+name: DRNAS XOR3 prospective original GBD10 strict standard VeriPB PAR2
+on:
+  push:
+    branches: [experiment/drnas-xor3-prospective-gbd10-20261117]
+    paths:
+      - research/xor3_prospective_gbd10/**
+      - research/XOR3_PROSPECTIVE_GBD10_PROTOCOL.md
+      - .github/workflows/drnas-xor3-prospective-gbd10.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xor3-prospective-gbd10-20261117
+  cancel-in-progress: true
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download unchanged original 87-source historical manifests and reference binaries
+        uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 43913499707
+          name: graph-disjoint25-original-sources-and-reference-binaries
+          github-token: ${{ github.token }}
+          path: prior
+      - name: Restore original 87-source manifests, reference solver binaries and standard proof checkers
+        run: |
+          set -euo pipefail
+          test -s prior/graph-disjoint25-all-original-sources-frozen.tgz
+          sha256sum prior/graph-disjoint25-all-original-sources-frozen.tgz
+          tar -xzf prior/graph-disjoint25-all-original-sources-frozen.tgz
+          test -s unified_realblind100_inputs/manifest.json
+          test -s research/graph_unseen25/inputs/manifest.json
+          test -s research/graph_family_disjoint25/inputs/manifest.json
+          test -s unified_evidence_results/protocol.json
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+          veripb-tool/bin/veripb --version
+      - name: Confirm exact preregistered 10 GBD hashes, two isohashes each and six-arm protocol
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/xor3_prospective_gbd10/freeze.py \
+            research/xor3_prospective_gbd10/benchmark.py \
+            research/math5/xor3_tseitin_id6.py \
+            research/math5/emit_veripb_xor3_carry.py \
+            research/math5/xor3_carry_selftest.py
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          p=pathlib.Path("research/xor3_prospective_gbd10/prespec.json")
+          pre=json.loads(p.read_text())
+          cases=pre["instances"]
+          assert pre["no_solver_until_all_original_SHA256_frozen"]
+          assert pre["no_post_outcome_instance_substitution"]
+          assert len(cases)==10 and {i["id"] for i in cases}==set(range(10))
+          assert len({s["gbd_hash"] for s in cases})==10
+          assert len({s["isohash"] for s in cases})==10
+          assert len({s["isohash2"] for s in cases})==10
+          assert set(pre["source_tracks"])=={"main_2023","main_2024","main_2025"}
+          assert len(pre["arms"])==6 and pre["expected_attempts"]==120
+          print("XOR3_HOLDOUT_PRESPEC_SOURCE_ONLY_SHA256",
+                hashlib.sha256(p.read_bytes()).hexdigest(),flush=True)
+          PY
+      - name: Independent adversarial safety check of unchanged MATH5 XOR3 standard emitter
+        run: |
+          set -euo pipefail
+          python3 -u research/math5/xor3_carry_selftest.py | tee xor3_holdout_safety.log
+          grep -q '^MATH5_XOR3_VERIPB_SAFETY_PASS ' xor3_holdout_safety.log
+      - name: Pre-solver SOURCE-ONLY GBD download, SHA256 freeze and 87-old exact/isohash disjointness
+        run: |
+          set -euo pipefail
+          python3 -u research/xor3_prospective_gbd10/freeze.py | tee xor3_holdout_freeze.log
+          grep -q '^XOR3_PROSPECTIVE_SOURCE_FREEZE_COMPLETE ' xor3_holdout_freeze.log
+      - name: Freeze full standard checker and reference binary SHA256 protocol BEFORE any new solver trial
+        run: |
+          set -euo pipefail
+          python3 -u research/xor3_prospective_gbd10/benchmark.py prepare | tee xor3_holdout_prepare.log
+          grep -q '^XOR3_HOLDOUT_PREPARED ' xor3_holdout_prepare.log
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,sys,tarfile,json
+          sys.path.insert(0,"research/unified_evidence")
+          import benchmark as frozen
+          needed=set(frozen.REQUIRED_BIN)
+          needed.update({
+            "unified_evidence_results/protocol.json",
+            "unified_realblind100_inputs/manifest.json",
+            "research/graph_unseen25/inputs/manifest.json",
+            "research/graph_family_disjoint25/inputs/manifest.json",
+            "research/xor3_prospective_gbd10/inputs",
+            "results/xor3_prospective_gbd10/protocol.json"})
+          tar=Path("xor3-prospective-gbd10-frozen-originals.tgz")
+          with tarfile.open(tar,"w:gz") as archive:
+              for name in sorted(needed):
+                  assert Path(name).exists(),("MISSING_FROZEN_REFERENCE",name)
+                  archive.add(name,arcname=name,recursive=True)
+          with tarfile.open(tar,"r:gz") as archive:
+              members=set(archive.getnames())
+          absent=sorted(needed-members)
+          assert not absent,("INCOMPLETE_ARCHIVE",absent)
+          folder=Path("research/xor3_prospective_gbd10/inputs")
+          assert len(list(folder.glob("[0-9][0-9]-*.cnf")))==10
+          print("XOR3_HOLDOUT_FROZEN_ARCHIVE_AUDIT",{
+            "old_binary_paths":len(frozen.REQUIRED_BIN),
+            "missing":absent,"new_originals":10,
+            "archive_sha256":hashlib.sha256(tar.read_bytes()).hexdigest()},flush=True)
+          PY
+          sha256sum xor3-prospective-gbd10-frozen-originals.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xor3-prospective-gbd10-originals-and-binaries
+          retention-days: 60
+          if-no-files-found: error
+          path: xor3-prospective-gbd10-frozen-originals.tgz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xor3-prospective-source-only-freeze-audit
+          retention-days: 60
+          path: |
+            xor3_holdout_safety.log
+            xor3_holdout_freeze.log
+            xor3_holdout_prepare.log
+            research/xor3_prospective_gbd10/inputs/manifest.json
+            results/xor3_prospective_gbd10/protocol.json
+  paired:
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0,1,2,3,4]
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xor3-prospective-gbd10-originals-and-binaries
+      - name: Restore source-exact CNFs, frozen native solvers, and independently pinned VeriPB/DRAT/FRAT
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libcryptominisat5-5.11t64 libboost-program-options1.83.0
+          tar -xzf xor3-prospective-gbd10-frozen-originals.tgz
+          chmod +x build/drnas-sat-native-x59 build/drnas-x59-xor-math5-unified1 \
+            build/drnas-unified-core1 build/drnas-pcmax-base \
+            build/drnas-pcmax-mg7-ipg1-bdd3 \
+            build/kissat build/cadical build/cms build/drat-trim build/frat-rs \
+            veripb-tool/bin/veripb
+      - name: Source SHA checked 6-arm serial paired strict 8s E2E solver and external proof audit
+        run: |
+          set -euo pipefail
+          python3 -u research/xor3_prospective_gbd10/benchmark.py shard --index ${{ matrix.shard }} \
+            | tee xor3_holdout_shard.log
+          grep -q '^XOR3_HOLDOUT_SHARD ' xor3_holdout_shard.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xor3-prospective-shard-${{ matrix.shard }}
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/xor3_prospective_gbd10/shard-${{ matrix.shard }}/trials.jsonl
+            results/xor3_prospective_gbd10/verified_proofs/
+            xor3_holdout_shard.log
+  aggregate:
+    needs: [freeze,paired]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xor3-prospective-gbd10-originals-and-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xor3-prospective-shard-*
+          path: collected
+      - name: Restore frozen identity audit and copy all five complete paired shard trial logs
+        run: |
+          set -euo pipefail
+          tar -xzf xor3-prospective-gbd10-frozen-originals.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for i in range(5):
+              folder=Path("collected")/f"xor3-prospective-shard-{i}"
+              trials=list(folder.glob("**/trials.jsonl"))
+              assert len(trials)==1,("MISSING_OR_DUPLICATE_SHARD_TRIALS",i,trials)
+              dest=Path("results/xor3_prospective_gbd10")/f"shard-{i}"
+              dest.mkdir(parents=True,exist_ok=False)
+              shutil.copy2(trials[0],dest/"trials.jsonl")
+          PY
+      - name: Complete 120-trial independent proof acceptance, source-SHA, reference and family audit
+        run: |
+          set -euo pipefail
+          python3 -u research/xor3_prospective_gbd10/benchmark.py report | tee xor3_holdout_final.log
+          grep -q '^XOR3_HOLDOUT_FINAL ' xor3_holdout_final.log
+          cat xor3_holdout_final.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xor3-prospective-gbd10-final-strict-E2E-PAR2
+          retention-days: 60
+          if-no-files-found: warn
+          path: |
+            results/xor3_prospective_gbd10/final.json
+            results/xor3_prospective_gbd10/shard-*/trials.jsonl
+            xor3_holdout_final.log
