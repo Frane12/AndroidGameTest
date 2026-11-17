@@ -1,0 +1,127 @@
+name: DRNAS XORLIN-CDCL1 original120 audit-only VeriPB DRAT JSON repair
+on:
+  push:
+    branches: [experiment/drnas-xorlin-cdcl1-auditfix-20261117]
+    paths:
+      - research/xorlin_cdcl1_auditfix/**
+      - research/xorlin_cdcl1/benchmark.py
+      - .github/workflows/drnas-xorlin-cdcl1-auditfix.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: drnas-xorlin-cdcl1-original120-audit-only-20261117
+  cancel-in-progress: true
+jobs:
+  reaggregate_existing_artifacts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DRNAS_ORIGINAL_ARTIFACT_REPLAY: "1"
+      DRNAS_SOURCE_RUN_ID: "44065020804"
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download ONLY the original frozen 12 sources, binary, source and verifier hashes
+        uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 44065020804
+          name: xorlin-cdcl1-oneprocess-original12-and-native-executable
+          github-token: ${{ github.token }}
+      - name: Download ALL FOUR original, unchanged paired 120-trial shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          repository: Frane12/AndroidGameTest
+          run-id: 44065020804
+          pattern: xorlin-cdcl1-shard-*
+          github-token: ${{ github.token }}
+          path: collected
+      - name: Restore identical original frozen source CNFs, one-process compiled binary and independent verifier executables
+        run: |
+          set -euo pipefail
+          test -s xorlin-cdcl1-frozen12-binaries.tgz
+          sha256sum xorlin-cdcl1-frozen12-binaries.tgz
+          tar -xzf xorlin-cdcl1-frozen12-binaries.tgz
+          chmod +x build/drnas-xorlin-cdcl1 \
+                   build/drat-trim veripb-tool/bin/veripb
+          python3 -m py_compile \
+            research/xorlin_cdcl1/benchmark.py \
+            research/xorlin_cdcl1_auditfix/replay.py
+          python3 - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          p=json.loads(Path("results/xorlin_cdcl1_paired12/protocol.json").read_text())
+          assert p["workflow_commit_sha256"]=="3ec2df9ee56e434aba9ee72b957fdbf3c69f2571"
+          assert p["source_manifest_sha256"]=="83c4607b66de977d3f1acfe62e348e1b652628efaf6e251e2e897d809addb296"
+          for i in range(4):
+              matches=list((Path("collected")/f"xorlin-cdcl1-shard-{i}").glob("**/trials.jsonl"))
+              assert len(matches)==1,("MISSING_OR_DUPLICATED_ORIGINAL_SHARD",i,matches)
+          print("XORLIN_CDCL1_AUDIT_ORIGINAL_IMMUTABLE_4_SHARDS_PASS",flush=True)
+          PY
+      - name: NO SOLVER RUN — independently reverify all original VeriPB/DRAT UNSAT proofs and copy SHA-pinned unchanged trials
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1_auditfix/replay.py \
+            | tee xorlin_cdcl1_original_proof_recheck.log
+          grep -q '^XORLIN_CDCL1_ORIGINAL_PROOF_REPLAY_AUDIT ' \
+            xorlin_cdcl1_original_proof_recheck.log
+      - name: Repair JSON null-route key serialization and aggregate ORIGINAL 120 paired records (no new solver runs)
+        run: |
+          set -euo pipefail
+          python3 -u research/xorlin_cdcl1/benchmark.py aggregate \
+            | tee xorlin_cdcl1_original120_audit_repair.log
+          grep -q '^XORLIN_CDCL1_FINAL ' \
+            xorlin_cdcl1_original120_audit_repair.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("results/xorlin_cdcl1_paired12/final.json")
+          f=json.loads(p.read_text())
+          a=json.loads(Path("results/xorlin_cdcl1_audit_repair/proof_recheck.json").read_text())
+          assert f["status"]=="COMPLETE" and f["critical_count"]==0
+          assert f["attempts"]==120 and f["sources"]==12
+          assert f["audit_replay_only"] is True
+          assert f["original_trial_run_id"]==44065020804
+          assert f["original_experiment_commit"]=="3ec2df9ee56e434aba9ee72b957fdbf3c69f2571"
+          assert f["original_shard_trial_log_sha256"]==a["original_shard_trial_log_sha256"]
+          assert a["original_solver_runs_reexecuted"]==0
+          assert a["reverified_standard_proofs"]==10
+          assert a["reverified_standard_proof_kinds"]=={"VERIPB":8,"DRAT":2}
+          assert f["ON_solved_to_unsolved_regressions"]==[]
+          expected={
+            "HYBRID_ON":(8,257.310335),
+            "HYBRID_OFF":(2,352.30828),
+            "Kissat":(6,295.23436),
+            "CaDiCaL":(4,326.108972),
+            "CryptoMiniSat":(2,352.293847)}
+          for arm,(strict,par2) in expected.items():
+              assert f["totals"][arm]["strict_verified"]==strict,arm
+              assert abs(f["totals"][arm]["strict_PAR2_s"]-par2)<1e-6,arm
+          print("XORLIN_CDCL1_REPAIRED_ORIGINAL120_AUDIT_PASS",{
+            "critical":f["critical_count"],"attempts":f["attempts"],
+            "unchanged_verified_proofs":a["reverified_standard_proofs"],
+            "original_solver_runs_rerun":0,
+            "ON_PAR2_s":f["totals"]["HYBRID_ON"]["strict_PAR2_s"],
+            "OFF_PAR2_s":f["totals"]["HYBRID_OFF"]["strict_PAR2_s"]},
+            flush=True)
+          PY
+          cat xorlin_cdcl1_original120_audit_repair.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xorlin-cdcl1-original120-externally-reverified-auditfix
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            results/xorlin_cdcl1_paired12/final.json
+            results/xorlin_cdcl1_paired12/shard-*/trials.jsonl
+            results/xorlin_cdcl1_audit_repair/proof_recheck.json
+            xorlin_cdcl1_original_proof_recheck.log
+            xorlin_cdcl1_original120_audit_repair.log
