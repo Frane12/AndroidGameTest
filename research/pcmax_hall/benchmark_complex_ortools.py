@@ -238,7 +238,10 @@ def experiment(name, out, arm, binary, budget):
       "WINDOW_UNSAT_200":("window",200,16,False,8724),
       "WINDOW_UNSAT_400":("window",400,24,False,8725),
       "WINDOW_SAT_400":("window",400,24,True,8726),
-      "WINDOW_UNSAT_800":("window",800,36,False,8727)
+      "WINDOW_UNSAT_800":("window",800,36,False,8727),
+      "WINDOW_SAT_1600":("window",1600,64,True,8731),
+      "WINDOW_UNSAT_1600":("window",1600,64,False,8732),
+      "WINDOW_UNSAT_3200":("window",3200,96,False,8733)
     }
     if name not in presets:raise ValueError("unlisted case")
     args=presets[name]
