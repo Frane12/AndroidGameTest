@@ -1,0 +1,103 @@
+name: DRNAS SCALE9 temporal-profile heuristic paired DRAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-scale9-native-sac-20261124]
+    paths:
+      - research/sac9/sac9.cpp
+      - .github/workflows/drnas-scale9-temporal.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      OMP_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated native SAC9
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -o drnas-sac9 research/sac9/sac9.cpp
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 45345607598
+          name: drnas-scale7-public-ft06-cp-sat-raw-structured
+          github-token: ${{ github.token }}
+          path: frozen
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43625251777
+          name: domain-bench1-prepared
+          github-token: ${{ github.token }}
+          path: tools
+      - name: 5 matched repetitions for both modes on both original deadlines
+        run: |
+          set -euo pipefail
+          mkdir -p results/sac9-temporal
+          tar -xzf tools/domain_bench_ready.tgz build/drat-trim
+          chmod +x build/drat-trim
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,statistics,subprocess,time
+          from pathlib import Path
+          os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          original={
+          54:'99910f35ed2401b2315618aa7ac23605ba876cfea79c3edadd1e468ef1c674ee',
+          55:'ec8a9bbb98f7742cedddf4c7430ce1185da7256427505b1b051bff1cbbb4dc20'}
+          base=Path('results/sac9-temporal');rows=[]
+          for h,sha in original.items():
+            src=Path(f'frozen/results/scale7-public/rep-1/day-{h}/raw/original.cnf')
+            assert hashlib.sha256(src.read_bytes()).hexdigest()==sha
+            for rep in range(5):
+              for priority in ((True,False) if rep%2 else (False,True)):
+                folder=base/f'h{h}'/f'rep{rep}'/('priority' if priority else 'default')
+                folder.mkdir(parents=True,exist_ok=True)
+                proof=folder/'candidate.drat';report=folder/'native.json'
+                cmd=['./drnas-sac9','--cnf',str(src),'--seconds','10','--cap','6000',
+                     '--drat',str(proof),'--report',str(report)]
+                if priority:cmd+=['--temporal-priority']
+                t=time.perf_counter()
+                p=subprocess.run(cmd,capture_output=True,text=True,timeout=15)
+                elapsed=time.perf_counter()-t
+                assert p.returncode==0,p.stderr
+                info=json.loads(report.read_text());verified=False;cs=0
+                if h==54:
+                  assert info['status']=='EMITTED_UNCHECKED' and proof.exists(),info
+                  t=time.perf_counter()
+                  c=subprocess.run(['build/drat-trim',str(src),str(proof),'-U','-t','20'],
+                            capture_output=True,text=True,timeout=30)
+                  cs=time.perf_counter()-t
+                  verified=c.returncode==0 and 's VERIFIED' in c.stdout
+                  (folder/'checker.log').write_text(c.stdout+'\n'+c.stderr)
+                  assert verified,(h,rep,priority,c.stdout[-300:],c.stderr)
+                else:assert info['status']=='UNKNOWN' and not proof.exists(),info
+                row={'deadline':h,'rep':rep,'priority':priority,'producer_s':round(elapsed,6),
+                     'checker_s':round(cs,6),'verified':verified,'proof_bytes':proof.stat().st_size if verified else 0,
+                     'checks':info['checks'],'lemmas':info['lemmas'],
+                     'nested_support_pairs':info['nested_support_pairs']}
+                rows.append(row)
+                print('SAC9_TEMPORAL_TRIAL',json.dumps(row,sort_keys=True),flush=True)
+          (base/'results.json').write_text(json.dumps(rows,indent=2)+'\n')
+          for h in original:
+            for p in (False,True):
+              matching=[r for r in rows if r['deadline']==h and r['priority']==p]
+              print('SAC9_TEMPORAL_MEDIAN',json.dumps({'deadline':h,'priority':p,
+                'producer_median_s':statistics.median(r['producer_s'] for r in matching),
+                'checker_median_s':statistics.median(r['checker_s'] for r in matching),
+                'proof_bytes':matching[0]['proof_bytes'],
+                'lemmas':matching[0]['lemmas']},sort_keys=True))
+          PY
+      - name: Archive proof audits and timing metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-scale9-temporal-priority-paired
+          retention-days: 60
+          path: |
+            results/sac9-temporal/
+            research/sac9/sac9.cpp
