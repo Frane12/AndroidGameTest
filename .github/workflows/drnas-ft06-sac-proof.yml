@@ -1,0 +1,134 @@
+name: DRNAS FT06 source-only SAC verified DRAT regression
+on:
+  push:
+    branches: [experiment/drnas-ft06-raw-sacroof-20261124]
+    paths:
+      - research/ft06_sac/**
+      - .github/workflows/drnas-ft06-sac-proof.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve immutable original external FT06 source CNFs from SCALE7
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45345607598
+          name: drnas-scale7-public-ft06-cp-sat-raw-structured
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Retrieve pinned independent drat-trim binary from earlier benchmark
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43625251777
+          name: domain-bench1-prepared
+          github-token: ${{ github.token }}
+          path: tools
+      - name: Compile original CDCL and unpack independent proof checker
+        run: |
+          set -euo pipefail
+          tar -xzf tools/domain_bench_ready.tgz build/drat-trim
+          chmod +x build/drat-trim
+          cmake -S . -B build-native -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-native --target drnas-pcmax -j2
+          sha256sum build/drat-trim build-native/drnas-pcmax research/ft06_sac/structural_sac.py
+      - name: Audit source hashes, independent RUP proof, SAT control and 24 permutations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/ft06-sac
+          python3 - <<'PY'
+          import hashlib,importlib.util,json,os,pathlib,random,statistics,subprocess,sys,time
+          from pathlib import Path
+          sys.path.insert(0,'research/ft06_sac')
+          from structural_sac import derive,parse
+          try: os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          except (AttributeError,OSError): pass
+          output=Path('results/ft06-sac')
+          sources={
+              54:(Path('frozen/results/scale7-public/rep-1/day-54/raw/original.cnf'),
+                  '99910f35ed2401b2315618aa7ac23605ba876cfea79c3edadd1e468ef1c674ee'),
+              55:(Path('frozen/results/scale7-public/rep-1/day-55/raw/original.cnf'),
+                  'ec8a9bbb98f7742cedddf4c7430ce1185da7256427505b1b051bff1cbbb4dc20')}
+          def permute(raw,seed):
+              rnd=random.Random(seed)
+              nv,clauses=parse(raw);labels=list(range(1,nv+1));rnd.shuffle(labels)
+              converted=[]
+              for clause in clauses:
+                  c=[labels[abs(v)-1]*(1 if v>0 else -1) for v in clause]
+                  rnd.shuffle(c);converted.append(c)
+              rnd.shuffle(converted)
+              return (f'p cnf {nv} {len(converted)}\n'+
+                   ''.join(' '.join(map(str,c))+' 0\n' for c in converted)).encode()
+          rows=[]
+          for horizon,(original,sha) in sources.items():
+              src=original.read_bytes()
+              assert hashlib.sha256(src).hexdigest()==sha
+              for seed in range(13):
+                  data=src if seed==0 else permute(src,772700+seed*53)
+                  folder=output/f'h{horizon}'/f'seed{seed:02d}'
+                  folder.mkdir(parents=True,exist_ok=True)
+                  cnf=folder/'original.cnf';cnf.write_bytes(data)
+                  t=time.perf_counter()
+                  r=derive(data,seconds=10)
+                  produce_s=time.perf_counter()-t
+                  proof_rc=None;check_s=None
+                  if horizon==54:
+                      assert r['status']=='UNSAT',r
+                      proof=folder/'proof.drat'
+                      proof.write_text(''.join(' '.join(map(str,c))+' 0\n' for c in r['proof'])+'0\n')
+                      t=time.perf_counter()
+                      p=subprocess.run(['build/drat-trim',str(cnf),str(proof),'-U','-t','20'],
+                                         capture_output=True,text=True,timeout=30)
+                      check_s=time.perf_counter()-t
+                      (folder/'external_checker.log').write_text(p.stdout+'\n'+p.stderr)
+                      assert p.returncode==0 and 's VERIFIED' in p.stdout,(horizon,seed,p.stdout[-1000:],p.stderr)
+                      proof_rc=p.returncode
+                  else:
+                      assert r['status']=='UNKNOWN',(horizon,seed,r)
+                  row={'horizon':horizon,'seed':seed,'source_sha256':hashlib.sha256(data).hexdigest(),
+                       'status':r['status'],'groups':r['groups'],'cross_links':r['cross_links'],
+                       'checks':r['checks'],'lemmas':len(r['proof']),
+                       'producer_s':round(produce_s,6),'checker_s':round(check_s,6) if check_s is not None else None,
+                       'externally_verified':proof_rc==0}
+                  print('FT06_SAC_TRIAL',json.dumps(row,sort_keys=True),flush=True)
+                  (folder/'summary.json').write_text(json.dumps(row,indent=2)+'\n')
+                  rows.append(row)
+          # Compare original CNFs with frozen native CDCL on same runner and CPU.
+          for horizon,(cnf,_) in sources.items():
+              for rep in range(3):
+                  t=time.perf_counter()
+                  p=subprocess.run(['build-native/drnas-pcmax',str(cnf),'--mode','core','--time','8'],
+                        capture_output=True,text=True,timeout=12)
+                  wall=time.perf_counter()-t
+                  expected=20 if horizon==54 else 10
+                  assert p.returncode==expected,(horizon,p.returncode,p.stdout[-1000:])
+                  rows.append({'horizon':horizon,'method':'native_cdcl_control','rep':rep,
+                               'status':'UNSAT' if expected==20 else 'SAT',
+                               'e2e_s':round(wall,6)})
+          (output/'all_results.json').write_text(json.dumps(rows,indent=2)+'\n')
+          print('FT06_SAC_TOTAL',json.dumps({'trials':26,'verified_unsat':13,
+             'sat_controls_without_false_unsat':13,'native_cdcl_controls':6}))
+          PY
+      - name: Archive unchanged original CNFs, standard DRAT proofs, logs, counters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-ft06-raw-cnf-sac-rup-drat-verified
+          retention-days: 60
+          compression-level: 6
+          path: |
+            research/ft06_sac/
+            results/ft06-sac/
