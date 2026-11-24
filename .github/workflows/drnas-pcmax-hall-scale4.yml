@@ -1,0 +1,48 @@
+name: DRNAS PCMAX SCALE4 native Hall source-certified regression
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale4-native-hall-20261124]
+    paths:
+      - src/drnas_x5.cpp
+      - src/pcmax_hall.hpp
+      - research/pcmax_hall/**
+      - .github/workflows/drnas-pcmax-hall-scale4.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  hall_native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build opt-in PCMAX and unchanged baseline CDCL
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          sha256sum build/drnas-pcmax src/pcmax_hall.hpp src/drnas_x5.cpp
+      - name: New Hall source-bound SAT/UNSAT/negative tests
+        run: |
+          set -euo pipefail
+          python3 -B research/pcmax_hall/smoke_test.py --binary build/drnas-pcmax
+      - name: Existing PCMAX safety regressions
+        run: |
+          set -euo pipefail
+          python3 -B research/pcmax_capacity/integration_tests.py --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base --report hall-integration.json
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-hall-scale4-native-regression
+          retention-days: 45
+          path: |
+            hall-integration.json
+            src/pcmax_hall.hpp
+            research/pcmax_hall/
