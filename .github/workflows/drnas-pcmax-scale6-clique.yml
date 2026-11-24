@@ -1,0 +1,104 @@
+name: DRNAS PCMAX SCALE6 certified clique-cover temporal CNF
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale6-clique-20261124]
+    paths:
+      - src/pcmax_clique.hpp
+      - src/drnas_x5.cpp
+      - research/pcmax_clique/**
+      - .github/workflows/drnas-pcmax-scale6-clique.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native_regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build native optional module and baseline
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/pcmax_clique/verify_clique.py research/pcmax_clique/benchmark_scale6.py
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          sha256sum build/drnas-pcmax src/pcmax_clique.hpp research/pcmax_clique/verify_clique.py
+      - name: Frozen SCALE5 original temporal UNSAT 80
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45340541476
+          name: scale5-WINDOW_UNSAT_80
+          github-token: ${{ github.token }}
+          path: frozen/unsat80
+      - name: Frozen SCALE5 original temporal UNSAT 800
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45340541476
+          name: scale5-WINDOW_UNSAT_800
+          github-token: ${{ github.token }}
+          path: frozen/unsat800
+      - name: Frozen SCALE5 original temporal SAT control 400
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45340541476
+          name: scale5-WINDOW_SAT_400
+          github-token: ${{ github.token }}
+          path: frozen/sat400
+      - name: Frozen SCALE5 original temporal UNSAT 3200
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45341133018
+          name: scale5-large-WINDOW_UNSAT_3200
+          github-token: ${{ github.token }}
+          path: frozen/unsat3200
+      - name: Audit source hashes, rerun with separate checker and metamorphic variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/scale6
+          cat > results/scale6/frozen_manifest.json <<'JSON'
+          [
+            {"tag":"WINDOW_UNSAT_80","label":"UNSAT",
+             "path":"frozen/unsat80/results/complex5/WINDOW_UNSAT_80.cnf",
+             "sha256":"77df18e836b186b3e1d039cd70f4b178d59c7518af25a9c6f35e533a2398518c",
+             "metamorphic":true},
+            {"tag":"WINDOW_UNSAT_800","label":"UNSAT",
+             "path":"frozen/unsat800/results/complex5/WINDOW_UNSAT_800.cnf",
+             "sha256":"dd214c8af4b524be857b4f1b5989a888c7913ff7a0196c5dd6e6937a20a47ae4"},
+            {"tag":"WINDOW_SAT_400","label":"SAT",
+             "path":"frozen/sat400/results/complex5/WINDOW_SAT_400.cnf",
+             "sha256":"40b8df8eb0f0cac3825495d11bd3e17d2a49f21cf3bc7e13c347dbd6e30b6391",
+             "metamorphic":true},
+            {"tag":"WINDOW_UNSAT_3200","label":"UNSAT",
+             "path":"frozen/unsat3200/results/large/rep-1/WINDOW_UNSAT_3200.cnf",
+             "sha256":"671b3e2af87f613019ceb14e380d4985a1131f6eb4231b4f7594d11c50eb9dcd"}
+          ]
+          JSON
+          python3 -u research/pcmax_clique/benchmark_scale6.py \
+            --binary build/drnas-pcmax --manifest results/scale6/frozen_manifest.json \
+            --output results/scale6 | tee results/scale6/replay.log
+      - name: Legacy PCMAX integration regression
+        run: |
+          set -euo pipefail
+          python3 -B research/pcmax_capacity/integration_tests.py \
+            --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base \
+            --report results/scale6/legacy-integration.json
+      - name: Save exact CNFs, certs, checker source, logs and build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-pcmax-scale6-clique-source-verified
+          retention-days: 60
+          compression-level: 6
+          path: |
+            src/pcmax_clique.hpp
+            research/pcmax_clique/
+            results/scale6/
