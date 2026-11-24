@@ -1,0 +1,121 @@
+name: DRNAS SCALE9 native SAC versus Python + independent DRAT
+on:
+  push:
+    branches: [experiment/drnas-scale9-native-sac-20261124]
+    paths:
+      - research/sac9/**
+      - .github/workflows/drnas-scale9-native.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile opt-in native SAC
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -o drnas-sac9 research/sac9/sac9.cpp
+          sha256sum drnas-sac9 research/sac9/sac9.cpp
+      - name: Fetch exact source-frozen external FT06 test data
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45345607598
+          name: drnas-scale7-public-ft06-cp-sat-raw-structured
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Fetch independently built DRAT checker
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43625251777
+          name: domain-bench1-prepared
+          github-token: ${{ github.token }}
+          path: checker-artifact
+      - name: Test native C++ cached and uncached, compare Python, require external DRAT
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/scale9
+          tar -xzf checker-artifact/domain_bench_ready.tgz build/drat-trim
+          chmod +x build/drat-trim
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,statistics,subprocess,time
+          try:os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          except (AttributeError,OSError):pass
+          src={
+            54:('99910f35ed2401b2315618aa7ac23605ba876cfea79c3edadd1e468ef1c674ee'),
+            55:('ec8a9bbb98f7742cedddf4c7430ce1185da7256427505b1b051bff1cbbb4dc20')}
+          base=pathlib.Path('results/scale9')
+          rows=[]
+          for h,sha in src.items():
+              cnf=pathlib.Path(f'frozen/results/scale7-public/rep-1/day-{h}/raw/original.cnf')
+              assert hashlib.sha256(cnf.read_bytes()).hexdigest()==sha
+              for cache in (True,False):
+                for rep in range(3):
+                  folder=base/f'h{h}'/('cached' if cache else 'uncached')/f'rep{rep}'
+                  folder.mkdir(parents=True,exist_ok=True)
+                  proof=folder/'proof.drat';report=folder/'summary.json'
+                  cmd=['./drnas-sac9','--cnf',str(cnf),'--drat',str(proof),
+                       '--report',str(report),'--seconds','10','--cap','6000']
+                  if not cache:cmd.append('--no-cache')
+                  t=time.perf_counter()
+                  r=subprocess.run(cmd,capture_output=True,text=True,timeout=20)
+                  wall=time.perf_counter()-t
+                  assert r.returncode==0,(r.stdout,r.stderr)
+                  info=json.loads(report.read_text())
+                  accepted=False;check_wall=None
+                  if h==54:
+                    assert info['status']=='EMITTED_UNCHECKED' and proof.is_file(),info
+                    st=time.perf_counter()
+                    ck=subprocess.run(['build/drat-trim',str(cnf),str(proof),'-U','-t','20'],
+                       capture_output=True,text=True,timeout=30)
+                    check_wall=time.perf_counter()-st
+                    (folder/'checker.log').write_text(ck.stdout+'\n'+ck.stderr)
+                    assert ck.returncode==0 and 's VERIFIED' in ck.stdout,(ck.stdout[-1000:],ck.stderr)
+                    accepted=True
+                  else:
+                    assert info['status']=='UNKNOWN' and not proof.exists(),info
+                  row={'case':h,'cache':cache,'rep':rep,'native_wall_s':round(wall,6),
+                    'external_checker_s':round(check_wall,6) if check_wall else None,
+                    'accepted':accepted,**info}
+                  rows.append(row);print('SAC9_TRIAL',json.dumps(row,sort_keys=True),flush=True)
+              # Python baseline: same exact bytes, same allowed one CPU.
+              folder=base/f'h{h}'/'python';folder.mkdir(parents=True,exist_ok=True)
+              for rep in range(3):
+                t=time.perf_counter()
+                r=subprocess.run(['python3','research/ft06_sac/structural_sac.py',str(cnf),
+                    '--seconds','10'],capture_output=True,text=True,timeout=20)
+                wall=time.perf_counter()-t
+                assert r.returncode==0,r.stderr
+                info=json.loads(r.stdout.split('SAC_RESULT ',1)[1])
+                assert info['status']==('UNSAT' if h==54 else 'UNKNOWN')
+                rows.append({'case':h,'mode':'python','rep':rep,
+                    'native_wall_s':round(wall,6),'accepted':False,**info})
+          (base/'all_results.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          for h in src:
+            for cache in (True,False):
+              rr=[x['native_wall_s'] for x in rows if x.get('case')==h and x.get('cache')==cache]
+              print('SAC9_MEDIAN',h,'cached' if cache else 'uncached',
+                   round(statistics.median(rr),6),'s')
+          PY
+      - name: Archive reproducible native sources and independently accepted DRAT proofs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-scale9-native-sac-verified
+          retention-days: 60
+          compression-level: 6
+          path: |
+            research/sac9/
+            drnas-sac9
+            results/scale9/
