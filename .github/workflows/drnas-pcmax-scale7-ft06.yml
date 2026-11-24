@@ -1,0 +1,92 @@
+name: DRNAS SCALE7 public JSPLIB FT06 fair CP-SAT benchmark
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale7-veripb-mixed-20261124]
+    paths:
+      - research/pcmax_clique/benchmark_public_ft06.py
+      - .github/workflows/drnas-pcmax-scale7-ft06.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ft06:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin CP-SAT version and build opt-in DRNAS
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'ortools==9.14.6206'
+          python3 -c 'import ortools; print(ortools.__version__)'
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum research/pcmax_clique/benchmark_public_ft06.py build/drnas-pcmax
+      - name: Fetch source FT06 benchmark from public JSPLIB and verify Git blob SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public-dataset
+          curl --fail --location --retry 3 --silent --show-error \
+            https://raw.githubusercontent.com/tamy0612/JSPLIB/master/instances/ft06 \
+            --output public-dataset/ft06
+          python3 - <<'PY'
+          import pathlib,hashlib
+          raw=pathlib.Path('public-dataset/ft06').read_bytes()
+          sha=hashlib.sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest()
+          assert sha=='24430d17a2d6d6021c7c147419e123536098051f',sha
+          print('FT06_PUBLIC_SOURCE_PINNED',sha)
+          PY
+      - name: 3 repetitions, 2 exact deadlines, 4 solver methods (1 CPU)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/scale7-public
+          for rep in 1 2 3; do
+            for deadline in 54 55; do
+              for arm in native-clique native-cdcl raw structured; do
+                mkdir -p "results/scale7-public/rep-$rep/day-$deadline/$arm"
+                python3 -u research/pcmax_clique/benchmark_public_ft06.py \
+                  --source public-dataset/ft06 \
+                  --out "results/scale7-public/rep-$rep/day-$deadline/$arm" \
+                  --arm "$arm" --deadline "$deadline" --budget 8 \
+                  --binary build/drnas-pcmax
+              done
+            done
+          done
+          python3 - <<'PY'
+          import pathlib,json,statistics
+          rows=[json.loads(p.read_text()) for p in pathlib.Path('results/scale7-public').rglob('result.json')]
+          assert len(rows)==24,len(rows)
+          summary={}
+          for deadline in (54,55):
+            for arm in ('native-clique','native-cdcl','raw','structured'):
+              group=[r for r in rows if r['deadline']==deadline and r['arm']==arm]
+              summary[f'{deadline}/{arm}']={
+                'statuses':[r['status'] for r in group],
+                'median_e2e_s':statistics.median(r['e2e_s'] for r in group),
+                'cnf_vars':group[0]['cnf_vars'],'cnf_clauses':group[0]['cnf_clauses'],
+                'cnf_sha256':group[0]['cnf_sha256']}
+              if arm in ('raw','structured'):
+                assert all(r['status'] in (('INFEASIBLE',) if deadline==54 else ('OPTIMAL','FEASIBLE')) for r in group)
+          print('FT06_FINAL',json.dumps(summary,sort_keys=True))
+          pathlib.Path('results/scale7-public/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Preserve original source, equivalent CNFs, timings and solver logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-scale7-public-ft06-cp-sat-raw-structured
+          retention-days: 60
+          compression-level: 6
+          path: |
+            public-dataset/ft06
+            results/scale7-public/
+            research/pcmax_clique/benchmark_public_ft06.py
