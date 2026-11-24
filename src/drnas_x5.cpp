@@ -32,6 +32,7 @@
 #include <unistd.h>
 #include "pcmax_capacity.hpp"
 #include "pcmax_hall.hpp"
+#include "pcmax_clique.hpp"
 #endif
 
 namespace {
@@ -1403,6 +1404,8 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
     bool pcmax_enabled=false, pcmax_only=false;
     bool hall_enabled=false, hall_only=false;
+    bool clique_enabled=false, clique_only=false;
+    double clique_budget_ms=1000.0;
     double hall_budget_ms=500.0;
     double pcmax_budget_ms=250.0;
     std::string pcmax_certificate;
@@ -1416,6 +1419,13 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
         else if (opt=="--pcmax-hall") hall_enabled=true;
+        else if (opt=="--pcmax-clique") clique_enabled=true;
+        else if (opt=="--pcmax-clique-only") {clique_enabled=true;clique_only=true;}
+        else if (opt=="--pcmax-clique-budget-ms" && i+1<argc) {
+            const std::string value=argv[++i];
+            size_t consumed=0;clique_budget_ms=std::stod(value,&consumed);
+            if(consumed!=value.size())throw std::runtime_error("invalid --pcmax-clique-budget-ms");
+        }
         else if (opt=="--pcmax-hall-only") { hall_enabled=true; hall_only=true; }
         else if (opt=="--pcmax-hall-budget-ms" && i+1<argc) {
             const std::string value=argv[++i];
@@ -1448,7 +1458,7 @@ int run(int argc, char** argv) {
         else if (opt=="--help") {
             std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts]\n";
 #ifdef DRNAS_PCMAX_MODULE
-            std::cout<<"PCMAX options (off by default): --pcmax-capacity | --pcmax-hall | --pcmax-hall-only [--pcmax-hall-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
+            std::cout<<"PCMAX options (off by default): --pcmax-capacity | --pcmax-hall | --pcmax-hall-only [--pcmax-hall-budget-ms N] [--pcmax-clique|--pcmax-clique-only] [--pcmax-clique-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
 #endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
@@ -1462,15 +1472,20 @@ int run(int argc, char** argv) {
         throw std::runtime_error("invalid --pcmax-budget-ms");
     if(!std::isfinite(hall_budget_ms)||hall_budget_ms<0||hall_budget_ms>86400000.0)
         throw std::runtime_error("invalid --pcmax-hall-budget-ms");
+    if (!std::isfinite(clique_budget_ms)||clique_budget_ms<0||clique_budget_ms>86400000.0)
+        throw std::runtime_error("invalid --pcmax-clique-budget-ms");
+    if (clique_only && (hall_only || pcmax_only))
+        throw std::runtime_error("--pcmax-clique-only conflicts with other only modes");
+    if (clique_only && !proof_path.empty())throw std::runtime_error("--pcmax-clique-only cannot combine with --proof");
     if (hall_only && !proof_path.empty())throw std::runtime_error("--pcmax-hall-only cannot be combined with --proof");
     if (pcmax_only && !proof_path.empty())
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
-    const bool pcmax_active=(pcmax_enabled || hall_enabled) && proof_path.empty();
+    const bool pcmax_active=(pcmax_enabled || hall_enabled || clique_enabled) && proof_path.empty();
     bool pcmax_capture=pcmax_active;
     size_t pcmax_literals=0;
     std::vector<std::vector<int>> pcmax_original;
     std::optional<PcmaxDigest> pcmax_digest;
-    std::string pcmax_skip_reason=(pcmax_enabled || hall_enabled) && !pcmax_active ? "disabled_for_drat" : "";
+    std::string pcmax_skip_reason=(pcmax_enabled || hall_enabled || clique_enabled) && !pcmax_active ? "disabled_for_drat" : "";
     if (pcmax_active) pcmax_digest.emplace();
 #endif
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
@@ -1555,7 +1570,7 @@ int run(int argc, char** argv) {
                 pcmax_capture=false;
                 pcmax_skip_reason="declared_size_limit";
                 pcmax_digest.reset();
-                if (pcmax_only || hall_only) {
+                if (pcmax_only || hall_only || clique_only) {
                     pcmax::Result skipped;
                     skipped.reason="header_size_gate";
                     pcmaxTelemetry(skipped,0,process_start,"",pcmax_certificate);
@@ -1607,7 +1622,7 @@ int run(int argc, char** argv) {
                     pcmax_skip_reason="literal_size_limit";
                     std::vector<std::vector<int>>().swap(pcmax_original);
                     pcmax_digest.reset();
-                    if (pcmax_only || hall_only) {
+                    if (pcmax_only || hall_only || clique_only) {
                         pcmax::Result skipped;
                         skipped.reason="literal_size_gate";
                         pcmaxTelemetry(skipped,0,process_start,"",pcmax_certificate);
@@ -1628,6 +1643,30 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
     std::string source_digest;
     if(pcmax_active && pcmax_digest && pcmax_skip_reason.empty())source_digest=pcmax_digest->finish();
+    if(clique_enabled) {
+        pcmax_clique::Result r;
+        double budget=clique_budget_ms/1000.0;
+        if(seconds>0) budget=std::min(budget,std::max(0.0,seconds-
+            std::chrono::duration<double>(Clock::now()-process_start).count()));
+        if(!pcmax_active)r.reason="disabled_for_drat";
+        else if(!pcmax_skip_reason.empty())r.reason=pcmax_skip_reason;
+        else if(budget<=0)r.reason="budget_exhausted";
+        else r=pcmax_clique::analyze(pcmax_original,declared_vars,source_digest,budget);
+        if(r.verified) {
+            if(pcmax_certificate.empty()){r.verified=false;r.reason="certificate_path_required";}
+            else if(seconds>0 && std::chrono::duration<double>(Clock::now()-process_start).count()>=seconds) {
+                r.verified=false;r.reason="overall_time_exhausted_before_certificate";
+            } else pcmaxWriteCertificate(pcmax_certificate,r.certificate_json);
+        }
+        std::cout<<"c PCMAX_CLIQUE {\"verified\":"<<(r.verified?"true":"false")
+                 <<",\"reason\":"<<pcmaxJsonString(r.reason)
+                 <<",\"demand\":"<<r.demand<<",\"capacity\":"<<r.capacity
+                 <<",\"selectors\":"<<r.selector_vars
+                 <<",\"bucket_width\":"<<r.bucket_width
+                 <<",\"source_sha256\":"<<pcmaxJsonString(source_digest)<<"}\n";
+        if(r.verified){std::cout<<"s UNSATISFIABLE\n";return 20;}
+        if(clique_only){std::cout<<"s UNKNOWN\n";return 0;}
+    }
     if(hall_enabled) {
         pcmax_hall::Result hall_result;
         double budget=hall_budget_ms/1000.0;
