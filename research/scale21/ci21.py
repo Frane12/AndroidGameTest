@@ -15,16 +15,26 @@ data={
 2 38 0 60 1 41 3 24 4 83
 3 17 1 49 4 25 0 44 2 98
 4 77 3 79 2 43 1 75 0 96""",
-'la02':"""0 20 3 21 1 94 4 26 2 55
-1 31 2 70 4 26 0 55 3 44
-1 25 0 85 4 29 3 84 2 20
-3 79 2 94 0 77 4 61 1 54
-4 66 3 67 2 64 1 21 0 77
-2 93 4 36 0 87 1 87 3 93
-4 90 1 77 0 87 2 38 3 79
-2 69 3 39 1 85 4 67 0 17
-3 74 4 61 1 81 0 69 2 98
-2 96 1 64 0 25 3 43 4 75"""}
+'la02':"""0 20 3 87 1 31 4 76 2 17
+4 25 2 32 0 24 1 18 3 81
+1 72 2 23 4 28 0 58 3 99
+2 86 1 76 4 97 0 45 3 90
+4 27 0 42 3 48 2 17 1 46
+1 67 0 98 4 48 3 27 2 62
+4 28 1 12 3 19 0 80 2 50
+1 63 0 94 2 98 3 50 4 80
+4 14 0 75 2 50 1 41 3 55
+4 72 2 18 1 37 3 79 0 61""",
+'la03':"""1 23 2 45 0 82 4 84 3 38
+2 21 1 29 0 18 4 41 3 50
+2 38 3 54 4 16 0 52 1 52
+4 37 0 54 2 74 1 62 3 57
+4 57 0 81 1 61 3 68 2 30
+4 81 0 79 1 89 2 89 3 11
+3 33 2 20 0 91 4 20 1 66
+4 24 1 84 0 32 2 55 3 8
+4 56 0 7 3 54 2 64 1 39
+4 40 1 83 0 19 2 8 3 7"""}
 # Full LA01, plus smaller certificate smoke case. Witness here is constructed from known source data:
 # this tests the proof compiler, not raw geometry discovery.
 def generate(name,n,H):
@@ -82,7 +92,7 @@ def cp(rows,H):
  for g in ms:m.AddNoOverlap(g)
  solver=cp_model.CpSolver();solver.parameters.num_search_workers=1;solver.parameters.max_time_in_seconds=15
  st=solver.Solve(m);return {'status':solver.StatusName(st),'s':time.perf_counter()-t}
-for name,n,H in [('la01',6,403),('la01',10,600)]:
+for name,n,H in [('la01',6,403),('la01',10,600),('la02',10,654),('la03',10,587)]:
  d,f,c,rows,cnt=generate(name,n,H)
  pb=d/'proof.pbp';a=run(['/tmp/emit21',str(f),str(c),str(pb)],60)
  v=run([sys.argv[1],'--cnf',str(f),str(pb)],120) if a['rc']==0 else {}
