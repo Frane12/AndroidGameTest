@@ -75,6 +75,7 @@ struct Graph {
     std::vector<Arc> arcs;
     std::vector<std::vector<int>> incoming;
     size_t pairs=0,nested_pairs=0, total_literals=0;
+    std::vector<int> nested_degree;
 };
 inline bool subset(const std::vector<uint64_t>&a,const std::vector<uint64_t>&b){
     for(size_t k=0;k<a.size();++k)if(a[k]&~b[k])return false;
@@ -116,6 +117,7 @@ Graph extract(const Input &in) {
         banned[{u,v}].push_back({i,j});
     }
     g.incoming.resize(g.groups.size());
+    g.nested_degree.assign(g.groups.size(),0);
     for(auto &[uv,pairs]:banned) {
         int u=uv.first,v=uv.second;
         Arc ab{u,v},ba{v,u};
@@ -132,7 +134,7 @@ Graph extract(const Input &in) {
         }
         ab.cached_support.assign(g.groups[u].size(),-1);
         ba.cached_support.assign(g.groups[v].size(),-1);
-        if(nested(ab)&&nested(ba))++g.nested_pairs;
+        if(nested(ab)&&nested(ba)){++g.nested_pairs;++g.nested_degree[u];++g.nested_degree[v];}
         int a_id=int(g.arcs.size()),b_id=a_id+1;
         g.arcs.push_back(std::move(ab));
         g.arcs.push_back(std::move(ba));
@@ -178,10 +180,10 @@ struct Stats{
 };
 using Proof=std::vector<std::vector<int>>;
 struct Solver {
-    Graph g;bool use_cache=true;
+    Graph g;bool use_cache=true;bool temporal_priority=false;
     Stats stats;Clock::time_point deadline;int cap;
-    explicit Solver(Graph graph,double seconds,int cap_,bool cache=true):
-        g(std::move(graph)),use_cache(cache),
+    explicit Solver(Graph graph,double seconds,int cap_,bool cache=true,bool timepriority=false):
+        g(std::move(graph)),use_cache(cache),temporal_priority(timepriority),
         deadline(Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds))),cap(cap_){}
     void check_time(){
         if(Clock::now()>deadline)throw Error("time_budget_exhausted");
@@ -241,7 +243,10 @@ struct Solver {
             std::iota(order.begin(),order.end(),0);
             std::sort(order.begin(),order.end(),[&](int u,int v){
                 int a=count(d,u),b=count(d,v);
-                return a!=b?a<b:u<v;
+                if(a!=b)return a<b;
+                if(temporal_priority && g.nested_degree[u]!=g.nested_degree[v])
+                    return g.nested_degree[u]>g.nested_degree[v];
+                return u<v;
             });
             for(int u:order){
                 std::vector<int> candidates;
@@ -279,7 +284,7 @@ struct Solver {
 
 int main(int argc,char**argv){
     std::string cnf,drat,report;double seconds=20;
-    int cap=6000;bool cache=true;
+    int cap=6000;bool cache=true,temporal_priority=false;
     for(int i=1;i<argc;++i){
         std::string a=argv[i];
         if(a=="--cnf"&&i+1<argc)cnf=argv[++i];
@@ -288,6 +293,7 @@ int main(int argc,char**argv){
         else if(a=="--seconds"&&i+1<argc)seconds=std::stod(argv[++i]);
         else if(a=="--cap"&&i+1<argc)cap=std::stoi(argv[++i]);
         else if(a=="--no-cache")cache=false;
+        else if(a=="--temporal-priority")temporal_priority=true;
         else if(a=="--help"){
             std::cout<<"Usage: drnas-sac9 --cnf file.cnf [--drat new.drat] [--report new.json] [--seconds N] [--cap N] [--no-cache]\n";
             return 0;
@@ -301,7 +307,7 @@ int main(int argc,char**argv){
     try{
         Input in=read_dimacs(cnf);vars=in.vars;clauses=in.clauses.size();
         Graph graph=extract(in);groups=graph.groups.size();links=graph.pairs;nested_pairs=graph.nested_pairs;
-        Solver solver(std::move(graph),seconds,cap,cache);
+        Solver solver(std::move(graph),seconds,cap,cache,temporal_priority);
         bool conflict=solver.run();
         st=solver.stats;lemmas=solver.proof.size();
         if(conflict){
@@ -322,6 +328,7 @@ int main(int argc,char**argv){
     std::ostringstream result;
     result<<"{\"status\":\""<<status<<"\",\"reason\":\""<<reason
           <<"\",\"vars\":"<<vars<<",\"clauses\":"<<clauses
+          <<",\"temporal_priority\":"<<(temporal_priority?"true":"false")
           <<",\"groups\":"<<groups<<",\"cross_links\":"<<links
           <<",\"nested_support_pairs\":"<<nested_pairs
           <<",\"checks\":"<<st.checks<<",\"singleton_eliminations\":"<<st.removed
