@@ -1,0 +1,60 @@
+name: DRNAS FT06 source-only SAC independent VeriPB3 audit
+on:
+  push:
+    branches: [experiment/drnas-ft06-raw-sacroof-20261124]
+    paths:
+      - research/ft06_sac/emit_veripb3.py
+      - .github/workflows/drnas-ft06-sac-veripb.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install independent VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          veripb-tool/bin/veripb --version
+      - name: Download original unchanged source from previous source-pin test
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45345607598
+          name: drnas-scale7-public-ft06-cp-sat-raw-structured
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Derive source-only RUP proof and require independent VeriPB acceptance
+        run: |
+          set -euo pipefail
+          mkdir -p results/ft06-sac-veripb
+          cp frozen/results/scale7-public/rep-1/day-54/raw/original.cnf results/ft06-sac-veripb/source.cnf
+          python3 - <<'PY'
+          import pathlib,hashlib
+          src=pathlib.Path('results/ft06-sac-veripb/source.cnf').read_bytes()
+          assert hashlib.sha256(src).hexdigest()=='99910f35ed2401b2315618aa7ac23605ba876cfea79c3edadd1e468ef1c674ee'
+          PY
+          python3 -u research/ft06_sac/emit_veripb3.py \
+            --cnf results/ft06-sac-veripb/source.cnf \
+            --output results/ft06-sac-veripb/source_only.pbp \
+            | tee results/ft06-sac-veripb/producer.log
+          timeout 120s veripb-tool/bin/veripb \
+            --cnf results/ft06-sac-veripb/source.cnf \
+            results/ft06-sac-veripb/source_only.pbp \
+            | tee results/ft06-sac-veripb/external_veripb.log
+          grep -q 's VERIFIED UNSATISFIABLE' results/ft06-sac-veripb/external_veripb.log
+      - name: Archive VeriPB proof and exact source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-ft06-sac-independently-verified-veripb3
+          retention-days: 60
+          path: |
+            research/ft06_sac/emit_veripb3.py
+            research/ft06_sac/structural_sac.py
+            results/ft06-sac-veripb/
