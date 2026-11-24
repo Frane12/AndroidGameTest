@@ -31,6 +31,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "pcmax_capacity.hpp"
+#include "pcmax_hall.hpp"
 #endif
 
 namespace {
@@ -1401,6 +1402,8 @@ int run(int argc, char** argv) {
     bool x5_minimize=true,x5_retain=false,x5_gc=true,x5_restarts=false;
 #ifdef DRNAS_PCMAX_MODULE
     bool pcmax_enabled=false, pcmax_only=false;
+    bool hall_enabled=false, hall_only=false;
+    double hall_budget_ms=500.0;
     double pcmax_budget_ms=250.0;
     std::string pcmax_certificate;
 #endif
@@ -1412,6 +1415,13 @@ int run(int argc, char** argv) {
         else if (opt=="--proof" && i+1<argc) proof_path=argv[++i];
 #ifdef DRNAS_PCMAX_MODULE
         else if (opt=="--pcmax-capacity") pcmax_enabled=true;
+        else if (opt=="--pcmax-hall") hall_enabled=true;
+        else if (opt=="--pcmax-hall-only") { hall_enabled=true; hall_only=true; }
+        else if (opt=="--pcmax-hall-budget-ms" && i+1<argc) {
+            const std::string value=argv[++i];
+            size_t consumed=0;hall_budget_ms=std::stod(value,&consumed);
+            if(consumed!=value.size())throw std::runtime_error("invalid --pcmax-hall-budget-ms");
+        }
         else if (opt=="--pcmax-only") { pcmax_enabled=true; pcmax_only=true; }
         else if (opt=="--pcmax-budget-ms" && i+1<argc) {
             const std::string value=argv[++i];
@@ -1438,7 +1448,7 @@ int run(int argc, char** argv) {
         else if (opt=="--help") {
             std::cout<<"Usage: drnas-x41 <file.cnf> [--mode core|trace] [--time seconds] [--stats] [--transitions path] [--trace-trail (n<=18)] [--branch-at 1..100000] [--flip-branch] [--x46-conflicts 8|32|128] [--x46-probe-ms N] [--x46-shadow] [--x46-model FILE] [--x47-guard FILE] [--proof FILE] [--x5-no-minimize] [--x5-retain] [--x5-no-gc] [--x5-restarts]\n";
 #ifdef DRNAS_PCMAX_MODULE
-            std::cout<<"PCMAX options (off by default): --pcmax-capacity [--pcmax-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
+            std::cout<<"PCMAX options (off by default): --pcmax-capacity | --pcmax-hall | --pcmax-hall-only [--pcmax-hall-budget-ms N] [--pcmax-certificate NEW_FILE] [--pcmax-only]\n";
 #endif
             return 0;
         } else if (opt.rfind("-",0)==0) throw std::runtime_error("unknown argument: "+opt);
@@ -1450,14 +1460,17 @@ int run(int argc, char** argv) {
 #ifdef DRNAS_PCMAX_MODULE
     if (!std::isfinite(pcmax_budget_ms) || pcmax_budget_ms<0 || pcmax_budget_ms>86400000.0)
         throw std::runtime_error("invalid --pcmax-budget-ms");
+    if(!std::isfinite(hall_budget_ms)||hall_budget_ms<0||hall_budget_ms>86400000.0)
+        throw std::runtime_error("invalid --pcmax-hall-budget-ms");
+    if (hall_only && !proof_path.empty())throw std::runtime_error("--pcmax-hall-only cannot be combined with --proof");
     if (pcmax_only && !proof_path.empty())
         throw std::runtime_error("--pcmax-only cannot be combined with --proof");
-    const bool pcmax_active=pcmax_enabled && proof_path.empty();
+    const bool pcmax_active=(pcmax_enabled || hall_enabled) && proof_path.empty();
     bool pcmax_capture=pcmax_active;
     size_t pcmax_literals=0;
     std::vector<std::vector<int>> pcmax_original;
     std::optional<PcmaxDigest> pcmax_digest;
-    std::string pcmax_skip_reason=pcmax_enabled && !pcmax_active ? "disabled_for_drat" : "";
+    std::string pcmax_skip_reason=(pcmax_enabled || hall_enabled) && !pcmax_active ? "disabled_for_drat" : "";
     if (pcmax_active) pcmax_digest.emplace();
 #endif
     if (!trace_file.empty() && mode!="trace") throw std::runtime_error("--transitions requires --mode trace");
@@ -1542,7 +1555,7 @@ int run(int argc, char** argv) {
                 pcmax_capture=false;
                 pcmax_skip_reason="declared_size_limit";
                 pcmax_digest.reset();
-                if (pcmax_only) {
+                if (pcmax_only || hall_only) {
                     pcmax::Result skipped;
                     skipped.reason="header_size_gate";
                     pcmaxTelemetry(skipped,0,process_start,"",pcmax_certificate);
@@ -1594,7 +1607,7 @@ int run(int argc, char** argv) {
                     pcmax_skip_reason="literal_size_limit";
                     std::vector<std::vector<int>>().swap(pcmax_original);
                     pcmax_digest.reset();
-                    if (pcmax_only) {
+                    if (pcmax_only || hall_only) {
                         pcmax::Result skipped;
                         skipped.reason="literal_size_gate";
                         pcmaxTelemetry(skipped,0,process_start,"",pcmax_certificate);
@@ -1613,16 +1626,40 @@ int run(int argc, char** argv) {
 #endif
     solver->finishParsing();
 #ifdef DRNAS_PCMAX_MODULE
+    std::string source_digest;
+    if(pcmax_active && pcmax_digest && pcmax_skip_reason.empty())source_digest=pcmax_digest->finish();
+    if(hall_enabled) {
+        pcmax_hall::Result hall_result;
+        double budget=hall_budget_ms/1000.0;
+        if(seconds>0)budget=std::min(budget,std::max(0.0,seconds-
+            std::chrono::duration<double>(Clock::now()-process_start).count()));
+        if(!pcmax_active)hall_result.reason="disabled_for_drat";
+        else if(!pcmax_skip_reason.empty())hall_result.reason=pcmax_skip_reason;
+        else if(budget<=0)hall_result.reason="hall_budget_exhausted";
+        else hall_result=pcmax_hall::analyze(pcmax_original,declared_vars,source_digest,budget);
+        if(hall_result.verified) {
+            if(pcmax_certificate.empty()){hall_result.verified=false;hall_result.reason="certificate_path_required";}
+            else if(seconds>0 && std::chrono::duration<double>(Clock::now()-process_start).count()>=seconds){
+                hall_result.verified=false;hall_result.reason="overall_time_exhausted_before_certificate";
+            } else pcmaxWriteCertificate(pcmax_certificate,hall_result.certificate_json);
+        }
+        std::cout<<"c PCMAX_HALL {\"verified\":"<<(hall_result.verified?"true":"false")
+                 <<",\"reason\":"<<pcmaxJsonString(hall_result.reason)
+                 <<",\"demand\":"<<hall_result.demand<<",\"capacity\":"<<hall_result.capacity
+                 <<",\"jobs\":"<<hall_result.jobs<<",\"slots\":"<<hall_result.slots
+                 <<",\"source_sha256\":"<<pcmaxJsonString(source_digest)<<"}\n";
+        if(hall_result.verified){std::cout<<"s UNSATISFIABLE\n";return 20;}
+        if(hall_only){std::cout<<"s UNKNOWN\n";return 0;}
+    }
     if (pcmax_enabled) {
         pcmax::Result capacity_result;
-        std::string digest;
+        std::string digest=source_digest;
         double budget=pcmax_budget_ms/1000.0;
         if (seconds>0) budget=std::min(budget,std::max(0.0,seconds-
             std::chrono::duration<double>(Clock::now()-process_start).count()));
         if (!pcmax_skip_reason.empty()) capacity_result.reason=pcmax_skip_reason;
         else if (budget<=0) capacity_result.reason="budget_exhausted_before_module";
         else {
-            digest=pcmax_digest->finish();
             pcmax::Options options;
             options.seconds=budget;
             capacity_result=pcmax::analyze(pcmax_original,declared_vars,digest,options);
