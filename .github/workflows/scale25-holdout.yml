@@ -1,0 +1,122 @@
+name: SCALE25 frozen 20 CNF 300s
+on:
+  push:
+    branches: ['experiment/drnas-scale25-holdout300-20261124']
+    paths: ['.github/workflows/scale25-holdout.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frozen solver and proof tools
+        run: |
+          set -euo pipefail
+          mkdir -p bin25 src25
+          echo 'cfd7f095d12c05267512b1902134f3507fc37a7e3417bf9d93ced474adb0917c  research/scale25/source.tar.xz.b64' | sha256sum -c -
+          base64 -d research/scale25/source.tar.xz.b64 | tar -xJ -C src25
+          g++ -O3 -std=c++17 -DS24_FAST -DS24_LOOKUP src25/scale24.cpp -o bin25/drnas
+          g++ -O3 -std=c++17 src25/verify_trace.cpp -o bin25/verify_trace
+          g++ -O3 -std=c++17 src25/verify_model.cpp -o bin25/verify_model
+          g++ -O3 -std=c++17 research/scale23/emit23.cpp -o bin25/emit23
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git /tmp/kissat
+          test "$(git -C /tmp/kissat rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd /tmp/kissat && ./configure && make -j2)
+          cp /tmp/kissat/build/kissat bin25/
+          git clone --depth 1 --branch rel-2.1.3 https://github.com/arminbiere/cadical.git /tmp/cadical
+          test "$(git -C /tmp/cadical rev-parse HEAD)" = f13d74439a5b5c963ac5b02d05ce93a8098018b8
+          (cd /tmp/cadical && ./configure && make -j2)
+          cp /tmp/cadical/build/cadical bin25/
+          git clone https://github.com/marijnheule/drat-trim.git /tmp/drat-trim
+          git -C /tmp/drat-trim checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          gcc -O2 -D_GNU_SOURCE /tmp/drat-trim/drat-trim.c -o bin25/drat-trim
+          cargo install veripb --version 3.0.2 --locked --root "$RUNNER_TEMP/veripb" --quiet
+          cp "$RUNNER_TEMP/veripb/bin/veripb" bin25/
+          printf 'p cnf 1 2\n1 0\n-1 0\n' >/tmp/smoke.cnf
+          set +e
+          bin25/kissat /tmp/smoke.cnf /tmp/kissat.drat
+          k=$?
+          bin25/cadical /tmp/smoke.cnf /tmp/cadical.drat
+          c=$?
+          set -e
+          test "$k" = 20 && test "$c" = 20
+          bin25/drat-trim /tmp/smoke.cnf /tmp/kissat.drat | grep 's VERIFIED'
+          bin25/drat-trim /tmp/smoke.cnf /tmp/cadical.drat | grep 's VERIFIED'
+          sha256sum bin25/* > bin25/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale25-frozen-bin
+          path: bin25/
+  paired:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        instance: [la04, la05, la08, la09, la10, la16, la17, la18, la19, la20]
+        delta: [-1, 0]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: scale25-frozen-bin
+          path: bin25/
+      - name: Install pinned reference and record environment
+        run: |
+          set -euo pipefail
+          chmod +x bin25/drnas bin25/verify_trace bin25/verify_model bin25/emit23 bin25/kissat bin25/cadical bin25/drat-trim bin25/veripb
+          sha256sum -c bin25/SHA256SUMS
+          python -m pip install --quiet ortools==9.14.6206
+          sudo apt-get update -qq
+          sudo apt-get install -y cryptominisat
+          git clone https://github.com/tamy0612/JSPLIB.git jsplib
+          git -C jsplib checkout eea2b60dd7e2f5c907ff7302662c61812eb7efdf
+          mkdir -p out
+          { lscpu; free -h; df -h .; python -V; pip show ortools; bin25/kissat --version; bin25/cadical --version; cryptominisat5 --version; bin25/veripb --version; } > out/environment.txt 2>&1
+          printf 'p cnf 1 1\n1 0\n' >/tmp/cp-smoke.cnf
+          python research/scale25/bench25.py cp raw /tmp/cp-smoke.cnf unused 1 /tmp/cp-smoke.model
+          bin25/verify_model /tmp/cp-smoke.cnf /tmp/cp-smoke.model
+      - name: Run frozen six-arm benchmark
+        run: python research/scale25/bench25.py '${{ matrix.instance }}' '${{ matrix.delta }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale25-${{ matrix.instance }}-${{ matrix.delta }}
+          path: out/
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scale25-la*
+          path: results
+      - name: Report counts and PAR2 without silently dropping failures
+        run: |
+          python - <<'PY'
+          import pathlib,json
+          from collections import Counter
+          a=[json.loads(p.read_text()) for p in pathlib.Path('results').rglob('result.json')]
+          print('cases with output:',len(a),'/20')
+          for arm in ('drnas','kissat','cadical','cms','cp_raw','cp_struct'):
+            rs=[r for x in a for r in x['results'] if r['arm']==arm]
+            good=[r for r in rs if r['matches_expected'] and r['decision']['seconds']<=300]
+            verified=[r for r in good if r['validation'] in ('STANDARD_UNSAT','SAT_VERIFIED')]
+            custom=[r for r in good if r['validation']=='CUSTOM_UNSAT']
+            print(arm,'decision',len(good),'/20','standard/model verified',len(verified),'custom-only',len(custom),'missing',20-len(rs),'statuses',dict(Counter(r['status'] for r in rs)))
+            print('  decision PAR2 (missing/unsolved=600):',(sum(r['decision']['seconds'] for r in good)+600*(20-len(good)))/20)
+            strict=[r for r in verified if (r['strict_custom_e2e_s'] if r['status']=='SAT' else r['standard_e2e_s'])<=300]
+            print('  standard/model verified E2E <=300:',len(strict),'/20')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale25-aggregate
+          path: results/
