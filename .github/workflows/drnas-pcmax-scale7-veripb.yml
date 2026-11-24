@@ -1,0 +1,107 @@
+name: DRNAS SCALE7 certified clique cutting-planes VeriPB3
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale7-veripb-mixed-20261124]
+    paths:
+      - research/pcmax_clique/emit_veripb_clique.py
+      - .github/workflows/drnas-pcmax-scale7-veripb.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  veripb_original:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin external VeriPB 3.0.2 and build native module
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          python3 -m py_compile research/pcmax_clique/emit_veripb_clique.py
+      - name: Fetch unchanged SCALE5 CNFs (80, 800, 3200)
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45340541476
+          name: scale5-WINDOW_UNSAT_80
+          github-token: ${{ github.token }}
+          path: frozen/unsat80
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 45340541476
+          name: scale5-WINDOW_UNSAT_800
+          github-token: ${{ github.token }}
+          path: frozen/unsat800
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 45341133018
+          name: scale5-large-WINDOW_UNSAT_3200
+          github-token: ${{ github.token }}
+          path: frozen/unsat3200
+      - name: Recreate source-bound capacity certificate and independently accept standard proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/scale7
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess,time
+          cases=[
+           ('WINDOW_UNSAT_80','frozen/unsat80/results/complex5/WINDOW_UNSAT_80.cnf',
+             '77df18e836b186b3e1d039cd70f4b178d59c7518af25a9c6f35e533a2398518c'),
+           ('WINDOW_UNSAT_800','frozen/unsat800/results/complex5/WINDOW_UNSAT_800.cnf',
+             'dd214c8af4b524be857b4f1b5989a888c7913ff7a0196c5dd6e6937a20a47ae4'),
+           ('WINDOW_UNSAT_3200','frozen/unsat3200/results/large/rep-1/WINDOW_UNSAT_3200.cnf',
+             '671b3e2af87f613019ceb14e380d4985a1131f6eb4231b4f7594d11c50eb9dcd')]
+          records=[]
+          for name,path,digest in cases:
+              source=pathlib.Path(path)
+              assert hashlib.sha256(source.read_bytes()).hexdigest()==digest,name
+              base=pathlib.Path('results/scale7')/name;base.mkdir(parents=True,exist_ok=True)
+              cert=base/'source_clique.json';proof=base/'source_veripb.pbp'
+              native=subprocess.run(['build/drnas-pcmax',str(source),'--mode','core','--time','6',
+                       '--pcmax-clique-only','--pcmax-clique-budget-ms','4000',
+                       '--pcmax-certificate',str(cert)],capture_output=True,text=True,timeout=15)
+              (base/'native.log').write_text(native.stdout+'\n'+native.stderr)
+              assert native.returncode==20 and cert.exists(),native.stdout[-1000:]
+              check=subprocess.run(['python3','research/pcmax_clique/verify_clique.py',
+                       str(source),str(cert)],capture_output=True,text=True,timeout=60)
+              assert check.returncode==0,check.stderr
+              emit=subprocess.run(['python3','research/pcmax_clique/emit_veripb_clique.py',
+                       '--cnf',str(source),'--certificate',str(cert),'--output',str(proof)],
+                       capture_output=True,text=True,timeout=60)
+              (base/'emit.log').write_text(emit.stdout+'\n'+emit.stderr)
+              assert emit.returncode==0 and proof.exists(),emit.stderr
+              t=time.perf_counter()
+              check=subprocess.run(['veripb-tool/bin/veripb','--cnf',str(source),str(proof)],
+                    capture_output=True,text=True,timeout=120)
+              veripb_s=time.perf_counter()-t
+              (base/'veripb.log').write_text(check.stdout+'\n'+check.stderr)
+              accepted=(check.returncode==0 and 's VERIFIED UNSATISFIABLE' in check.stdout+check.stderr)
+              record={'name':name,'source_sha256':digest,'native_rc':native.returncode,
+                      'veripb_rc':check.returncode,'accepted':accepted,
+                      'proof_bytes':proof.stat().st_size,'veripb_s':round(veripb_s,5)}
+              print('SCALE7_STANDARD_PROOF '+json.dumps(record,sort_keys=True),flush=True)
+              records.append(record)
+              assert accepted,(name,check.stdout[-2000:],check.stderr[-2000:])
+          (pathlib.Path('results/scale7')/'summary.json').write_text(json.dumps(records,indent=2)+'\n')
+          PY
+      - name: Preserve exact standard proof and external checker diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-scale7-standard-veripb3-source-audit
+          retention-days: 60
+          compression-level: 6
+          path: |
+            results/scale7/
+            research/pcmax_clique/emit_veripb_clique.py
+            research/pcmax_clique/verify_clique.py
