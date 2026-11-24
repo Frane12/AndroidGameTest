@@ -34,6 +34,10 @@ The CI executes 13 SHA-controlled variants for each deadline, 13 independent DRA
 
 **Median same-runner results:** deadline 54 structural generator 0.055327 s, independent DRAT checker 0.054431 s, native DRNAS CDCL 0.023483 s. Deadline 55 structural UNKNOWN in 0.234373 s, native CDCL SAT in 0.0217 s. This demonstrates verified structural coverage, not current speed superiority.
 
+## Independent VeriPB 3.0.2 confirmation
+
+The same source-only RUP trace has also been emitted as VeriPB 3.0 and accepted by the independent VeriPB 3.0.2 checker: `s VERIFIED UNSATISFIABLE` for the unchanged SHA-pinned deadline-54 source. The producer outputs `EMITTED_UNCHECKED`; only the external checker grants verified status. [GitHub CI 45347770332](https://github.com/Frane12/AndroidGameTest/actions/runs/45347770332). Proof size: 238,114 bytes and 8,910 RUP steps.
+
 ## Next research directions
 
 1. Extend beyond positive-source exact-one groups and binary conflict masks to arbitrary scheduling encodings (reified intervals, pseudo-Boolean and time-indexed cumulative constraints).
