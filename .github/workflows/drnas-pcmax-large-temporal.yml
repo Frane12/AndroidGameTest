@@ -1,0 +1,58 @@
+name: DRNAS SCALE5 large connected temporal scheduling stress
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale5-large-temporal-20261124]
+    paths:
+      - .github/workflows/drnas-pcmax-large-temporal.yml
+      - research/pcmax_hall/benchmark_complex_ortools.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  large:
+    name: LARGE / ${{ matrix.case }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [WINDOW_SAT_1600, WINDOW_UNSAT_1600, WINDOW_UNSAT_3200]
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin OR-Tools and native DRNAS
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'ortools==9.14.6206'
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum research/pcmax_hall/benchmark_complex_ortools.py build/drnas-pcmax
+      - name: Paired 3 repetitions on identical model / CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          for rep in 1 2 3; do
+            for arm in native raw structured; do
+              mkdir -p "results/large/rep-$rep"
+              echo "LARGE_TRIAL case=${{ matrix.case }} rep=$rep arm=$arm"
+              timeout 130s python3 -B research/pcmax_hall/benchmark_complex_ortools.py \
+                --case '${{ matrix.case }}' --arm "$arm" --budget 8 \
+                --binary build/drnas-pcmax --out "results/large/rep-$rep"
+            done
+          done
+      - name: Archive all trials, CNFs and measurement traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale5-large-${{ matrix.case }}
+          retention-days: 60
+          compression-level: 6
+          path: |
+            results/large/
+            research/pcmax_hall/benchmark_complex_ortools.py
+            research/pcmax_hall/verify_hall.py
