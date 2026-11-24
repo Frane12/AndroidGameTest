@@ -3,6 +3,7 @@
 #pragma once
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <cstdint>
 #include <numeric>
 #include <sstream>
@@ -58,10 +59,59 @@ inline Result analyze(const std::vector<std::vector<int>>& clauses,int nvars,
         if(by_width[a].size()!=by_width[b].size())return by_width[a].size()<by_width[b].size();
         return a>b;
     });
-    for(size_t width:widths){
+    // Preserve fixed-width path, then inspect mutex-connected mixed-width jobs.
+    std::vector<std::pair<size_t,std::vector<IndexedGroup>>> candidates;
+    for(size_t width:widths)candidates.push_back({width,by_width[width]});
+    std::vector<IndexedGroup> positive;
+    for(const auto& p:by_width)for(const auto& g:p.second)positive.push_back(g);
+    if(positive.size()<=4096){
+        std::sort(positive.begin(),positive.end(),[](const auto&a,const auto&b){return a.clause_index<b.clause_index;});
+        std::vector<int> parent(positive.size());
+        std::iota(parent.begin(),parent.end(),0);
+        std::vector<int> sz(positive.size(),1);
+        auto find=[&](int u){while(parent[u]!=u){parent[u]=parent[parent[u]];u=parent[u];}return u;};
+        auto join=[&](int u,int v){u=find(u);v=find(v);if(u!=v){if(sz[u]<sz[v])std::swap(u,v);parent[v]=u;sz[u]+=sz[v];}};
+        std::unordered_map<int,int> owner;
+        for(size_t i=0;i<positive.size();++i)for(int lit:positive[i].lits){
+            auto [it,inserted]=owner.emplace(lit,int(i));
+            if(!inserted)it->second=-1;
+        }
+        for(uint64_t p:mutex){
+            if(!budget.ok()){out.reason="budget_exhausted_components";return out;}
+            int a=int(p>>32),b=int(uint32_t(p));
+            auto it=owner.find(a),jt=owner.find(b);
+            if(it!=owner.end()&&jt!=owner.end()&&it->second>=0&&jt->second>=0&&it->second!=jt->second)
+                join(it->second,jt->second);
+        }
+        std::unordered_map<int,std::vector<IndexedGroup>> components;
+        for(size_t i=0;i<positive.size();++i)components[find(int(i))].push_back(positive[i]);
+        std::vector<std::vector<IndexedGroup>> mixed;
+        for(auto& p:components){
+            auto& group=p.second;
+            if(group.size()<3||group.size()>24)continue;
+            size_t literals=0;std::unordered_set<int> seen;
+            bool collision=false;
+            for(const auto& g:group)for(int x:g.lits){
+                if(!seen.insert(x).second)collision=true;
+                ++literals;
+            }
+            if(!collision&&literals<=256){
+                std::sort(group.begin(),group.end(),[](const auto&a,const auto&b){return a.clause_index<b.clause_index;});
+                mixed.push_back(std::move(group));
+            }
+        }
+        std::sort(mixed.begin(),mixed.end(),[](const auto&a,const auto&b){
+            return a.front().clause_index<b.front().clause_index;
+        });
+        for(auto& g:mixed)candidates.push_back({0,std::move(g)});
+    }
+    for(const auto& candidate:candidates){
         if(!budget.ok()){out.reason="budget_exhausted_search";return out;}
-        auto &bucket=by_width[width];
-        if(bucket.size()*width>256)continue;
+        size_t width=candidate.first;
+        const auto& bucket=candidate.second;
+        size_t total_literals=0;
+        for(const auto& g:bucket)total_literals+=g.lits.size();
+        if(total_literals>256)continue;
         std::vector<int> selectors;
         std::unordered_set<int> distinct;
         bool collision=false;
@@ -119,6 +169,49 @@ inline Result analyze(const std::vector<std::vector<int>>& clauses,int nvars,
                 proof_clique.push_back(selectors[v]);left[v]=0;--remaining;
             }
             cover.push_back(std::move(proof_clique));
+        }
+        // Exact bounded fallback for small mixed-width components.
+        // Color the complement of source mutex graph into <= jobs-1 colors.
+        if((remaining || cover.size()>=bucket.size()) && n<=48 && bucket.size()>=3){
+            std::vector<uint64_t> nonmutex(n,0);
+            for(size_t u=0;u<n;++u)for(size_t v=0;v<n;++v)
+                if(u!=v&&!edge[u][v])nonmutex[u]|=(uint64_t(1)<<v);
+            std::vector<int> colors(n,-1);
+            uint64_t visits=0;
+            const int max_colors=int(bucket.size())-1;
+            bool exhausted=false;
+            std::function<bool(int,int)> search=[&](int done,int used)->bool{
+                if(done==int(n))return true;
+                if(++visits>100000 || !budget.ok()){exhausted=true;return false;}
+                int next=-1,highest_sat=-1,highest_degree=-1;
+                for(int u=0;u<int(n);++u)if(colors[u]<0){
+                    uint64_t seen=0;
+                    for(int v=0;v<int(n);++v)if(colors[v]>=0 && (nonmutex[u]&(uint64_t(1)<<v)))
+                        seen|=uint64_t(1)<<colors[v];
+                    int sat=__builtin_popcountll(seen);
+                    int degree=__builtin_popcountll(nonmutex[u]);
+                    if(sat>highest_sat || (sat==highest_sat && degree>highest_degree)){
+                        highest_sat=sat;highest_degree=degree;next=u;
+                    }
+                }
+                uint64_t forbidden=0;
+                for(int v=0;v<int(n);++v)if(colors[v]>=0 && (nonmutex[next]&(uint64_t(1)<<v)))
+                    forbidden|=uint64_t(1)<<colors[v];
+                for(int c=0;c<std::min(max_colors,used+1);++c){
+                    if(forbidden&(uint64_t(1)<<c))continue;
+                    colors[next]=c;
+                    if(search(done+1,std::max(used,c+1)))return true;
+                    colors[next]=-1;
+                    if(exhausted)return false;
+                }
+                return false;
+            };
+            if(search(0,0)){
+                int used=1+*std::max_element(colors.begin(),colors.end());
+                cover.assign(size_t(used),{});
+                for(size_t v=0;v<n;++v)cover[size_t(colors[v])].push_back(selectors[v]);
+                remaining=0;
+            }
         }
         if(remaining || cover.size()>=bucket.size())continue;
         std::unordered_set<int> covered;
