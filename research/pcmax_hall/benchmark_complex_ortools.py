@@ -24,7 +24,7 @@ def hall_case(bins, sat, seed, dense=False):
     urgent=bins if sat else bins+1
     allowed=[]
     for j in range(urgent):
-        allowed.append(list(range(bins)) if dense else sorted(set(rng.sample(range(bins),min(5,bins)))))
+        allowed.append(list(range(bins)) if dense else sorted(set(rng.sample(range(bins),min(5,bins))) | ({j} if sat else set())))
     for k in range(12):
         allowed.append(sorted(set([bins+k, rng.randrange(bins),bins+12+k%3])))
     clauses=[];entries=[];bybin=collections.defaultdict(list)
@@ -228,7 +228,9 @@ def experiment(name, out, arm, binary, budget):
       "WINDOW_UNSAT_80":("window",80,12,False,8722),
       "WINDOW_SAT_200":("window",200,16,True,8723),
       "WINDOW_UNSAT_200":("window",200,16,False,8724),
-      "WINDOW_UNSAT_400":("window",400,24,False,8725)
+      "WINDOW_UNSAT_400":("window",400,24,False,8725),
+      "WINDOW_SAT_400":("window",400,24,True,8726),
+      "WINDOW_UNSAT_800":("window",800,36,False,8727)
     }
     if name not in presets:raise ValueError("unlisted case")
     args=presets[name]
