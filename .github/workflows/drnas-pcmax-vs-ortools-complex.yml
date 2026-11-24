@@ -1,0 +1,90 @@
+name: DRNAS SCALE5 complex Hall vs CP-SAT raw and structured
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale4-vs-ortools-20261124]
+    paths:
+      - research/pcmax_hall/benchmark_complex_ortools.py
+      - research/pcmax_hall/verify_hall.py
+      - src/pcmax_hall.hpp
+      - src/drnas_x5.cpp
+      - .github/workflows/drnas-pcmax-vs-ortools-complex.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: SCALE5 / ${{ matrix.case }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        case:
+          - HALL_DENSE_UNSAT_32
+          - HALL_SPARSE_UNSAT_800
+          - HALL_SPARSE_SAT_800
+          - HALL_SPARSE_UNSAT_1600
+          - WINDOW_SAT_80
+          - WINDOW_UNSAT_80
+          - WINDOW_SAT_200
+          - WINDOW_UNSAT_200
+          - WINDOW_UNSAT_400
+          - WINDOW_SAT_400
+          - WINDOW_UNSAT_800
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin CP-SAT version and compile native Hall module
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'ortools==9.14.6206'
+          python3 - <<'PY'
+          import ortools
+          print("PINNED_ORTOOLS",ortools.__version__)
+          PY
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum build/drnas-pcmax research/pcmax_hall/benchmark_complex_ortools.py
+      - name: Three arms; same exact CNF vs structured equivalence; one worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/complex5
+          : > results/complex5/bench.log
+          for arm in native raw structured; do
+            echo "SCALE5_ARM_START case=${{ matrix.case }} arm=$arm" | tee -a results/complex5/bench.log
+            timeout --signal=TERM 85s python3 -B research/pcmax_hall/benchmark_complex_ortools.py \
+              --case '${{ matrix.case }}' --arm "$arm" --budget 8 \
+              --binary build/drnas-pcmax --out results/complex5 \
+              2>&1 | tee -a results/complex5/bench.log
+          done
+          python3 - <<'PY'
+          import json,pathlib
+          root=pathlib.Path('results/complex5')
+          for f in sorted(root.glob('*-*.json')):
+            if f.name.count('-') != 1:continue
+            try:d=json.loads(f.read_text())
+            except Exception:continue
+            if 'arm' in d:
+              print('SCALE5_FINAL',json.dumps({k:d.get(k) for k in
+                    ['case','arm','label','status','e2e_s','e2e_with_checker_s','vars','clauses',
+                     'certificate_verified','branches','conflicts','build_s']},sort_keys=True))
+          PY
+      - name: Archive original CNF, seed, certificates, results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale5-${{ matrix.case }}
+          retention-days: 60
+          compression-level: 6
+          path: |
+            results/complex5/
+            research/pcmax_hall/benchmark_complex_ortools.py
+            research/pcmax_hall/verify_hall.py
