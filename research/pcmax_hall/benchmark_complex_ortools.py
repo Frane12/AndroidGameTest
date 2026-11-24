@@ -154,11 +154,19 @@ def cp_solve(case, arm, budget):
     from ortools.sat.python import cp_model
     started=time.perf_counter()
     model=cp_model.CpModel()
-    x=[None]+[model.NewBoolVar(f"x{i}") for i in range(1,case["nvars"]+1)]
+    if arm=="alldiff":
+        if case["kind"]!="hall":raise ValueError("AllDifferent requires Hall assignment family")
+        allowed=collections.defaultdict(set)
+        for e in case["entries"]: allowed[e["job"]].add(e["slot"])
+        slots=[model.NewIntVarFromDomain(cp_model.Domain.FromValues(sorted(allowed[j])),
+                   f"job_{j}") for j in sorted(allowed)]
+        model.AddAllDifferent(slots)
+    else:
+        x=[None]+[model.NewBoolVar(f"x{i}") for i in range(1,case["nvars"]+1)]
     if arm=="raw":
         for cl in case["clauses"]:
             model.AddBoolOr([x[v] if v>0 else x[-v].Not() for v in cl])
-    else:
+    elif arm=="structured":
         jobs=collections.defaultdict(list)
         for e in case["entries"]:jobs[e["job"]].append(e)
         for choices in jobs.values():
@@ -261,7 +269,7 @@ def experiment(name, out, arm, binary, budget):
 if __name__=="__main__":
     ap=argparse.ArgumentParser()
     ap.add_argument("--case",required=True)
-    ap.add_argument("--arm",choices=["native","raw","structured"],required=True)
+    ap.add_argument("--arm",choices=["native","raw","structured","alldiff"],required=True)
     ap.add_argument("--out",type=Path,default=Path("results/complex5"))
     ap.add_argument("--binary",type=Path,default=Path("build/drnas-pcmax"))
     ap.add_argument("--budget",type=float,default=8.0)
