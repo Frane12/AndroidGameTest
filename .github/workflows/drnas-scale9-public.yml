@@ -1,0 +1,73 @@
+name: DRNAS SCALE9 public LA01 LA02 derived job-shop stress
+on:
+  push:
+    branches: [experiment/drnas-scale9-native-sac-20261124]
+    paths:
+      - research/sac9/public_jobshop.py
+      - .github/workflows/drnas-scale9-public.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  public:
+    name: Public undefined / undefined
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {name: la01, multiplier: 1.08}
+          - {name: la01, multiplier: 1.25}
+          - {name: la02, multiplier: 1.08}
+          - {name: la02, multiplier: 1.25}
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin OR-Tools and compile separate native and baseline CDCL
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check 'ortools==9.14.6206'
+          g++ -std=c++17 -O3 -DNDEBUG -o drnas-sac9 research/sac9/sac9.cpp
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum drnas-sac9 build/drnas-pcmax research/sac9/public_jobshop.py
+      - name: Fetch frozen public upstream raw data
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl --fail --silent --show-error --retry 3 -L             'https://raw.githubusercontent.com/tamy0612/JSPLIB/master/instances/undefined'             -o 'source/undefined'
+      - name: Fetch pinned independent DRAT checker
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43625251777
+          name: domain-bench1-prepared
+          github-token: ${{ github.token }}
+          path: checker-artifact
+      - name: Run four arms on same materialized CNF / one CPU; no expected labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf checker-artifact/domain_bench_ready.tgz build/drat-trim
+          chmod +x build/drat-trim
+          python3 -u research/sac9/public_jobshop.py             --source 'source/undefined' --name 'undefined'             --multiplier 'undefined'             --binary drnas-sac9 --cdcl build/drnas-pcmax             --drat-trim build/drat-trim --limit 8             --out results/public/undefined-undefined             | tee public_result.log
+      - name: Preserve public source pin, exact CNF, source-only evidence and controls
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sac9-public-undefined-undefined
+          retention-days: 60
+          compression-level: 6
+          path: |
+            source/
+            results/public/
+            public_result.log
+            research/sac9/public_jobshop.py
