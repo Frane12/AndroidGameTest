@@ -1,0 +1,65 @@
+name: SCALE26 raw CNF exact band recovery
+on:
+  push:
+    branches: ['experiment/scale26-raw-structure-recovery-20261124']
+    paths: ['.github/workflows/scale26-recovery.yml']
+  workflow_dispatch:
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        instance: [la04, la05, la08, la09, la10, la16, la17, la18, la19, la20]
+        delta: [-1, 0]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pin dependencies and input source
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet ortools==9.14.6206
+          git clone https://github.com/tamy0612/JSPLIB.git jsplib
+          git -C jsplib checkout eea2b60dd7e2f5c907ff7302662c61812eb7efdf
+          python -m py_compile research/scale26/recover26.py
+          printf 'p cnf 3 3\n1 2 0\n-1 -3 0\n-2 3 0\n' >/tmp/smoke.cnf
+          python research/scale26/recover26.py raw /tmp/smoke.cnf /tmp/smoke.model
+          test -s /tmp/smoke.model
+      - name: Raw structure only (300 seconds, single CPU)
+        run: python research/scale26/recover26.py '${{ matrix.instance }}' '${{ matrix.delta }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale26-${{ matrix.instance }}-${{ matrix.delta }}
+          path: out26/
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scale26-la*
+          path: results
+      - name: Aggregate separately verified and unverified
+        run: |
+          python - <<'PY'
+          import pathlib,json
+          rows=[json.loads(p.read_text()) for p in pathlib.Path('results').rglob('result.json')]
+          good=[r for r in rows if r['status']==r['expected'] and r['decision_s']<=300]
+          strict=[r for r in good if r['model_verified'] and r['e2e_s']<=300]
+          bad=[r for r in rows if r['status'] in ('SAT','UNSAT') and r['status']!=r['expected']]
+          print('cases',len(rows),'/20')
+          print('decision',len(good),'/20','verified SAT E2E',len(strict),'unverified UNSAT',sum(r['status']=='UNSAT' for r in good),'wrong',len(bad))
+          print('decision PAR2',(sum(r['decision_s'] for r in good)+600*(20-len(good)))/20)
+          for r in sorted(rows,key=lambda r:r['case']): print(json.dumps(r))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale26-aggregate
+          path: results/
