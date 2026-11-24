@@ -4,6 +4,8 @@
 // accepted against the unchanged original DIMACS CNF.
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
