@@ -1,0 +1,102 @@
+name: DRNAS SCALE9 metamorphic DRAT + VeriPB source audit
+on:
+  push:
+    branches: [experiment/drnas-scale9-native-sac-20261124]
+    paths:
+      - research/sac9/metamorphic_native.py
+      - research/sac9/emit_veripb3.py
+      - .github/workflows/drnas-scale9-proof-audit.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  proof_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile native C++ SAC9 and original CDCL baseline, pin external VeriPB
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -o drnas-sac9 research/sac9/sac9.cpp
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          veripb-tool/bin/veripb --version
+      - name: Retrieve frozen FT06 raw CNFs
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 45345607598
+          name: drnas-scale7-public-ft06-cp-sat-raw-structured
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Retrieve independently compiled DRAT-trim
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43625251777
+          name: domain-bench1-prepared
+          github-token: ${{ github.token }}
+          path: checker-artifact
+      - name: Native SAC9 metamorphic permutation audit (9x UNSAT, 9x SAT controls)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/sac9-proof
+          tar -xzf checker-artifact/domain_bench_ready.tgz build/drat-trim
+          chmod +x build/drat-trim
+          python3 -u research/sac9/metamorphic_native.py \
+            --source54 frozen/results/scale7-public/rep-1/day-54/raw/original.cnf \
+            --source55 frozen/results/scale7-public/rep-1/day-55/raw/original.cnf \
+            --binary drnas-sac9 --checker build/drat-trim \
+            --out results/sac9-proof \
+            | tee results/sac9-proof/summary.log
+      - name: Independently verify native SAC9 proof in VeriPB 3.0.2
+        run: |
+          set -euo pipefail
+          d=results/sac9-proof/h54/rep00
+          python3 research/sac9/emit_veripb3.py \
+            --cnf "$d/original.cnf" --drat "$d/proof.drat" --out "$d/proof.pbp" \
+            | tee "$d/producer.log"
+          timeout 120s veripb-tool/bin/veripb --cnf "$d/original.cnf" "$d/proof.pbp" \
+            | tee "$d/veripb.log"
+          grep -q 's VERIFIED UNSATISFIABLE' "$d/veripb.log"
+      - name: Same CPU / same run CDCL baseline against unchanged FT06 CNFs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib,statistics,subprocess,time
+          try:os.sched_setaffinity(0,{min(os.sched_getaffinity(0))})
+          except (AttributeError,OSError):pass
+          records=[]
+          for h in (54,55):
+            path=f'frozen/results/scale7-public/rep-1/day-{h}/raw/original.cnf'
+            for rep in range(5):
+              started=time.perf_counter()
+              p=subprocess.run(['build/drnas-pcmax',path,'--mode','core','--time','8'],
+                   capture_output=True,text=True,timeout=12)
+              wall=time.perf_counter()-started
+              assert p.returncode==(20 if h==54 else 10),(h,p.returncode,p.stdout[-300:])
+              records.append({'h':h,'rep':rep,'status':'UNSAT' if h==54 else 'SAT',
+                              'e2e_s':round(wall,6)})
+          pathlib.Path('results/sac9-proof/cdcl_baseline.json').write_text(json.dumps(records,indent=2)+'\n')
+          for h in (54,55):
+            print('CDCL_SAME_RUN_MEDIAN',h,statistics.median(r['e2e_s'] for r in records if r['h']==h))
+          PY
+      - name: Archive source material, standard proofs, checked outputs, timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-scale9-drat-veripb-metamorphic-frozen-audit
+          retention-days: 60
+          compression-level: 6
+          path: |
+            research/sac9/
+            results/sac9-proof/
