@@ -1,0 +1,55 @@
+name: DRNAS SCALE7 mixed-width CNF standard VeriPB audit
+on:
+  push:
+    branches: [experiment/drnas-pcmax-scale7-veripb-mixed-20261124]
+    paths:
+      - src/pcmax_clique.hpp
+      - research/pcmax_clique/mixed_family_test.py
+      - .github/workflows/drnas-pcmax-scale7-mixed.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mixed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pin independent VeriPB 3.0.2 and compile native SCALE7
+        run: |
+          set -euo pipefail
+          cargo install veripb --version 3.0.2 --locked --root "$GITHUB_WORKSPACE/veripb-tool" --quiet
+          ./veripb-tool/bin/veripb --version
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax drnas-pcmax-base -j2
+          sha256sum build/drnas-pcmax src/pcmax_clique.hpp
+      - name: Source-only mixed 16 trials with falsification controls and external PB verifier
+        run: |
+          set -euo pipefail
+          python3 -u research/pcmax_clique/mixed_family_test.py \
+             --binary build/drnas-pcmax --veripb veripb-tool/bin/veripb \
+             --output results/scale7-mixed | tee mixed-trials.log
+      - name: Existing SCALE6 Hall/PCMAX integration regressions
+        run: |
+          set -euo pipefail
+          python3 -B research/pcmax_capacity/integration_tests.py \
+             --binary build/drnas-pcmax --base-binary build/drnas-pcmax-base \
+             --report results/scale7-mixed/legacy-integration.json
+      - name: Archive source CNFs, certs, external Veripb outputs and controls
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drnas-scale7-mixed-standard-veripb-source-audit
+          retention-days: 60
+          compression-level: 6
+          path: |
+            results/scale7-mixed/
+            mixed-trials.log
+            research/pcmax_clique/mixed_family_test.py
+            research/pcmax_clique/emit_veripb_clique.py
