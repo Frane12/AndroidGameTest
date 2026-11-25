@@ -1,0 +1,59 @@
+name: PCMAX conference validation — 100 fresh synthetic cases
+on:
+  push:
+    branches: [experiment/pcmax-conference-validation1-20261125]
+    paths: ['.github/workflows/pcmax-conference-validation1.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check detector freeze and build
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 466a5fa3a974304f710482ea4f403dab389319e2
+          git diff --exit-code 466a5fa3a974304f710482ea4f403dab389319e2 HEAD -- src CMakeLists.txt research/pcmax_hall/smoke_test.py research/pcmax_hall/verify_hall.py
+          mkdir -p metadata
+          git rev-parse HEAD > metadata/experiment-sha
+          lscpu > metadata/cpu
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target drnas-pcmax -j2
+          sha256sum build/drnas-pcmax src/pcmax_hall.hpp > metadata/drnas.sha
+      - name: Build reference solvers and independent checker
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          test "$(git -C kissat-src rev-parse HEAD)" = 8af8e56f174b778aef3aa45af9f739b2a5f492c2
+          (cd kissat-src && ./configure && make -j2)
+          git clone --depth 1 --branch rel-2.1.3 https://github.com/arminbiere/cadical.git cadical-src
+          (cd cadical-src && ./configure && make -j2)
+          git clone --depth 1 https://github.com/marijnheule/drat-trim.git drat-src
+          gcc -D_GNU_SOURCE -std=c99 -O2 drat-src/drat-trim.c -o drat-src/drat-trim
+          for d in kissat-src cadical-src drat-src; do git -C "$d" rev-parse HEAD > "metadata/$d.sha"; done
+          python3 -m venv .venv
+          .venv/bin/pip install ortools==9.14.6206
+          .venv/bin/pip freeze > metadata/python-packages.txt
+      - name: Fresh paired pilot — detector only, proof producing reference SAT, raw CP-SAT
+        run: |
+          set -euo pipefail
+          .venv/bin/python -u research/pcmax_hall/conference_pilot.py --drnas "$PWD/build/drnas-pcmax" --kissat "$PWD/kissat-src/build/kissat" --cadical "$PWD/cadical-src/build/cadical" --checker "$PWD/drat-src/drat-trim" --out pilot --cap 5 --freeze 466a5fa3a974304f710482ea4f403dab389319e2
+      - name: Preserve exact inputs, proofs, logs and manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcmax-conference-pilot
+          path: |
+            pilot/
+            metadata/
+            research/pcmax_hall/conference_protocol.md
+          retention-days: 90
