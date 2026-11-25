@@ -1,0 +1,62 @@
+name: DRNAS native C++17 GENERAL13 paired
+on:
+  push:
+    branches:
+      - experiment/drnas-native-general13-20261125
+    paths:
+      - '.github/workflows/drnas-native-general13.yml'
+      - 'research/native-general13/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        case: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native C++ baseline vs attack, same public CNF
+        run: python3 research/native-general13/run.py ${{ matrix.case }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native13-${{ matrix.case }}
+          path: |
+            native13-out/result.json
+            native13-out/*.drat
+            native13-out/*.model
+            native13-out/native.cpp
+          if-no-files-found: warn
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native13-*
+          path: rows
+      - name: Report exact paired outcomes
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,collections
+          r=sorted([json.loads(p.read_text()) for p in pathlib.Path("rows").rglob("result.json")],key=lambda x:x["id"])
+          print("NATIVE13_COMPLETE",len(r),"/13")
+          for x in r:
+              print("NATIVE13_ROW",json.dumps(x))
+          for mode in ("base","attack"):
+              rr=[z for x in r for z in x["rows"] if z["mode"]==mode]
+              print("NATIVE13_SUMMARY",mode,dict(collections.Counter(z["verification"] for z in rr)))
+          pathlib.Path("final-report.json").write_text(json.dumps(r,indent=2))
+          if len(r)!=13: raise SystemExit("incomplete cohort")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native13-final-report
+          path: final-report.json
