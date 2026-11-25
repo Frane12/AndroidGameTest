@@ -1,0 +1,86 @@
+name: DRNAS GENERAL6 affine closure vs frozen ATTACK2 and references
+on:
+  push:
+    branches: [experiment/drnas-general6-affine-closure-20261125]
+    paths: ['.github/workflows/drnas-native-general6.yml', 'research/native-general6/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3,4]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned Kissat, CaDiCaL and DRAT checker
+        run: |
+          set -eux
+          mkdir -p bin
+          git clone https://github.com/arminbiere/kissat.git /tmp/kissat
+          git -C /tmp/kissat checkout 77bc7ea68afe80751a67df8561357f193e160fb1
+          (cd /tmp/kissat && ./configure && make -j2)
+          cp /tmp/kissat/build/kissat bin/
+          git clone https://github.com/arminbiere/cadical.git /tmp/cadical
+          git -C /tmp/cadical checkout 14593f819cb242082b127396218bd60889409737
+          (cd /tmp/cadical && ./configure && make -j2)
+          cp /tmp/cadical/build/cadical bin/
+          git clone https://github.com/marijnheule/drat-trim.git /tmp/drat
+          git -C /tmp/drat checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          cc -O2 -std=gnu99 /tmp/drat/drat-trim.c -o bin/drat-trim
+      - name: Original CNF paired run on one logical CPU
+        run: python3 research/native-general6/bench.py ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: general6-paired-${{ matrix.shard }}
+          path: |
+            general6-out/manifest.json
+            general6-out/rows.jsonl
+            general6-out/summary.json
+            general6-out/*.verified.*.gz
+          if-no-files-found: warn
+  aggregate:
+    if: always()
+    needs: paired
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: general6-paired-*
+          path: rows
+      - name: Audit complete coverage and print score
+        run: |
+          python3 - <<'PY'
+          import pathlib,json,collections
+          files=list(pathlib.Path('rows').rglob('rows.jsonl'))
+          manifests=[json.loads(p.read_text()) for p in pathlib.Path('rows').rglob('manifest.json')]
+          assert len(files)==len(manifests)==5, 'missing shard'
+          assert all(m['draw']==manifests[0]['draw'] and m['list_sha256']==manifests[0]['list_sha256'] for m in manifests)
+          rows=[json.loads(l) for p in files for l in p.read_text().splitlines()]
+          arms=['ATTACK2','GENERAL6','Kissat','CaDiCaL']
+          fails=[r for r in rows if r['status']=='SOURCE_FAILED']
+          ids={r['id'] for r in rows}
+          assert ids==set(range(50)), 'incomplete draw'
+          for i in ids:
+              group=[r for r in rows if r['id']==i]
+              if any(r['status']=='SOURCE_FAILED' for r in group): assert len(group)==1;continue
+              assert sorted(r['solver'] for r in group)==sorted(arms)
+              assert len({r['sha256'] for r in group})==1
+              assert len({r['status'] for r in group if r['status'] in ('SAT','UNSAT')})<=1
+          report={'requested':50,'tested':50-len(fails),'source_failed':len(fails),'arms':{}}
+          for name in arms:
+              rr=[r for r in rows if r.get('solver')==name]
+              report['arms'][name]={'counts':dict(collections.Counter(r['status'] for r in rr)), 'par2_s':sum(r['par2_s'] for r in rr)/max(1,len(rr))}
+          print('GENERAL6_FINAL',json.dumps(report))
+          pathlib.Path('final.json').write_text(json.dumps(report,indent=2))
+          assert not any(r['status'] in ('AUDIT_FAILED','ERROR') for r in rows)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: general6-final
+          path: final.json
