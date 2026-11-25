@@ -1,0 +1,59 @@
+name: DRNAS native C++17 GENERAL4 paired
+on:
+  push:
+    branches: [experiment/drnas-native-general4-20261125]
+    paths: ['.github/workflows/drnas-native-general4.yml', 'research/native-general4/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native C++ temporal and case decomposition vs prior attack
+        run: python3 research/native-general4/run.py ${{ matrix.case }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native4-${{ matrix.case }}
+          path: |
+            native4-out/result.json
+            native4-out/*.drat
+            native4-out/*.model
+            native4-out/native.cpp
+            native4-out/general4.hpp
+          if-no-files-found: warn
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native4-*
+          path: rows
+      - name: Report exact paired outcomes
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,collections
+          r=sorted([json.loads(p.read_text()) for p in pathlib.Path("rows").rglob("result.json")],key=lambda x:x["id"])
+          print("NATIVE4_COMPLETE",len(r),"/4")
+          for x in r:
+              print("NATIVE4_ROW",json.dumps(x))
+          for mode in ("attack","attack2"):
+              rr=[z for x in r for z in x["rows"] if z["mode"]==mode]
+              print("NATIVE4_SUMMARY",mode,dict(collections.Counter(z["verification"] for z in rr)))
+          pathlib.Path("final-report.json").write_text(json.dumps(r,indent=2))
+          if len(r)!=4: raise SystemExit("incomplete cohort")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native4-final-report
+          path: final-report.json
