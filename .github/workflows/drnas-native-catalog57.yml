@@ -1,0 +1,75 @@
+name: DRNAS native C++17 CATALOG57 multi-family
+on:
+  push:
+    branches: [experiment/drnas-native-catalog-multifamily-20261125]
+    paths: ['.github/workflows/drnas-native-catalog57.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        case: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Paired original CNF, one logical CPU, independent audit
+        run: python3 -u research/native-catalog/run.py ${{ matrix.case }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: catalog57-${{ matrix.case }}
+          path: |
+            native-catalog-out/result.json
+            native-catalog-out/*.drat
+            native-catalog-out/*.model
+          if-no-files-found: warn
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: catalog57-*
+          path: rows
+      - name: Full paired report, deduplication and separate cohorts
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,collections,statistics
+          rows=sorted([json.loads(p.read_text()) for p in pathlib.Path("rows").rglob("result.json")],key=lambda x:x["id"])
+          verified={"INDEPENDENT_MODEL_VERIFIED","INDEPENDENT_RUP_VERIFIED"}
+          print("CATALOG57_COMPLETE",len(rows),"/57")
+          for x in rows:
+              print("CATALOG57_ROW",json.dumps(x))
+          seen=set()
+          distinct=[]
+          for x in rows:
+              h=x.get("source_sha256")
+              if x.get("input_status")=="READY" and h not in seen:
+                  seen.add(h);distinct.append(x)
+          for cohort in sorted(set(x["cohort"] for x in rows)):
+              raw=[x for x in rows if x["cohort"]==cohort]
+              subset=[x for x in distinct if x["cohort"]==cohort]
+              for mode in ["attack","attack2"]:
+                  r=[z for x in subset for z in x["rows"] if z["mode"]==mode]
+                  print("CATALOG57_SUMMARY",json.dumps(dict(cohort=cohort,arm=mode,requested=len(raw),distinct_ready=len(subset),verification=collections.Counter(z["verification"] for z in r),strict_within_cap=sum(z["strict_par2_s"]<60 for z in r),strict_par2=statistics.mean(z["strict_par2_s"] for z in r) if r else None)))
+          unknown=[]
+          for x in distinct:
+              if x["cohort"].startswith("catalog_unknown"):
+                  for z in x["rows"]:
+                      if z["mode"]=="attack2" and z["verification"] in verified:
+                          unknown.append(dict(file_id=x["file_id"],family=x["family"],source_sha256=x["source_sha256"],result=z["status"],method=z["method"],verification=z["verification"],e2e_s=z["e2e_s"]))
+          print("CATALOG57_UNKNOWN_VERIFIED",json.dumps(unknown))
+          pathlib.Path("final-report.json").write_text(json.dumps(dict(requested=57,reported=len(rows),distinct_ready=len(distinct),rows=rows,catalog_unknown_verified=unknown),indent=2))
+          if len(rows)!=57:raise SystemExit("incomplete cohort")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: catalog57-final
+          path: final-report.json
