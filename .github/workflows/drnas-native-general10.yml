@@ -1,0 +1,108 @@
+name: DRNAS GENERAL10 exact relation factorization and adaptive portfolio
+on:
+  push:
+    branches: [experiment/drnas-general10-relational-factorization-20261125]
+    paths: ['.github/workflows/drnas-native-general10.yml','research/native-general10/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned Kissat, CaDiCaL and DRAT checker
+        run: |
+          set -eux
+          mkdir -p bin
+          git clone https://github.com/arminbiere/kissat.git /tmp/kissat
+          git -C /tmp/kissat checkout 77bc7ea68afe80751a67df8561357f193e160fb1
+          (cd /tmp/kissat && ./configure && make -j2)
+          cp /tmp/kissat/build/kissat bin/
+          git clone https://github.com/arminbiere/cadical.git /tmp/cadical
+          git -C /tmp/cadical checkout 14593f819cb242082b127396218bd60889409737
+          (cd /tmp/cadical && ./configure && make -j2)
+          cp /tmp/cadical/build/cadical bin/
+          git clone https://github.com/marijnheule/drat-trim.git /tmp/drat
+          git -C /tmp/drat checkout 2e3b2dc0ecf938addbd779d42877b6ed69d9a985
+          cc -O2 -std=gnu99 /tmp/drat/drat-trim.c -o bin/drat-trim
+      - name: Reconstruct frozen GENERAL7-10 native sources and compile
+        run: |
+          set -eux
+          mkdir -p /tmp/g10 bin
+          base64 -d research/native-general10/kernels.tar.xz.b64 > /tmp/g10.tar.xz
+          echo '8f261a791853a2176728069f222930df0e05f8739a9c257fb5636b9479a12b24  /tmp/g10.tar.xz' | sha256sum -c -
+          tar -xJf /tmp/g10.tar.xz -C /tmp/g10
+          base64 -d research/native-general7/general7.cpp.xz.b64 | xz -dc > /tmp/g10/base/general7.cpp
+          cp research/native-general6/affine.cpp /tmp/g10/base/affine.cpp
+          echo 'f7ceb4ecc92cc44a36d633b2af050e5fd4108f5f504255b902931e503262a75d  /tmp/g10/base/general7.cpp' | sha256sum -c -
+          echo 'd4c2ebcde8b0e96ea099b19021e510c9d81c5c90e445a4432d71cd507eda3095  /tmp/g10/base/affine.cpp' | sha256sum -c -
+          echo 'ec685d50c682a47e3eb63c0fb9e108ef02b76e3e8cc0141df772c140f82d72f5  /tmp/g10/general10.cpp' | sha256sum -c -
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/g10/base/general7.cpp')
+          s=p.read_text()
+          assert s.count('\nint main(')==1
+          p.with_name('general7_core.hpp').write_text(s.split('\nint main(')[0]+'\n')
+          PY
+          for x in general7 general8 general9; do
+            g++ -std=c++17 -O3 -Wall -Wextra -Werror /tmp/g10/base/$x.cpp -o bin/$x
+          done
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror /tmp/g10/general10.cpp -o bin/general10
+      - name: Paired one logical CPU, prospective original SAT2026 draw
+        run: python3 -u research/native-general10/public_bench.py ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: general10-public-${{ matrix.shard }}
+          path: |
+            g10-public/manifest.json
+            g10-public/rows.jsonl
+            g10-public/*.model.gz
+            g10-public/*.proof.gz
+          if-no-files-found: warn
+  aggregate:
+    if: always()
+    needs: paired
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: general10-public-*
+          path: rows
+      - name: Verify cohort and summarize independently checked results
+        run: |
+          python3 - <<'PY'
+          import pathlib,json,collections
+          fs=list(pathlib.Path('rows').rglob('rows.jsonl'))
+          ms=[json.loads(p.read_text()) for p in pathlib.Path('rows').rglob('manifest.json')]
+          assert len(fs)==len(ms)==10
+          assert all(m['draw']==ms[0]['draw'] and m['list_sha256']==ms[0]['list_sha256'] for m in ms)
+          rs=[json.loads(l) for p in fs for l in p.read_text().splitlines()]
+          arms=['G7','G8','G9','G10_STRUCT','G10_AUTO','Kissat','CaDiCaL']
+          ids={r['id'] for r in rs};assert ids==set(range(50))
+          for i in ids:
+              group=[r for r in rs if r['id']==i]
+              if any(r['status']=='SOURCE_FAILED' for r in group):assert len(group)==1;continue
+              assert sorted(r['solver'] for r in group)==sorted(arms)
+              assert len({r['sha256'] for r in group})==1
+              assert len({r['status'] for r in group if r['status'] in ('SAT','UNSAT')})<=1
+          report={'requested':50,'source_failed':sum(r['status']=='SOURCE_FAILED' for r in rs),'arms':{}}
+          for arm in arms:
+              rr=[r for r in rs if r.get('solver')==arm]
+              report['arms'][arm]={'tested':len(rr),'counts':dict(collections.Counter(r['status'] for r in rr)),'par2_s':sum(r['par2_s'] for r in rr)/max(1,len(rr))}
+          print('GENERAL10_FINAL',json.dumps(report))
+          pathlib.Path('final.json').write_text(json.dumps(report,indent=2))
+          assert not any(r['status']=='AUDIT_FAILED' for r in rs)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: general10-final
+          path: final.json
